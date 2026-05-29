@@ -991,7 +991,7 @@ VALUE korb_last_match_get(CTX *c);
 void  korb_last_match_set(CTX *c, VALUE v);
 
 /* const lookup along current scope (uses CTX->current_class) */
-VALUE korb_const_lookup(CTX *c, ID name);
+RESULT korb_const_lookup(CTX *c, ID name);
 
 /* range */
 VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);

@@ -1202,7 +1202,7 @@ bool korb_const_has(struct korb_class *klass, ID name) {
     return false;
 }
 
-VALUE korb_const_lookup(CTX *c, ID name) {
+RESULT korb_const_lookup(CTX *c, ID name) {
     /* Lexical lookup along cref chain (each cref level checks its own
      * class plus that class's includes — but NOT super).  The bottom
      * implicit `[Object, prev=NULL]` cref entry (created at top-level
@@ -1223,21 +1223,21 @@ VALUE korb_const_lookup(CTX *c, ID name) {
         if (cr->klass == NULL) continue;
         if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
-        if (!UNDEF_P(v)) return v;
+        if (!UNDEF_P(v)) return RESULT_OK(v);
         for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
             VALUE v2 = korb_const_get(cr->klass->includes[i], name);
-            if (!UNDEF_P(v2)) return v2;
+            if (!UNDEF_P(v2)) return RESULT_OK(v2);
         }
     }
     /* Inheritance chain of innermost class — walks includes too. */
     struct korb_class *k = korb_host_class(c);
     if (k && k->super) {
         VALUE v = korb_const_get_inherited(k->super, name);
-        if (!UNDEF_P(v)) return v;
+        if (!UNDEF_P(v)) return RESULT_OK(v);
     }
     /* Object as global namespace (Object's includes too). */
     VALUE v = korb_const_get_inherited(KORB_VM(c)->object_class, name);
-    if (!UNDEF_P(v)) return v;
+    if (!UNDEF_P(v)) return RESULT_OK(v);
     /* const_missing — dispatch to the lexically innermost real class.
      * CRuby calls #const_missing on the original class/module scope so
      * code like `ClassA.constx → CS_CONSTX` can intercept the miss
@@ -1246,15 +1246,12 @@ VALUE korb_const_lookup(CTX *c, ID name) {
         struct korb_class *meta = korb_singleton_class_of(c, k);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return SINK_RESULT(c, korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym));
+            return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
         }
     }
-    {
-        VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
-                   "uninitialized constant %s", korb_id_name(name)));
-    }
-    return Qnil;
+    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
+    return korb_raise(c, (struct korb_class *)eName,
+               "uninitialized constant %s", korb_id_name(name));
 }
 
 /* ---- gvars ---- */

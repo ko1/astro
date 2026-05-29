@@ -420,7 +420,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
      * out address fields, producing negative lengths that abort
      * korb_xmalloc with SIGABRT. */
     bool has_block = korb_block_given(c);
-    VALUE ret = Qnil;
+    RESULT _final = RESULT_OK(Qnil);
     int rs_cap = 4;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
         (void)rs_cap;
@@ -430,8 +430,10 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         /* rs[3] holds the per-iter piece across korb_ary_push / yield */
         #define EMIT(v) do { \
             rs[3] = (v); \
-            if (has_block) SINK_RESULT(c, korb_yield(c, 1, &rs[3])); \
-            else korb_ary_push(rs[2], rs[3]); \
+            if (has_block) { \
+                RESULT _ye = korb_yield(c, 1, &rs[3]); \
+                if (_ye.state != KORB_NORMAL) { _final = _ye; goto split_done; } \
+            } else korb_ary_push(rs[2], rs[3]); \
         } while (0)
         struct korb_string *s = (struct korb_string *)rs[0];
         if (argc == 0 || NIL_P(rs[1])) {
@@ -444,9 +446,9 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
                 EMIT(korb_str_new(c, c->sp, s->ptr + start, i - start));
                 s = (struct korb_string *)rs[0];  /* reload */
             }
-            ret = has_block ? rs[0] : rs[2];
+            _final = RESULT_OK(has_block ? rs[0] : rs[2]);
         } else if (BUILTIN_TYPE(rs[1]) != T_STRING) {
-            ret = has_block ? rs[0] : rs[2];
+            _final = RESULT_OK(has_block ? rs[0] : rs[2]);
         } else {
             struct korb_string *sep = (struct korb_string *)rs[1];
             if (sep->len == 0) {
@@ -455,7 +457,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
                     s = (struct korb_string *)rs[0];  /* reload */
                     sep = (struct korb_string *)rs[1];
                 }
-                ret = has_block ? rs[0] : rs[2];
+                _final = RESULT_OK(has_block ? rs[0] : rs[2]);
             } else {
                 long start = 0;
                 for (long i = 0; i + sep->len <= s->len; ) {
@@ -468,12 +470,13 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
                     } else i++;
                 }
                 EMIT(korb_str_new(c, c->sp, s->ptr + start, s->len - start));
-                ret = has_block ? rs[0] : rs[2];
+                _final = RESULT_OK(has_block ? rs[0] : rs[2]);
             }
         }
         #undef EMIT
+    split_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    return _final;
 }
 
 /* Compute the chomp length given an optional argument.

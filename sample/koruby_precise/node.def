@@ -401,7 +401,7 @@ node_cvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 {
-    return RESULT_OK(LIFT_C_STATE(c, korb_const_lookup(c, name)));
+    return korb_const_lookup(c, name);
 }
 
 NODE_DEF
