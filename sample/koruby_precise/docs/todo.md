@@ -155,6 +155,39 @@ User 指摘: 「sp として staging + 1 を渡してるんだから、別に c-
 成果: broad rubyspec sweep PASS=1615 → 1634 (+19)、 CRASH=0 維持、 全
 10 test suite が default / STRESS / STRESS+PURGE 全 mode で PASS。
 
+### Curry / nested closure bug (2026-05-29 第 6 セッション)
+
+`Proc#curry` 含む recursive Proc dispatch で nested lambda の captured
+outer-var が壊れる pre-existing bug を発見 ([[project_koruby_precise_curry_bug]])。
+
+簡易 repro: `lambda { |a,b,c| a+b+c }.curry[1][2][3]` → SEGV。
+
+仮説: `korb_snapshot_one_proc_` が new_inner_lambda の env を snapshot する
+際、 fresh_env_B (rec の proc_call clone) は accum_env_size 個 (= 親 lambda
+の env size) しか valid 領域を持たないが、 new_inner->env_size の方が大きい
+場合、 snap_B の slot K > accum_env_size は fresh_env_B の SLACK 領域 or
+他データを copy する。 親が contained block の env_size を伝播せず、 child
+が parent の env_size を超えると corrupted slot にアクセスする。
+
+対応案: parser-side で `korb_proc_new` の env_size 算定時に contained block
+の env_size を親側に伝播して max を取る。 または snapshot 経路で child の
+env_size まで cover するように fp_hi を拡張する。
+
+未解決。 rubyspec の curry_spec.rb が crash する。 他は不影響 (test_block
+他は PASS)。
+
+### Bug fixes (2026-05-29 第 6 セッション、 後半)
+
+- Array#zip: #to_ary / #to_a 失敗時の #each fallback 実装。
+  Array::__zip_each__(obj, n) ヘルパで each → break at limit パターン。
+  zip_spec: 10 → 12 PASS。
+- proc_call clone に FRESH_ENV_SLACK = 512 (defensive、 korb_yield に
+  mirror)。
+
+このセッション末: rubyspec sweep PASS=1634 維持、 全 10 test suite が
+default / STRESS / STRESS+PURGE 全 mode で PASS、 27 benchmark が
+STRESS+PURGE で 0 crash。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
