@@ -807,7 +807,7 @@ cfunc 側で:
 | 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | R1-R5 完了 (cfunc 全 RESULT 化 + c->state 削除) |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default mode PASS、 STRESS+PURGE で test_class.rb のみ regression (snapshot_env_if_in_frame で SEGV、 root cause 未特定 = pre-existing flake)。 rubyspec は Struct PASS 130→183、 Range PASS の cover/min/max 大幅改善、 Comparable#== の例外伝播、 Kernel#instance_variable_get/set/defined?/remove の名前検証+frozen check 強化等で +100 PASS 程度。 |
+| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default + STRESS + STRESS+PURGE 全 mode PASS。 test_class.rb の post-body snapshot SEGV は fr.self 経由に変えて修正済 (commit 253395db)。 rubyspec は Struct PASS 130→183、 Range PASS の cover/min/max 大幅改善、 Comparable#== の例外伝播、 Kernel#instance_variable_get/set/defined?/remove の名前検証+frozen check 強化等で +100 PASS 程度。 c->sp を c->sp_top に rename (commit 40a75bce) し alloc 関数のみが書き換える design rule を明確化。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
