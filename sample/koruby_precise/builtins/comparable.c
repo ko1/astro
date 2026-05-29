@@ -904,31 +904,75 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                 return korb_raise(c, (struct korb_class *)eArg,
                            "wrong number of arguments (given %d, expected 1)", argc);
             }
-            /* nil → return all values as hash; Array → filter. */
-            c->sp[0] = self;
-            VALUE h = UNWRAP(struct_to_h(c, 0, c->sp + 1));
-            if (NIL_P(argv[0])) return RESULT_OK(h);
-            if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) {
-                return RESULT_OK(h);
+            /* nil → return full hash of members. */
+            if (NIL_P(argv[0])) {
+                c->sp[0] = self;
+                return struct_to_h(c, 0, c->sp + 1);
             }
+            if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "expected Array or nil");
+            }
+            struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+            VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
+            if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) {
+                return RESULT_OK(korb_hash_new(c, c->sp));
+            }
+            struct korb_array *members = (struct korb_array *)members_v;
             struct korb_array *keys = (struct korb_array *)argv[0];
             VALUE result = korb_hash_new(c, c->sp);
+            /* CRuby: if keys.length > members.length, return empty hash. */
+            if (keys->len > members->len) return RESULT_OK(result);
             for (long i = 0; i < keys->len; i++) {
                 VALUE k = keys->ptr[i];
-                VALUE v = korb_hash_aref(c, h, k);
-                if (UNDEF_P(v)) {
-                    /* Try integer index — convert to symbol via Struct member name. */
-                    if (FIXNUM_P(k)) {
-                        c->sp[0] = self;
-                        VALUE arr = UNWRAP(struct_to_a(c, 0, c->sp + 1));
-                        long idx = FIX2LONG(k);
-                        if (idx >= 0 && idx < ((struct korb_array *)arr)->len) {
-                            korb_hash_aset(c, result, k, ((struct korb_array *)arr)->ptr[idx]);
-                            continue;
+                long idx = -1;
+                ID want_id = 0; bool by_name = false;
+                if (FIXNUM_P(k)) {
+                    idx = FIX2LONG(k);
+                    if (idx < 0) idx += members->len;
+                    if (idx < 0 || idx >= members->len) return RESULT_OK(result);
+                } else if (SYMBOL_P(k)) {
+                    by_name = true; want_id = korb_sym2id(k);
+                } else if (!SPECIAL_CONST_P(k) && BUILTIN_TYPE(k) == T_STRING) {
+                    by_name = true; want_id = korb_intern(korb_str_cstr(k));
+                } else {
+                    /* Try to_int coerce. */
+                    if (!SPECIAL_CONST_P(k)) {
+                        struct korb_class *kk = korb_class_of_class(k);
+                        if (korb_class_find_method(kk, korb_intern("to_int"))) {
+                            RESULT cr = korb_funcall_r(c, k, korb_intern("to_int"), 0, NULL);
+                            if (cr.state != KORB_NORMAL) return cr;
+                            if (!FIXNUM_P(cr.value)) {
+                                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                                  "can't convert %s to Integer (#to_int gave non-Integer)",
+                                                  korb_id_name(korb_class_of_class(k)->name));
+                            }
+                            idx = FIX2LONG(cr.value);
+                            if (idx < 0) idx += members->len;
+                            if (idx < 0 || idx >= members->len) return RESULT_OK(result);
+                            goto have_idx;
                         }
                     }
-                    return RESULT_OK(result); /* missing key short-circuits */
+                    return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                      "no implicit conversion of %s into Integer",
+                                      korb_id_name(korb_class_of_class(k)->name));
                 }
+                if (by_name) {
+                    for (long j = 0; j < members->len; j++) {
+                        ID mid = SYMBOL_P(members->ptr[j]) ? korb_sym2id(members->ptr[j]) :
+                                  korb_intern(korb_str_cstr(members->ptr[j]));
+                        if (mid == want_id) { idx = j; break; }
+                    }
+                    if (idx < 0) return RESULT_OK(result);
+                }
+            have_idx:;
+                ID name = SYMBOL_P(members->ptr[idx]) ? korb_sym2id(members->ptr[idx]) :
+                          korb_intern(korb_str_cstr(members->ptr[idx]));
+                const char *base = korb_id_name(name);
+                long bl = strlen(base);
+                char *iv = korb_xmalloc_atomic(bl + 2);
+                iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+                VALUE v = korb_ivar_get(self, korb_intern(iv));
                 korb_hash_aset(c, result, k, v);
             }
             return RESULT_OK(result);
