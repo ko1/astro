@@ -4296,10 +4296,15 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
             /* New sp-based RESULT ABI bridge: stage self + args at the top of
              * the value stack and call func_r.  c->sp is NOT bumped here —
              * the cfunc syncs `c->sp = sp` at alloc points (runtime.md §12.3).
-             * Convert returned RESULT back to legacy VALUE + c->state. */
+             * Convert returned RESULT back to legacy VALUE + c->state.
+             * Snapshot argv into a local buffer first: when argv lies inside
+             * the staging area (caller passed argv = sp + 1 etc.), the
+             * sp[1+i] = argv[i] copy would self-clobber on overlap. */
+            VALUE saved_argv[argc > 0 ? argc : 1];
+            for (int i = 0; i < argc; i++) saved_argv[i] = argv[i];
             VALUE *sp = c->sp;
             sp[0] = recv;
-            for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+            for (int i = 0; i < argc; i++) sp[1 + i] = saved_argv[i];
             RESULT _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
             if (UNLIKELY(_rr.state != KORB_NORMAL)) {
                 c->state = _rr.state;
