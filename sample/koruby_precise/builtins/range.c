@@ -202,6 +202,24 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
     return korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
 }
 
+/* Range#begin — returns the begin field directly (nil for beginless).
+ * Unlike #first, never raises.  CRuby semantics. */
+static RESULT rng_begin(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    (void)argc; (void)sp;
+    return RESULT_OK(((struct korb_range *)self)->begin);
+}
+
+/* Range#end / Range#last (no args) — returns the end field directly
+ * (nil for endless).  #last with args raises for endless. */
+static RESULT rng_end(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    (void)argc; (void)sp;
+    return RESULT_OK(((struct korb_range *)self)->end);
+}
+
 static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];

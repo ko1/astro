@@ -379,9 +379,9 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->range_class, "each", rng_each, 0);
     DEF_R(KORB_VM(c)->range_class, "first", rng_first, -1);
     DEF_R(KORB_VM(c)->range_class, "last",  rng_last,  -1);
-    DEF_R(KORB_VM(c)->range_class, "begin", rng_first, -1);
+    DEF_R(KORB_VM(c)->range_class, "begin", rng_begin, 0);
     DEF_R(KORB_VM(c)->range_class, "min",   rng_min,   -1);
-    DEF_R(KORB_VM(c)->range_class, "end",   rng_last,  -1);
+    DEF_R(KORB_VM(c)->range_class, "end",   rng_end,    0);
     DEF_R(KORB_VM(c)->range_class, "max",   rng_max,   -1);
     DEF_R(KORB_VM(c)->range_class, "to_a", rng_to_a, 0);
     {
