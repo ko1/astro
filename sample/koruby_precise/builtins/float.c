@@ -352,8 +352,34 @@ static RESULT flt_truncate(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* truncate toward zero — same as to_i for Float. */
     double v = korb_num2dbl(self);
+    if (isnan(v)) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError")),
+                          "NaN");
+    }
+    if (isinf(v)) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError")),
+                          v > 0 ? "Infinity" : "-Infinity");
+    }
+    /* Optional precision arg: positive → return Float scaled to `prec`
+     * decimal places (CRuby semantics).  Negative → round to nearest 10^n. */
+    long prec = 0;
+    if (argc >= 1) {
+        if (FIXNUM_P(argv[0])) prec = FIX2LONG(argv[0]);
+    }
+    if (prec > 0) {
+        double scale = pow(10.0, (double)prec);
+        double scaled = v * scale;
+        double truncated = scaled >= 0 ? floor(scaled) : ceil(scaled);
+        return RESULT_OK(korb_float_new(c, c->sp_top, truncated / scale));
+    }
+    if (prec < 0) {
+        double scale = pow(10.0, (double)(-prec));
+        double scaled = v / scale;
+        double truncated = scaled >= 0 ? floor(scaled) : ceil(scaled);
+        return RESULT_OK(korb_dbl2int(c, c->sp_top, truncated * scale));
+    }
+    /* truncate toward zero — same as to_i for Float. */
     return RESULT_OK(korb_dbl2int(c, c->sp_top, v >= 0 ? floor(v) : ceil(v)));
 }
 
