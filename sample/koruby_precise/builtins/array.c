@@ -2628,7 +2628,7 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
                    "wrong number of arguments (given %d, expected 1..2)", argc);
     }
     VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
-    if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return RESULT_OK(Qnil);
+    if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
     long i = FIX2LONG(iv);
     struct korb_array *a = (struct korb_array *)self;
     long norm = i < 0 ? i + a->len : i;
@@ -2657,7 +2657,7 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     for (int k = 0; k < argc; k++) {
         VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[k]));
-        if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return RESULT_OK(Qnil);
+        if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         long i = FIX2LONG(iv);
         long norm = i < 0 ? i + a->len : i;
         if (norm >= 0 && norm < a->len) {
@@ -3008,7 +3008,7 @@ static RESULT ary_combination(CTX *c, int argc, VALUE *sp) {
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
         VALUE e = UNWRAP(korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv));
-        if (c->state == KORB_RAISE || SPECIAL_CONST_P(e)) return RESULT_OK(e);
+        if (SPECIAL_CONST_P(e)) return RESULT_OK(e);
         long n = a->len;
         long sz = 0;
         if (r >= 0 && r <= n) {
@@ -3067,7 +3067,7 @@ static RESULT ary_permutation(CTX *c, int argc, VALUE *sp) {
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
         VALUE e = UNWRAP(korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv));
-        if (c->state == KORB_RAISE || SPECIAL_CONST_P(e)) return RESULT_OK(e);
+        if (SPECIAL_CONST_P(e)) return RESULT_OK(e);
         long n = a->len;
         long sz = 0;
         if (r >= 0 && r <= n) {

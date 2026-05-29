@@ -191,10 +191,10 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
              * unconditionally (covers method_missing-based mocks); only
              * skip if it raises NoMethodError. */
             if (!SPECIAL_CONST_P(arg)) {
-                arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
-                if (c->state == KORB_RAISE) {
+                RESULT _th = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                if (_th.state == KORB_RAISE) {
                     /* swallow NoMethodError; propagate other errors */
-                    VALUE bang = c->state_value;
+                    VALUE bang = _th.value;
                     VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
                     if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
                         BUILTIN_TYPE(eNo) == T_CLASS) {
@@ -203,14 +203,12 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
                         for (struct korb_class *kk = bk; kk; kk = kk->super) {
                             if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
                         }
-                        if (is_nm) {
-                            c->state = KORB_NORMAL;
-                            c->state_value = Qnil;
-                            continue;
-                        }
+                        if (is_nm) continue;
                     }
-                    return RESULT_OK(Qnil);
+                    return _th;
                 }
+                if (_th.state != KORB_NORMAL) return _th;
+                arg = _th.value;
             }
             if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_HASH) continue;
         }
@@ -1171,9 +1169,9 @@ static RESULT hash_count(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Hash#min_by, Hash#max_by — yields [k, v]; finds min/max by block. */
-static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int max) {
+static RESULT hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int max) {
     struct korb_hash *h = (struct korb_hash *)self;
-    if (!h->first) return Qnil;
+    if (!h->first) return RESULT_OK(Qnil);
     VALUE best_pair = Qnil;
     VALUE best_key = Qnil;
     bool first = true;
@@ -1181,15 +1179,13 @@ static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int m
         VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
-        RESULT _rt_bk = korb_yield(c, 1, &pair);
-        if (_rt_bk.state == KORB_RAISE) return Qnil;
-        VALUE bk = _rt_bk.value;
+        VALUE bk = UNWRAP(korb_yield(c, 1, &pair));
         if (first) {
             best_pair = pair;
             best_key  = bk;
             first = false;
         } else {
-            VALUE cmp = SINK_RESULT(c, korb_funcall(c, bk, korb_intern("<=>"), 1, &best_key));
+            VALUE cmp = UNWRAP(korb_funcall(c, bk, korb_intern("<=>"), 1, &best_key));
             if (FIXNUM_P(cmp)) {
                 long cv = FIX2LONG(cmp);
                 if ((max && cv > 0) || (!max && cv < 0)) {
@@ -1199,21 +1195,21 @@ static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int m
             }
         }
     }
-    return best_pair;
+    return RESULT_OK(best_pair);
 }
 static RESULT hash_min_by(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(hash_min_or_max_by(c, self, argc, argv, 0));
+    return hash_min_or_max_by(c, self, argc, argv, 0);
 }
 static RESULT hash_max_by(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(hash_min_or_max_by(c, self, argc, argv, 1));
+    return hash_min_or_max_by(c, self, argc, argv, 1);
 }
 
 /* Hash#sort — array of [k, v] sorted by [k, v] <=>. With a block,

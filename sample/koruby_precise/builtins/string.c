@@ -805,7 +805,7 @@ static RESULT str_getbyte(CTX *c, int argc, VALUE *sp) {
         i = FIX2LONG(argv[0]);
     } else {
         VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
-        if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return RESULT_OK(Qnil);
+        if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         i = FIX2LONG(iv);
     }
     struct korb_string *s = (struct korb_string *)self;
@@ -1060,7 +1060,7 @@ static RESULT str_rindex(CTX *c, int argc, VALUE *sp) {
     VALUE arg = argv[0];
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
         arg = str_coerce_arg(c, arg);
-        if (UNDEF_P(arg) || c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        if (UNDEF_P(arg) ) return RESULT_OK(Qnil);
     }
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *needle = (struct korb_string *)arg;
@@ -1432,7 +1432,7 @@ static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
             bits = FIX2LONG(argv[0]);
         } else {
             VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
-            if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return RESULT_OK(Qnil);
+            if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             bits = FIX2LONG(iv);
         }
     }
@@ -2672,13 +2672,13 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
         pos = FIX2LONG(argv[0]);
     } else {
         VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
-        if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return RESULT_OK(Qnil);
+        if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         pos = FIX2LONG(iv);
     }
     /* Coerce other to a String via #to_str (TypeError on failure). */
     VALUE other = (SPECIAL_CONST_P(argv[1]) || BUILTIN_TYPE(argv[1]) != T_STRING)
         ? str_coerce_arg(c, argv[1]) : argv[1];
-    if (UNDEF_P(other) || c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    if (UNDEF_P(other) ) return RESULT_OK(Qnil);
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)other;
     long orig_pos = pos;
