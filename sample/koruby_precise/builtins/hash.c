@@ -52,6 +52,11 @@ static RESULT hash_each(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* No block: return Enumerator. */
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("each"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     /* CRuby Hash#each yields a single 2-element Array per pair: a
      * 1-param block sees the [key, value] tuple; a 2-param block
      * auto-destructures into k, v.  Yielding 2 args directly would
@@ -127,6 +132,10 @@ static RESULT hash_each_value(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("each_value"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         CHECK(korb_yield(c, 1, &e->value));
@@ -139,6 +148,10 @@ static RESULT hash_each_key(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("each_key"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         CHECK(korb_yield(c, 1, &e->key));
@@ -501,6 +514,10 @@ static RESULT hash_map(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("map"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
