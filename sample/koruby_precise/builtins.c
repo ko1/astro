@@ -359,11 +359,11 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->array_class, "to_h", ary_to_h, 0);
 
     /* Hash */
-    DEF(korb_vm->hash_class, "[]", hash_aref, 1);
-    DEF(korb_vm->hash_class, "[]=", hash_aset, 2);
-    DEF(korb_vm->hash_class, "size", hash_size, 0);
-    DEF(korb_vm->hash_class, "length", hash_size, 0);
-    DEF(korb_vm->hash_class, "each", hash_each, 0);
+    DEF_R(korb_vm->hash_class, "[]", hash_aref, 1);
+    DEF_R(korb_vm->hash_class, "[]=", hash_aset, 2);
+    DEF_R(korb_vm->hash_class, "size", hash_size, 0);
+    DEF_R(korb_vm->hash_class, "length", hash_size, 0);
+    DEF_R(korb_vm->hash_class, "each", hash_each, 0);
 
     /* Range */
     {
@@ -851,71 +851,71 @@ void korb_init_builtins(CTX *c) {
     }
 
     /* extra Hash */
-    DEF(korb_vm->hash_class, "keys",       hash_keys,       0);
-    DEF(korb_vm->hash_class, "values",     hash_values,     0);
-    DEF(korb_vm->hash_class, "each_value", hash_each_value, 0);
-    DEF(korb_vm->hash_class, "each_key",   hash_each_key,   0);
-    DEF(korb_vm->hash_class, "each_pair",  hash_each,       0);
-    DEF(korb_vm->hash_class, "key?",       hash_key_p,      1);
-    DEF(korb_vm->hash_class, "has_key?",   hash_key_p,      1);
-    DEF(korb_vm->hash_class, "include?",   hash_key_p,      1);
-    DEF(korb_vm->hash_class, "merge",      hash_merge,     -1);
-    DEF(korb_vm->hash_class, "merge!",     hash_merge_bang,-1);
-    DEF(korb_vm->hash_class, "invert",     hash_invert,     0);
-    DEF(korb_vm->hash_class, "to_a",       hash_to_a,       0);
-    DEF(korb_vm->hash_class, "delete",     hash_delete,    -1);
-    DEF(korb_vm->hash_class, "fetch",      hash_fetch,     -1);
-    DEF(korb_vm->hash_class, "__korb_required_kwarg__", hash_required_kwarg, 1);
-    DEF(korb_vm->hash_class, "__korb_required_kwargs_check__", hash_required_kwargs_check, 1);
-    DEF(korb_vm->hash_class, "__korb_kwargs_validate__", hash_kwargs_validate, 1);
-    DEF(korb_vm->hash_class, "compare_by_identity",  hash_compare_by_identity, 0);
-    DEF(korb_vm->hash_class, "compare_by_identity?", hash_compare_by_identity_p, 0);
-    DEF(korb_vm->hash_class, "clear",       hash_clear,        0);
-    DEF(korb_vm->hash_class, "delete_if",   hash_delete_if,    0);
-    DEF(korb_vm->hash_class, "keep_if",     hash_keep_if,      0);
-    DEF(korb_vm->hash_class, "compact",     hash_compact,      0);
-    DEF(korb_vm->hash_class, "compact!",    hash_compact_bang, 0);
-    DEF(korb_vm->hash_class, "values_at",   hash_values_at,   -1);
-    DEF(korb_vm->hash_class, "fetch_values",hash_fetch_values,-1);
-    DEF(korb_vm->hash_class, "member?",     hash_key_p,        1);
-    DEF(korb_vm->hash_class, "reject",      hash_reject,       0);
+    DEF_R(korb_vm->hash_class, "keys",       hash_keys,       0);
+    DEF_R(korb_vm->hash_class, "values",     hash_values,     0);
+    DEF_R(korb_vm->hash_class, "each_value", hash_each_value, 0);
+    DEF_R(korb_vm->hash_class, "each_key",   hash_each_key,   0);
+    DEF_R(korb_vm->hash_class, "each_pair",  hash_each,       0);
+    DEF_R(korb_vm->hash_class, "key?",       hash_key_p,      1);
+    DEF_R(korb_vm->hash_class, "has_key?",   hash_key_p,      1);
+    DEF_R(korb_vm->hash_class, "include?",   hash_key_p,      1);
+    DEF_R(korb_vm->hash_class, "merge",      hash_merge,     -1);
+    DEF_R(korb_vm->hash_class, "merge!",     hash_merge_bang,-1);
+    DEF_R(korb_vm->hash_class, "invert",     hash_invert,     0);
+    DEF_R(korb_vm->hash_class, "to_a",       hash_to_a,       0);
+    DEF_R(korb_vm->hash_class, "delete",     hash_delete,    -1);
+    DEF_R(korb_vm->hash_class, "fetch",      hash_fetch,     -1);
+    DEF_R(korb_vm->hash_class, "__korb_required_kwarg__", hash_required_kwarg, 1);
+    DEF_R(korb_vm->hash_class, "__korb_required_kwargs_check__", hash_required_kwargs_check, 1);
+    DEF_R(korb_vm->hash_class, "__korb_kwargs_validate__", hash_kwargs_validate, 1);
+    DEF_R(korb_vm->hash_class, "compare_by_identity",  hash_compare_by_identity, 0);
+    DEF_R(korb_vm->hash_class, "compare_by_identity?", hash_compare_by_identity_p, 0);
+    DEF_R(korb_vm->hash_class, "clear",       hash_clear,        0);
+    DEF_R(korb_vm->hash_class, "delete_if",   hash_delete_if,    0);
+    DEF_R(korb_vm->hash_class, "keep_if",     hash_keep_if,      0);
+    DEF_R(korb_vm->hash_class, "compact",     hash_compact,      0);
+    DEF_R(korb_vm->hash_class, "compact!",    hash_compact_bang, 0);
+    DEF_R(korb_vm->hash_class, "values_at",   hash_values_at,   -1);
+    DEF_R(korb_vm->hash_class, "fetch_values",hash_fetch_values,-1);
+    DEF_R(korb_vm->hash_class, "member?",     hash_key_p,        1);
+    DEF_R(korb_vm->hash_class, "reject",      hash_reject,       0);
     {
-        VALUE hash_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->hash_class, "reject!",     hash_reject_bang,  0);
+        RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->hash_class, "reject!",     hash_reject_bang,  0);
     }
-    DEF(korb_vm->hash_class, "replace",     hash_replace,      1);
-    DEF(korb_vm->hash_class, "shift",       hash_shift,        0);
-    DEF(korb_vm->hash_class, "store",       hash_aset,         2);
-    DEF(korb_vm->hash_class, "update",      hash_merge_bang,  -1);
-    DEF(korb_vm->hash_class, "slice",       hash_slice,       -1);
-    DEF(korb_vm->hash_class, "except",      hash_except,      -1);
-    DEF(korb_vm->hash_class, "count",       hash_count,       -1);
-    DEF(korb_vm->hash_class, "min_by",      hash_min_by,       0);
-    DEF(korb_vm->hash_class, "max_by",      hash_max_by,       0);
-    DEF(korb_vm->hash_class, "sort",        hash_sort,         0);
-    DEF(korb_vm->hash_class, "deconstruct_keys", hash_deconstruct_keys, 1);
-    DEF(korb_vm->hash_class, "dig",              hash_dig,              -1);
-    DEF(korb_vm->hash_class, "has_value?",       hash_has_value_p,       1);
-    DEF(korb_vm->hash_class, "value?",           hash_has_value_p,       1);
-    DEF(korb_vm->hash_class, "group_by",         hash_group_by,          0);
-    DEF(korb_vm->hash_class, "sort_by",          hash_sort_by,           0);
-    DEF(korb_vm->hash_class, "filter_map",       hash_filter_map,        0);
-    DEF(korb_vm->hash_class, "sum",              hash_sum,              -1);
-    DEF(korb_vm->hash_class, "each_with_object", hash_each_with_object,  1);
-    DEF(korb_vm->hash_class, "take",             hash_take,              1);
-    DEF(korb_vm->hash_class, "flat_map",         hash_flat_map,          0);
-    DEF(korb_vm->hash_class, "collect_concat",   hash_flat_map,          0);
-    DEF(korb_vm->hash_class, "default",      hash_default_get,      0);
-    DEF(korb_vm->hash_class, "default=",     hash_default_set,      1);
-    DEF(korb_vm->hash_class, "default_proc", hash_default_proc_get, 0);
-    DEF(korb_vm->hash_class, "default_proc=", hash_default_proc_set, 1);
+    DEF_R(korb_vm->hash_class, "replace",     hash_replace,      1);
+    DEF_R(korb_vm->hash_class, "shift",       hash_shift,        0);
+    DEF_R(korb_vm->hash_class, "store",       hash_aset,         2);
+    DEF_R(korb_vm->hash_class, "update",      hash_merge_bang,  -1);
+    DEF_R(korb_vm->hash_class, "slice",       hash_slice,       -1);
+    DEF_R(korb_vm->hash_class, "except",      hash_except,      -1);
+    DEF_R(korb_vm->hash_class, "count",       hash_count,       -1);
+    DEF_R(korb_vm->hash_class, "min_by",      hash_min_by,       0);
+    DEF_R(korb_vm->hash_class, "max_by",      hash_max_by,       0);
+    DEF_R(korb_vm->hash_class, "sort",        hash_sort,         0);
+    DEF_R(korb_vm->hash_class, "deconstruct_keys", hash_deconstruct_keys, 1);
+    DEF_R(korb_vm->hash_class, "dig",              hash_dig,              -1);
+    DEF_R(korb_vm->hash_class, "has_value?",       hash_has_value_p,       1);
+    DEF_R(korb_vm->hash_class, "value?",           hash_has_value_p,       1);
+    DEF_R(korb_vm->hash_class, "group_by",         hash_group_by,          0);
+    DEF_R(korb_vm->hash_class, "sort_by",          hash_sort_by,           0);
+    DEF_R(korb_vm->hash_class, "filter_map",       hash_filter_map,        0);
+    DEF_R(korb_vm->hash_class, "sum",              hash_sum,              -1);
+    DEF_R(korb_vm->hash_class, "each_with_object", hash_each_with_object,  1);
+    DEF_R(korb_vm->hash_class, "take",             hash_take,              1);
+    DEF_R(korb_vm->hash_class, "flat_map",         hash_flat_map,          0);
+    DEF_R(korb_vm->hash_class, "collect_concat",   hash_flat_map,          0);
+    DEF_R(korb_vm->hash_class, "default",      hash_default_get,      0);
+    DEF_R(korb_vm->hash_class, "default=",     hash_default_set,      1);
+    DEF_R(korb_vm->hash_class, "default_proc", hash_default_proc_get, 0);
+    DEF_R(korb_vm->hash_class, "default_proc=", hash_default_proc_set, 1);
     {
         /* Override Class.new on Hash's metaclass so Hash.new(default) and
          * Hash.new { ... } actually create a real hash with the default. */
         struct korb_class *cHshMeta = korb_class_new(c, c->sp, korb_intern("HashMeta"),
                                                       korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
-        korb_class_add_method_cfunc(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
+        korb_class_add_method_cfunc_r(cHshMeta, korb_intern("new"), hash_class_new, -1);
+        korb_class_add_method_cfunc_r(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
         korb_vm->hash_class->basic.klass = (VALUE)cHshMeta;
         /* Hash.try_convert(obj) — obj.to_hash if responding and returns
          * Hash, else nil.  Raises TypeError if #to_hash returns non-Hash. */
@@ -1004,19 +1004,19 @@ void korb_init_builtins(CTX *c) {
                 _try;
             }), -1);
     }
-    DEF(korb_vm->hash_class, "===",        hash_eqq,        1);
-    DEF(korb_vm->hash_class, "dup",        hash_dup,        0);
-    DEF(korb_vm->hash_class, "clone",      hash_clone,      0);
-    DEF(korb_vm->hash_class, "empty?",     hash_empty_p,    0);
-    DEF(korb_vm->hash_class, "map",        hash_map,        0);
-    DEF(korb_vm->hash_class, "collect",    hash_map,        0);
-    DEF(korb_vm->hash_class, "select",     hash_select,     0);
-    DEF(korb_vm->hash_class, "filter",     hash_select,     0);
-    DEF(korb_vm->hash_class, "partition",  hash_partition,  0);
-    DEF(korb_vm->hash_class, "tally",      hash_tally,      0);
-    DEF(korb_vm->hash_class, "filter",     hash_select,     0);
-    DEF(korb_vm->hash_class, "reduce",     hash_reduce,    -1);
-    DEF(korb_vm->hash_class, "inject",     hash_reduce,    -1);
+    DEF_R(korb_vm->hash_class, "===",        hash_eqq,        1);
+    DEF_R(korb_vm->hash_class, "dup",        hash_dup,        0);
+    DEF_R(korb_vm->hash_class, "clone",      hash_clone,      0);
+    DEF_R(korb_vm->hash_class, "empty?",     hash_empty_p,    0);
+    DEF_R(korb_vm->hash_class, "map",        hash_map,        0);
+    DEF_R(korb_vm->hash_class, "collect",    hash_map,        0);
+    DEF_R(korb_vm->hash_class, "select",     hash_select,     0);
+    DEF_R(korb_vm->hash_class, "filter",     hash_select,     0);
+    DEF_R(korb_vm->hash_class, "partition",  hash_partition,  0);
+    DEF_R(korb_vm->hash_class, "tally",      hash_tally,      0);
+    DEF_R(korb_vm->hash_class, "filter",     hash_select,     0);
+    DEF_R(korb_vm->hash_class, "reduce",     hash_reduce,    -1);
+    DEF_R(korb_vm->hash_class, "inject",     hash_reduce,    -1);
 
     /* extra Range */
     DEF_R(korb_vm->range_class, "step",     rng_step,    -1);

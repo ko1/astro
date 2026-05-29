@@ -134,20 +134,111 @@ def convert_body(body):
     new_body = ''.join(out)
 
     # 2. Wrap remaining `return EXPR;` (not `return korb_raise(`, not `return UNWRAP(`,
-    #    not `return RESULT_OK(`) with RESULT_OK(...)
-    def wrap_return(match):
-        expr = match.group(1).strip()
-        # Don't wrap if already RESULT or known raise/UNWRAP propagator
-        if expr.startswith('RESULT_OK'):
-            return match.group(0)
-        if expr.startswith('korb_raise'):
-            return match.group(0)
-        if expr.startswith('UNWRAP'):
-            return match.group(0)
-        if expr.startswith('(RESULT)'):
-            return match.group(0)
-        return f'return RESULT_OK({expr});'
-    new_body = re.sub(r'return ([^;]+);', wrap_return, new_body)
+    #    not `return RESULT_OK(`) with RESULT_OK(...).
+    # Use a string-aware scan rather than regex so we don't cross
+    # comments / string literals.
+    out_parts = []
+    i = 0
+    n = len(new_body)
+    while i < n:
+        ch = new_body[i]
+        nx = new_body[i+1] if i+1 < n else ''
+        # Skip line comments
+        if ch == '/' and nx == '/':
+            j = new_body.find('\n', i)
+            if j < 0: j = n
+            out_parts.append(new_body[i:j])
+            i = j; continue
+        # Skip block comments
+        if ch == '/' and nx == '*':
+            j = new_body.find('*/', i+2)
+            if j < 0: j = n
+            else: j += 2
+            out_parts.append(new_body[i:j])
+            i = j; continue
+        # Skip string literals
+        if ch == '"':
+            j = i + 1
+            while j < n and new_body[j] != '"':
+                if new_body[j] == '\\' and j+1 < n:
+                    j += 2; continue
+                j += 1
+            j = min(j + 1, n)
+            out_parts.append(new_body[i:j])
+            i = j; continue
+        # Skip char literals
+        if ch == "'":
+            j = i + 1
+            while j < n and new_body[j] != "'":
+                if new_body[j] == '\\' and j+1 < n:
+                    j += 2; continue
+                j += 1
+            j = min(j + 1, n)
+            out_parts.append(new_body[i:j])
+            i = j; continue
+        # Match `return ` only if preceded by whitespace or `{` (statement boundary)
+        # and we're not in middle of an identifier.
+        if (i == 0 or not (new_body[i-1].isalnum() or new_body[i-1] == '_')) \
+           and new_body[i:i+7] == 'return ':
+            # Find the matching ';' at the same paren/brace depth on the same statement
+            j = i + 7
+            depth_paren = 0; depth_brace = 0
+            while j < n:
+                cj = new_body[j]
+                if cj == '"' or cj == "'":
+                    # Skip the literal
+                    qc = cj
+                    j += 1
+                    while j < n and new_body[j] != qc:
+                        if new_body[j] == '\\' and j+1 < n:
+                            j += 2; continue
+                        j += 1
+                    j = min(j + 1, n)
+                    continue
+                if cj == '/' and j+1 < n and new_body[j+1] == '/':
+                    # line comment - end of statement actually but only if no ;
+                    break
+                if cj == '/' and j+1 < n and new_body[j+1] == '*':
+                    end = new_body.find('*/', j+2)
+                    j = end + 2 if end >= 0 else n
+                    continue
+                if cj == '(': depth_paren += 1
+                elif cj == ')': depth_paren -= 1
+                elif cj == '{': depth_brace += 1
+                elif cj == '}': depth_brace -= 1
+                elif cj == ';' and depth_paren == 0 and depth_brace == 0:
+                    break
+                elif cj == '\n' and depth_paren == 0 and depth_brace == 0:
+                    # Multi-line return — bail (don't rewrite, output as-is)
+                    out_parts.append(new_body[i])
+                    i += 1
+                    break
+                j += 1
+            else:
+                out_parts.append(new_body[i])
+                i += 1
+                continue
+            if j >= n or new_body[j] != ';':
+                # Couldn't find ';' on same statement — emit char-by-char fallback
+                out_parts.append(new_body[i])
+                i += 1
+                continue
+            expr = new_body[i+7:j].strip()
+            if (expr.startswith('RESULT_OK') or
+                expr.startswith('korb_raise') or
+                expr.startswith('UNWRAP') or
+                expr.startswith('(RESULT)') or
+                expr == '' or
+                # Bare `return;` (void)
+                False):
+                out_parts.append(new_body[i:j+1])
+            else:
+                out_parts.append(f'return RESULT_OK({expr});')
+            i = j + 1
+            continue
+        out_parts.append(ch)
+        i += 1
+    new_body = ''.join(out_parts)
 
     # Handle bare `return;` (shouldn't happen in VALUE func, but just in case)
     return new_body

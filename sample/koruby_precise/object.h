@@ -1049,6 +1049,14 @@ static inline bool korb_obj_frozen_p(VALUE v) {
         return (ret); \
     } \
 } while (0)
+/* RESULT-returning version: short-circuits the enclosing RESULT function
+ * with a raised FrozenError. */
+#define CHECK_FROZEN_R(c, self) do { \
+    if (UNLIKELY(korb_obj_frozen_p(self))) { \
+        VALUE _eFrozen = korb_const_get(korb_vm->object_class, korb_intern("FrozenError")); \
+        return korb_raise((c), (struct korb_class *)_eFrozen, "can't modify frozen object"); \
+    } \
+} while (0)
 
 /* well-known IDs */
 extern ID id_initialize, id_to_s, id_inspect, id_call, id_each, id_new;
