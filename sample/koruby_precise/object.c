@@ -1410,7 +1410,7 @@ bool korb_ivar_defined(VALUE obj, ID name) {
     while (k->name == singleton_id && k->super) k = k->super;
     for (uint32_t i = 0; i < k->ivar_count; i++) {
         if (k->ivar_names[i] == name) {
-            return i < o->ivar_cnt;
+            return i < o->ivar_cnt && !UNDEF_P(o->ivars[i]);
         }
     }
     return false;
@@ -1470,7 +1470,8 @@ VALUE korb_ivar_get(VALUE obj, ID name) {
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s = ivar_slot(k, name);
     if (s < 0 || (uint32_t)s >= o->ivar_cnt) return Qnil;
-    return o->ivars[s];
+    VALUE v = o->ivars[s];
+    return UNDEF_P(v) ? Qnil : v;
 }
 
 /* Out-of-line slow path for the inline korb_ivar_get_ic (object.h).
@@ -1487,7 +1488,8 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
     int s = ivar_slot(k, name);
     if (s >= 0) { cache->klass = k; cache->slot = s; cache->gen = korb_g_gc_gen; }
     if (s < 0 || (uint32_t)s >= o->ivar_cnt) return Qnil;
-    return o->ivars[s];
+    VALUE v = o->ivars[s];
+    return UNDEF_P(v) ? Qnil : v;
 }
 
 void korb_ivar_set(VALUE obj, ID name, VALUE val) {

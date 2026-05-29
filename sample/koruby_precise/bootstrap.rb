@@ -4943,15 +4943,6 @@ class Object
   end unless method_defined?(:to_enum)
   alias_method(:enum_for, :to_enum) rescue nil
 
-  def remove_instance_variable(name)
-    sym = name.to_sym
-    raise NameError, "`#{name}' is not allowed as an instance variable name" unless name.to_s.start_with?("@")
-    v = instance_variable_get(sym)
-    raise NameError, "instance variable #{name} not defined" if v.nil? && !instance_variables.include?(sym)
-    instance_variable_set(sym, nil)
-    v
-  end unless method_defined?(:remove_instance_variable)
-
 end
 
 module Kernel

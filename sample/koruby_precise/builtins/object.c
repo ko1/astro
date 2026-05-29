@@ -1230,6 +1230,51 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(arr);
 }
 
+/* Kernel#remove_instance_variable — un-set the named ivar and return
+ * its previous value.  Raises NameError if not defined, FrozenError if
+ * self is frozen, TypeError for bad name args. */
+static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "wrong number of arguments (given 0, expected 1)");
+    }
+    RESULT err = RESULT_OK(Qnil);
+    ID name = coerce_ivar_name(c, argv[0], &err);
+    if (name == 0) return err;
+    CHECK_FROZEN_R(c, self);
+    /* T_CLASS / T_MODULE: remove from class_ivars[]. */
+    if (!SPECIAL_CONST_P(self) &&
+        (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE)) {
+        struct korb_class *k = (struct korb_class *)self;
+        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+            if (k->class_ivars[i].name == name) {
+                VALUE prev = k->class_ivars[i].value;
+                for (uint32_t j = i + 1; j < k->class_ivar_cnt; j++) {
+                    k->class_ivars[j - 1] = k->class_ivars[j];
+                }
+                k->class_ivar_cnt--;
+                return RESULT_OK(prev);
+            }
+        }
+    }
+    /* T_OBJECT: look up the slot and clear to Qundef. */
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT) {
+        if (korb_ivar_defined(self, name)) {
+            VALUE prev = korb_ivar_get(self, name);
+            /* No public "unset" — write Qundef so future ivar_get returns
+             * Qnil and instance_variables hides this slot. */
+            korb_ivar_set(self, name, Qundef);
+            return RESULT_OK(prev);
+        }
+    }
+    return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError")),
+                      "instance variable %s not defined", korb_id_name(name));
+}
+
 static RESULT obj_ivar_defined_p(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];

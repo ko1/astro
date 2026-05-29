@@ -583,6 +583,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->object_class, "clone",              obj_clone,                 0);
     DEF_R(KORB_VM(c)->object_class, "instance_variables", obj_instance_variables,    0);
     DEF_R(KORB_VM(c)->object_class, "instance_variable_defined?", obj_ivar_defined_p, 1);
+    DEF_R(KORB_VM(c)->object_class, "remove_instance_variable", obj_remove_instance_variable, 1);
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
     DEF_R(KORB_VM(c)->object_class, "__method__",         kernel_method_name,        0);
     DEF_R(KORB_VM(c)->object_class, "__callee__",         kernel_method_name,        0);
