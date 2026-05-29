@@ -294,6 +294,8 @@ def be_true; MSpecMatcher.new(:be_true); end
 def be_false; MSpecMatcher.new(:be_false); end
 def be_truthy; MSpecMatcher.new(:be_truthy); end
 def be_falsy; MSpecMatcher.new(:be_falsy); end
+def be_empty; MSpecMatcher.new(:be_empty); end
+def be_frozen; MSpecMatcher.new(:be_frozen); end
 def be_close(target, tol); MSpecMatcher.new(:be_close, [target, tol]); end
 def be_nan; MSpecMatcher.new(:be_nan); end
 def be_positive_infinity; MSpecMatcher.new(:be_positive_infinity); end
@@ -425,6 +427,8 @@ class MSpecExpectation
          when :be_false then @actual == false
          when :be_truthy then !!@actual
          when :be_falsy then !@actual
+         when :be_empty then @actual.respond_to?(:empty?) && @actual.empty?
+         when :be_frozen then @actual.frozen?
          when :be_close then (@actual - m.arg[0]).abs <= m.arg[1]
          when :be_nan then @actual.is_a?(Float) && @actual.nan?
          when :be_positive_infinity then @actual.is_a?(Float) && @actual.infinite? == 1
