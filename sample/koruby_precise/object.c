@@ -2269,15 +2269,12 @@ bool korb_block_given(CTX *c) { return c->current_block != NULL; }
 /* The single-arg/single-param fast path is inlined in object.h
  * (korb_yield).  This handles every other shape — auto-destructure,
  * argc/params mismatch, etc. */
-VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv) {
+RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv) {
     /* Symbol-proc shim (`&:method`): dispatch as argv[0].send(symbol, *rest). */
     if (blk->body == NULL && SYMBOL_P(blk->self)) {
-        if (argc < 1) {
-            DROP_RESULT(korb_raise(c, NULL, "no receiver for symbol proc"));
-            return Qnil;
-        }
+        if (argc < 1) return korb_raise(c, NULL, "no receiver for symbol proc");
         ID name = korb_sym2id(blk->self);
-        return SINK_RESULT(c, korb_funcall(c, argv[0], name, argc - 1, argv + 1));
+        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
     }
     /* Method-proc shim (`&obj.method(:m)`): dispatch as receiver.send(name, *args). */
     if (blk->body == NULL && !SPECIAL_CONST_P(blk->self) &&
@@ -2285,7 +2282,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj { struct RBasic basic; VALUE receiver; ID name; };
         struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-        return SINK_RESULT(c, korb_funcall(c, mo->receiver, mo->name, argc, argv));
+        return korb_funcall(c, mo->receiver, mo->name, argc, argv);
     }
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
@@ -2304,20 +2301,18 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         if (argc < required || argc > blk->params_cnt) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+            return korb_raise(c, (struct korb_class *)eArg,
                        "wrong number of arguments (given %u, expected %u)",
-                       argc, blk->params_cnt));
-            return Qnil;
+                       argc, blk->params_cnt);
         }
     } else if (blk->is_lambda) {
         /* Lambda with rest_slot — lower bound only. */
         uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         if (argc < required) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+            return korb_raise(c, (struct korb_class *)eArg,
                        "wrong number of arguments (given %u, expected %u+)",
-                       argc, required));
-            return Qnil;
+                       argc, required);
         }
     }
 
@@ -2418,25 +2413,26 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             arr = arg0;
         } else if (!SPECIAL_CONST_P(arg0)) {
             /* Try to_ary if it responds to it (honors respond_to_missing?). */
-            VALUE rt; { RESULT _r_rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }); if (UNLIKELY(_r_rt.state != KORB_NORMAL)) { c->state = _r_rt.state; c->state_value = _r_rt.value; rt = Qnil; } else { rt = _r_rt.value; } }
-            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            RESULT _rt_r = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            VALUE rt = (_rt_r.state == KORB_NORMAL) ? _rt_r.value : Qfalse;
             if (RTEST(rt)) {
-                VALUE coerced; { RESULT _r_coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL); if (UNLIKELY(_r_coerced.state != KORB_NORMAL)) { c->state = _r_coerced.state; c->state_value = _r_coerced.value; coerced = Qnil; } else { coerced = _r_coerced.value; } }
-                if (c->state != KORB_NORMAL) {
+                RESULT _coerced_r = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                if (_coerced_r.state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
-                    return Qnil;
+                    return _coerced_r;
                 }
+                VALUE coerced = _coerced_r.value;
                 if (NIL_P(coerced)) {
                     /* to_ary explicitly returned nil — treat the same
                      * as not responding to to_ary: pass the original
                      * object through without destructuring. */
                 } else if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                               "can't convert to Array (#to_ary gave non-Array)"));
+                    RESULT _err = korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)");
                     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
-                    return Qnil;
+                    return _err;
                 } else {
                     arr = coerced;
                 }
@@ -2579,31 +2575,19 @@ redo_block:
      * above (prev_self read from the root slot). */
     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
 #undef prev_self
-    /* `next` inside a block: yield returns the next value, state cleared.
-     * `break` should NOT be cleared here — it propagates to the yielding
-     * method, where dispatch_call catches it as that method's return. */
+    /* `next` inside a block: yield returns the next value as NORMAL.
+     * `break` propagates to the yielding method, where dispatch_call
+     * catches it as that method's return. */
     if (_br.state == KORB_NEXT) {
-        return _br.value;
+        return RESULT_OK(_br.value);
     }
     /* `break` from inside the block: target the yielding method's frame
-     * so loops within that method's body don't consume the break.  Use
-     * the c->state side-channel for the legacy-caller (this function
-     * still returns VALUE; converting it to RESULT-returning is the next
-     * step). */
-    if (_br.state == KORB_BREAK) {
-        c->state = KORB_BREAK;
-        c->state_value = _br.value;
-        if (c->state_target_frame == NULL) {
-            c->state_target_frame = c->current_frame;
-        }
-        return Qnil;
+     * so loops within that method's body don't consume the break. */
+    if (_br.state == KORB_BREAK && c->state_target_frame == NULL) {
+        c->state_target_frame = c->current_frame;
     }
-    if (_br.state != KORB_NORMAL) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        return Qnil;
-    }
-    return _br.value;
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 /* ---- class lookup ---- */

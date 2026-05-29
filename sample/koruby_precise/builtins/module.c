@@ -634,7 +634,7 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
     c->current_frame->cref = &new_cref;
     blk->self = self;
     VALUE av0[1] = { self };
-    VALUE r = korb_yield(c, 1, av0);
+    VALUE r = UNWRAP(korb_yield(c, 1, av0));
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
@@ -680,7 +680,7 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
     c->current_frame->current_class = klass;
     c->current_frame->cref = &new_cref;
     blk->self = self;
-    VALUE r = korb_yield(c, (uint32_t)argc, argv);
+    VALUE r = UNWRAP(korb_yield(c, (uint32_t)argc, argv));
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
@@ -879,7 +879,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             c->current_frame->cref = &new_cref;
             c->current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
-            korb_yield(c, 1, av0);
+            SINK_RESULT(c, korb_yield(c, 1, av0));
             c->current_block->cref = prev_blk_cref;
             c->current_block->self = prev_blk_self;
             c->current_frame->self = prev_self;
@@ -1295,7 +1295,7 @@ static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
          * the module, not the outer caller — same fix as Class.new. */
         c->current_block->self = (VALUE)m;
         VALUE argv0[1] = { (VALUE)m };
-        korb_yield(c, 1, argv0);
+        SINK_RESULT(c, korb_yield(c, 1, argv0));
         c->current_block->cref = prev_blk_cref;
         c->current_block->self = prev_blk_self;
         c->current_frame->self = prev_self;

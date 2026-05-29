@@ -683,7 +683,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         c->current_block->self = (VALUE)klass;
         c->current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
-        korb_yield(c, 1, av0);
+        SINK_RESULT(c, korb_yield(c, 1, av0));
         c->current_block->self = prev_blk_self;
         c->current_block->cref = prev_blk_cref;
         c->current_frame->self = prev_self;

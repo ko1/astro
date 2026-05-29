@@ -346,7 +346,7 @@ static RESULT ary_each(CTX *c, int argc, VALUE *sp) {
      * stops iteration normally. */
     for (long i = 0; i < korb_ary_len(self); i++) {
         VALUE v = korb_ary_aref(self, i);
-        korb_yield(c, 1, &v);
+        SINK_RESULT(c, korb_yield(c, 1, &v));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
@@ -369,7 +369,7 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i < len; i++) {
         VALUE args[2] = { korb_ary_aref(self, i), INT2FIX(i) };
-        korb_yield(c, 2, args);
+        SINK_RESULT(c, korb_yield(c, 2, args));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
@@ -384,7 +384,7 @@ static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
     VALUE r = korb_ary_new_capa(c, c->sp, len);
     for (long i = 0; i < len; i++) {
         VALUE v = korb_ary_aref(self, i);
-        VALUE m = korb_yield(c, 1, &v);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         korb_ary_push(r, m);
     }
@@ -400,7 +400,7 @@ static RESULT ary_select(CTX *c, int argc, VALUE *sp) {
     VALUE r = korb_ary_new(c, c->sp);
     for (long i = 0; i < len; i++) {
         VALUE v = korb_ary_aref(self, i);
-        VALUE m = korb_yield(c, 1, &v);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (RTEST(m)) korb_ary_push(r, v);
     }
@@ -449,7 +449,7 @@ static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
     i = argc > 0 ? 0 : 1;
     for (; i < len; i++) {
         VALUE args[2] = { acc, korb_ary_aref(self, i) };
-        acc = korb_yield(c, 2, args);
+        acc = SINK_RESULT(c, korb_yield(c, 2, args));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(acc);
@@ -662,7 +662,7 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     VALUE r;
     if (has_block) {
         VALUE pair[2] = { x, y };
-        r = korb_yield(c, 2, pair);
+        r = SINK_RESULT(c, korb_yield(c, 2, pair));
     } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
         return (intptr_t)x < (intptr_t)y ? -1 : (intptr_t)x > (intptr_t)y ? 1 : 0;
     } else {
@@ -749,7 +749,7 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
     long n = a->len;
     VALUE pairs = korb_ary_new_capa(c, c->sp, n);
     for (long i = 0; i < n; i++) {
-        VALUE k = korb_yield(c, 1, &a->ptr[i]);
+        VALUE k = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, k);
@@ -848,7 +848,7 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (has_block) {
-            korb_yield(c, 1, &tup);
+            SINK_RESULT(c, korb_yield(c, 1, &tup));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         } else {
             korb_ary_push(r, tup);
@@ -1073,7 +1073,7 @@ static RESULT ary_include(CTX *c, int argc, VALUE *sp) {
  * Returns Qtrue/Qfalse. */
 static int ary_predicate_match(CTX *c, VALUE elem, int argc, VALUE *argv) {
     if (korb_block_given(c)) {
-        VALUE r = korb_yield(c, 1, &elem);
+        VALUE r = SINK_RESULT(c, korb_yield(c, 1, &elem));
         return RTEST(r);
     }
     if (argc >= 1) {
@@ -1221,7 +1221,7 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < a->len; i++) {
         VALUE elt = a->ptr[i];
         if (has_block) {
-            elt = korb_yield(c, 1, &elt);
+            elt = SINK_RESULT(c, korb_yield(c, 1, &elt));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
         bool elt_float = FLONUM_P(elt) ||
@@ -1272,7 +1272,7 @@ static RESULT ary_each_slice(CTX *c, int argc, VALUE *sp) {
         VALUE slice = korb_ary_new_capa(c, c->sp, end - i);
         for (long j = i; j < end; j++) korb_ary_push(slice, a->ptr[j]);
         if (has_block) {
-            korb_yield(c, 1, &slice);
+            SINK_RESULT(c, korb_yield(c, 1, &slice));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         } else {
             korb_ary_push(collected, slice);
@@ -1736,7 +1736,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
     
     if (argc < 1 && c->current_block) {
         for (long i = 0; i < a->len; i++) {
-            VALUE r = korb_yield(c, 1, &a->ptr[i]);
+            VALUE r = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!NIL_P(r) && r != Qfalse) return RESULT_OK(INT2FIX(i));
         }
@@ -1970,7 +1970,7 @@ static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
     if (argc == 0 && c->current_block) {
         long n = 0;
         for (long i = 0; i < a->len; i++) {
-            VALUE r = korb_yield(c, 1, &a->ptr[i]);
+            VALUE r = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!NIL_P(r) && r != Qfalse) n++;
         }
@@ -2160,7 +2160,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
     if (has_block) {
         for (long i = start; i < end; i++) {
             VALUE iv = INT2FIX(i);
-            VALUE r = korb_yield(c, 1, &iv);
+            VALUE r = SINK_RESULT(c, korb_yield(c, 1, &iv));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
             a->ptr[i] = r;
         }
@@ -2222,7 +2222,7 @@ static RESULT ary_find(CTX *c, int argc, VALUE *sp) {
 
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
-        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (RTEST(m)) return RESULT_OK(a->ptr[i]);
     }
@@ -2241,11 +2241,11 @@ static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
         rs[0] = a->ptr[0];                                /* m: running min */
-        rs[1] = korb_yield(c, 1, &rs[0]);                 /* mk: m's key */
+        rs[1] = SINK_RESULT(c, korb_yield(c, 1, &rs[0]));                 /* mk: m's key */
         if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
         for (long i = 1; i < a->len; i++) {
             rs[2] = a->ptr[i];                            /* v: probe */
-            rs[3] = korb_yield(c, 1, &rs[2]);             /* k: v's key */
+            rs[3] = SINK_RESULT(c, korb_yield(c, 1, &rs[2]));             /* k: v's key */
             if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
             VALUE cmp = UNWRAP(korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]));
             if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
@@ -2357,11 +2357,11 @@ static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
         rs[0] = a->ptr[0];
-        rs[1] = korb_yield(c, 1, &rs[0]);
+        rs[1] = SINK_RESULT(c, korb_yield(c, 1, &rs[0]));
         if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
         for (long i = 1; i < a->len; i++) {
             rs[2] = a->ptr[i];
-            rs[3] = korb_yield(c, 1, &rs[2]);
+            rs[3] = SINK_RESULT(c, korb_yield(c, 1, &rs[2]));
             if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
             VALUE cmp = UNWRAP(korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]));
             if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
@@ -2553,7 +2553,7 @@ static RESULT ary_each_with_object(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE args[2] = { a->ptr[i], memo };
-        korb_yield(c, 2, args);
+        SINK_RESULT(c, korb_yield(c, 2, args));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(memo);
@@ -2670,7 +2670,7 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
     if (norm >= 0 && norm < a->len) return RESULT_OK(a->ptr[norm]);
     if (korb_block_given(c)) {
         VALUE arg[1] = { argv[0] };
-        return RESULT_OK(korb_yield(c, 1, arg));
+        return korb_yield(c, 1, arg);
     }
     if (argc == 2) return RESULT_OK(argv[1]);
     VALUE eI = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
@@ -2699,7 +2699,7 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(r, a->ptr[norm]);
         } else if (block_p) {
             VALUE arg[1] = { argv[k] };
-            VALUE yv = korb_yield(c, 1, arg);
+            VALUE yv = SINK_RESULT(c, korb_yield(c, 1, arg));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             korb_ary_push(r, yv);
         } else {
@@ -2737,7 +2737,7 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
          * if a block is given, else nil).  Don't raise FrozenError. */
         if (korb_block_given(c)) {
             VALUE blk_args[1] = { argv[0] };
-            return RESULT_OK(korb_yield(c, 1, blk_args));
+            return korb_yield(c, 1, blk_args);
         }
         return RESULT_OK(Qnil);
     }
@@ -2813,7 +2813,7 @@ static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
     long w = 0;
     for (long r = 0; r < a->len; r++) {
         VALUE elt = a->ptr[r];
-        VALUE drop = korb_yield(c, 1, &elt);
+        VALUE drop = SINK_RESULT(c, korb_yield(c, 1, &elt));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (NIL_P(drop) || drop == Qfalse) {
             a->ptr[w++] = elt;
@@ -2840,7 +2840,7 @@ static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
     bool changed = false;
     for (long r = 0; r < a->len; r++) {
         VALUE elt = a->ptr[r];
-        VALUE drop = korb_yield(c, 1, &elt);
+        VALUE drop = SINK_RESULT(c, korb_yield(c, 1, &elt));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (NIL_P(drop) || drop == Qfalse) {
             a->ptr[w++] = elt;
@@ -2868,7 +2868,7 @@ static RESULT ary_reverse_each(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(r);
     }
     for (long i = a->len - 1; i >= 0; i--) {
-        korb_yield(c, 1, &a->ptr[i]);
+        SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
@@ -2885,7 +2885,7 @@ static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new(c, c->sp);
     for (long i = 0; i < a->len; i++) {
-        VALUE drop = korb_yield(c, 1, &a->ptr[i]);
+        VALUE drop = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (NIL_P(drop) || drop == Qfalse) korb_ary_push(r, a->ptr[i]);
     }
@@ -2954,7 +2954,7 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE iv = INT2FIX(i);
-        korb_yield(c, 1, &iv);
+        SINK_RESULT(c, korb_yield(c, 1, &iv));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
@@ -3021,7 +3021,7 @@ static void ary_combine(CTX *c, struct korb_array *a, long r, long start,
         VALUE copy = korb_ary_new_capa(c, c->sp, r);
         struct korb_array *bb = (struct korb_array *)buf;
         for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
-        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        if (NIL_P(result_or_nil)) SINK_RESULT(c, korb_yield(c, 1, &copy));
         else korb_ary_push(result_or_nil, copy);
         return;
     }
@@ -3078,7 +3078,7 @@ static void ary_perm(CTX *c, struct korb_array *a, long r,
         VALUE copy = korb_ary_new_capa(c, c->sp, r);
         struct korb_array *bb = (struct korb_array *)buf;
         for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
-        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        if (NIL_P(result_or_nil)) SINK_RESULT(c, korb_yield(c, 1, &copy));
         else korb_ary_push(result_or_nil, copy);
         return;
     }
@@ -3186,7 +3186,7 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
     while (n < 0 || iter < n) {
         if (a->len == 0) return RESULT_OK(Qnil);  /* CRuby: cleared mid-iter → exit */
         for (long i = 0; i < a->len; i++) {
-            korb_yield(c, 1, &a->ptr[i]);
+            SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
         iter++;
@@ -3202,7 +3202,7 @@ static void ary_rcombine(CTX *c, struct korb_array *a, long r, long start,
         VALUE copy = korb_ary_new_capa(c, c->sp, r);
         struct korb_array *bb = (struct korb_array *)buf;
         for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
-        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        if (NIL_P(result_or_nil)) SINK_RESULT(c, korb_yield(c, 1, &copy));
         else korb_ary_push(result_or_nil, copy);
         return;
     }
@@ -3233,7 +3233,7 @@ static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp);
-        korb_yield(c, 1, &empty);
+        SINK_RESULT(c, korb_yield(c, 1, &empty));
         return RESULT_OK(self);
     }
     if (a->len == 0) return RESULT_OK(self);
@@ -3250,7 +3250,7 @@ static void ary_rperm(CTX *c, struct korb_array *a, long r,
         VALUE copy = korb_ary_new_capa(c, c->sp, r);
         struct korb_array *bb = (struct korb_array *)buf;
         for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
-        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        if (NIL_P(result_or_nil)) SINK_RESULT(c, korb_yield(c, 1, &copy));
         else korb_ary_push(result_or_nil, copy);
         return;
     }
@@ -3281,7 +3281,7 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp);
-        korb_yield(c, 1, &empty);
+        SINK_RESULT(c, korb_yield(c, 1, &empty));
         return RESULT_OK(self);
     }
     if (a->len == 0) return RESULT_OK(self);
@@ -3329,7 +3329,7 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
         }
         if (empty) break;
         if (c->current_block) {
-            korb_yield(c, 1, &row);
+            SINK_RESULT(c, korb_yield(c, 1, &row));
             if (c->state != KORB_NORMAL) return RESULT_OK(self);
         } else {
             korb_ary_push(result, row);
@@ -3459,7 +3459,7 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
     if (c->current_block) {
         for (long i = 0; i < size; i++) {
             VALUE iv = INT2FIX(i);
-            VALUE v = korb_yield(c, 1, &iv);
+            VALUE v = SINK_RESULT(c, korb_yield(c, 1, &iv));
             if (c->state != KORB_NORMAL) return RESULT_OK(self);
             korb_ary_push(self, v);
         }
@@ -3587,7 +3587,7 @@ static RESULT ary_take_while(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new(c, c->sp);
     for (long i = 0; i < a->len; i++) {
-        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (!RTEST(m)) break;
         korb_ary_push(r, a->ptr[i]);
@@ -3603,7 +3603,7 @@ static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     long i = 0;
     for (; i < a->len; i++) {
-        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (!RTEST(m)) break;
     }
@@ -3625,7 +3625,7 @@ static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new(c, c->sp);
     for (long i = 0; i < a->len; i++) {
-        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (!SPECIAL_CONST_P(m) && BUILTIN_TYPE(m) == T_ARRAY) {
             struct korb_array *ma = (struct korb_array *)m;
@@ -3794,7 +3794,7 @@ static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
         VALUE win = korb_ary_new_capa(c, c->sp, n);
         for (long j = 0; j < n; j++) korb_ary_push(win, a->ptr[i + j]);
         if (has_block) {
-            korb_yield(c, 1, &win);
+            SINK_RESULT(c, korb_yield(c, 1, &win));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         } else {
             korb_ary_push(out, win);
@@ -3819,11 +3819,11 @@ static RESULT ary_minmax_by(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(pair);
     }
     VALUE min_e = a->ptr[0], max_e = a->ptr[0];
-    VALUE min_k = korb_yield(c, 1, &a->ptr[0]);
+    VALUE min_k = UNWRAP(korb_yield(c, 1, &a->ptr[0]));
     if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     VALUE max_k = min_k;
     for (long i = 1; i < a->len; i++) {
-        VALUE k = korb_yield(c, 1, &a->ptr[i]);
+        VALUE k = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[i]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         VALUE cmp_min = UNWRAP(korb_funcall(c, k, korb_intern("<=>"), 1, &min_k));
         if (FIXNUM_P(cmp_min) && FIX2LONG(cmp_min) < 0) { min_e = a->ptr[i]; min_k = k; }
@@ -3853,7 +3853,7 @@ static RESULT ary_bsearch(CTX *c, int argc, VALUE *sp) {
     VALUE found = Qnil;
     while (lo < hi) {
         long mid = lo + (hi - lo) / 2;
-        VALUE r = korb_yield(c, 1, &a->ptr[mid]);
+        VALUE r = SINK_RESULT(c, korb_yield(c, 1, &a->ptr[mid]));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (TRUE_P(r) || FALSE_P(r) || NIL_P(r)) {
             /* Find-minimum mode: return the first element for which the

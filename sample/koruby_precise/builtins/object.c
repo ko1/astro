@@ -385,7 +385,7 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
     VALUE av0[1] = { self };
-    VALUE r = korb_yield(c, 1, av0);
+    VALUE r = UNWRAP(korb_yield(c, 1, av0));
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     return RESULT_OK(r);
@@ -426,7 +426,7 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
-    VALUE r = korb_yield(c, (uint32_t)argc, argv);
+    VALUE r = UNWRAP(korb_yield(c, (uint32_t)argc, argv));
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     return RESULT_OK(r);
@@ -915,7 +915,7 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
     
     if (c->current_block) {
         VALUE av[1] = { self };
-        korb_yield(c, 1, av);
+        SINK_RESULT(c, korb_yield(c, 1, av));
     }
     return RESULT_OK(self);
 }
@@ -927,7 +927,7 @@ RESULT obj_then(CTX *c, int argc, VALUE *sp) {
     
     if (c->current_block) {
         VALUE av[1] = { self };
-        return RESULT_OK(korb_yield(c, 1, av));
+        return korb_yield(c, 1, av);
     }
     return RESULT_OK(self);
 }

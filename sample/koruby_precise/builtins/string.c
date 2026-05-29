@@ -437,7 +437,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         /* rs[3] holds the per-iter piece across korb_ary_push / yield */
         #define EMIT(v) do { \
             rs[3] = (v); \
-            if (has_block) korb_yield(c, 1, &rs[3]); \
+            if (has_block) SINK_RESULT(c, korb_yield(c, 1, &rs[3])); \
             else korb_ary_push(rs[2], rs[3]); \
         } while (0)
         struct korb_string *s = (struct korb_string *)rs[0];
@@ -1113,7 +1113,7 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            korb_yield(c, 1, &b);
+            SINK_RESULT(c, korb_yield(c, 1, &b));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         }
         return RESULT_OK(c->current_frame->self);
@@ -1147,7 +1147,7 @@ static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         VALUE ch = korb_str_new(c, c->sp, s->ptr + i, 1);
-        korb_yield(c, 1, &ch);
+        SINK_RESULT(c, korb_yield(c, 1, &ch));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(c->current_frame->self);
@@ -1540,7 +1540,7 @@ static RESULT str_gsub(CTX *c, int argc, VALUE *sp) {
                 s = (struct korb_string *)rs[0];
             } else if (c->current_block) {
                 rs[4] = korb_str_new(c, c->sp, s->ptr + ms, ml);
-                rs[4] = korb_yield(c, 1, &rs[4]);
+                rs[4] = SINK_RESULT(c, korb_yield(c, 1, &rs[4]));
                 if (c->state == KORB_RAISE) { ret = Qnil; goto gsub_done; }
                 if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
                 else korb_str_concat(c, c->sp, rs[3], korb_to_s(c, c->sp, rs[4]));
@@ -1581,7 +1581,7 @@ static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
             s = (struct korb_string *)rs[0];
         } else if (c->current_block) {
             rs[4] = korb_str_new(c, c->sp, s->ptr + ms, ml);
-            rs[4] = korb_yield(c, 1, &rs[4]);
+            rs[4] = SINK_RESULT(c, korb_yield(c, 1, &rs[4]));
             if (c->state == KORB_RAISE) { ret = Qnil; goto sub_done; }
             if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
             else korb_str_concat(c, c->sp, rs[3], korb_to_s(c, c->sp, rs[4]));
@@ -2338,7 +2338,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-        korb_yield(c, 1, &b);
+        SINK_RESULT(c, korb_yield(c, 1, &b));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
     }
     return RESULT_OK(c->current_frame->self);
@@ -2838,7 +2838,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
         if (s->ptr[i] == '\n') {
             VALUE line = korb_str_new(c, c->sp, s->ptr + start, i - start + 1);
             if (has_block) {
-                korb_yield(c, 1, &line);
+                SINK_RESULT(c, korb_yield(c, 1, &line));
                 if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
             } else {
                 korb_ary_push(collected, line);
@@ -2849,7 +2849,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
     if (start < s->len) {
         VALUE line = korb_str_new(c, c->sp, s->ptr + start, s->len - start);
         if (has_block) {
-            korb_yield(c, 1, &line);
+            SINK_RESULT(c, korb_yield(c, 1, &line));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         } else {
             korb_ary_push(collected, line);

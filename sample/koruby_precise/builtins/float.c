@@ -97,7 +97,7 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
         for (double v = start; v <= limit + 1e-12; v += step) {
             VALUE fv = korb_float_new(c, c->sp, v);
             if (has_block) {
-                korb_yield(c, 1, &fv);
+                SINK_RESULT(c, korb_yield(c, 1, &fv));
                 if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
             } else {
                 korb_ary_push(out, fv);
@@ -107,7 +107,7 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
         for (double v = start; v >= limit - 1e-12; v += step) {
             VALUE fv = korb_float_new(c, c->sp, v);
             if (has_block) {
-                korb_yield(c, 1, &fv);
+                SINK_RESULT(c, korb_yield(c, 1, &fv));
                 if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
             } else {
                 korb_ary_push(out, fv);

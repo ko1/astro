@@ -844,7 +844,7 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
      * For the no-tag form we synthesize a fresh Object as the tag. */
     VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp, KORB_VM(c)->object_class);
     VALUE block_arg[1] = { tag };
-    VALUE r = korb_yield(c, 1, block_arg);
+    VALUE r = UNWRAP(korb_yield(c, 1, block_arg));
     /* state == THROW: tag/value live on c->state_value as a 2-element ary. */
     if (c->state == KORB_THROW && !SPECIAL_CONST_P(c->state_value) &&
         BUILTIN_TYPE(c->state_value) == T_ARRAY) {
@@ -1610,7 +1610,7 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "no block given (loop)");
     }
     while (c->state == KORB_NORMAL) {
-        korb_yield(c, 0, NULL);
+        SINK_RESULT(c, korb_yield(c, 0, NULL));
         if (c->state == KORB_BREAK) {
             VALUE r = c->state_value;
             c->state = KORB_NORMAL; c->state_value = Qnil;

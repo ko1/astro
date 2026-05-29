@@ -883,12 +883,10 @@ VALUE korb_node_aset_slow  (CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_inde
 /* Cold tail of korb_yield: handles auto-destructure (block has N>1
  * params, called with single Array of size M), variable argc paths,
  * and the param/argc-mismatch slow case. */
-VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv);
+RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv);
 
-/* RESULT-returning bridges around korb_funcall / korb_funcall_with_block /
- * korb_yield.  Each performs the legacy dispatch, then converts c->state
- * into RESULT.state for in-band propagation.  Use in new-ABI cfuncs /
- * helpers (where UNWRAP propagates the state). */
+/* RESULT-returning bridges around korb_funcall / korb_funcall_with_block.
+ * Used in new-ABI cfuncs / helpers (where UNWRAP propagates the state). */
 RESULT_FN RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
 /* korb_yield_r — defined as a static inline below near korb_yield. */
 RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
@@ -907,13 +905,12 @@ RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc,
  * auto-destructure, no need to copy more than 1 arg.  Inlined into
  * builtins.c iterators (ary_each etc.) so the cross-.so dispatcher
  * call disappears. */
-static inline __attribute__((always_inline)) VALUE
+static inline __attribute__((always_inline, warn_unused_result)) RESULT
 korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     struct korb_proc *blk = c->current_block;
     if (UNLIKELY(!blk)) {
         VALUE eLJE = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)");
     }
     /* Symbol-proc shim — fall to slow path. */
     if (UNLIKELY(blk->body == NULL)) return korb_yield_slow(c, blk, argc, argv);
@@ -964,31 +961,18 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
         c->running_block = prev_running;
-        if (UNLIKELY(_br.state == KORB_NEXT)) {
-            return _br.value;
-        }
-        if (UNLIKELY(_br.state != KORB_NORMAL)) {
-            /* Bridge to legacy c->state for callers that still inspect it. */
-            c->state = _br.state;
-            c->state_value = _br.value;
-            return Qnil;
-        }
-        return _br.value;
+        if (UNLIKELY(_br.state == KORB_NEXT)) return RESULT_OK(_br.value);
+        if (UNLIKELY(_br.state != KORB_NORMAL)) return _br;
+        return RESULT_OK(_br.value);
     }
     return korb_yield_slow(c, blk, argc, argv);
 }
 
-/* RESULT-returning wrapper around korb_yield. */
+/* Legacy alias for korb_yield — kept for callers not yet migrated to
+ * use korb_yield directly.  korb_yield is now RESULT-returning natively. */
 static inline __attribute__((always_inline, warn_unused_result)) RESULT
 korb_yield_r(CTX *c, uint32_t argc, VALUE *argv) {
-    VALUE r = korb_yield(c, argc, argv);
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        return res;
-    }
-    return RESULT_OK(r);
+    return korb_yield(c, argc, argv);
 }
 
 bool korb_block_given(CTX *c);

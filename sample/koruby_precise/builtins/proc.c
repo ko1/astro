@@ -1,7 +1,7 @@
 /* Proc / Method — moved from builtins.c. */
 
 /* ---------- Proc ---------- */
-extern VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
+extern RESULT korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
 /* Proc#lambda? — true for ->{} / lambda{}, false for Proc.new / { } blocks. */
 static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {

@@ -454,7 +454,7 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i < n; i++) {
         VALUE arg = INT2FIX(i);
-        VALUE r = korb_yield(c, 1, &arg);
+        VALUE r = SINK_RESULT(c, korb_yield(c, 1, &arg));
         if (c->state != KORB_NORMAL) return RESULT_OK(r);
     }
     return RESULT_OK(self);
@@ -1240,13 +1240,13 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     if (step > 0) {
         for (long i = start; i <= stop; i += step) {
             VALUE v = INT2FIX(i);
-            korb_yield(c, 1, &v);
+            SINK_RESULT(c, korb_yield(c, 1, &v));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
     } else {
         for (long i = start; i >= stop; i += step) {
             VALUE v = INT2FIX(i);
-            korb_yield(c, 1, &v);
+            SINK_RESULT(c, korb_yield(c, 1, &v));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
     }

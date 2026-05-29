@@ -111,7 +111,7 @@ static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE l = korb_str_new(c, c->sp, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
-            korb_yield(c, 1, &l);
+            SINK_RESULT(c, korb_yield(c, 1, &l));
             if (c->state != KORB_NORMAL) { free(line); return Qnil; }
         } else {
             korb_ary_push(collected, l);
@@ -913,7 +913,7 @@ static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (pid < 0) return Qnil;
     if (pid == 0) {
         if (korb_block_given(c)) {
-            korb_yield(c, 0, NULL);
+            SINK_RESULT(c, korb_yield(c, 0, NULL));
         }
         if (c->state == KORB_RAISE) {
             VALUE s = korb_inspect(c, c->sp, c->state_value);
