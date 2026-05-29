@@ -501,24 +501,22 @@ static RESULT file_join(CTX *c, int argc, VALUE *sp) {
 
     VALUE *argv = sp - argc;
 
-    /* Pin r (result) and per-iter s/sep against the cascade of
-     * korb_str_new / korb_to_s / korb_str_concat allocations that
-     * each fire GC under STRESS. */
-    VALUE ret = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = korb_str_new(c, c->sp_top, "", 0);  /* r */
-        for (int i = 0; i < argc; i++) {
-            rs[1] = argv[i];
-            if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(c, c->sp_top, rs[1]);
-            if (i > 0) {
-                rs[2] = korb_str_new_cstr(c, c->sp_top, "/");
-                korb_str_concat(c, c->sp_top, rs[0], rs[2]);
-            }
-            korb_str_concat(c, c->sp_top, rs[0], rs[1]);
+    /* Park r (result) + per-iter s/sep in sp[0..2] across korb_str_new /
+     * korb_to_s / korb_str_concat allocations. */
+    sp[0] = 0;
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[0] = korb_str_new(c, sp + 3, "", 0);
+    for (int i = 0; i < argc; i++) {
+        sp[1] = argv[i];
+        if (BUILTIN_TYPE(sp[1]) != T_STRING) sp[1] = korb_to_s(c, sp + 3, sp[1]);
+        if (i > 0) {
+            sp[2] = korb_str_new_cstr(c, sp + 3, "/");
+            korb_str_concat(c, sp + 3, sp[0], sp[2]);
         }
-        ret = rs[0];
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+        korb_str_concat(c, sp + 3, sp[0], sp[1]);
+    }
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT file_exist_p(CTX *c, int argc, VALUE *sp) {
