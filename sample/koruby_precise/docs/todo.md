@@ -61,6 +61,22 @@ control 全 PASS。
 
 memory note: feedback_result_and_vm_priorities (user 要望保存)。
 
+### Phase 8c — korb_vm global → KORB_VM(c) macro 移行 (2026-05-29)
+
+global `korb_vm` を直接参照する 891 ヶ所中、 CTX *c がスコープにあるものを
+全て `KORB_VM(c)->X` (= `(c)->mch->X`) に変換 (commit e554de81):
+- context.h に KORB_VM(c) macro 定義 (transition 用)。
+- builtins.c: 732 → 0、 builtins/*.c: 159 → 0、 object.c: 148 → 28。
+- builtins/hash.c::hash_apply_self_class helper に CTX *c 追加。
+- 残 28 ヶ所 (object.c) と main.c / exe_main.c / koruby_runtime.c は CTX を
+  取らない low-level helper (korb_class_add_method_*, korb_check_basic_op_redef,
+  korb_method_cache_fill, koruby_visit_roots 等)。 これらは将来:
+  (a) CTX を引数追加、 (b) per-machine instance method 化、
+  (c) thread-local 化 のいずれかで対応。
+
+multi-interpreter 化への第一歩。 引き続き c->mch を経由した参照に統一して
+いけば global 撤廃が現実的に。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
