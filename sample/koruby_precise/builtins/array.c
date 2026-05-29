@@ -3009,14 +3009,16 @@ static VALUE ary_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
         for (long i = 0; i < src->len; i++) korb_ary_push(self, src->ptr[i]);
         return self;
     }
-    /* Try to_ary coerce when the first arg isn't already an integer-like. */
+    /* Try to_ary coerce when the first arg isn't already an integer-like.
+     * Use respond_to?(:to_ary, true) so private to_ary is also seen. */
     if (argc == 1 && !SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) != T_BIGNUM) {
         if (!FIXNUM_P(first)) {
-            VALUE rt = korb_funcall(c, first, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            VALUE rt = korb_funcall(c, first, korb_intern("respond_to?"), 2,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")), Qtrue });
             if (c->state == KORB_RAISE) return Qnil;
             if (RTEST(rt)) {
-                VALUE coerced = korb_funcall(c, first, korb_intern("to_ary"), 0, NULL);
+                VALUE coerced = korb_funcall(c, first, korb_intern("__send__"), 1,
+                                              (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
                 if (c->state == KORB_RAISE) return Qnil;
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
                     struct korb_array *src = (struct korb_array *)coerced;
@@ -3030,6 +3032,11 @@ static VALUE ary_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
     long size = 0;
     if (FIXNUM_P(first)) {
         size = FIX2LONG(first);
+    } else if (!SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) == T_BIGNUM) {
+        /* Bignum size → ArgumentError ("array size too big"). */
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "array size too big");
+        return Qnil;
     } else if (!SPECIAL_CONST_P(first)) {
         VALUE iv = korb_funcall(c, first, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
