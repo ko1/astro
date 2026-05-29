@@ -2810,9 +2810,8 @@ static RESULT ary_reverse_each(CTX *c, int argc, VALUE *sp) {
 
     struct korb_array *a = (struct korb_array *)self;
     if (!korb_block_given(c)) {
-        VALUE r = korb_ary_new_capa(c, c->sp_top, a->len);
-        for (long i = a->len - 1; i >= 0; i--) korb_ary_push(r, a->ptr[i]);
-        return RESULT_OK(r);
+        VALUE method_sym = korb_id2sym(korb_intern("reverse_each"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
     }
     for (long i = a->len - 1; i >= 0; i--) {
         CHECK(korb_yield(c, 1, &a->ptr[i]));
@@ -2879,11 +2878,30 @@ static RESULT ary_replace(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return RESULT_OK(self);
+    VALUE other = argv[0];
+    /* Coerce non-Array via #to_ary (CRuby semantics) — TypeError if neither
+     * an Array nor respond_to?(:to_ary). */
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
+            if (RTEST(rt)) {
+                RESULT tr = korb_funcall_r(c, other, korb_intern("to_ary"), 0, NULL);
+                if (tr.state != KORB_NORMAL) return tr;
+                other = tr.value;
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
+            return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                              "no implicit conversion of %s into Array",
+                              SPECIAL_CONST_P(argv[0]) ? "(special)" :
+                              korb_id_name(korb_class_of_class(argv[0])->name));
+        }
+    }
     /* Self-replace is a no-op (CRuby semantics). */
-    if (self == argv[0]) return RESULT_OK(self);
+    if (self == other) return RESULT_OK(self);
     struct korb_array *a = (struct korb_array *)self;
-    struct korb_array *b = (struct korb_array *)argv[0];
+    struct korb_array *b = (struct korb_array *)other;
     a->len = 0;
     for (long i = 0; i < b->len; i++) korb_ary_push(self, b->ptr[i]);
     return RESULT_OK(self);
