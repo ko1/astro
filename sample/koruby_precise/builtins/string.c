@@ -1790,7 +1790,7 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
      * stale on every alloc inside the loop and fmt->ptr / fmt->len
      * read moved-out fields, producing wrong format output or false
      * return values from sprintf. */
-    VALUE ret = Qnil;
+    RESULT _final_kf = RESULT_OK(Qnil);
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = argv[0];  /* fmt */
         rs[1] = korb_str_new(c, c->sp, "", 0);  /* out */
@@ -1816,7 +1816,13 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
             spec[sl++] = fmt->ptr[i++];
             while (i < fmt->len && fmt->ptr[i] >= '0' && fmt->ptr[i] <= '9') spec[sl++] = fmt->ptr[i++];
         }
-        if (i >= fmt->len) break;
+        if (i >= fmt->len) {
+            /* CRuby raises ArgumentError for trailing `%` at end of format. */
+            VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+            _final_kf = korb_raise(c, (struct korb_class *)eA,
+                       "incomplete format specifier; use %%%% (double %%) instead");
+            goto kf_done;
+        }
         char conv = fmt->ptr[i];
         spec[sl++] = conv;
         spec[sl] = 0;
@@ -1919,15 +1925,33 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
                 ai++;
                 break;
             }
-            default:
-                snprintf(buf, sizeof(buf), "%%%c", conv);
+            case 'p': {
+                /* %p uses #inspect to render the value. */
+                VALUE v = ai < argc ? argv[ai] : Qnil;
+                VALUE is = korb_inspect(c, c->sp, v);
+                if (BUILTIN_TYPE(is) != T_STRING) is = korb_to_s(c, c->sp, is);
+                /* Apply width/flags via swapped-out %s. */
+                spec[sl-1] = 's'; /* turn %p into %s */
+                snprintf(buf, sizeof(buf), spec, ((struct korb_string *)is)->ptr);
+                ai++;
+                break;
+            }
+            default: {
+                /* Unknown conversion specifier — CRuby raises
+                 * ArgumentError "malformed format string - %X". */
+                VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+                _final_kf = korb_raise(c, (struct korb_class *)eA,
+                           "malformed format string - %%%c", conv);
+                goto kf_done;
+            }
         }
         korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, buf));
         fmt = (struct korb_string *)rs[0];  /* reload after potential GC */
     }
-    ret = rs[1];
+    _final_kf = RESULT_OK(rs[1]);
+kf_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    return _final_kf;
 }
 
 /* printf — format then write to stdout */
@@ -2427,12 +2451,81 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
                         memcpy(keybuf, fmt->ptr + i + 2, klen);
                         keybuf[klen] = 0;
                         VALUE key = korb_id2sym(korb_intern(keybuf));
-                        VALUE v = korb_hash_aref(c, (VALUE)h, key);
-                        if (UNDEF_P(v)) v = Qnil;
+                        bool found = false;
+                        VALUE v = Qnil;
+                        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+                            if (e->key == key) { v = e->value; found = true; break; }
+                        }
+                        if (!found) {
+                            VALUE eK = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
+                            return korb_raise(c, (struct korb_class *)eK, "key%s not found", keybuf);
+                        }
                         VALUE vs = korb_to_s(c, c->sp, v);
                         korb_str_concat(c, c->sp, out, vs);
                         i = j + 1;
                         continue;
+                    }
+                }
+            }
+            /* %<name>spec — extract name + apply printf spec to value. */
+            if (i + 1 < fmt->len && fmt->ptr[i] == '%' && fmt->ptr[i+1] == '<') {
+                long j = i + 2;
+                while (j < fmt->len && fmt->ptr[j] != '>') j++;
+                if (j < fmt->len) {
+                    long klen = j - (i + 2);
+                    char keybuf[256];
+                    if (klen < (long)sizeof(keybuf)) {
+                        memcpy(keybuf, fmt->ptr + i + 2, klen);
+                        keybuf[klen] = 0;
+                        VALUE key = korb_id2sym(korb_intern(keybuf));
+                        bool found = false;
+                        VALUE v = Qnil;
+                        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+                            if (e->key == key) { v = e->value; found = true; break; }
+                        }
+                        if (!found) {
+                            VALUE eK = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
+                            return korb_raise(c, (struct korb_class *)eK, "key%s not found", keybuf);
+                        }
+                        /* Build %[flags][width][.prec][conv] from chars after '>'. */
+                        long k = j + 1;
+                        char spec[64]; int sl = 0;
+                        spec[sl++] = '%';
+                        while (k < fmt->len && (fmt->ptr[k] == '-' || fmt->ptr[k] == '+' ||
+                               fmt->ptr[k] == ' ' || fmt->ptr[k] == '#' || fmt->ptr[k] == '0'))
+                            spec[sl++] = fmt->ptr[k++];
+                        while (k < fmt->len && fmt->ptr[k] >= '0' && fmt->ptr[k] <= '9')
+                            spec[sl++] = fmt->ptr[k++];
+                        if (k < fmt->len && fmt->ptr[k] == '.') {
+                            spec[sl++] = fmt->ptr[k++];
+                            while (k < fmt->len && fmt->ptr[k] >= '0' && fmt->ptr[k] <= '9')
+                                spec[sl++] = fmt->ptr[k++];
+                        }
+                        if (k < fmt->len) {
+                            char conv = fmt->ptr[k];
+                            spec[sl++] = conv; spec[sl] = 0;
+                            char buf[256];
+                            if (conv == 'd' || conv == 'i' || conv == 'u' ||
+                                conv == 'x' || conv == 'X' || conv == 'o') {
+                                long lv = FIXNUM_P(v) ? FIX2LONG(v) : 0;
+                                if (conv == 'd' || conv == 'i' || conv == 'u') {
+                                    spec[sl-1] = 'l'; spec[sl++] = 'd'; spec[sl] = 0;
+                                    snprintf(buf, sizeof(buf), spec, lv);
+                                } else {
+                                    snprintf(buf, sizeof(buf), spec, (unsigned long)lv);
+                                }
+                            } else if (conv == 's') {
+                                VALUE vs = (BUILTIN_TYPE(v) == T_STRING) ? v : korb_to_s(c, c->sp, v);
+                                snprintf(buf, sizeof(buf), spec, ((struct korb_string *)vs)->ptr);
+                            } else if (conv == 'f' || conv == 'g' || conv == 'e') {
+                                snprintf(buf, sizeof(buf), spec, korb_num2dbl(v));
+                            } else {
+                                buf[0] = 0;
+                            }
+                            korb_str_concat(c, c->sp, out, korb_str_new_cstr(c, c->sp, buf));
+                            i = k + 1;
+                            continue;
+                        }
                     }
                 }
             }
