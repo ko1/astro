@@ -1083,10 +1083,23 @@ static int ary_predicate_match(CTX *c, VALUE elem, int argc, VALUE *argv) {
     return RTEST(elem);
 }
 
+static RESULT ary_predicate_argc_check(CTX *c, int argc) {
+    if (argc > 1) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA,
+                          "wrong number of arguments (given %d, expected 0..1)", argc);
+    }
+    return RESULT_OK(Qnil);
+}
+
 static RESULT ary_any_p(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    {
+        RESULT chk = ary_predicate_argc_check(c, argc);
+        if (chk.state != KORB_NORMAL) return chk;
+    }
 
     const struct korb_array *a = (const struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
@@ -1100,6 +1113,10 @@ static RESULT ary_all_p(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    {
+        RESULT chk = ary_predicate_argc_check(c, argc);
+        if (chk.state != KORB_NORMAL) return chk;
+    }
 
     const struct korb_array *a = (const struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
@@ -1113,6 +1130,10 @@ static RESULT ary_none_p(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    {
+        RESULT chk = ary_predicate_argc_check(c, argc);
+        if (chk.state != KORB_NORMAL) return chk;
+    }
 
     const struct korb_array *a = (const struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
@@ -1126,6 +1147,10 @@ static RESULT ary_one_p(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    {
+        RESULT chk = ary_predicate_argc_check(c, argc);
+        if (chk.state != KORB_NORMAL) return chk;
+    }
 
     const struct korb_array *a = (const struct korb_array *)self;
     long count = 0;

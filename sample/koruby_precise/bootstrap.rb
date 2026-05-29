@@ -152,7 +152,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(x)
+            blk.call(*xs)
           else
             x
           end
@@ -170,7 +170,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(x)
+            blk.call(*xs)
           else
             x
           end
@@ -188,7 +188,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(x)
+            blk.call(*xs)
           else
             x
           end
@@ -206,7 +206,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(x)
+            blk.call(*xs)
           else
             x
           end
@@ -256,7 +256,7 @@ module Enumerable
     i = 0
     each { |*xs|
       x = xs.size <= 1 ? xs.first : xs
-      hit = blk ? blk.call(x) : (x == target)
+      hit = blk ? blk.call(*xs) : (x == target)
       return i if hit
       i += 1
     }
@@ -1865,25 +1865,14 @@ class Hash
   end unless method_defined?(:select)
   alias filter select unless method_defined?(:filter)
 
-  def any?(&blk)
-    return size > 0 unless blk
-    result = false
-    each_pair { |k, v| if blk.call(k, v); result = true; break; end }
-    result
-  end
-
-  def all?(&blk)
-    return true unless blk
-    result = true
-    each_pair { |k, v| unless blk.call(k, v); result = false; break; end }
-    result
-  end
+  # any? / all? / count: delegate to Enumerable to handle pattern arg
+  # (Integer / NilClass / Regexp etc.) and gather-as-pair semantics
+  # ({a: 1}.any? { |x| ... } → x = [:a, 1]).  Hash#each yields [k, v]
+  # as a single arg, which Enumerable handles correctly via xs.first.
 
   def count(*args, &blk)
     return size if args.empty? && !blk
-    n = 0
-    each_pair { |k, v| n += 1 if blk.call(k, v) }
-    n
+    super
   end
 
   def find(&blk)
