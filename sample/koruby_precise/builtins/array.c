@@ -76,6 +76,23 @@ static RESULT ary_size(CTX *c, int argc, VALUE *sp) {
 
     return RESULT_OK(INT2FIX(korb_ary_len(self)));
 }
+/* Try to coerce v to a long via #to_int (CRuby semantics): on success
+ * store result in *out and return RESULT_OK(Qtrue); on failure (no
+ * to_int) return RESULT_OK(Qfalse); on TypeError (to_int returns
+ * non-Integer) return the raise RESULT. */
+static RESULT ary_aref_to_long(CTX *c, VALUE v, long *out) {
+    if (FIXNUM_P(v)) { *out = FIX2LONG(v); return RESULT_OK(Qtrue); }
+    if (SPECIAL_CONST_P(v)) return RESULT_OK(Qfalse);
+    struct korb_class *k = korb_class_of_class(v);
+    if (!k || !korb_class_find_method(k, korb_intern("to_int"))) return RESULT_OK(Qfalse);
+    RESULT tr = korb_funcall_r(c, v, korb_intern("to_int"), 0, NULL);
+    if (tr.state != KORB_NORMAL) return tr;
+    if (FIXNUM_P(tr.value)) { *out = FIX2LONG(tr.value); return RESULT_OK(Qtrue); }
+    return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                      "can't convert %s to Integer (#to_int gave non-Integer)",
+                      korb_id_name(k->name));
+}
+
 static RESULT ary_aref(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
     VALUE self = sp[-argc - 1];
@@ -104,12 +121,22 @@ static RESULT ary_aref(CTX *c, int argc, VALUE *sp) {
             for (long i = b; i <= e; i++) korb_ary_push(res, a->ptr[i]);
             return RESULT_OK(res);
         }
+        /* Try #to_int coercion (CRuby semantics — falls back to integer
+         * index when arg responds to #to_int but isn't a Fixnum/Range). */
+        long idx;
+        RESULT cr = ary_aref_to_long(c, argv[0], &idx);
+        if (cr.state != KORB_NORMAL) return cr;
+        if (RTEST(cr.value)) return RESULT_OK(korb_ary_aref(self, idx));
         return RESULT_OK(Qnil);
     }
-    if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+    if (argc == 2) {
+        long start, len;
+        RESULT cr1 = ary_aref_to_long(c, argv[0], &start);
+        if (cr1.state != KORB_NORMAL) return cr1;
+        RESULT cr2 = ary_aref_to_long(c, argv[1], &len);
+        if (cr2.state != KORB_NORMAL) return cr2;
+        if (!RTEST(cr1.value) || !RTEST(cr2.value)) return RESULT_OK(Qnil);
         struct korb_array *a = (struct korb_array *)self;
-        long start = FIX2LONG(argv[0]);
-        long len = FIX2LONG(argv[1]);
         if (start < 0) start += a->len;
         if (start < 0 || start > a->len || len < 0) return RESULT_OK(Qnil);
         if (start + len > a->len) len = a->len - start;
