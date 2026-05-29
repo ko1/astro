@@ -1070,19 +1070,17 @@ static RESULT str_chars(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* Pin self + result across korb_str_new / korb_ary_push GC fires. */
-    VALUE ret = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        rs[1] = korb_ary_new_capa(c, c->sp_top, ((struct korb_string *)rs[0])->len);
-        struct korb_string *s = (struct korb_string *)rs[0];
-        for (long i = 0; i < s->len; i++) {
-            korb_ary_push(rs[1], korb_str_new(c, c->sp_top, s->ptr + i, 1));
-            s = (struct korb_string *)rs[0];  /* reload */
-        }
-        ret = rs[1];
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    /* Park self + result in sp[0..1] across korb_str_new / korb_ary_push GC. */
+    sp[0] = self;
+    sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[1] = korb_ary_new_capa(c, sp + 2, ((struct korb_string *)sp[0])->len);
+    struct korb_string *s = (struct korb_string *)sp[0];
+    for (long i = 0; i < s->len; i++) {
+        korb_ary_push(sp[1], korb_str_new(c, sp + 2, s->ptr + i, 1));
+        s = (struct korb_string *)sp[0];  /* reload */
+    }
+    return RESULT_OK(sp[1]);
 }
 
 static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
@@ -1445,14 +1443,13 @@ static RESULT str_mul(CTX *c, int argc, VALUE *sp) {
      * self (C param) goes stale after the first alloc, and
      * korb_str_concat(c, c->sp_top, r, stale_self) reads garbage->len → buffer
      * overflow → corrupts adjacent obj's header. */
-    VALUE result;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        rs[1] = korb_str_new(c, c->sp_top, "", 0);
-        for (long i = 0; i < n; i++) korb_str_concat(c, c->sp_top, rs[1], rs[0]);
-        result = rs[1];
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(result);
+    /* Park self + result in sp[0..1] across korb_str_concat GC. */
+    sp[0] = self;
+    sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[1] = korb_str_new(c, sp + 2, "", 0);
+    for (long i = 0; i < n; i++) korb_str_concat(c, sp + 2, sp[1], sp[0]);
+    return RESULT_OK(sp[1]);
 }
 
 static RESULT str_hash(CTX *c, int argc, VALUE *sp) {
