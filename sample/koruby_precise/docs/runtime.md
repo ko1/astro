@@ -329,28 +329,72 @@ node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
 
 baruby_precise / castro / abruby も同じ `RESULT { VALUE, state }` を採用。
 
-### 5.6 移行過渡期 (Phase 8d, in progress)
+### 5.6 c->state 廃止計画 (Phase 8d-final, 設計)
 
-Legacy VALUE-returning helper (`korb_dispatch_call`, `korb_funcall`,
-`korb_const_lookup`, `korb_node_X_slow` 等) は今は `c->state` 経由で
-raise を返す。 NODE_DEF body から呼ぶ場所では `LIFT_C_STATE(c, call)`
-で RESULT に lift する:
+**目標**: `CTX::state` / `CTX::state_value` フィールドを完全削除し、 例外/
+break/return/throw 等の非 NORMAL 制御フローを **すべて RESULT (2 reg) で
+伝搬**。 baruby_precise / castro と同じ ABI に揃える。
 
-```c
-#define LIFT_C_STATE(c, call) ({ \
-    VALUE _lv = (call); \
-    if (__builtin_expect((c)->state != KORB_NORMAL, 0)) { \
-        RESULT _ls = (RESULT){ (c)->state_value, (c)->state }; \
-        (c)->state = KORB_NORMAL; (c)->state_value = Qnil; \
-        return _ls; \
-    } _lv; \
-})
+`CTX::state_target_frame` は state 値ではなく "非ローカル return がどの
+method frame を unwind するか" の target ポインタなので RESULT には載らず、
+CTX に残す (これは state ではない)。
 
-/* Use: return RESULT_OK(LIFT_C_STATE(c, korb_funcall(...))) */
-```
+#### 現状の問題
 
-全 legacy helper を `_r` 化 (= RESULT 返り値) すれば `LIFT_C_STATE` も
-撤去できる。 これが Phase 8d 続きの作業。
+422 ヶ所の legacy call site (`korb_funcall` / `korb_yield` / `korb_dispatch_call`
+等) が `c->state` 経由で例外を返す。 node.def の bridge は
+`LIFT_C_STATE(c, ...)` で 43 ヶ所 / `LIFT_C_STATE_OR_OK(c, ret)` で 3
+ヶ所 RESULT に lift しているが、 これらは bridge であり「state を消す」
+には不十分。
+
+#### 削除戦略 (5 ステップ)
+
+**R1**: `korb_dispatch_call` / `korb_funcall` / `korb_funcall_with_block` /
+`korb_dispatch_binop` / `korb_dispatch_to_method` 群を **すべて RESULT
+返り値に in-place 変更**。 関数 signature を `VALUE foo(...)` → `RESULT
+foo(...)` に直す。 既存呼出を全 sweep で書き換え (UNWRAP / CHECK 適用)。
+
+**R2**: `korb_yield` / `korb_yield_slow` を RESULT 返り値に変更。 今は
+"VALUE 返し + c->state に BREAK/RETURN/NEXT/REDO を載せる" 設計を、
+"RESULT.state を直接返す" に。 builtin の各 iterator (ary_each,
+range_each, hash_each 等) で yield 結果を RESULT で受ける。
+
+**R3**: `korb_node_X_slow` (約 20 個の binop fallback) を RESULT 返り値に。
+これは object.c の cold path なので影響範囲は小さい。
+
+**R4**: legacy cfunc (~100 個、 cfunc_r ABI 未移行) を全 cfunc_r 化。
+`prologue_cfunc` (legacy) の path 自体を削除する。
+
+**R5**: `korb_raise` / `korb_raise_X` を「c->state 設定しない、 RESULT
+返し only」に書換え。 これにより `c->state` を書く場所がなくなる。
+
+最後: `CTX::state` / `CTX::state_value` field を削除し、 `LIFT_C_STATE`
+macro 群を削除。
+
+#### Step ごとの commit 粒度
+
+- R1 は内部で「`korb_dispatch_call_r_native(c, ...)` を一旦 _r 名で実装、
+  両方の version を共存」させ、 caller を 1 ヶ所ずつ切替えて最後に旧名を
+  削除する。 一度に全 caller を書き換えるのは git diff が膨大で review
+  不能になるため。
+- R2-R4 も同様。
+- R5 は最後の 1 step (caller が全部 RESULT 化されていれば、 korb_raise
+  から c->state 書きを消すのは 1 line 修正)。
+
+#### 段階の検証基準
+
+各 step 後に:
+- `make test` 全 24 suite が default / STRESS / STRESS+PURGE 全 mode で PASS
+- rubyspec sweep が PASS counts を維持 (regression 0)
+- `grep -c "c->state\b" *.c` が単調減少
+
+#### 影響を受けないもの
+
+- `c->state_target_frame` — 非ローカル return の target frame 識別、 残す
+- `c->current_eval_binding` 等の周辺 CTX field — 例外伝搬には無関係
+- `korb_raise` の signature 自体 (既に RESULT を返す)、 内部実装のみ変更
+- node.def の break/next/return 終端 (既に RESULT を直接返す)
+- prologue_cfunc_r_inl (既に RESULT-native)
 
 ## 6. 字句的定数スコープ (cref)
 
