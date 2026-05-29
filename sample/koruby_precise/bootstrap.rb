@@ -2480,6 +2480,20 @@ class Array
   def difference(*others)
     others.reduce(self.dup) { |acc, o| acc - o }
   end unless method_defined?(:difference)
+  def intersect?(other)
+    o = if other.is_a?(Array)
+          other
+        elsif other.respond_to?(:to_ary)
+          coerced = other.to_ary
+          unless coerced.is_a?(Array)
+            raise TypeError, "can't convert #{other.class} to Array (#{other.class}#to_ary gives #{coerced.class})"
+          end
+          coerced
+        else
+          raise TypeError, "no implicit conversion of #{other.class} into Array"
+        end
+    !(self & o).empty?
+  end unless method_defined?(:intersect?)
 
   def rindex(target = nil, &blk)
     if !blk && target.nil?
