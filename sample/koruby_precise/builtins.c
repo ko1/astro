@@ -1502,11 +1502,11 @@ void korb_init_builtins(CTX *c) {
         struct korb_class *cIntMeta = korb_singleton_class_of(c, KORB_VM(c)->integer_class);
         DEF_R(cIntMeta, "allocate", _allocator_disallowed, -1);
         DEF_R(cIntMeta, "new",      _new_disallowed,       -1);
-        if (KORB_VM(c)->numeric_class) {
-            struct korb_class *cNumMeta = korb_singleton_class_of(c, KORB_VM(c)->numeric_class);
-            DEF_R(cNumMeta, "allocate", _allocator_disallowed, -1);
-            DEF_R(cNumMeta, "new",      _new_disallowed,       -1);
-        }
+        /* Note: Numeric was previously banned but that broke subclass
+         * instantiation (class N < Numeric; end; N.new).  CRuby's
+         * Numeric.new fails because Numeric lacks an allocator, but
+         * subclasses that define one (or inherit Object's) succeed.
+         * Keep Numeric.allocate / .new available; let users handle. */
     }
 
     /* Proc */

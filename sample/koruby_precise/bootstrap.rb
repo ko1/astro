@@ -661,6 +661,66 @@ class Numeric
     self.zero? ? nil : self
   end unless method_defined?(:nonzero?)
 
+  # Numeric#abs — magnitude.  Default via `<` and `-@`.
+  def abs
+    self < 0 ? -self : self
+  end unless method_defined?(:abs)
+  alias magnitude abs unless method_defined?(:magnitude)
+
+  # Numeric#i — wrap as Complex (0, self).
+  def i
+    Complex(0, self)
+  end unless method_defined?(:i)
+
+  # Numeric#real? / imaginary / angle / conjugate / phase / arg.
+  def real?; true; end unless method_defined?(:real?)
+  def imaginary; 0; end unless method_defined?(:imaginary)
+  alias imag imaginary unless method_defined?(:imag)
+  def real; self; end unless method_defined?(:real)
+  def conjugate; self; end unless method_defined?(:conjugate)
+  alias conj conjugate unless method_defined?(:conj)
+  def angle
+    self < 0 ? Math::PI : 0
+  end unless method_defined?(:angle)
+  alias arg angle unless method_defined?(:arg)
+  alias phase angle unless method_defined?(:phase)
+
+  # Numeric#finite? / infinite?.  Bignum is always finite.
+  def finite?; true; end unless method_defined?(:finite?)
+  def infinite?; nil; end unless method_defined?(:infinite?)
+
+  # Numeric#ceil / floor / round / truncate — Float / Integer override.
+  def ceil(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:ceil)
+  def floor(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:floor)
+  def round(n = 0, **); n == 0 ? self.to_i : self; end unless method_defined?(:round)
+  def truncate(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:truncate)
+
+  # Numeric#integer? — true for Integer, false otherwise.
+  def integer?; false; end unless method_defined?(:integer?)
+
+  # Numeric#fdiv — convert to Float and divide.
+  def fdiv(other)
+    self.to_f / other.to_f
+  end unless method_defined?(:fdiv)
+
+  # Numeric#quo — Rational result.
+  def quo(other)
+    Rational(self) / other
+  end unless method_defined?(:quo)
+
+  # Numeric#div / modulo / remainder.
+  def div(other)
+    (self / other).floor
+  end unless method_defined?(:div)
+  def modulo(other)
+    self - other * (self / other).floor
+  end unless method_defined?(:modulo)
+  def remainder(other)
+    return 0 if other == 0
+    diff = self.div(other) * other
+    self - diff
+  end unless method_defined?(:remainder)
+
   # Numeric#divmod — default via Comparable's `/` and `%`.  Subclasses
   # (Integer/Float) override with proper implementations.
   def divmod(other)
