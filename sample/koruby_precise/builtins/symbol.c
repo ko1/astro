@@ -75,7 +75,24 @@ static RESULT sym_length(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(INT2FIX((long)strlen(korb_id_name(korb_sym2id(self)))));
+    ID id = korb_sym2id(self);
+    const unsigned char *p = (const unsigned char *)korb_id_name(id);
+    size_t len = korb_id_name_len(id);
+    /* Count UTF-8 codepoints (treat invalid bytes as 1 codepoint each). */
+    long cp = 0;
+    for (size_t i = 0; i < len; ) {
+        unsigned char b0 = p[i];
+        int adv;
+        if (b0 < 0x80) adv = 1;
+        else if ((b0 & 0xe0) == 0xc0) adv = 2;
+        else if ((b0 & 0xf0) == 0xe0) adv = 3;
+        else if ((b0 & 0xf8) == 0xf0) adv = 4;
+        else adv = 1;
+        if (i + adv > len) adv = 1;
+        i += adv;
+        cp++;
+    }
+    return RESULT_OK(INT2FIX(cp));
 }
 /* Symbol#empty? */
 static RESULT sym_empty_p(CTX *c, int argc, VALUE *sp) {

@@ -406,6 +406,7 @@ void  korb_xfree(void *p);
 ID korb_intern(const char *str);
 ID korb_intern_n(const char *str, long len);
 const char *korb_id_name(ID id);
+size_t korb_id_name_len(ID id);
 
 /* class system */
 VALUE korb_class_of(VALUE v);

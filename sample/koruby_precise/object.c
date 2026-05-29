@@ -99,6 +99,11 @@ const char *korb_id_name(ID id) {
     return id_index[id]->name;
 }
 
+size_t korb_id_name_len(ID id) {
+    if (id == 0 || id >= id_index_capa || !id_index[id]) return 0;
+    return id_index[id]->len;
+}
+
 VALUE korb_id2sym(ID id) {
     /* encode id in upper bits, low byte = SYMBOL_FLAG */
     return ((VALUE)id << 8) | SYMBOL_FLAG;
