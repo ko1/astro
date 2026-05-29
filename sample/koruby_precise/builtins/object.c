@@ -25,11 +25,20 @@ extern struct korb_method *korb_class_find_method(const struct korb_class *klass
  * `enforce_public` ⇒ refuse to call private/protected methods (the
  * public_send semantics).  send / __send__ ignore visibility. */
 static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enforce_public) {
-    if (argc < 1) return RESULT_OK(Qnil);
+    if (argc < 1) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "no method name given");
+    }
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
-    else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return RESULT_OK(Qnil);
+    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    } else {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                          "%s is not a symbol nor a string",
+                          SPECIAL_CONST_P(argv[0]) ? "(special)" :
+                          korb_id_name(korb_class_of_class(argv[0])->name));
+    }
     /* Forward the block that was passed to send itself: `obj.send(:foo) { ... }`
      * should run with the block visible to foo's `yield`. */
 
