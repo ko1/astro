@@ -96,34 +96,31 @@ static RESULT str_plus(CTX *c, int argc, VALUE *sp) {
      * result) goes stale and korb_str_concat reads garbage->len which
      * overflows the freshly-malloc'd buffer into adjacent libc/gc obj
      * memory, corrupting a hash header that later crashes scan_edges. */
-    VALUE result;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        rs[1] = argv[0];
-        if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
-            if (!SPECIAL_CONST_P(rs[1])) {
-                RESULT _rt = korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-                if (_rt.state != KORB_NORMAL) { ARO_ROOT_SCOPE_CANCEL(c, rs); return _rt; }
-                if (RTEST(_rt.value)) {
-                    RESULT _ts = korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL);
-                    if (_ts.state != KORB_NORMAL) { ARO_ROOT_SCOPE_CANCEL(c, rs); return _ts; }
-                    rs[1] = _ts.value;
-                }
-            }
-            if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
-                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                RESULT _e = korb_raise(c, (struct korb_class *)eT,
-                           "no implicit conversion of %s into String",
-                           SPECIAL_CONST_P(argv[0]) ? "(special)"
-                               : korb_id_name(korb_class_of_class(argv[0])->name));
-                ARO_ROOT_SCOPE_CANCEL(c, rs); return _e;
+    /* Park self + other in sp[0..1] across korb_str_dup's alloc-can-GC. */
+    sp[0] = self;
+    sp[1] = argv[0];
+    c->sp_top = sp + 2;
+    if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
+        if (!SPECIAL_CONST_P(sp[1])) {
+            RESULT _rt = korb_funcall(c, sp[1], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (_rt.state != KORB_NORMAL) return _rt;
+            if (RTEST(_rt.value)) {
+                RESULT _ts = korb_funcall(c, sp[1], korb_intern("to_str"), 0, NULL);
+                if (_ts.state != KORB_NORMAL) return _ts;
+                sp[1] = _ts.value;
             }
         }
-        VALUE r = korb_str_dup(c, c->sp_top, rs[0]);
-        result = korb_str_concat(c, c->sp_top, r, rs[1]);
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(result);
+        if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+        }
+    }
+    VALUE r = korb_str_dup(c, sp + 2, sp[0]);
+    return RESULT_OK(korb_str_concat(c, sp + 2, r, sp[1]));
 }
 /* Append a single arg to self.  Propagates raise via RESULT.state. */
 static RESULT str_concat_one(CTX *c, VALUE self, VALUE arg);
