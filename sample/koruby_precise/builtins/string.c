@@ -13,51 +13,75 @@ static int str_char_range_to_bytes(const char *p, long byte_len,
 /* String.new(s = "") — start the new string from an optional initial
  * value.  Class#new's generic path goes through korb_object_new which
  * doesn't allocate the String storage; we need a real heap String. */
-RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
+/* String#initialize(s = "") — copy contents from s into self.  Default
+ * implementation used by both String.new and subclass overrides via
+ * super.  encoding:/capacity: kwargs are accepted but informational. */
+RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE r;
-    /* Drop trailing FL_KWARGS hash (encoding: / capacity: kwargs are
-     * accepted but treated as informational). */
+    CHECK_FROZEN_R(c, self);
     int eff_argc = argc;
     if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
         (RBASIC(argv[argc - 1])->head.flags & FL_KWARGS)) {
         eff_argc = argc - 1;
     }
-    if (eff_argc >= 1) {
-        VALUE init = argv[0];
-        if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
-            if (!SPECIAL_CONST_P(init)) {
-                VALUE rt = korb_funcall(c, init, korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+    if (eff_argc == 0) return RESULT_OK(self);
+    VALUE init = argv[0];
+    if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
+        if (!SPECIAL_CONST_P(init)) {
+            VALUE rt = korb_funcall(c, init, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+            if (RTEST(rt)) {
+                init = korb_funcall(c, init, korb_intern("to_str"), 0, NULL);
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
-                if (RTEST(rt)) {
-                    init = korb_funcall(c, init, korb_intern("to_str"), 0, NULL);
-                    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
-                }
-            }
-            if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
-                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                return korb_raise(c, (struct korb_class *)eT,
-                           "no implicit conversion of %s into String",
-                           SPECIAL_CONST_P(argv[0]) ? "(special)"
-                               : korb_id_name(korb_class_of_class(argv[0])->name));
             }
         }
-        struct korb_string *s = (struct korb_string *)init;
-        r = korb_str_new(c, c->sp, s->ptr, s->len);
-    } else {
-        r = korb_str_new(c, c->sp, "", 0);
+        if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+        }
     }
-    /* For String subclasses, retag the result with the subclass so
-     * `class BP < String; end; BP.new("a").class == BP`.  Top-level
-     * `String.new` keeps the default String klass. */
-    if (BUILTIN_TYPE(self) == T_CLASS && (struct korb_class *)self != KORB_VM(c)->string_class) {
+    struct korb_string *src = (struct korb_string *)init;
+    struct korb_string *dst = (struct korb_string *)self;
+    /* Replace contents in-place (copy buffer so source can be mutated
+     * later without affecting us). */
+    char *buf = korb_xmalloc_atomic(src->len + 1);
+    if (src->len > 0) memcpy(buf, src->ptr, src->len);
+    buf[src->len] = 0;
+    dst->ptr = buf;
+    dst->len = src->len;
+    dst->capa = src->len;
+    return RESULT_OK(self);
+}
+
+RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    /* Allocate an empty String of self's class, then dispatch initialize
+     * so subclass overrides apply (CRuby semantics). */
+    VALUE r = korb_str_new(c, c->sp, "", 0);
+    if (BUILTIN_TYPE(self) == T_CLASS) {
         ((struct RBasic *)r)->klass = self;
     }
+    /* See ary_class_new comment: stage [r, argv...] on sp, bump c->sp
+     * past the staging so the AST dispatcher's zero-fill on return
+     * doesn't clobber r, and read back from sp[0] (GC may have moved r). */
+    sp[0] = r;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    VALUE *prev_sp = c->sp;
+    c->sp = sp + 1 + argc;
+    UNWRAP(korb_funcall_r(c, r, korb_intern("initialize"), argc, sp + 1));
+    r = sp[0];
+    c->sp = prev_sp;
     return RESULT_OK(r);
 }
 

@@ -741,11 +741,16 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_hash *)h)->basic.klass = self;
     }
-    /* Stage [h, argv...] on sp and dispatch initialize.  See
-     * ary_class_new comment for the rationale. */
+    /* See ary_class_new comment: stage [h, argv...] on sp, bump c->sp
+     * past the staging so the AST dispatcher's zero-fill on return
+     * doesn't clobber h, and read back from sp[0] (GC may have moved h). */
     sp[0] = h;
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    VALUE *prev_sp = c->sp;
+    c->sp = sp + 1 + argc;
     UNWRAP(korb_funcall_r(c, h, korb_intern("initialize"), argc, sp + 1));
+    h = sp[0];
+    c->sp = prev_sp;
     return RESULT_OK(h);
 }
 

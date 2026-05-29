@@ -3446,11 +3446,17 @@ static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_array *)arr)->basic.klass = self;
     }
-    /* Stage [arr, argv...] on sp.  korb_funcall_r bumps c->sp past the
-     * argv area itself so the dispatcher doesn't clobber. */
+    /* Stage [arr, argv...] on sp.  CRITICAL: bump c->sp past the staging
+     * so the AST dispatcher's [prev_sp, new_sp) zero-fill on return
+     * doesn't clobber arr at sp[0].  Read back from sp[0] after dispatch
+     * since GC may have moved arr (the C-local goes stale). */
     sp[0] = arr;
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    VALUE *prev_sp = c->sp;
+    c->sp = sp + 1 + argc;
     UNWRAP(korb_funcall_r(c, arr, korb_intern("initialize"), argc, sp + 1));
+    arr = sp[0];
+    c->sp = prev_sp;
     return RESULT_OK(arr);
 }
 

@@ -977,6 +977,10 @@ void korb_init_builtins(CTX *c) {
         struct korb_class *cStrMeta = korb_class_new(c, c->sp, korb_intern("StringMeta"),
                                                       KORB_VM(c)->class_class, T_CLASS);
         korb_class_add_method_cfunc_r(cStrMeta, korb_intern("new"), str_class_new, -1);
+        /* String#initialize — subclasses can override; called by String.new
+         * after the empty allocation. */
+        extern RESULT str_initialize(CTX *c, int argc, VALUE *sp);
+        DEF_R(KORB_VM(c)->string_class, "initialize", str_initialize, -1);
         KORB_VM(c)->string_class->basic.klass = (VALUE)cStrMeta;
         /* String.try_convert(obj) — obj.to_str if responding and returns
          * String, else nil.  Raises TypeError if #to_str returns non-String. */
