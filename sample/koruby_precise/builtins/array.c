@@ -1169,19 +1169,18 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
      * returns < 0 the probe is smaller than the running min (so swap).
      * This is the opposite of sort's convention, which is also why the
      * cmp variable here is interpreted with the probe as the LHS. */
+    /* Park running min + probe in sp[0..1] across ary_sort_compare GC. */
+    sp[0] = a->ptr[0];
+    sp[1] = 0;
+    c->sp_top = sp + 2;
     RESULT _ret = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = a->ptr[0];
-        for (long i = 1; i < a->len; i++) {
-            rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block, &_ret);
-            if (_ret.state != KORB_NORMAL) goto done_min;
-            if (cmp < 0) rs[0] = rs[1];
-        }
-        _ret = RESULT_OK(rs[0]);
-done_min: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _ret;
+    for (long i = 1; i < a->len; i++) {
+        sp[1] = a->ptr[i];
+        long cmp = ary_sort_compare(c, sp[1], sp[0], has_block, &_ret);
+        if (_ret.state != KORB_NORMAL) return _ret;
+        if (cmp < 0) sp[0] = sp[1];
+    }
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
@@ -1192,21 +1191,18 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return RESULT_OK(Qnil);
     bool has_block = korb_block_given(c);
-    /* Same convention as ary_min — block.call(probe, running).  If it
-     * returns > 0 the probe is greater than running max, so swap. */
+    /* Park running max + probe in sp[0..1] across ary_sort_compare GC. */
+    sp[0] = a->ptr[0];
+    sp[1] = 0;
+    c->sp_top = sp + 2;
     RESULT _ret = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = a->ptr[0];
-        for (long i = 1; i < a->len; i++) {
-            rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block, &_ret);
-            if (_ret.state != KORB_NORMAL) goto done_max;
-            if (cmp > 0) rs[0] = rs[1];
-        }
-        _ret = RESULT_OK(rs[0]);
-done_max: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _ret;
+    for (long i = 1; i < a->len; i++) {
+        sp[1] = a->ptr[i];
+        long cmp = ary_sort_compare(c, sp[1], sp[0], has_block, &_ret);
+        if (_ret.state != KORB_NORMAL) return _ret;
+        if (cmp > 0) sp[0] = sp[1];
+    }
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
