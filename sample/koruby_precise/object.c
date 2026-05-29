@@ -2748,56 +2748,51 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    /* Park klass + the new Exception obj across korb_exc_set_backtrace
-     * (= allocates a backtrace Array, triggers GC) and the cause-link
-     * walk (= multiple korb_ivar_get / korb_ivar_set, the set path can
-     * grow the ivar array via libc which is GC-safe but other paths
-     * might fire if an ivar setter cfunc is registered).  Without this,
-     * the C local `e` goes stale across the backtrace alloc and the
-     * final return value stores a moved-out address — which is what
-     * made bootstrap.rb's RuntimeError surface as "" under STRESS. */
-    VALUE exc_out = Qnil;
-    ARO_ROOT_SCOPE_START(c, r, 2) {
-        r[0] = (VALUE)klass;
-        r[1] = korb_exc_new(c, c->sp_top, (struct korb_class *)r[0], buf);
-        int line = (c->last_cfunc_callsite
-                    ? c->last_cfunc_callsite->head.line : 0);
-        korb_exc_set_backtrace(c, c->sp_top, r[1], line);
-        /* Exception#cause: when this raise happens inside a rescue body,
-         * $! holds the currently-rescued exception — link it.  Skip if
-         * the exception already has a cause, skip self, and skip when
-         * linking would create a cycle.
-         *
-         * Use r[1] / r[0] directly throughout (= GC-protected) rather
-         * than caching to C locals.  Each korb_ivar_get/set can fire
-         * GC; a C-local cached exc/current goes stale and the next
-         * korb_ivar_set writes into a phantom obj's @cause. */
-        VALUE current = korb_gvar_get(korb_intern("$!"));
-        /* Park current too — subsequent korb_ivar_get walks might GC. */
-        ARO_ROOT_SCOPE_START(c, rc, 1) {
-            rc[0] = current;
-            if (!NIL_P(rc[0]) && rc[0] != r[1] &&
-                !SPECIAL_CONST_P(r[1]) && BUILTIN_TYPE(r[1]) == T_OBJECT) {
-                VALUE existing = korb_ivar_get(r[1], korb_intern("@cause"));
-                if (UNDEF_P(existing) || NIL_P(existing)) {
-                    /* Cycle check: walk rc[0]'s cause chain. */
-                    ARO_ROOT_SCOPE_START(c, rw, 1) {
-                        rw[0] = rc[0];
-                        int hops = 0;
-                        bool would_cycle = false;
-                        while (!NIL_P(rw[0]) && hops++ < 32) {
-                            if (rw[0] == r[1]) { would_cycle = true; break; }
-                            if (SPECIAL_CONST_P(rw[0]) || BUILTIN_TYPE(rw[0]) != T_OBJECT) break;
-                            rw[0] = korb_ivar_get(rw[0], korb_intern("@cause"));
-                            if (UNDEF_P(rw[0])) break;
-                        }
-                        if (!would_cycle) korb_ivar_set(r[1], korb_intern("@cause"), rc[0]);
-                    } ARO_ROOT_SCOPE_END(c, rw);
-                }
+    /* Park klass (sp[0]) + new Exception obj (sp[1]) + $! cause (sp[2])
+     * + cycle-walker (sp[3]) across korb_exc_set_backtrace (allocates a
+     * backtrace Array) and the cause-link walk (korb_ivar_get/set may
+     * grow the ivar table = libc realloc which is fine, but other paths
+     * could fire GC).  Without this the C local `e` goes stale across
+     * the backtrace alloc and the final return value stores a moved-out
+     * address — which made bootstrap.rb's RuntimeError surface as ""
+     * under STRESS.
+     *
+     * korb_raise has no sp param (called from 400+ sites); stage at the
+     * current c->sp_top top-of-live. */
+    VALUE *sp = c->sp_top;
+    sp[0] = (VALUE)klass;
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[3] = 0;
+    c->sp_top = sp + 4;
+    sp[1] = korb_exc_new(c, sp + 4, (struct korb_class *)sp[0], buf);
+    int line = (c->last_cfunc_callsite
+                ? c->last_cfunc_callsite->head.line : 0);
+    korb_exc_set_backtrace(c, sp + 4, sp[1], line);
+    /* Exception#cause: when this raise happens inside a rescue body,
+     * $! holds the currently-rescued exception — link it.  Skip if
+     * the exception already has a cause, skip self, and skip when
+     * linking would create a cycle.  Use sp[1] / sp[2] directly. */
+    sp[2] = korb_gvar_get(korb_intern("$!"));
+    if (!NIL_P(sp[2]) && sp[2] != sp[1] &&
+        !SPECIAL_CONST_P(sp[1]) && BUILTIN_TYPE(sp[1]) == T_OBJECT) {
+        VALUE existing = korb_ivar_get(sp[1], korb_intern("@cause"));
+        if (UNDEF_P(existing) || NIL_P(existing)) {
+            /* Cycle check: walk sp[2]'s cause chain. */
+            sp[3] = sp[2];
+            int hops = 0;
+            bool would_cycle = false;
+            while (!NIL_P(sp[3]) && hops++ < 32) {
+                if (sp[3] == sp[1]) { would_cycle = true; break; }
+                if (SPECIAL_CONST_P(sp[3]) || BUILTIN_TYPE(sp[3]) != T_OBJECT) break;
+                sp[3] = korb_ivar_get(sp[3], korb_intern("@cause"));
+                if (UNDEF_P(sp[3])) break;
             }
-        } ARO_ROOT_SCOPE_END(c, rc);
-        exc_out = r[1];
-    } ARO_ROOT_SCOPE_END(c, r);
+            if (!would_cycle) korb_ivar_set(sp[1], korb_intern("@cause"), sp[2]);
+        }
+    }
+    VALUE exc_out = sp[1];
+    c->sp_top = sp;
     return (RESULT){ exc_out, KORB_RAISE };
 }
 
@@ -2954,45 +2949,31 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
             }
         }
         if (!needs_quote) {
-            VALUE ret = Qnil;
-            CTX *c2 = c;
-            if (c2) {
-                ARO_ROOT_SCOPE_START(c2, rs, 2) {
-                    rs[0] = korb_str_new_cstr(c, c->sp_top, ":");
-                    rs[1] = korb_str_new(c, c->sp_top, name, (long)nlen);
-                    korb_str_concat(c, c->sp_top, rs[0], rs[1]);
-                    ret = rs[0];
-                } ARO_ROOT_SCOPE_END(c2, rs);
-                return ret;
-            }
-            VALUE s = korb_str_new_cstr(c, c->sp_top, ":");
-            korb_str_concat(c, c->sp_top, s, korb_str_new(c, c->sp_top, name, (long)nlen));
-            return s;
+            VALUE *sp = c->sp_top;
+            sp[0] = 0; sp[1] = 0;
+            c->sp_top = sp + 2;
+            sp[0] = korb_str_new_cstr(c, sp + 2, ":");
+            sp[1] = korb_str_new(c, sp + 2, name, (long)nlen);
+            korb_str_concat(c, sp + 2, sp[0], sp[1]);
+            VALUE ret = sp[0];
+            c->sp_top = sp;
+            return ret;
         }
         /* Quoted form: :"...".  Re-use the String inspect path for
          * escaping by inspecting the name as a String, which yields
-         * a quoted, escaped form, then prepend the colon.  Each
-         * korb_str_new + korb_inspect_inner can fire GC, so park the
-         * intermediate strings in ARO_ROOT_SCOPE to keep them alive. */
+         * a quoted, escaped form, then prepend the colon. */
         {
-            VALUE ret = Qnil;
-            CTX *c2 = c;
-            if (c2) {
-                ARO_ROOT_SCOPE_START(c2, rs, 2) {
-                    rs[0] = korb_str_new(c, c->sp_top, name, (long)nlen);
-                    rs[0] = korb_inspect_inner(c, rs[0], depth + 1);
-                    rs[1] = korb_str_new_cstr(c, c->sp_top, ":");
-                    korb_str_concat(c, c->sp_top, rs[1], rs[0]);
-                    ret = rs[1];
-                } ARO_ROOT_SCOPE_END(c2, rs);
-                return ret;
-            }
+            VALUE *sp = c->sp_top;
+            sp[0] = 0; sp[1] = 0;
+            c->sp_top = sp + 2;
+            sp[0] = korb_str_new(c, sp + 2, name, (long)nlen);
+            sp[0] = korb_inspect_inner(c, sp[0], depth + 1);
+            sp[1] = korb_str_new_cstr(c, sp + 2, ":");
+            korb_str_concat(c, sp + 2, sp[1], sp[0]);
+            VALUE ret = sp[1];
+            c->sp_top = sp;
+            return ret;
         }
-        VALUE name_str = korb_str_new(c, c->sp_top, name, (long)nlen);
-        VALUE inspected = korb_inspect_inner(c, name_str, depth + 1);
-        VALUE r = korb_str_new_cstr(c, c->sp_top, ":");
-        korb_str_concat(c, c->sp_top, r, inspected);
-        return r;
     }
     enum korb_type t = BUILTIN_TYPE(v);
     if (t == T_STRING) {
@@ -3002,61 +2983,15 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
          * all of which fire GC under STRESS.  Without pinning, the
          * C-local `r` and `s` go stale, producing mangled "" output
          * even for plain strings (= `"hello".inspect → ""`). */
-        VALUE iret = Qnil;
-        CTX *c3 = c;
-        if (c3) {
-            ARO_ROOT_SCOPE_START(c3, rs, 2) {
-                rs[0] = v;  /* pin self so s->ptr / s->len stay valid */
-                rs[1] = korb_str_new_cstr(c, c->sp_top, "\"");
-                struct korb_string *ss = (struct korb_string *)rs[0];
-                long start = 0;
-                for (long i = 0; i < ss->len; i++) {
-                    unsigned char ch = (unsigned char)ss->ptr[i];
-                    const char *esc = NULL;
-                    char buf[8];
-                    switch (ch) {
-                        case '\\': esc = "\\\\"; break;
-                        case '"':  esc = "\\\""; break;
-                        case '\n': esc = "\\n";  break;
-                        case '\t': esc = "\\t";  break;
-                        case '\r': esc = "\\r";  break;
-                        case '\a': esc = "\\a";  break;
-                        case '\b': esc = "\\b";  break;
-                        case '\f': esc = "\\f";  break;
-                        case '\v': esc = "\\v";  break;
-                        case '\x1b': esc = "\\e"; break;
-                        case '#':
-                            if (i + 1 < ss->len) {
-                                unsigned char nx = (unsigned char)ss->ptr[i + 1];
-                                if (nx == '{' || nx == '$' || nx == '@') esc = "\\#";
-                            }
-                            break;
-                        default:
-                            if (ch < 0x20 || ch == 0x7f) {
-                                snprintf(buf, sizeof(buf), "\\x%02X", ch);
-                                esc = buf;
-                            }
-                            break;
-                    }
-                    if (esc) {
-                        if (i > start) rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new(c, c->sp_top, ((struct korb_string *)rs[0])->ptr + start, i - start));
-                        rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, esc));
-                        start = i + 1;
-                        ss = (struct korb_string *)rs[0];  /* reload after potential GC */
-                    }
-                }
-                if (start < ss->len) rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new(c, c->sp_top, ((struct korb_string *)rs[0])->ptr + start, ((struct korb_string *)rs[0])->len - start));
-                rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, "\""));
-                iret = rs[1];
-            } ARO_ROOT_SCOPE_END(c3, rs);
-            return iret;
-        }
-        /* Cold fallback when CTX is unavailable. */
-        struct korb_string *s = (struct korb_string *)v;
-        VALUE r = korb_str_new_cstr(c, c->sp_top, "\"");
+        VALUE *sp = c->sp_top;
+        sp[0] = v;  /* pin self so s->ptr / s->len stay valid */
+        sp[1] = 0;
+        c->sp_top = sp + 2;
+        sp[1] = korb_str_new_cstr(c, sp + 2, "\"");
+        struct korb_string *ss = (struct korb_string *)sp[0];
         long start = 0;
-        for (long i = 0; i < s->len; i++) {
-            unsigned char ch = (unsigned char)s->ptr[i];
+        for (long i = 0; i < ss->len; i++) {
+            unsigned char ch = (unsigned char)ss->ptr[i];
             const char *esc = NULL;
             char buf[8];
             switch (ch) {
@@ -3071,8 +3006,8 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                 case '\v': esc = "\\v";  break;
                 case '\x1b': esc = "\\e"; break;
                 case '#':
-                    if (i + 1 < s->len) {
-                        unsigned char nx = (unsigned char)s->ptr[i + 1];
+                    if (i + 1 < ss->len) {
+                        unsigned char nx = (unsigned char)ss->ptr[i + 1];
                         if (nx == '{' || nx == '$' || nx == '@') esc = "\\#";
                     }
                     break;
@@ -3084,14 +3019,17 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                     break;
             }
             if (esc) {
-                if (i > start) korb_str_concat(c, c->sp_top, r, korb_str_new(c, c->sp_top, s->ptr + start, i - start));
-                korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, esc));
+                if (i > start) sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_str_new(c, sp + 2, ((struct korb_string *)sp[0])->ptr + start, i - start));
+                sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, esc));
                 start = i + 1;
+                ss = (struct korb_string *)sp[0];  /* reload after potential GC */
             }
         }
-        if (start < s->len) korb_str_concat(c, c->sp_top, r, korb_str_new(c, c->sp_top, s->ptr + start, s->len - start));
-        korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, "\""));
-        return r;
+        if (start < ss->len) sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_str_new(c, sp + 2, ((struct korb_string *)sp[0])->ptr + start, ((struct korb_string *)sp[0])->len - start));
+        sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, "\""));
+        VALUE iret = sp[1];
+        c->sp_top = sp;
+        return iret;
     }
     if (t == T_ARRAY) {
         /* Recursion guard: when inspecting a self-referential array,
@@ -3103,43 +3041,31 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                 return korb_str_new_cstr(c, c->sp_top, "[...]");
             }
         }
-        /* Pin the accumulating result string + each formatted element
+        /* Pin self (sp[0]) + acc (sp[1]) + per-iter formatted (sp[2])
          * across korb_inspect_inner / korb_str_new_cstr / korb_str_concat
          * — all of which can fire GC. */
-        VALUE ret = Qnil;
-        CTX *c2 = c;
-        if (c2) {
-            struct korb_array *a = (struct korb_array *)v;
-            if (inspect_recurse_top < 64) {
-                inspect_recurse_stk[inspect_recurse_top++] = v;
-            }
-            ARO_ROOT_SCOPE_START(c2, rs, 3) {
-                rs[0] = v;   /* pin self so a->len / a->ptr stay valid */
-                rs[1] = korb_str_new_cstr(c, c->sp_top, "[");
-                for (long i = 0; i < ((struct korb_array *)rs[0])->len; i++) {
-                    if (i) rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, ", "));
-                    rs[2] = korb_inspect_inner(c, ((struct korb_array *)rs[0])->ptr[i], depth+1);
-                    rs[1] = korb_str_concat(c, c->sp_top, rs[1], rs[2]);
-                }
-                rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, "]"));
-                ret = rs[1];
-            } ARO_ROOT_SCOPE_END(c2, rs);
-            if (inspect_recurse_top > 0 &&
-                inspect_recurse_stk[inspect_recurse_top - 1] == v) {
-                inspect_recurse_top--;
-            }
-            return ret;
+        if (inspect_recurse_top < 64) {
+            inspect_recurse_stk[inspect_recurse_top++] = v;
         }
-        /* Cold fallback when CTX is unavailable (shouldn't happen under
-         * normal program execution). */
-        struct korb_array *a = (struct korb_array *)v;
-        VALUE r = korb_str_new_cstr(c, c->sp_top, "[");
-        for (long i = 0; i < a->len; i++) {
-            if (i) korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ", "));
-            korb_str_concat(c, c->sp_top, r, korb_inspect_inner(c, a->ptr[i], depth+1));
+        VALUE *sp = c->sp_top;
+        sp[0] = v;
+        sp[1] = 0;
+        sp[2] = 0;
+        c->sp_top = sp + 3;
+        sp[1] = korb_str_new_cstr(c, sp + 3, "[");
+        for (long i = 0; i < ((struct korb_array *)sp[0])->len; i++) {
+            if (i) sp[1] = korb_str_concat(c, sp + 3, sp[1], korb_str_new_cstr(c, sp + 3, ", "));
+            sp[2] = korb_inspect_inner(c, ((struct korb_array *)sp[0])->ptr[i], depth+1);
+            sp[1] = korb_str_concat(c, sp + 3, sp[1], sp[2]);
         }
-        korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, "]"));
-        return r;
+        sp[1] = korb_str_concat(c, sp + 3, sp[1], korb_str_new_cstr(c, sp + 3, "]"));
+        VALUE ret = sp[1];
+        c->sp_top = sp;
+        if (inspect_recurse_top > 0 &&
+            inspect_recurse_stk[inspect_recurse_top - 1] == v) {
+            inspect_recurse_top--;
+        }
+        return ret;
     }
     if (t == T_HASH) {
         /* Recursion guard for self-referential hash. */
@@ -3150,43 +3076,31 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                 return korb_str_new_cstr(c, c->sp_top, "{...}");
             }
         }
-        VALUE ret = Qnil;
-        CTX *c2 = c;
-        if (c2) {
-            if (hash_inspect_top < 64) hash_inspect_stk[hash_inspect_top++] = v;
-            ARO_ROOT_SCOPE_START(c2, rs, 4) {
-                rs[0] = v;
-                rs[1] = korb_str_new_cstr(c, c->sp_top, "{");
-                bool first = true;
-                for (struct korb_hash_entry *e = ((struct korb_hash *)rs[0])->first; e; e = e->next) {
-                    if (!first) rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, ", "));
-                    first = false;
-                    rs[2] = korb_inspect_inner(c, e->key, depth+1);
-                    rs[1] = korb_str_concat(c, c->sp_top, rs[1], rs[2]);
-                    rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, "=>"));
-                    rs[3] = korb_inspect_inner(c, e->value, depth+1);
-                    rs[1] = korb_str_concat(c, c->sp_top, rs[1], rs[3]);
-                }
-                rs[1] = korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, "}"));
-                ret = rs[1];
-            } ARO_ROOT_SCOPE_END(c2, rs);
-            if (hash_inspect_top > 0 && hash_inspect_stk[hash_inspect_top - 1] == v) {
-                hash_inspect_top--;
-            }
-            return ret;
-        }
-        struct korb_hash *h = (struct korb_hash *)v;
-        VALUE r = korb_str_new_cstr(c, c->sp_top, "{");
+        if (hash_inspect_top < 64) hash_inspect_stk[hash_inspect_top++] = v;
+        VALUE *sp = c->sp_top;
+        sp[0] = v;
+        sp[1] = 0;
+        sp[2] = 0;
+        sp[3] = 0;
+        c->sp_top = sp + 4;
+        sp[1] = korb_str_new_cstr(c, sp + 4, "{");
         bool first = true;
-        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-            if (!first) korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ", "));
+        for (struct korb_hash_entry *e = ((struct korb_hash *)sp[0])->first; e; e = e->next) {
+            if (!first) sp[1] = korb_str_concat(c, sp + 4, sp[1], korb_str_new_cstr(c, sp + 4, ", "));
             first = false;
-            korb_str_concat(c, c->sp_top, r, korb_inspect_inner(c, e->key, depth+1));
-            korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, "=>"));
-            korb_str_concat(c, c->sp_top, r, korb_inspect_inner(c, e->value, depth+1));
+            sp[2] = korb_inspect_inner(c, e->key, depth+1);
+            sp[1] = korb_str_concat(c, sp + 4, sp[1], sp[2]);
+            sp[1] = korb_str_concat(c, sp + 4, sp[1], korb_str_new_cstr(c, sp + 4, "=>"));
+            sp[3] = korb_inspect_inner(c, e->value, depth+1);
+            sp[1] = korb_str_concat(c, sp + 4, sp[1], sp[3]);
         }
-        korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, "}"));
-        return r;
+        sp[1] = korb_str_concat(c, sp + 4, sp[1], korb_str_new_cstr(c, sp + 4, "}"));
+        VALUE ret = sp[1];
+        c->sp_top = sp;
+        if (hash_inspect_top > 0 && hash_inspect_stk[hash_inspect_top - 1] == v) {
+            hash_inspect_top--;
+        }
+        return ret;
     }
     if (t == T_RANGE) {
         struct korb_range *r = (struct korb_range *)v;
@@ -3227,31 +3141,21 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         }
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
         if (msg && !UNDEF_P(msg) && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) {
-            /* Exception-shaped: "#<ClassName: message>".  Park r and
-             * msg in ARO_ROOT_SCOPE — each subsequent korb_str_new_cstr
-             * can fire GC, invalidating prior C-local heap ptrs. */
-            CTX *c2 = c;
+            /* Exception-shaped: "#<ClassName: message>".  Pin msg (sp[0])
+             * + acc (sp[1]) across korb_str_new_cstr / korb_str_concat. */
             const char *cls_name = k && k->name ? korb_id_name(k->name) : "Object";
-            if (c2) {
-                VALUE ret = Qnil;
-                ARO_ROOT_SCOPE_START(c2, rs, 2) {
-                    rs[0] = msg;
-                    rs[1] = korb_str_new_cstr(c, c->sp_top, "#<");
-                    korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, cls_name));
-                    korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, ": "));
-                    korb_str_concat(c, c->sp_top, rs[1], rs[0]);
-                    korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, ">"));
-                    ret = rs[1];
-                } ARO_ROOT_SCOPE_END(c2, rs);
-                return ret;
-            }
-            /* Fallback: no CTX (= early bootstrap), best-effort C-local. */
-            VALUE r = korb_str_new_cstr(c, c->sp_top, "#<");
-            korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, cls_name));
-            korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ": "));
-            korb_str_concat(c, c->sp_top, r, msg);
-            korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ">"));
-            return r;
+            VALUE *sp = c->sp_top;
+            sp[0] = msg;
+            sp[1] = 0;
+            c->sp_top = sp + 2;
+            sp[1] = korb_str_new_cstr(c, sp + 2, "#<");
+            korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, cls_name));
+            korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, ": "));
+            korb_str_concat(c, sp + 2, sp[1], sp[0]);
+            korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, ">"));
+            VALUE ret = sp[1];
+            c->sp_top = sp;
+            return ret;
         }
         char b[64];
         snprintf(b, 64, "#<%s:%p>", k && k->name ? korb_id_name(k->name) : "Object", (void *)v);
@@ -4635,27 +4539,31 @@ CTX *korb_runtime_init(void) {
      * Each class's own metaclass is Class itself.
      *
      * All 4 are GC-heap allocated.  Moving GC can relocate them between
-     * the inner allocs and the basic.klass / korb_vm assignments, so park
-     * them in an ARO_ROOT_SCOPE buffer that visit_roots scans (= c->sp_top
-     * range).  cBasic survives outside the scope via KORB_VM(c)->object_class
-     * ->super (= reachable from the class_class root chain). */
-    ARO_ROOT_SCOPE_START(c, boot, 4) {
-        boot[0] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("BasicObject"), NULL, T_OBJECT);
-        boot[1] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("Object"),
-                                         (struct korb_class *)boot[0],  T_OBJECT);
-        boot[2] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("Module"),
-                                         (struct korb_class *)boot[1], T_MODULE);
-        boot[3] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("Class"),
-                                         (struct korb_class *)boot[2], T_CLASS);
-        ((struct korb_class *)boot[0])->basic.klass = (struct korb_class *)boot[3];
-        ((struct korb_class *)boot[1])->basic.klass = (struct korb_class *)boot[3];
-        ((struct korb_class *)boot[2])->basic.klass = (struct korb_class *)boot[3];
-        ((struct korb_class *)boot[3])->basic.klass = (struct korb_class *)boot[3];
+     * the inner allocs and the basic.klass / korb_vm assignments, so pin
+     * them in sp[0..3] (= visit_roots scans c->sp_top range).  cBasic
+     * survives outside via KORB_VM(c)->object_class->super (= reachable
+     * via class_class root chain). */
+    {
+        VALUE *sp = c->sp_top;
+        sp[0] = 0; sp[1] = 0; sp[2] = 0; sp[3] = 0;
+        c->sp_top = sp + 4;
+        sp[0] = (VALUE)korb_class_new(c, sp + 4, korb_intern("BasicObject"), NULL, T_OBJECT);
+        sp[1] = (VALUE)korb_class_new(c, sp + 4, korb_intern("Object"),
+                                       (struct korb_class *)sp[0], T_OBJECT);
+        sp[2] = (VALUE)korb_class_new(c, sp + 4, korb_intern("Module"),
+                                       (struct korb_class *)sp[1], T_MODULE);
+        sp[3] = (VALUE)korb_class_new(c, sp + 4, korb_intern("Class"),
+                                       (struct korb_class *)sp[2], T_CLASS);
+        ((struct korb_class *)sp[0])->basic.klass = (struct korb_class *)sp[3];
+        ((struct korb_class *)sp[1])->basic.klass = (struct korb_class *)sp[3];
+        ((struct korb_class *)sp[2])->basic.klass = (struct korb_class *)sp[3];
+        ((struct korb_class *)sp[3])->basic.klass = (struct korb_class *)sp[3];
 
-        KORB_VM(c)->object_class = (struct korb_class *)boot[1];
-        KORB_VM(c)->class_class  = (struct korb_class *)boot[3];
-        KORB_VM(c)->module_class = (struct korb_class *)boot[2];
-    } ARO_ROOT_SCOPE_END(c, boot);
+        KORB_VM(c)->object_class = (struct korb_class *)sp[1];
+        KORB_VM(c)->class_class  = (struct korb_class *)sp[3];
+        KORB_VM(c)->module_class = (struct korb_class *)sp[2];
+        c->sp_top = sp;
+    }
 
     /* From here on, every newly-alloc'd class is immediately stashed into
      * a korb_vm field (= rooted via visit_roots' korb_vm scan), so no
@@ -4676,23 +4584,25 @@ CTX *korb_runtime_init(void) {
     KORB_VM(c)->range_class   = korb_class_new(c, c->sp_top, korb_intern("Range"),      KORB_VM(c)->object_class, T_RANGE);
     KORB_VM(c)->kernel_module = korb_module_new(c, c->sp_top, korb_intern("Kernel"));
     /* ObjectSpace — stub module for the API surface.  cOS lives across
-     * the cOSMeta alloc, so park both in an ARO_ROOT_SCOPE; once
-     * cOS->basic.klass is set + the const_set installed cOS into
-     * cObject->constants, both are reachable via the constants chain. */
+     * the cOSMeta alloc, so park both in sp[0..1]; once cOS->basic.klass
+     * is set + const_set installed cOS into cObject->constants, both are
+     * reachable via the constants chain. */
     {
-        ARO_ROOT_SCOPE_START(c, os, 2) {
-            os[0] = (VALUE)korb_module_new(c, c->sp_top, korb_intern("ObjectSpace"));
-            korb_const_set(KORB_VM(c)->object_class, ((struct korb_class *)os[0])->name, os[0]);
-            os[1] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("ObjectSpaceMeta"),
-                                           KORB_VM(c)->class_class, T_CLASS);
-            extern RESULT objspace_each_object(CTX *c, int argc, VALUE *sp);
-            extern RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp);
-            extern RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp);
-            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("each_object"),     objspace_each_object,     -1);
-            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("count_objects"),   objspace_count_objects,   -1);
-            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("garbage_collect"), objspace_garbage_collect,  0);
-            ((struct korb_class *)os[0])->basic.klass = (struct korb_class *)os[1];
-        } ARO_ROOT_SCOPE_END(c, os);
+        VALUE *sp = c->sp_top;
+        sp[0] = 0; sp[1] = 0;
+        c->sp_top = sp + 2;
+        sp[0] = (VALUE)korb_module_new(c, sp + 2, korb_intern("ObjectSpace"));
+        korb_const_set(KORB_VM(c)->object_class, ((struct korb_class *)sp[0])->name, sp[0]);
+        sp[1] = (VALUE)korb_class_new(c, sp + 2, korb_intern("ObjectSpaceMeta"),
+                                       KORB_VM(c)->class_class, T_CLASS);
+        extern RESULT objspace_each_object(CTX *c, int argc, VALUE *sp);
+        extern RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp);
+        extern RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp);
+        korb_class_add_method_cfunc_r((struct korb_class *)sp[1], korb_intern("each_object"),     objspace_each_object,     -1);
+        korb_class_add_method_cfunc_r((struct korb_class *)sp[1], korb_intern("count_objects"),   objspace_count_objects,   -1);
+        korb_class_add_method_cfunc_r((struct korb_class *)sp[1], korb_intern("garbage_collect"), objspace_garbage_collect,  0);
+        ((struct korb_class *)sp[0])->basic.klass = (struct korb_class *)sp[1];
+        c->sp_top = sp;
     }
     KORB_VM(c)->comparable_module = korb_module_new(c, c->sp_top, korb_intern("Comparable"));
     KORB_VM(c)->enumerable_module = korb_module_new(c, c->sp_top, korb_intern("Enumerable"));
@@ -4841,26 +4751,25 @@ CTX *korb_runtime_init(void) {
     korb_const_set(KORB_VM(c)->object_class, korb_intern("Enumerable"), (VALUE)KORB_VM(c)->enumerable_module);
 
     /* Encoding scaffold MUST be created before korb_init_builtins so the
-     * String#encoding etc. defs in builtins.c find Encoding.  cEnc + utf8
-     * both live across allocation-fires-GC calls, so park them in an
-     * ARO_ROOT_SCOPE slot. */
+     * String#encoding etc. defs in builtins.c find Encoding.  Pin cEnc
+     * (sp[0]) + utf8 (sp[1]) across allocation-fires-GC calls. */
     {
-        ARO_ROOT_SCOPE_START(c, enc, 2) {
-            enc[0] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("Encoding"), KORB_VM(c)->object_class, T_OBJECT);
-            korb_const_set(KORB_VM(c)->object_class, korb_intern("Encoding"), enc[0]);
-            enc[1] = korb_object_new(c, c->sp_top, (struct korb_class *)enc[0]);
-            /* str_new fires GC — pre-evaluate into a local before calling
-             * ivar_set so the 1st arg (enc[1]) is read after the inner
-             * GC has already updated the slot. */
-            {
-                VALUE name_str = korb_str_new_cstr(c, c->sp_top, "UTF-8");
-                korb_ivar_set(enc[1], korb_intern("@name"), name_str);
-            }
-            /* Each const_set is libc-only (no GC fire); enc[1] stays valid
-             * through the sequence, and enc[0] (cEnc) is updated by
-             * visit_roots if any of these alloc paths grow the const chain. */
-            struct korb_class *cEnc = (struct korb_class *)enc[0];
-            VALUE utf8 = enc[1];
+        VALUE *sp = c->sp_top;
+        sp[0] = 0; sp[1] = 0;
+        c->sp_top = sp + 2;
+        sp[0] = (VALUE)korb_class_new(c, sp + 2, korb_intern("Encoding"), KORB_VM(c)->object_class, T_OBJECT);
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("Encoding"), sp[0]);
+        sp[1] = korb_object_new(c, sp + 2, (struct korb_class *)sp[0]);
+        /* str_new fires GC — pre-evaluate into a local before calling
+         * ivar_set so the 1st arg (sp[1]) is read after the inner
+         * GC has already updated the slot. */
+        {
+            VALUE name_str = korb_str_new_cstr(c, sp + 2, "UTF-8");
+            korb_ivar_set(sp[1], korb_intern("@name"), name_str);
+        }
+        /* Each const_set is libc-only (no GC fire). */
+        struct korb_class *cEnc = (struct korb_class *)sp[0];
+        VALUE utf8 = sp[1];
             korb_const_set(cEnc, korb_intern("UTF_8"),       utf8);
             korb_const_set(cEnc, korb_intern("ASCII_8BIT"),  utf8);
             korb_const_set(cEnc, korb_intern("BINARY"),      utf8);
@@ -4898,7 +4807,7 @@ CTX *korb_runtime_init(void) {
             korb_const_set(cEnc, korb_intern("KOI8_R"),      utf8);
             korb_const_set(cEnc, korb_intern("Big5"),        utf8);
             korb_const_set(cEnc, korb_intern("GB18030"),     utf8);
-        } ARO_ROOT_SCOPE_END(c, enc);
+        c->sp_top = sp;
     }
     /* Temporarily disable STRESS during builtins init — many class
      * helpers in builtins.c hold class pointers as C locals across
