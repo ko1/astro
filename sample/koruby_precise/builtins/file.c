@@ -6,7 +6,7 @@ static VALUE file_read(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *path = korb_str_cstr(argv[0]);
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        korb_raise(c, NULL, "no such file -- %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "no such file -- %s", path));
         return Qnil;
     }
     fseek(fp, 0, SEEK_END);
@@ -169,7 +169,7 @@ static VALUE io_eof_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv) {
     int fds[2];
     if (pipe(fds) != 0) {
-        korb_raise(c, NULL, "IO.pipe failed: %s", strerror(errno));
+        DROP_RESULT(korb_raise(c, NULL, "IO.pipe failed: %s", strerror(errno)));
         return Qnil;
     }
     FILE *r = fdopen(fds[0], "rb");
@@ -177,7 +177,7 @@ VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!r || !w) {
         if (r) fclose(r); else close(fds[0]);
         if (w) fclose(w); else close(fds[1]);
-        korb_raise(c, NULL, "IO.pipe fdopen failed");
+        DROP_RESULT(korb_raise(c, NULL, "IO.pipe fdopen failed"));
         return Qnil;
     }
     /* Unbuffer both ends so the writer's bytes immediately reach the
@@ -231,7 +231,7 @@ static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
  * Mode "r" (default) reads from cmd's stdout; "w" writes to cmd's stdin. */
 VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        korb_raise(c, NULL, "IO.popen: command String required");
+        DROP_RESULT(korb_raise(c, NULL, "IO.popen: command String required"));
         return Qnil;
     }
     const char *cmd = korb_str_cstr(argv[0]);
@@ -241,7 +241,7 @@ VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     FILE *fp = popen(cmd, mode);
     if (!fp) {
-        korb_raise(c, NULL, "popen failed: %s", strerror(errno));
+        DROP_RESULT(korb_raise(c, NULL, "popen failed: %s", strerror(errno)));
         return Qnil;
     }
     VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
@@ -276,7 +276,7 @@ static long korb_copy_fd_(int from_fd, int to_fd, long max_len) {
 
 VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
-        korb_raise(c, NULL, "IO.copy_stream(src, dst[, len[, src_offset]])");
+        DROP_RESULT(korb_raise(c, NULL, "IO.copy_stream(src, dst[, len[, src_offset]])"));
         return Qnil;
     }
     long max_len = (argc >= 3 && FIXNUM_P(argv[2])) ? FIX2LONG(argv[2]) : -1;
@@ -285,15 +285,15 @@ VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         src_fd = open(korb_str_cstr(argv[0]), O_RDONLY);
         if (src_fd < 0) {
-            korb_raise(c, NULL, "open(%s) failed: %s",
-                       korb_str_cstr(argv[0]), strerror(errno));
+            DROP_RESULT(korb_raise(c, NULL, "open(%s) failed: %s",
+                       korb_str_cstr(argv[0]), strerror(errno)));
             return Qnil;
         }
         src_close = true;
     } else {
         FILE *fp = korb_io_fp(argv[0]);
         if (!fp) {
-            korb_raise(c, NULL, "IO.copy_stream: src must be IO or path");
+            DROP_RESULT(korb_raise(c, NULL, "IO.copy_stream: src must be IO or path"));
             return Qnil;
         }
         fflush(fp);
@@ -305,8 +305,8 @@ VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
                       O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (dst_fd < 0) {
             if (src_close) close(src_fd);
-            korb_raise(c, NULL, "open(%s) failed: %s",
-                       korb_str_cstr(argv[1]), strerror(errno));
+            DROP_RESULT(korb_raise(c, NULL, "open(%s) failed: %s",
+                       korb_str_cstr(argv[1]), strerror(errno)));
             return Qnil;
         }
         dst_close = true;
@@ -314,7 +314,7 @@ VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
         FILE *fp = korb_io_fp(argv[1]);
         if (!fp) {
             if (src_close) close(src_fd);
-            korb_raise(c, NULL, "IO.copy_stream: dst must be IO or path");
+            DROP_RESULT(korb_raise(c, NULL, "IO.copy_stream: dst must be IO or path"));
             return Qnil;
         }
         fflush(fp);
@@ -325,7 +325,7 @@ VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (lseek(src_fd, (off_t)FIX2LONG(argv[3]), SEEK_SET) < 0) {
             if (src_close) close(src_fd);
             if (dst_close) close(dst_fd);
-            korb_raise(c, NULL, "lseek failed: %s", strerror(errno));
+            DROP_RESULT(korb_raise(c, NULL, "lseek failed: %s", strerror(errno)));
             return Qnil;
         }
     }
@@ -333,7 +333,7 @@ VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (src_close) close(src_fd);
     if (dst_close) close(dst_fd);
     if (n < 0) {
-        korb_raise(c, NULL, "IO.copy_stream failed: %s", strerror(errno));
+        DROP_RESULT(korb_raise(c, NULL, "IO.copy_stream failed: %s", strerror(errno)));
         return Qnil;
     }
     return INT2FIX(n);
@@ -376,7 +376,7 @@ VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     int n = select(maxfd + 1, &rset, &wset, &eset, tvp);
     if (n < 0) {
-        korb_raise(c, NULL, "IO.select failed: %s", strerror(errno));
+        DROP_RESULT(korb_raise(c, NULL, "IO.select failed: %s", strerror(errno)));
         return Qnil;
     }
     if (n == 0) return Qnil;
@@ -402,7 +402,7 @@ static VALUE file_open(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!fp) {
         VALUE eErrno = korb_const_get(korb_vm->object_class, korb_intern("Errno"));
         if (UNDEF_P(eErrno) || !eErrno) eErrno = (VALUE)NULL;
-        korb_raise(c, NULL, "Errno::ENOENT: no such file -- %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "Errno::ENOENT: no such file -- %s", path));
         return Qnil;
     }
     /* `self` here is the File class object — use it as the IO's class. */
@@ -421,7 +421,7 @@ static VALUE file_write(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *path = korb_str_cstr(argv[0]);
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        korb_raise(c, NULL, "could not open for writing: %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "could not open for writing: %s", path));
         return Qnil;
     }
     VALUE s = korb_to_s_dispatch(c, argv[1]);
@@ -474,7 +474,7 @@ static VALUE file_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return INT2FIX(0);
     struct stat st;
     if (stat(korb_str_cstr(argv[0]), &st) != 0) {
-        korb_raise(c, NULL, "no such file -- %s", korb_str_cstr(argv[0]));
+        DROP_RESULT(korb_raise(c, NULL, "no such file -- %s", korb_str_cstr(argv[0])));
         return Qnil;
     }
     return INT2FIX((long)st.st_size);
@@ -485,8 +485,8 @@ static VALUE file_unlink(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) {
         if (BUILTIN_TYPE(argv[i]) != T_STRING) continue;
         if (unlink(korb_str_cstr(argv[i])) != 0) {
-            korb_raise(c, NULL, "unlink failed: %s -- %s",
-                       strerror(errno), korb_str_cstr(argv[i]));
+            DROP_RESULT(korb_raise(c, NULL, "unlink failed: %s -- %s",
+                       strerror(errno), korb_str_cstr(argv[i])));
             return Qnil;
         }
         n++;
@@ -497,11 +497,11 @@ static VALUE file_unlink(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE file_rename(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING ||
         BUILTIN_TYPE(argv[1]) != T_STRING) {
-        korb_raise(c, NULL, "File.rename: two String args expected");
+        DROP_RESULT(korb_raise(c, NULL, "File.rename: two String args expected"));
         return Qnil;
     }
     if (rename(korb_str_cstr(argv[0]), korb_str_cstr(argv[1])) != 0) {
-        korb_raise(c, NULL, "rename failed: %s", strerror(errno));
+        DROP_RESULT(korb_raise(c, NULL, "rename failed: %s", strerror(errno)));
         return Qnil;
     }
     return INT2FIX(0);
@@ -509,7 +509,7 @@ static VALUE file_rename(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE file_chmod(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2 || !FIXNUM_P(argv[0])) {
-        korb_raise(c, NULL, "File.chmod(mode, *paths)");
+        DROP_RESULT(korb_raise(c, NULL, "File.chmod(mode, *paths)"));
         return Qnil;
     }
     long mode = FIX2LONG(argv[0]);
@@ -517,7 +517,7 @@ static VALUE file_chmod(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 1; i < argc; i++) {
         if (BUILTIN_TYPE(argv[i]) != T_STRING) continue;
         if (chmod(korb_str_cstr(argv[i]), (mode_t)mode) != 0) {
-            korb_raise(c, NULL, "chmod failed: %s", strerror(errno));
+            DROP_RESULT(korb_raise(c, NULL, "chmod failed: %s", strerror(errno)));
             return Qnil;
         }
         n++;
@@ -549,8 +549,8 @@ static VALUE file_realpath(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     char buf[PATH_MAX];
     if (!realpath(resolved_in, buf)) {
-        korb_raise(c, NULL, "realpath failed: %s -- %s",
-                   strerror(errno), resolved_in);
+        DROP_RESULT(korb_raise(c, NULL, "realpath failed: %s -- %s",
+                   strerror(errno), resolved_in));
         return Qnil;
     }
     return korb_str_new_cstr(c, c->sp, buf);
@@ -602,13 +602,13 @@ static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE dir_mkdir(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        korb_raise(c, NULL, "Dir.mkdir(path[, mode])");
+        DROP_RESULT(korb_raise(c, NULL, "Dir.mkdir(path[, mode])"));
         return Qnil;
     }
     long mode = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 0755;
     if (mkdir(korb_str_cstr(argv[0]), (mode_t)mode) != 0) {
-        korb_raise(c, NULL, "mkdir failed: %s -- %s",
-                   strerror(errno), korb_str_cstr(argv[0]));
+        DROP_RESULT(korb_raise(c, NULL, "mkdir failed: %s -- %s",
+                   strerror(errno), korb_str_cstr(argv[0])));
         return Qnil;
     }
     return INT2FIX(0);
@@ -617,8 +617,8 @@ static VALUE dir_mkdir(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE dir_rmdir(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
     if (rmdir(korb_str_cstr(argv[0])) != 0) {
-        korb_raise(c, NULL, "rmdir failed: %s -- %s",
-                   strerror(errno), korb_str_cstr(argv[0]));
+        DROP_RESULT(korb_raise(c, NULL, "rmdir failed: %s -- %s",
+                   strerror(errno), korb_str_cstr(argv[0])));
         return Qnil;
     }
     return INT2FIX(0);
@@ -635,7 +635,7 @@ static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *path = korb_str_cstr(argv[0]);
     DIR *d = opendir(path);
     if (!d) {
-        korb_raise(c, NULL, "no such directory -- %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "no such directory -- %s", path));
         return Qnil;
     }
     VALUE out = korb_ary_new(c, c->sp);
@@ -654,7 +654,7 @@ static VALUE dir_chdir(CTX *c, VALUE self, int argc, VALUE *argv) {
         char prev[4096];
         if (!getcwd(prev, sizeof(prev))) return Qnil;
         if (chdir(path) != 0) {
-            korb_raise(c, NULL, "could not chdir to %s", path);
+            DROP_RESULT(korb_raise(c, NULL, "could not chdir to %s", path));
             return Qnil;
         }
         VALUE r = korb_yield(c, 0, NULL);
@@ -662,7 +662,7 @@ static VALUE dir_chdir(CTX *c, VALUE self, int argc, VALUE *argv) {
         return r;
     }
     if (chdir(path) != 0) {
-        korb_raise(c, NULL, "could not chdir to %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "could not chdir to %s", path));
         return Qnil;
     }
     return INT2FIX(0);
@@ -817,7 +817,7 @@ static VALUE make_process_status(CTX *c, int wstatus, pid_t pid) {
 static VALUE kernel_system(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "wrong number of arguments"));
         return Qnil;
     }
     bool use_shell;
@@ -881,7 +881,7 @@ static VALUE kernel_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Reach here only if exec failed. */
     VALUE eErrno = korb_const_get(korb_vm->object_class, korb_intern("Errno"));
     if (!UNDEF_P(eErrno) && !NIL_P(eErrno)) {
-        korb_raise(c, NULL, "exec failed: %s", xargv[0]);
+        DROP_RESULT(korb_raise(c, NULL, "exec failed: %s", xargv[0]));
     }
     return Qnil;
 }

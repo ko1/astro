@@ -388,15 +388,15 @@ static VALUE binding_local_variable_get(CTX *c, VALUE self, int argc, VALUE *arg
     bool ok = false;
     ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) {
-        korb_raise(c, NULL, "binding: name must be Symbol or String");
+        DROP_RESULT(korb_raise(c, NULL, "binding: name must be Symbol or String"));
         return Qnil;
     }
     VALUE v = binding_read_name(b, name_id);
     if (UNDEF_P(v)) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "local variable '%s' is not defined for binding",
-                   korb_id_name(name_id));
+                   korb_id_name(name_id)));
         return Qnil;
     }
     return v;
@@ -438,14 +438,14 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
     bool ok = false;
     ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) {
-        korb_raise(c, NULL, "binding: name must be Symbol or String");
+        DROP_RESULT(korb_raise(c, NULL, "binding: name must be Symbol or String"));
         return Qnil;
     }
     if (!binding_valid_lvar_name(name_id)) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "wrong local variable name '%s' for binding",
-                   korb_id_name(name_id));
+                   korb_id_name(name_id)));
         return Qnil;
     }
     int idx = binding_find_slot(b, name_id);
@@ -560,7 +560,7 @@ static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *
 VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     if (argc < 1) return Qnil;
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        korb_raise(c, NULL, "binding.eval: argument must be a String");
+        DROP_RESULT(korb_raise(c, NULL, "binding.eval: argument must be a String"));
         return Qnil;
     }
     struct korb_string *s = (struct korb_string *)argv[0];
@@ -624,7 +624,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
                                               line_offset, &err_msg);
     if (err_msg) {
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
-        korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
         return Qnil;
     }
     if (!ast) return Qnil;

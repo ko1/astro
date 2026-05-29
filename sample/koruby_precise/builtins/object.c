@@ -39,9 +39,9 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
         struct korb_method *m = korb_class_find_method(klass, name);
         if (m && m->visibility != KORB_VIS_PUBLIC) {
             VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-            korb_raise(c, (struct korb_class *)eNo,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eNo,
                      "private method '%s' called for %s",
-                     korb_id_name(name), korb_id_name(klass->name));
+                     korb_id_name(name), korb_id_name(klass->name)));
             return Qnil;
         }
     }
@@ -102,8 +102,8 @@ static VALUE obj_instance_variable_set(CTX *c, VALUE self, int argc, VALUE *argv
         else if (FIXNUM_P(self)) cn = "Integer";
         else if (FLONUM_P(self)) cn = "Float";
         else if (SYMBOL_P(self)) cn = "Symbol";
-        korb_raise(c, (struct korb_class *)eF,
-                   "can't modify frozen %s", cn);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
+                   "can't modify frozen %s", cn));
         return Qnil;
     }
     korb_ivar_set(self, name, argv[1]);
@@ -145,16 +145,16 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
         n = ((struct korb_string *)v)->len;
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
-                   "(arg)");
+                   "(arg)"));
         return 0;
     }
     if (n < 3 || p[0] != '@' || p[1] != '@') {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "`%.*s' is not allowed as a class variable name",
-                   (int)n, p);
+                   (int)n, p));
         return 0;
     }
     return korb_intern_n(p, n);
@@ -162,7 +162,7 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
 extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
 VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) {
-        korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module");
+        DROP_RESULT(korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module"));
         return Qnil;
     }
     if (argc < 1) return Qnil;
@@ -189,8 +189,8 @@ VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
-                   korb_id_name(korb_class_of_class(self)->name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name)));
         return Qnil;
     }
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
@@ -246,16 +246,16 @@ VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (SPECIAL_CONST_P(self) && (FIXNUM_P(self) || SYMBOL_P(self) || KORB_IS_FLOAT(self))) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "can't define singleton on %s",
-                   korb_id_name(korb_class_of_class(self)->name));
+                   korb_id_name(korb_class_of_class(self)->name)));
         return Qnil;
     }
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
     struct korb_class *meta = korb_singleton_class_of_value(c, self);
     if (!meta) {
-        korb_raise(c, NULL, "no singleton class for %s",
-                   korb_id_name(korb_class_of_class(self)->name));
+        DROP_RESULT(korb_raise(c, NULL, "no singleton class for %s",
+                   korb_id_name(korb_class_of_class(self)->name)));
         return Qnil;
     }
     return (VALUE)meta;
@@ -265,14 +265,14 @@ VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Used for serializers, Marshal.load, etc. */
 VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_CLASS) {
-        korb_raise(c, NULL, "Class#allocate called on non-Class");
+        DROP_RESULT(korb_raise(c, NULL, "Class#allocate called on non-Class"));
         return Qnil;
     }
     /* Singleton classes can't be instantiated. */
     if (((struct korb_class *)self)->basic.head.flags & FL_SINGLETON) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "can't create instance of singleton class");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of singleton class"));
         return Qnil;
     }
     return korb_object_new(c, c->sp, (struct korb_class *)self);
@@ -395,8 +395,8 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
     struct korb_method *km = korb_class_find_method((struct korb_class *)self, name);
     if (!km) {
-        korb_raise(c, NULL, "undefined method '%s' for %s",
-                   korb_id_name(name), korb_id_name(((struct korb_class *)self)->name));
+        DROP_RESULT(korb_raise(c, NULL, "undefined method '%s' for %s",
+                   korb_id_name(name), korb_id_name(((struct korb_class *)self)->name)));
         return Qnil;
     }
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
@@ -780,8 +780,8 @@ static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "class or module required");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "class or module required"));
         return Qnil;
     }
     return KORB_BOOL((VALUE)korb_class_of_class(self) == argv[0]);
@@ -1037,8 +1037,8 @@ static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
         const char *cn = SPECIAL_CONST_P(argv[0]) ? "(special)"
                               : korb_id_name(korb_class_of_class(argv[0])->name);
-        korb_raise(c, (struct korb_class *)eT,
-                   "%s is not a symbol nor a string", cn);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", cn));
         return Qnil;
     }
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return Qfalse;

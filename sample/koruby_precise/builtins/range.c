@@ -7,7 +7,7 @@ static VALUE rng_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Range.new(begin, end[, exclude_end=false]) */
     if (argc < 2) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to Range.new");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to Range.new"));
         return Qnil;
     }
     bool excl = (argc >= 3) && RTEST(argv[2]);
@@ -20,7 +20,7 @@ static VALUE rng_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (c->state == KORB_RAISE) return Qnil;
         if (NIL_P(cmp)) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg, "bad value for range");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "bad value for range"));
             return Qnil;
         }
     }
@@ -48,8 +48,8 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Beginless range: TypeError (can't iterate starting from -Inf). */
     if (NIL_P(r->begin)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "can't iterate from beginless range");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "can't iterate from beginless range"));
         return Qnil;
     }
     /* Integer begin (incl Bignum): step by 1 until past end. */
@@ -81,9 +81,9 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (c->state == KORB_RAISE) return Qnil;
     if (!RTEST(rt)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT, "can't iterate from %s",
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "can't iterate from %s",
                    SPECIAL_CONST_P(r->begin) ? "(special)"
-                       : korb_id_name(korb_class_of_class(r->begin)->name));
+                       : korb_id_name(korb_class_of_class(r->begin)->name)));
         return Qnil;
     }
     VALUE cur = r->begin;
@@ -132,7 +132,7 @@ static VALUE rng_min(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block, no arg: min == begin (or nil if begin > end). */
     if (NIL_P(r->begin)) {
         VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-        korb_raise(c, (struct korb_class *)eR, "cannot get the minimum of beginless range");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the minimum of beginless range"));
         return Qnil;
     }
     if (NIL_P(r->end)) return r->begin;
@@ -157,7 +157,7 @@ static VALUE rng_max(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (NIL_P(r->end)) {
         VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-        korb_raise(c, (struct korb_class *)eR, "cannot get the maximum of endless range");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the maximum of endless range"));
         return Qnil;
     }
     if (NIL_P(r->begin)) {
@@ -170,7 +170,7 @@ static VALUE rng_max(CTX *c, VALUE self, int argc, VALUE *argv) {
                 return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
             }
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value"));
             return Qnil;
         }
         return r->end;
@@ -186,7 +186,7 @@ static VALUE rng_max(CTX *c, VALUE self, int argc, VALUE *argv) {
         return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
     }
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value"));
     return Qnil;
 }
 
@@ -195,7 +195,7 @@ static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         if (NIL_P(r->begin)) {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-            korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range"));
             return Qnil;
         }
         return r->begin;
@@ -203,14 +203,14 @@ static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Beginless range with argument: always RangeError. */
     if (NIL_P(r->begin)) {
         VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-        korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range"));
         return Qnil;
     }
     /* Coerce non-Fixnum count via #to_int, raise TypeError if invalid. */
     VALUE nv = argv[0];
     if (NIL_P(nv)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer"));
         return Qnil;
     }
     if (!FIXNUM_P(nv)) {
@@ -229,8 +229,8 @@ static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (!FIXNUM_P(nv)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "no implicit conversion into Integer");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer"));
             return Qnil;
         }
     }
@@ -243,7 +243,7 @@ static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     long n = FIX2LONG(nv);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg, "negative array size");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "negative array size"));
         return Qnil;
     }
     long b = FIX2LONG(r->begin);
@@ -276,7 +276,7 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
          * still returns the stored end (not end-1).  Match that. */
         if (NIL_P(r->end)) {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-            korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range"));
             return Qnil;
         }
         return r->end;
@@ -284,13 +284,13 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Endless range with argument: RangeError. */
     if (NIL_P(r->end)) {
         VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-        korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range"));
         return Qnil;
     }
     VALUE nv = argv[0];
     if (NIL_P(nv)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer"));
         return Qnil;
     }
     if (!FIXNUM_P(nv)) {
@@ -307,8 +307,8 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (!FIXNUM_P(nv)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "no implicit conversion into Integer");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer"));
             return Qnil;
         }
     }
@@ -316,7 +316,7 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     long n = FIX2LONG(nv);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg, "negative array size");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "negative array size"));
         return Qnil;
     }
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);

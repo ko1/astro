@@ -37,10 +37,10 @@ VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
             if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[0]) ? "(special)"
-                               : korb_id_name(korb_class_of_class(argv[0])->name));
+                               : korb_id_name(korb_class_of_class(argv[0])->name)));
                 return Qnil;
             }
         }
@@ -81,10 +81,10 @@ static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
             if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[0]) ? "(special)"
-                               : korb_id_name(korb_class_of_class(argv[0])->name));
+                               : korb_id_name(korb_class_of_class(argv[0])->name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs); return Qnil;
             }
         }
@@ -102,8 +102,8 @@ static VALUE str_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     if (argc != 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected 1)", argc);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1)", argc));
         return Qnil;
     }
     /* Pin self across str_concat_one's potential GC fires (korb_str_new
@@ -162,8 +162,8 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
         long cp = FIX2LONG(rs[1]);
         if (cp < 0) {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-            korb_raise(c, (struct korb_class *)eR,
-                       "%ld out of char range", cp);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eR,
+                       "%ld out of char range", cp));
             ok = false; goto done;
         }
         if (cp <= 0x7f) {
@@ -192,8 +192,8 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
             len = 4;
         } else {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-            korb_raise(c, (struct korb_class *)eR,
-                       "%ld out of char range", cp);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eR,
+                       "%ld out of char range", cp));
             return false;
         }
         rs[2] = korb_str_new(c, c->sp, buf, len);
@@ -208,8 +208,8 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
             ok = true; goto done;
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "no implicit conversion to String");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion to String"));
         ok = false; goto done;
     }
     /* Snapshot the arg's bytes if it might alias self (e.g. `b.concat(b, b)`
@@ -292,8 +292,8 @@ static void str_cmp_raise(CTX *c, VALUE other) {
     const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                             ? korb_str_cstr(oi)
                             : korb_id_name(korb_class_of_class(other)->name);
-    korb_raise(c, (struct korb_class *)eArg,
-               "comparison of String with %s failed", o_str);
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+               "comparison of String with %s failed", o_str));
 }
 static VALUE str_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = str_cmp(c, self, argc, argv);
@@ -434,10 +434,10 @@ static long str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
                    SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name));
+                       : korb_id_name(korb_class_of_class(arg)->name)));
         return n;
     }
 have_str:;
@@ -654,7 +654,7 @@ static VALUE str_setbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (i < 0) i += s->len;
     if (i < 0 || i >= s->len) {
         VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-        korb_raise(c, (struct korb_class *)eI, "index %ld out of string", i);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eI, "index %ld out of string", i));
         return Qnil;
     }
     s->ptr[i] = (char)(b & 0xff);
@@ -663,8 +663,8 @@ static VALUE str_setbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_getbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc != 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected 1)", argc);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1)", argc));
         return Qnil;
     }
     long i;
@@ -813,18 +813,18 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (c->state == KORB_RAISE) return Qnil;
         if (!RTEST(rt)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                        "no implicit conversion of %s into String",
                        SPECIAL_CONST_P(val) ? "(special)"
-                           : korb_id_name(korb_class_of_class(val)->name));
+                           : korb_id_name(korb_class_of_class(val)->name)));
             return Qnil;
         }
         VALUE coerced = korb_funcall(c, val, korb_intern("to_str"), 0, NULL);
         if (c->state == KORB_RAISE) return Qnil;
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "can't convert to String (to_str returned non-String)");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to String (to_str returned non-String)"));
             return Qnil;
         }
         val = coerced;
@@ -836,7 +836,7 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, 1, &start, &len);
         if (rc == -1 || (rc == 0 && len == 0 && char_idx != 0 && char_idx != -1)) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx));
             return val;
         }
     } else if (argc == 3 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
@@ -845,12 +845,12 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, char_cnt, &start, &len);
         if (rc == -1) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx));
             return val;
         }
         if (rc == -2) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "negative length %ld", char_cnt);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "negative length %ld", char_cnt));
             return val;
         }
     } else if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
@@ -862,7 +862,7 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (r->exclude_end && !NIL_P(r->end)) e--;
         if (b < 0 || b > s->len) {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-            korb_raise(c, (struct korb_class *)eR, "out of range");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eR, "out of range"));
             return val;
         }
         if (e < b - 1) e = b - 1;
@@ -876,7 +876,7 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (pos < 0) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "string not matched");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "string not matched"));
             return val;
         }
         start = pos; len = needle->len;
@@ -1025,10 +1025,10 @@ static VALUE str_include(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                        "no implicit conversion of %s into String",
                        SPECIAL_CONST_P(argv[0]) ? "(special)"
-                           : korb_id_name(korb_class_of_class(argv[0])->name));
+                           : korb_id_name(korb_class_of_class(argv[0])->name)));
             return Qfalse;
         }
     }
@@ -1999,7 +1999,7 @@ static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_ord(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     if (s->len == 0) {
-        korb_raise(c, NULL, "empty string");
+        DROP_RESULT(korb_raise(c, NULL, "empty string"));
         return Qnil;
     }
     /* Decode the leading UTF-8 codepoint.  ASCII (0xxxxxxx) returns
@@ -2203,10 +2203,10 @@ static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
             if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[i]) ? "(special)"
-                               : korb_id_name(korb_class_of_class(argv[i])->name));
+                               : korb_id_name(korb_class_of_class(argv[i])->name)));
                 return Qnil;
             }
         }
@@ -2312,8 +2312,8 @@ static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
     long bpos = str_char_to_byte_index(s->ptr, s->len, pos);
     if (bpos < 0) {
         VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-        korb_raise(c, (struct korb_class *)eI,
-                   "index %ld out of string", orig_pos);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eI,
+                   "index %ld out of string", orig_pos));
         return Qnil;
     }
     long total = s->len + p->len;
@@ -2346,10 +2346,10 @@ static VALUE str_coerce_arg(CTX *c, VALUE arg) {
         }
     }
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eT,
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                "no implicit conversion of %s into String",
                SPECIAL_CONST_P(arg) ? "(special)"
-                   : korb_id_name(korb_class_of_class(arg)->name));
+                   : korb_id_name(korb_class_of_class(arg)->name)));
     return Qundef;
 }
 

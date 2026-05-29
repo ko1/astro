@@ -40,18 +40,18 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
                              ((struct korb_string *)v)->len);
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
                    SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name));
+                       : korb_id_name(korb_class_of_class(arg)->name)));
         return false;
     }
     const char *base = korb_id_name(name);
     if (!base || (!((base[0] >= 'a' && base[0] <= 'z') ||
                     (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
-                   "invalid attribute name '%s'", base ? base : "");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+                   "invalid attribute name '%s'", base ? base : ""));
         return false;
     }
     *out_id = name;
@@ -66,16 +66,16 @@ static bool attr_check_frozen(CTX *c, VALUE self) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
         struct korb_class *k = (struct korb_class *)self;
         const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
-        korb_raise(c, (struct korb_class *)eF,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
                    "can't modify frozen %s: %s",
-                   BUILTIN_TYPE(self) == T_MODULE ? "Module" : "Class", cn);
+                   BUILTIN_TYPE(self) == T_MODULE ? "Module" : "Class", cn));
         return false;
     }
     return true;
 }
 static VALUE module_attr_reader(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        korb_raise(c, NULL, "attr_reader: not on a class/module");
+        DROP_RESULT(korb_raise(c, NULL, "attr_reader: not on a class/module"));
         return Qnil;
     }
     if (!attr_check_frozen(c, self)) return Qnil;
@@ -98,7 +98,7 @@ static VALUE module_attr_reader(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE module_attr_writer(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        korb_raise(c, NULL, "attr_writer: not on a class/module");
+        DROP_RESULT(korb_raise(c, NULL, "attr_writer: not on a class/module"));
         return Qnil;
     }
     if (!attr_check_frozen(c, self)) return Qnil;
@@ -255,8 +255,8 @@ static VALUE class_superclass(CTX *c, VALUE self, int argc, VALUE *argv) {
      * raises TypeError on #superclass.  Detect via our sentinel name. */
     if (k->super == NULL && k->name == korb_intern("(uninitialized)")) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "uninitialized class");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "uninitialized class"));
         return Qnil;
     }
     return k->super ? (VALUE)k->super : Qnil;
@@ -603,8 +603,8 @@ static VALUE module_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "compared with non class/module");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "compared with non class/module"));
         return Qnil;
     }
     if (self == argv[0]) return Qfalse;  /* CRuby: same → false for `<` */
@@ -635,8 +635,8 @@ static VALUE module_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "compared with non class/module");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "compared with non class/module"));
         return Qnil;
     }
     if (self == argv[0]) return Qfalse;
@@ -678,15 +678,15 @@ static VALUE class_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- Class.new etc ---------- */
 static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS) {
-        korb_raise(c, NULL, "Class.new called on non-class");
+        DROP_RESULT(korb_raise(c, NULL, "Class.new called on non-class"));
         return Qnil;
     }
     struct korb_class *klass = (struct korb_class *)self;
     /* Singleton classes can't be instantiated — CRuby raises TypeError. */
     if (klass->basic.head.flags & FL_SINGLETON) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "can't create instance of singleton class");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of singleton class"));
         return Qnil;
     }
     /* Reject .new on an uninitialized class (the result of Class.allocate
@@ -695,8 +695,8 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
      * method lookup.  CRuby raises TypeError here. */
     if (klass->name == korb_intern("(uninitialized)") && klass->super == NULL) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "can't create instance of uninitialized class");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of uninitialized class"));
         return Qnil;
     }
     /* Class.new(superclass = Object) — create an anonymous subclass. */
@@ -706,9 +706,9 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
             /* Reject non-Class superclass with TypeError. */
             if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_CLASS) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "superclass must be an instance of Class (given an instance of %s)",
-                           korb_id_name(korb_class_of_class(argv[0])->name));
+                           korb_id_name(korb_class_of_class(argv[0])->name)));
                 return Qnil;
             }
             super = (struct korb_class *)argv[0];
@@ -716,8 +716,8 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
              * "can't make subclass of singleton class". */
             if (super->basic.head.flags & FL_SINGLETON) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
-                           "can't make subclass of singleton class");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                           "can't make subclass of singleton class"));
                 return Qnil;
             }
             /* Reject an uninitialized superclass — same TypeError as
@@ -727,8 +727,8 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (super->super == NULL &&
                 super->name == korb_intern("(uninitialized)")) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
-                           "can't inherit uninitialized class");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                           "can't inherit uninitialized class"));
                 return Qnil;
             }
         }
@@ -958,9 +958,9 @@ static VALUE module_remove_const(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE prev = Qnil;
     if (!korb_const_remove(k, name, &prev)) {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eName,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                    "constant %s::%s not defined",
-                   korb_id_name(k->name), korb_id_name(name));
+                   korb_id_name(k->name), korb_id_name(name)));
         return Qnil;
     }
     return prev;
@@ -986,9 +986,9 @@ static VALUE module_remove_class_variable(CTX *c, VALUE self, int argc, VALUE *a
         }
     }
     VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-    korb_raise(c, (struct korb_class *)eName,
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                "class variable %s not defined for %s",
-               korb_id_name(name), korb_id_name(k->name));
+               korb_id_name(name), korb_id_name(k->name)));
     return Qnil;
 }
 
@@ -1026,10 +1026,10 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
                                  ((struct korb_string *)arg)->len);
         if (!name) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                        "%s is not a symbol nor a string",
                        SPECIAL_CONST_P(argv[i]) ? "(special)"
-                           : korb_id_name(korb_class_of_class(argv[i])->name));
+                           : korb_id_name(korb_class_of_class(argv[i])->name)));
             return Qnil;
         }
         struct korb_method *m = meta ? korb_class_find_method(meta, name) : NULL;
@@ -1037,9 +1037,9 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
             const char *cn = (((struct korb_class *)self)->name)
                               ? korb_id_name(((struct korb_class *)self)->name) : "(anon)";
-            korb_raise(c, (struct korb_class *)eN,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                        "undefined method '%s' for class '%s'",
-                       korb_id_name(name), cn);
+                       korb_id_name(name), cn));
             return Qnil;
         }
         m->visibility = v;
@@ -1070,9 +1070,9 @@ static VALUE module_private_constant(CTX *c, VALUE self, int argc, VALUE *argv) 
         }
         if (!found) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            korb_raise(c, (struct korb_class *)eN,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                        "constant %s::%s not defined",
-                       k->name ? korb_id_name(k->name) : "?", korb_id_name(name));
+                       k->name ? korb_id_name(k->name) : "?", korb_id_name(name)));
             return Qnil;
         }
     }

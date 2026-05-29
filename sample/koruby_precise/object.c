@@ -264,16 +264,16 @@ VALUE korb_cvar_get(CTX *c, ID name) {
      * meta or main. */
     if (c->current_frame->cref && !c->current_frame->cref->prev &&
         (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
-        korb_raise(c, NULL, "class variable access from toplevel");
+        DROP_RESULT(korb_raise(c, NULL, "class variable access from toplevel"));
         return Qnil;
     }
     struct korb_class *owner = k ? cvar_owner_(k, name) : NULL;
     if (!owner) {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eName,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                    "uninitialized class variable %s in %s",
                    korb_id_name(name),
-                   k ? korb_id_name(k->name) : "(unknown)");
+                   k ? korb_id_name(k->name) : "(unknown)"));
         return Qnil;
     }
     /* Overtaken detection: if a strict ancestor of `owner` also has this
@@ -283,11 +283,11 @@ VALUE korb_cvar_get(CTX *c, ID name) {
     for (struct korb_class *anc = owner->super; anc; anc = anc->super) {
         for (uint32_t i = 0; i < anc->cvar_cnt; i++) {
             if (anc->cvars[i].name == name) {
-                korb_raise(c, NULL,
+                DROP_RESULT(korb_raise(c, NULL,
                            "class variable %s of %s is overtaken by %s",
                            korb_id_name(name),
                            anc->name ? korb_id_name(anc->name) : "(anon)",
-                           owner->name ? korb_id_name(owner->name) : "(anon)");
+                           owner->name ? korb_id_name(owner->name) : "(anon)"));
                 return Qnil;
             }
         }
@@ -433,11 +433,11 @@ void korb_class_add_method_ast_full_cref(CTX *c, struct korb_class *klass, ID na
     if (klass && korb_obj_frozen_p((VALUE)klass)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
         if (eF && !SPECIAL_CONST_P(eF) && BUILTIN_TYPE(eF) == T_CLASS) {
-            korb_raise(c, (struct korb_class *)eF,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
-                       klass->name ? korb_id_name(klass->name) : "Class");
+                       klass->name ? korb_id_name(klass->name) : "Class"));
         } else {
-            korb_raise(c, NULL, "can't modify frozen Class");
+            DROP_RESULT(korb_raise(c, NULL, "can't modify frozen Class"));
         }
         return;
     }
@@ -1251,8 +1251,8 @@ VALUE korb_const_lookup(CTX *c, ID name) {
     }
     {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eName,
-                   "uninitialized constant %s", korb_id_name(name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
+                   "uninitialized constant %s", korb_id_name(name)));
     }
     return Qnil;
 }
@@ -2215,7 +2215,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     /* Symbol-proc shim (`&:method`): dispatch as argv[0].send(symbol, *rest). */
     if (blk->body == NULL && SYMBOL_P(blk->self)) {
         if (argc < 1) {
-            korb_raise(c, NULL, "no receiver for symbol proc");
+            DROP_RESULT(korb_raise(c, NULL, "no receiver for symbol proc"));
             return Qnil;
         }
         ID name = korb_sym2id(blk->self);
@@ -2246,9 +2246,9 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         if (argc < required || argc > blk->params_cnt) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                        "wrong number of arguments (given %u, expected %u)",
-                       argc, blk->params_cnt);
+                       argc, blk->params_cnt));
             return Qnil;
         }
     } else if (blk->is_lambda) {
@@ -2256,9 +2256,9 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         if (argc < required) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                        "wrong number of arguments (given %u, expected %u+)",
-                       argc, required);
+                       argc, required));
             return Qnil;
         }
     }
@@ -2362,8 +2362,8 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
                      * object through without destructuring. */
                 } else if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    korb_raise(c, (struct korb_class *)eT,
-                               "can't convert to Array (#to_ary gave non-Array)");
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)"));
                     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
                     return Qnil;
                 } else {
@@ -3526,7 +3526,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->current_frame->fp += arg_index;
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
-        korb_raise(c, NULL, "stack overflow");
+        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
         c->current_block = prev_block;
         return Qnil;
     }
@@ -3589,9 +3589,9 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
 
     if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                    "wrong number of arguments (given %u, expected %u)",
-                   argc, mc->total_params_cnt);
+                   argc, mc->total_params_cnt));
         c->current_frame->fp = prev_fp;
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
@@ -3607,17 +3607,17 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             bool variadic = (mc->rest_slot >= 0) || (mc->total_params_cnt > min_argc);
             uint32_t opt_total = mc->total_params_cnt - mc->required_params_cnt - mc->post_params_cnt;
             if (mc->rest_slot >= 0) {
-                korb_raise(c, (struct korb_class *)eArg,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                            "wrong number of arguments (given %u, expected %u+)",
-                           argc, min_argc);
+                           argc, min_argc));
             } else if (opt_total > 0) {
-                korb_raise(c, (struct korb_class *)eArg,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                            "wrong number of arguments (given %u, expected %u..%u)",
-                           argc, min_argc, mc->total_params_cnt);
+                           argc, min_argc, mc->total_params_cnt));
             } else {
-                korb_raise(c, (struct korb_class *)eArg,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                            "wrong number of arguments (given %u, expected %u)",
-                           argc, min_argc);
+                           argc, min_argc));
             }
             (void)variadic;
             c->current_frame->fp = prev_fp;
@@ -4011,9 +4011,9 @@ VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
         (BUILTIN_TYPE(eNoMethodError) == T_CLASS || BUILTIN_TYPE(eNoMethodError) == T_MODULE)) {
         exc_class = (struct korb_class *)eNoMethodError;
     }
-    korb_raise(c, exc_class, "%s method '%s' called for %s",
+    DROP_RESULT(korb_raise(c, exc_class, "%s method '%s' called for %s",
                kind, korb_id_name(name),
-               klass && klass->name ? korb_id_name(klass->name) : "?");
+               klass && klass->name ? korb_id_name(klass->name) : "?"));
     /* Stash receiver + name on the exception so NoMethodError#receiver
      * and #name work.  CRuby exposes both. */
     if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
@@ -4076,12 +4076,12 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                       (ch >= '0' && ch <= '9') || ch == '_')) { bareword = false; break; }
             }
             if (recv == c->current_frame->self && bareword) {
-                korb_raise(c, (struct korb_class *)eNo,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eNo,
                            "undefined local variable or method '%s' for %s",
-                           nm, korb_id_name(klass->name));
+                           nm, korb_id_name(klass->name)));
             } else {
-                korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
-                           nm, korb_id_name(klass->name));
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
+                           nm, korb_id_name(klass->name)));
             }
             if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
                 korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
@@ -4262,8 +4262,8 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
             return r;
         }
         VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
-                 korb_id_name(name), korb_id_name(klass->name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
+                 korb_id_name(name), korb_id_name(klass->name)));
         if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
             korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
             korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
@@ -4352,9 +4352,9 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected %u) for %s",
-                   argc, m->u.ast.total_params_cnt, korb_id_name(name));
+                   argc, m->u.ast.total_params_cnt, korb_id_name(name)));
         return Qnil;
     }
     VALUE *prev_fp = c->current_frame->fp;
@@ -4365,7 +4365,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * dispatches don't leak high-water mark. */
     VALUE *new_fp = c->sp + 1;
     if (new_fp + m->u.ast.locals_cnt >= c->stack_end) {
-        korb_raise(c, NULL, "stack overflow");
+        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
         return Qnil;
     }
     /* CRITICAL ordering — extend sp + zero-fill BEFORE any alloc and before
@@ -5003,9 +5003,9 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     if (err_msg) {
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
-            korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
         } else {
-            korb_raise(c, NULL, "syntax error: %s", err_msg);
+            DROP_RESULT(korb_raise(c, NULL, "syntax error: %s", err_msg));
         }
         return Qnil;
     }
@@ -5295,11 +5295,11 @@ VALUE korb_fiber_new(struct korb_proc *block) {
 VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     struct korb_fiber *fib = (struct korb_fiber *)fibv;
     if (fib->state == KF_DEAD) {
-        korb_raise(c, NULL, "dead fiber called");
+        DROP_RESULT(korb_raise(c, NULL, "dead fiber called"));
         return Qnil;
     }
     if (fib->state == KF_RUNNING) {
-        korb_raise(c, NULL, "double resume");
+        DROP_RESULT(korb_raise(c, NULL, "double resume"));
         return Qnil;
     }
     fib->args = argv;
@@ -5383,7 +5383,7 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
 VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     struct korb_fiber *fib = current_fiber;
     if (!fib) {
-        korb_raise(c, NULL, "Fiber.yield called outside a fiber");
+        DROP_RESULT(korb_raise(c, NULL, "Fiber.yield called outside a fiber"));
         return Qnil;
     }
     fib->result = argc > 0 ? argv[0] : Qnil;
@@ -5433,7 +5433,7 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
 VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Block is the c->current_block when Fiber.new is called */
     if (!c->current_block) {
-        korb_raise(c, NULL, "Fiber.new requires a block");
+        DROP_RESULT(korb_raise(c, NULL, "Fiber.new requires a block"));
         return Qnil;
     }
     return korb_fiber_new(c->current_block);
@@ -5450,7 +5450,7 @@ VALUE korb_require_file(CTX *c, const char *path) {
     size_t len;
     char *src = read_file(path, &len);
     if (!src) {
-        korb_raise(c, NULL, "no such file: %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "no such file: %s", path));
         return Qnil;
     }
     mark_loaded(path);
@@ -5465,7 +5465,7 @@ VALUE korb_load_file(CTX *c, const char *path) {
     size_t len;
     char *src = read_file(path, &len);
     if (!src) {
-        korb_raise(c, NULL, "no such file: %s", path);
+        DROP_RESULT(korb_raise(c, NULL, "no such file: %s", path));
         return Qnil;
     }
     korb_eval_string(c, src, len, path);

@@ -117,7 +117,7 @@ static VALUE int_mod(CTX *c, VALUE self, int argc, VALUE *argv) {
         double rhs = korb_num2dbl(argv[0]);
         if (rhs == 0.0) {
             VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)_eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)_eZ, "divided by 0"));
             return Qnil;
         }
         double lhs = korb_num2dbl(self);
@@ -377,7 +377,7 @@ static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     int base = argc >= 1 && FIXNUM_P(argv[0]) ? (int)FIX2LONG(argv[0]) : 10;
     if (base < 2 || base > 36) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA, "invalid radix %d", base);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "invalid radix %d", base));
         return Qnil;
     }
     if (!FIXNUM_P(self)) {
@@ -476,13 +476,13 @@ static VALUE int_round(CTX *c, VALUE self, int argc, VALUE *argv) {
                     else if (id == korb_intern("even") || id == korb_intern("banker")) half_mode = HALF_EVEN;
                     else {
                         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                        korb_raise(c, (struct korb_class *)eA,
-                                   "invalid rounding mode: %s", korb_id_name(id));
+                        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
+                                   "invalid rounding mode: %s", korb_id_name(id)));
                         return Qnil;
                     }
                 } else {
                     VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                    korb_raise(c, (struct korb_class *)eA, "invalid rounding mode");
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "invalid rounding mode"));
                     return Qnil;
                 }
                 break;
@@ -548,7 +548,7 @@ static VALUE int_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "wrong number of arguments"));
         return Qnil;
     }
     VALUE other = argv[0];
@@ -559,7 +559,7 @@ static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
         double b = korb_num2dbl(other);
         if (b == 0.0) {
             VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eDiv, "divided by 0"));
             return Qnil;
         }
         double q = floor(a / b);
@@ -572,7 +572,7 @@ static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
         long a = FIX2LONG(self), b = FIX2LONG(other);
         if (b == 0) {
             VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eDiv, "divided by 0"));
             return Qnil;
         }
         long q = a / b;
@@ -587,7 +587,7 @@ static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
             (!FIXNUM_P(other) && BUILTIN_TYPE(other) == T_BIGNUM &&
              mpz_sgn((mpz_ptr)((struct korb_bignum *)other)->mpz) == 0)) {
             VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eDiv, "divided by 0"));
             return Qnil;
         }
         return korb_int_div(self, other);
@@ -608,7 +608,7 @@ static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eT, "expected Numeric");
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "expected Numeric"));
     return Qnil;
 }
 
@@ -655,7 +655,7 @@ static VALUE int_remainder(CTX *c, VALUE self, int argc, VALUE *argv) {
     long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
     if (b == 0) {
         VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-        korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
         return Qnil;
     }
     /* C's % truncates toward zero — exactly what remainder wants. */
@@ -669,7 +669,7 @@ static VALUE int_remainder(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments"));
         return Qnil;
     }
     VALUE other = argv[0];
@@ -713,8 +713,8 @@ static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Integer",
-             korb_id_name(korb_class_of_class(other)->name));
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Integer",
+             korb_id_name(korb_class_of_class(other)->name)));
     return Qnil;
 }
 
@@ -796,7 +796,7 @@ static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "wrong number of arguments"));
         return Qnil;
     }
     VALUE other = argv[0];
@@ -806,12 +806,12 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
         double bd = korb_num2dbl(other);
         if (isnan(bd)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
-            korb_raise(c, (struct korb_class *)eF, "NaN");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "NaN"));
             return Qnil;
         }
         if (bd == 0.0) {
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         double ad = korb_num2dbl(self);
@@ -827,7 +827,7 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
         long a = FIX2LONG(self), b = FIX2LONG(other);
         if (b == 0) {
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         long q = a / b, m = a % b;
@@ -844,7 +844,7 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
             (!FIXNUM_P(other) && BUILTIN_TYPE(other) == T_BIGNUM &&
              mpz_sgn((mpz_ptr)((struct korb_bignum *)other)->mpz) == 0)) {
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         VALUE q = korb_int_div(self, other);
@@ -870,7 +870,7 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eT, "expected Numeric");
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "expected Numeric"));
     return Qnil;
 }
 
@@ -937,10 +937,10 @@ static long int_upto_downto_stop(CTX *c, VALUE arg, bool is_upto, bool *abort) {
         return 0;
     }
     VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-    korb_raise(c, (struct korb_class *)eA,
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
                "comparison of Integer with %s failed",
                SPECIAL_CONST_P(arg) ? "(special)"
-                   : korb_id_name(korb_class_of_class(arg)->name));
+                   : korb_id_name(korb_class_of_class(arg)->name)));
     *abort = true;
     return 0;
 }
@@ -1007,7 +1007,7 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (exp < 0) {
         if (base == 0) {
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         /* For |exp| outside fixnum range (e.g. 2 ** -2^62), -exp would

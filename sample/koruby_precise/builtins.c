@@ -35,8 +35,8 @@ VALUE _allocator_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *cn = (!SPECIAL_CONST_P(self) &&
                       (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE))
         ? korb_id_name(((struct korb_class *)self)->name) : "?";
-    korb_raise(c, (struct korb_class *)eT,
-               "allocator undefined for %s", cn);
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+               "allocator undefined for %s", cn));
     return Qnil;
 }
 VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -44,8 +44,8 @@ VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *cn = (!SPECIAL_CONST_P(self) &&
                       (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE))
         ? korb_id_name(((struct korb_class *)self)->name) : "?";
-    korb_raise(c, (struct korb_class *)eN,
-               "undefined method 'new' for %s", cn);
+    DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+               "undefined method 'new' for %s", cn));
     return Qnil;
 }
 
@@ -516,10 +516,10 @@ void korb_init_builtins(CTX *c) {
             if (SPECIAL_CONST_P(argv[0]) ||
                 (BUILTIN_TYPE(argv[0]) != T_MODULE && BUILTIN_TYPE(argv[0]) != T_CLASS)) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "wrong argument type %s (expected Module)",
                            SPECIAL_CONST_P(argv[0]) ? "?" :
-                               korb_id_name(korb_class_of_class(argv[0])->name));
+                               korb_id_name(korb_class_of_class(argv[0])->name)));
                 return Qnil;
             }
             extern bool korb_module_has_ancestor(struct korb_class *, struct korb_class *);
@@ -839,9 +839,9 @@ void korb_init_builtins(CTX *c) {
                         const char *src_n = korb_id_name(korb_class_of_class(o)->name);
                         const char *got_n = SPECIAL_CONST_P(r) ? "(special)"
                                                                 : korb_id_name(korb_class_of_class(r)->name);
-                        korb_raise(c, (struct korb_class *)eT,
+                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to Array (%s#to_ary gives %s)",
-                                   src_n, src_n, got_n);
+                                   src_n, src_n, got_n));
                         return Qnil;
                     }
                     return r;
@@ -945,11 +945,11 @@ void korb_init_builtins(CTX *c) {
                     if (NIL_P(r)) return Qnil;
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
                         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                        korb_raise(c, (struct korb_class *)eT,
+                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to Hash (%s#to_hash gives %s)",
                                    korb_id_name(korb_class_of_class(o)->name),
                                    korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(r)->name));
+                                   korb_id_name(korb_class_of_class(r)->name)));
                         return Qnil;
                     }
                     return r;
@@ -992,11 +992,11 @@ void korb_init_builtins(CTX *c) {
                     if (NIL_P(r)) return Qnil;
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_STRING) {
                         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                        korb_raise(c, (struct korb_class *)eT,
+                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to String (%s#to_str gives %s)",
                                    korb_id_name(korb_class_of_class(o)->name),
                                    korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(r)->name));
+                                   korb_id_name(korb_class_of_class(r)->name)));
                         return Qnil;
                     }
                     return r;
@@ -1327,8 +1327,8 @@ void korb_init_builtins(CTX *c) {
         {
             VALUE _proc_alloc_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
-                           "allocator undefined for Proc");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                           "allocator undefined for Proc"));
                 return Qnil;
             }
             korb_class_add_method_cfunc(cProcMeta, korb_intern("allocate"),

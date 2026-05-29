@@ -35,7 +35,7 @@ static VALUE proc_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE proc_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     
     if (!c->current_block) {
-        korb_raise(c, NULL, "tried to create Proc object without a block");
+        DROP_RESULT(korb_raise(c, NULL, "tried to create Proc object without a block"));
         return Qnil;
     }
     return (VALUE)c->current_block;
@@ -52,7 +52,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * `argv[0].send(symbol, *rest)`. */
     if (p->body == NULL && SYMBOL_P(p->self)) {
         if (argc < 1) {
-            korb_raise(c, NULL, "no receiver for symbol proc");
+            DROP_RESULT(korb_raise(c, NULL, "no receiver for symbol proc"));
             return Qnil;
         }
         ID name = korb_sym2id(p->self);
@@ -84,9 +84,9 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required || (uint32_t)eff_argc > total_pos) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u)",
-                     eff_argc, total_pos);
+                     eff_argc, total_pos));
             return Qnil;
         }
     } else if (p->is_lambda) {
@@ -102,9 +102,9 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u+)",
-                     eff_argc, required);
+                     eff_argc, required));
             return Qnil;
         }
     }
@@ -133,7 +133,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE *new_fp = p->env;
     VALUE *fresh_env = NULL;     /* non-null when we cloned */
     if (UNLIKELY(!new_fp)) {
-        korb_raise(c, NULL, "proc with no env");
+        DROP_RESULT(korb_raise(c, NULL, "proc with no env"));
         AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
         return Qnil;
     }
@@ -218,8 +218,8 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                 }
                 if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    korb_raise(c, (struct korb_class *)eT,
-                               "can't convert to Array (#to_ary gave non-Array)");
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)"));
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return Qnil;
                 }
@@ -403,7 +403,7 @@ redo_proc:
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 c->state_target_frame = NULL;
-                korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eL, "break from proc-closure"));
                 r = Qnil;
             }
         }
@@ -446,9 +446,9 @@ redo_proc:
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[3]));
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                korb_raise(c, (struct korb_class *)urs[0], "%s", buf);
+                DROP_RESULT(korb_raise(c, (struct korb_class *)urs[0], "%s", buf));
             } else {
-                korb_raise(c, NULL, "%s", buf);
+                DROP_RESULT(korb_raise(c, NULL, "%s", buf));
             }
             /* Stash tag/value on the exception for catch to re-extract. */
             if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
@@ -462,9 +462,9 @@ redo_proc:
          * Convert to a SyntaxError-like raise so `rescue` can catch. */
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
-            korb_raise(c, (struct korb_class *)eSE, "Invalid retry");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "Invalid retry"));
         } else {
-            korb_raise(c, NULL, "Invalid retry");
+            DROP_RESULT(korb_raise(c, NULL, "Invalid retry"));
         }
     }
     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);

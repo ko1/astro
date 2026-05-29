@@ -20,8 +20,8 @@ static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
         const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                                 ? korb_str_cstr(oi)
                                 : korb_id_name(korb_class_of_class(other)->name);
-        korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
-                   korb_id_name(korb_class_of_class(self)->name), o_str);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
+                   korb_id_name(korb_class_of_class(self)->name), o_str));
         return 0;
     }
     if (FIXNUM_P(r)) {
@@ -83,7 +83,7 @@ static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
-        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
+        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc));
         return Qnil;
     }
     long lo = korb_cmp_call(c, self, argv[0]);
@@ -101,8 +101,8 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (r->exclude_end) {
             /* `clamp(a...b)` is rejected (no clean cap on b's value). */
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
-                       "cannot clamp with an exclusive range");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+                       "cannot clamp with an exclusive range"));
             return Qnil;
         }
         lo = r->begin;
@@ -111,7 +111,7 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         lo = argv[0];
         hi = argv[1];
     } else {
-        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc);
+        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc));
         return Qnil;
     }
     /* If both bounds are non-nil, verify lo <= hi.  Use the bounds'
@@ -128,8 +128,8 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         else bad = false;
         if (bad) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
-                       "min argument must be smaller than max argument");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+                       "min argument must be smaller than max argument"));
             return Qnil;
         }
     }
@@ -159,10 +159,10 @@ static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VA
         struct korb_method *m = korb_class_find_method(klass, name);
         if (!m) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            korb_raise(c, (struct korb_class *)eN,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                        "undefined method '%s' for class '%s'",
                        korb_id_name(name),
-                       klass->name ? korb_id_name(klass->name) : "?");
+                       klass->name ? korb_id_name(klass->name) : "?"));
             return Qnil;
         }
         korb_method_table_remove(&klass->methods, name);
@@ -197,7 +197,7 @@ static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *
 
 static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
-        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
+        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc));
         return Qnil;
     }
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
@@ -213,10 +213,10 @@ static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_name),
-                   klass->name ? korb_id_name(klass->name) : "?");
+                   klass->name ? korb_id_name(klass->name) : "?"));
         return Qnil;
     }
     korb_class_alias_method(klass, new_name, m);
@@ -270,11 +270,11 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
                 if (is_singleton) continue;
                 VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                 const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
-                korb_raise(c, (struct korb_class *)eN,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                            "undefined method '%s' for %s '%s'",
                            korb_id_name(name),
                            BUILTIN_TYPE(self) == T_MODULE ? "module" : "class",
-                           cn);
+                           cn));
                 return;
             }
         }
@@ -614,14 +614,14 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
-                   korb_id_name(korb_class_of_class(arg)->name));
+                   korb_id_name(korb_class_of_class(arg)->name)));
         return Qnil;
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT,
-                   "no implicit conversion of (special) into String");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of (special) into String"));
         return Qnil;
     }
 have_name:;
@@ -633,10 +633,10 @@ have_name:;
         : korb_const_get((struct korb_class *)self, name);
     if (UNDEF_P(v)) {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eName,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                    "uninitialized constant %s::%s",
                    korb_id_name(((struct korb_class *)self)->name),
-                   korb_id_name(name));
+                   korb_id_name(name)));
         return Qnil;
     }
     return v;
@@ -648,8 +648,8 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
-                   korb_id_name(korb_class_of_class(self)->name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name)));
         return Qnil;
     }
     /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
@@ -679,8 +679,8 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE inspv = korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL);
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
-        korb_raise(c, (struct korb_class *)eT,
-                   "%s is not a symbol nor a string", insp);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", insp));
         return Qnil;
     }
     /* Constant name must start with an uppercase ASCII letter and consist
@@ -695,8 +695,8 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!valid) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
-                   "wrong constant name %.*s", namelen, namep);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+                   "wrong constant name %.*s", namelen, namep));
         return Qnil;
     }
     ID name = korb_intern_n(namep, namelen);
