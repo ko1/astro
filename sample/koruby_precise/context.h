@@ -226,6 +226,15 @@ typedef struct {
  * to the return type itself, so this is the cleanest way to apply it. */
 #define RESULT_FN __attribute__((warn_unused_result))
 
+/* Discharge a RESULT explicitly without propagating it — used for legacy
+ * VALUE-returning cfuncs that call korb_raise() with c->state side-channel.
+ * (void)foo() doesn't silence warn_unused_result on its own; capture into
+ * a local and read a field. */
+#define DROP_RESULT(call) do {                                  \
+    RESULT _drop_r = (call);                                    \
+    (void)_drop_r.value;                                        \
+} while (0)
+
 #define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
 #define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
 #define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
