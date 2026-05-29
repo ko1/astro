@@ -152,7 +152,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(*xs)
+            blk.call(x)
           else
             x
           end
@@ -170,7 +170,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(*xs)
+            blk.call(x)
           else
             x
           end
@@ -188,7 +188,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(*xs)
+            blk.call(x)
           else
             x
           end
@@ -206,7 +206,7 @@ module Enumerable
       v = if pattern
             pattern === x
           elsif blk
-            blk.call(*xs)
+            blk.call(x)
           else
             x
           end
@@ -254,7 +254,8 @@ module Enumerable
 
   def find_index(target = nil, &blk)
     i = 0
-    each { |x|
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
       hit = blk ? blk.call(x) : (x == target)
       return i if hit
       i += 1
@@ -334,7 +335,10 @@ module Enumerable
   def sort_by(&blk)
     return enum_for(:sort_by) unless blk
     pairs = []
-    each { |x| pairs << [blk.call(x), x] }
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
+      pairs << [blk.call(*xs), x]
+    }
     pairs.sort { |a, b| a[0] <=> b[0] }.map { |p| p[1] }
   end unless method_defined?(:sort_by)
 
