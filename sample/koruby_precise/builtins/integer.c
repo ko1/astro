@@ -787,6 +787,30 @@ static RESULT int_size(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* Fixnum always 8 bytes (size of machine word on this build). */
+    if (FIXNUM_P(self)) return RESULT_OK(INT2FIX((long)sizeof(long)));
+    /* Bignum: count bytes needed for the abs value's two's-complement
+     * representation.  CRuby: ceil(bits/8), at least 8 (machine word).
+     * For negative numbers use |n|-1's bit count (two's-complement). */
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        const struct korb_bignum *bn = (const struct korb_bignum *)self;
+        int sgn = mpz_sgn((mpz_ptr)bn->mpz);
+        if (sgn == 0) return RESULT_OK(INT2FIX((long)sizeof(long)));
+        long bits;
+        if (sgn > 0) {
+            bits = (long)mpz_sizeinbase((mpz_ptr)bn->mpz, 2);
+        } else {
+            mpz_t tmp;
+            mpz_init(tmp);
+            mpz_neg(tmp, (mpz_ptr)bn->mpz);
+            mpz_sub_ui(tmp, tmp, 1);
+            bits = mpz_sgn(tmp) == 0 ? 1 : (long)mpz_sizeinbase(tmp, 2);
+            mpz_clear(tmp);
+        }
+        long bytes = (bits + 7) / 8;
+        if (bytes < (long)sizeof(long)) bytes = sizeof(long);
+        return RESULT_OK(INT2FIX(bytes));
+    }
     return RESULT_OK(INT2FIX((long)sizeof(long)));
 }
 

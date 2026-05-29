@@ -863,7 +863,11 @@ class Integer
     if other.is_a?(Integer)
       raise ZeroDivisionError, "divided by 0" if other == 0
       q, r = self.divmod(other)
-      (r == 0) ? q : (other > 0 ? q + 1 : q)
+      # divmod uses floor division.  ceildiv rounds toward +inf:
+      # whenever the remainder is non-zero, bump q by one (this works
+      # for all sign combinations since Ruby's floor div + r==0 case
+      # leaves q exact).
+      (r == 0) ? q : q + 1
     else
       (self.to_f / other.to_f).ceil
     end
