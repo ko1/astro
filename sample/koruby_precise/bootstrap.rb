@@ -343,6 +343,7 @@ module Enumerable
 
   # Enumerable#chunk_while / slice_when — Array overrides; fallback here.
   def chunk_while(&blk)
+    raise ArgumentError, "tried to create Proc object without a block" unless blk
     out = []
     cur = nil
     prev = nil
@@ -358,6 +359,11 @@ module Enumerable
     }
     out << cur if cur && !cur.empty?
     out
+  end
+
+  def slice_when(&blk)
+    raise ArgumentError, "tried to create Proc object without a block" unless blk
+    chunk_while { |a, b| !blk.call(a, b) }
   end
 end
 
