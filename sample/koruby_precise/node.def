@@ -2121,14 +2121,17 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
             sp_top[0] = c->current_frame->self;
             for (int i = 0; i < (int)argc; i++) sp_top[1 + i] = c->current_frame->fp[arg_index + i];
             RESULT _rr = sm->u.cfunc.func_r(c, (int)argc, sp_top + 1 + argc);
-            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-                c->state = _rr.state;
-                c->state_value = _rr.value;
-                return RESULT_OK(Qnil);
-            }
-            return RESULT_OK(_rr.value);
+            return _rr;
         }
-        return RESULT_OK(sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]));
+        /* Legacy cfunc fallback — bridge VALUE return + c->state to RESULT. */
+        VALUE _rv = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            RESULT _rr = (RESULT){ c->state_value, c->state };
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            return _rr;
+        }
+        return RESULT_OK(_rv);
     }
     if (sm->type == KORB_METHOD_PROC) {
         /* Super to a define_method'd proc — dispatch via proc_call so
@@ -2139,9 +2142,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
         RESULT _rr = proc_call(c, (int)argc, sp + 1 + argc);
         if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-            c->state = _rr.state;
-            c->state_value = _rr.value;
-            return RESULT_OK(Qnil);
+            return _rr;
         }
         return RESULT_OK(_rr.value);
     }
@@ -2224,24 +2225,24 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->type == KORB_METHOD_CFUNC) {
         struct korb_proc *prev_block = c->current_block;
         c->current_block = blk_proc;
-        VALUE r;
+        RESULT _r;
         if (sm->u.cfunc.func_r != NULL) {
             VALUE *sp_top = c->sp;
             sp_top[0] = c->current_frame->self;
             for (int i = 0; i < (int)argc; i++) sp_top[1 + i] = c->current_frame->fp[arg_index + i];
-            RESULT _rr = sm->u.cfunc.func_r(c, (int)argc, sp_top + 1 + argc);
-            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-                c->state = _rr.state;
-                c->state_value = _rr.value;
-                r = Qnil;
-            } else {
-                r = _rr.value;
-            }
+            _r = sm->u.cfunc.func_r(c, (int)argc, sp_top + 1 + argc);
         } else {
-            r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+            /* Legacy cfunc fallback. */
+            VALUE rv = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+            if (UNLIKELY(c->state != KORB_NORMAL)) {
+                _r = (RESULT){ c->state_value, c->state };
+                c->state = KORB_NORMAL; c->state_value = Qnil;
+            } else {
+                _r = RESULT_OK(rv);
+            }
         }
         c->current_block = prev_block;
-        return RESULT_OK(r);
+        return _r;
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
@@ -2408,15 +2409,16 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             VALUE *sp_top = c->sp;
             sp_top[0] = c->current_frame->self;
             for (int i = 0; i < argc; i++) sp_top[1 + i] = forward_buf[i];
-            RESULT _rr = sm->u.cfunc.func_r(c, argc, sp_top + 1 + argc);
-            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-                c->state = _rr.state;
-                c->state_value = _rr.value;
-                return RESULT_OK(Qnil);
-            }
-            return RESULT_OK(_rr.value);
+            return sm->u.cfunc.func_r(c, argc, sp_top + 1 + argc);
         }
-        return RESULT_OK(sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf));
+        /* Legacy cfunc fallback. */
+        VALUE rv = sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            RESULT _rr = (RESULT){ c->state_value, c->state };
+            c->state = KORB_NORMAL; c->state_value = Qnil;
+            return _rr;
+        }
+        return RESULT_OK(rv);
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
@@ -3128,25 +3130,20 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
     /* begin; body; end while cond */
     do {
     redo_do_while:
-        EVAL_ARG_UNWRAP(c, body);
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
-                VALUE bv = c->state_value;
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                return RESULT_OK(bv);
+        {
+            RESULT _br = EVAL_ARG(c, body);
+            if (UNLIKELY(_br.state != KORB_NORMAL)) {
+                if (_br.state == KORB_BREAK && c->state_target_frame == NULL) {
+                    return RESULT_OK(_br.value);
+                }
+                if (_br.state == KORB_NEXT) {
+                    /* go back to cond check */
+                }
+                else if (_br.state == KORB_REDO) {
+                    goto redo_do_while;
+                }
+                else return _br;
             }
-            else if (c->state == KORB_NEXT) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                /* go back to cond check */
-            }
-            else if (c->state == KORB_REDO) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                goto redo_do_while;
-            }
-            else return RESULT_OK(Qnil);
         }
         VALUE v = EVAL_ARG_UNWRAP(c, cond);
         if (!RTEST(v)) break;
@@ -3159,24 +3156,20 @@ node_do_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
 {
     do {
     redo_do_until:
-        EVAL_ARG_UNWRAP(c, body);
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
-                VALUE bv = c->state_value;
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                return RESULT_OK(bv);
+        {
+            RESULT _br = EVAL_ARG(c, body);
+            if (UNLIKELY(_br.state != KORB_NORMAL)) {
+                if (_br.state == KORB_BREAK && c->state_target_frame == NULL) {
+                    return RESULT_OK(_br.value);
+                }
+                if (_br.state == KORB_NEXT) {
+                    /* go back to cond check */
+                }
+                else if (_br.state == KORB_REDO) {
+                    goto redo_do_until;
+                }
+                else return _br;
             }
-            else if (c->state == KORB_NEXT) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-            }
-            else if (c->state == KORB_REDO) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                goto redo_do_until;
-            }
-            else return RESULT_OK(Qnil);
         }
         VALUE v = EVAL_ARG_UNWRAP(c, cond);
         if (RTEST(v)) break;
