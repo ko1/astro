@@ -803,9 +803,9 @@ korb_proc_snapshot_env_maybe(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
 
 /* Cold path: resolved-but-non-public method, raise NoMethodError per
  * Ruby semantics.  Defined out-of-line in object.c. */
-extern VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m,
-                                            ID name, struct korb_class *klass,
-                                            VALUE recv);
+extern RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m,
+                                             ID name, struct korb_class *klass,
+                                             VALUE recv);
 
 static inline __attribute__((always_inline)) VALUE
 korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
@@ -820,7 +820,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
          * to include the target's class in its hierarchy. */
         if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
             if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-                return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+                return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
             }
             if (mc->method->visibility == KORB_VIS_PROTECTED) {
                 struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -829,7 +829,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
                     if (k == target) { ok = true; break; }
                 }
-                if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+                if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
             }
         }
         korb_prologue_t p = mc->prologue;

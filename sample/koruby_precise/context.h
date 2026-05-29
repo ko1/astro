@@ -283,7 +283,14 @@ typedef struct {
  * c->state and yields Qnil; on NORMAL yields the value.  Use as:
  *   VALUE r = SINK_RESULT(c, korb_some_call_r(...));
  * Used in step-by-step migration of R1 (dispatch helpers) when an inner
- * helper has been RESULT-ized but its caller is still VALUE-returning. */
+ * helper has been RESULT-ized but its caller is still VALUE-returning.
+ *
+ * !! TRANSITIONAL !! Every SINK_RESULT site is a candidate for removal
+ * once the surrounding function migrates to RESULT — at that point it
+ * should be replaced with `UNWRAP(...)`.  Leaving SINK_RESULT in a
+ * RESULT-native function would route RESULT → c->state → RESULT (two
+ * branches on state) instead of just propagating the RESULT directly.
+ * Phase 8d-final R5 deletes this macro AND verifies zero call sites. */
 #define SINK_RESULT(c, call) ({                              \
     RESULT _sr = (call);                                     \
     VALUE _sv;                                               \

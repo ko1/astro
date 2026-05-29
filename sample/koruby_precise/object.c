@@ -4093,8 +4093,8 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     return r;
 }
 
-VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
-                                     struct korb_class *klass, VALUE recv) {
+RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
+                                      struct korb_class *klass, VALUE recv) {
     /* CRuby semantics: explicit-receiver call to a private/protected
      * method routes through method_missing if user has defined one
      * (default method_missing raises NoMethodError).  This lets a mock
@@ -4104,7 +4104,15 @@ VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
     struct korb_method *mm = klass ? korb_class_find_method(klass, korb_intern("method_missing")) : NULL;
     if (mm) {
         VALUE av[1] = { korb_id2sym(name) };
-        return korb_dispatch_binop(c, recv, korb_intern("method_missing"), 1, av);
+        /* korb_dispatch_binop still returns VALUE — lift its c->state. */
+        VALUE r = korb_dispatch_binop(c, recv, korb_intern("method_missing"), 1, av);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            RESULT res = (RESULT){ c->state_value, c->state };
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            return res;
+        }
+        return RESULT_OK(r);
     }
     const char *kind = (m->visibility == KORB_VIS_PRIVATE) ? "private" : "protected";
     VALUE eNoMethodError = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -4113,16 +4121,16 @@ VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
         (BUILTIN_TYPE(eNoMethodError) == T_CLASS || BUILTIN_TYPE(eNoMethodError) == T_MODULE)) {
         exc_class = (struct korb_class *)eNoMethodError;
     }
-    DROP_RESULT(korb_raise(c, exc_class, "%s method '%s' called for %s",
-               kind, korb_id_name(name),
-               klass && klass->name ? korb_id_name(klass->name) : "?"));
+    RESULT exc_res = korb_raise(c, exc_class, "%s method '%s' called for %s",
+                                kind, korb_id_name(name),
+                                klass && klass->name ? korb_id_name(klass->name) : "?");
     /* Stash receiver + name on the exception so NoMethodError#receiver
      * and #name work.  CRuby exposes both. */
-    if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
-        korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
-        korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+    if (exc_res.state == KORB_RAISE && exc_res.value && !SPECIAL_CONST_P(exc_res.value)) {
+        korb_ivar_set(exc_res.value, korb_intern("@receiver"), recv);
+        korb_ivar_set(exc_res.value, korb_intern("@name"), korb_id2sym(name));
     }
-    return Qnil;
+    return exc_res;
 }
 
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
@@ -4198,7 +4206,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             struct method_cache tmp = {0};
             korb_method_cache_fill(&tmp, klass, m);
             if (m->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-                return korb_dispatch_visibility_raise(c, m, name, klass, recv);
+                return SINK_RESULT(c, korb_dispatch_visibility_raise(c, m, name, klass, recv));
             }
             if (m->visibility == KORB_VIS_PROTECTED) {
                 struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -4206,7 +4214,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
                     if (k == m->defining_class) { ok = true; break; }
                 }
-                if (!ok) return korb_dispatch_visibility_raise(c, m, name, klass, recv);
+                if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, m, name, klass, recv));
             }
             return tmp.prologue(c, callsite, recv, argc, arg_index, block, &tmp);
         }
@@ -4215,7 +4223,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
      * for cache hits — same logic as the inline fast path. */
     if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
         if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-            return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+            return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
         }
         if (mc->method->visibility == KORB_VIS_PROTECTED) {
             struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -4223,7 +4231,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             for (struct korb_class *k = caller_klass; k; k = k->super) {
                 if (k == mc->method->defining_class) { ok = true; break; }
             }
-            if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+            if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
         }
     }
     return mc->prologue(c, callsite, recv, argc, arg_index, block, mc);
