@@ -2686,22 +2686,21 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     return arr;
 }
 
-void korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line) {
+void korb_exc_set_backtrace(CTX *c, VALUE *sp, VALUE exc, int raise_line) {
     if (SPECIAL_CONST_P(exc)) return;
     ID id = korb_intern("@__backtrace__");
     VALUE existing = korb_ivar_get(exc, id);
     if (!UNDEF_P(existing) && !NIL_P(existing)) return;
-    /* korb_build_backtrace allocates (= can move exc).  Park exc so the
-     * subsequent korb_ivar_set sees the forwarded address. */
-    ARO_ROOT_SCOPE_START(c, r, 2) {
-        r[0] = exc;
-        r[1] = korb_build_backtrace(c, raise_line);
-        korb_ivar_set(r[0], id, r[1]);
-    } ARO_ROOT_SCOPE_END(c, r);
+    /* Park exc + backtrace ary in sp[0..1] so korb_build_backtrace's
+     * potential GC forwards exc. */
+    sp[0] = exc;
+    sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[1] = korb_build_backtrace(c, raise_line);
+    korb_ivar_set(sp[0], id, sp[1]);
 }
 
 VALUE korb_exc_new(CTX *c, VALUE *sp, struct korb_class *klass, const char *msg) {
-    (void)sp;
     if (!klass) {
         VALUE eRuntime = korb_const_get(KORB_VM(c)->object_class,
                                         korb_intern("RuntimeError"));
@@ -2712,19 +2711,15 @@ VALUE korb_exc_new(CTX *c, VALUE *sp, struct korb_class *klass, const char *msg)
             klass = KORB_VM(c)->object_class;
         }
     }
-    /* Park the exception obj across korb_str_new_cstr's alloc-can-GC
-     * — otherwise the C local `obj` goes stale (= obj moves under GC
-     * compaction) and korb_ivar_set writes @message into a phantom. */
-    VALUE result;
-    ARO_ROOT_SCOPE_START(c, r, 1) {
-        r[0] = korb_object_new(c, c->sp_top, klass);
-        if (msg) {
-            VALUE m = korb_str_new_cstr(c, c->sp_top, msg);
-            korb_ivar_set(r[0], korb_intern("@message"), m);
-        }
-        result = r[0];
-    } ARO_ROOT_SCOPE_END(c, r);
-    return result;
+    /* Park exc in sp[0] so korb_str_new_cstr's potential GC forwards it. */
+    sp[0] = 0;
+    c->sp_top = sp + 1;          /* publish slot before alloc */
+    sp[0] = korb_object_new(c, sp + 1, klass);
+    if (msg) {
+        VALUE m = korb_str_new_cstr(c, sp + 1, msg);
+        korb_ivar_set(sp[0], korb_intern("@message"), m);
+    }
+    return sp[0];
 }
 
 /* Convenience helpers — pick the right exception subclass instead of
@@ -2804,7 +2799,7 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
         r[1] = korb_exc_new(c, c->sp_top, (struct korb_class *)r[0], buf);
         int line = (c->last_cfunc_callsite
                     ? c->last_cfunc_callsite->head.line : 0);
-        korb_exc_set_backtrace(c, r[1], line);
+        korb_exc_set_backtrace(c, c->sp_top, r[1], line);
         /* Exception#cause: when this raise happens inside a rescue body,
          * $! holds the currently-rescued exception — link it.  Skip if
          * the exception already has a cause, skip self, and skip when

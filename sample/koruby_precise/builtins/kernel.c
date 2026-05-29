@@ -462,7 +462,7 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
                        "exception class/object expected");
         }
         int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
-        korb_exc_set_backtrace(c, argv[0], line);
+        korb_exc_set_backtrace(c, sp, argv[0], line);
         exc_val = argv[0];
     } else if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_CLASS) {
         /* raise Klass, msg — pin e (exception obj) across
@@ -474,7 +474,7 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
         ARO_ROOT_SCOPE_START(c, rs, 1) {
             rs[0] = korb_exc_new(c, c->sp_top, (struct korb_class *)argv[0], msg);
             int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
-            korb_exc_set_backtrace(c, rs[0], line);
+            korb_exc_set_backtrace(c, sp, rs[0], line);
             VALUE cur = korb_gvar_get(korb_intern("$!"));
             if (!NIL_P(cur) && cur != rs[0] &&
                 !SPECIAL_CONST_P(rs[0]) && BUILTIN_TYPE(rs[0]) == T_OBJECT) {

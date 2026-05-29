@@ -698,7 +698,7 @@ RESULT_FN RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...);
 RESULT_FN RESULT korb_raise_range_error(CTX *c, const char *fmt, ...);
 RESULT_FN RESULT korb_raise_index_error(CTX *c, const char *fmt, ...);
 VALUE korb_build_backtrace(CTX *c, int raise_line);
-void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
+void  korb_exc_set_backtrace(CTX *c, VALUE *sp, VALUE exc, int raise_line);
 
 /* method dispatch helper */
 RESULT korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
