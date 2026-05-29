@@ -28,11 +28,11 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
-            VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return false;
             if (RTEST(rt)) {
-                v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
+                v = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return false;
             }
         }
@@ -241,7 +241,7 @@ static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
         }
         /* Bound Method (receiver is an instance): fall back to the
          * Proc-shim path so `m.receiver.send(m.name, *args)` runs. */
-        VALUE pr = korb_funcall(c, argv[1], korb_intern("to_proc"), 0, NULL);
+        VALUE pr = UNWRAP(korb_funcall(c, argv[1], korb_intern("to_proc"), 0, NULL));
         if (BUILTIN_TYPE(pr) != T_PROC) return RESULT_OK(Qnil);
         p = (struct korb_proc *)pr;
     } else if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_PROC) {
@@ -606,13 +606,13 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
      * idea as obj_instance_eval. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return RESULT_OK(korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL));
+            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return RESULT_OK(korb_funcall(c, self, mo->name, 0, NULL));
+            return korb_funcall(c, self, mo->name, 0, NULL);
         }
         return RESULT_OK(self);
     }
@@ -657,13 +657,13 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
     struct korb_proc *blk = c->current_block;
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return RESULT_OK(korb_funcall(c, self, korb_sym2id(blk->self), (uint32_t)argc, argv));
+            return korb_funcall(c, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return RESULT_OK(korb_funcall(c, self, mo->name, (uint32_t)argc, argv));
+            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(self);
     }
@@ -1154,11 +1154,11 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         if (!SYMBOL_P(arg) &&
             (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
             !SPECIAL_CONST_P(arg)) {
-            VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return Qnil;
             if (RTEST(rt)) {
-                arg = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+                arg = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return Qnil;
             }
         }

@@ -35,8 +35,8 @@ static RESULT rng_hash(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_range *r = (struct korb_range *)self;
-    VALUE bh = korb_funcall(c, r->begin, korb_intern("hash"), 0, NULL);
-    VALUE eh = korb_funcall(c, r->end,   korb_intern("hash"), 0, NULL);
+    VALUE bh = UNWRAP(korb_funcall(c, r->begin, korb_intern("hash"), 0, NULL));
+    VALUE eh = UNWRAP(korb_funcall(c, r->end,   korb_intern("hash"), 0, NULL));
     long bn = FIXNUM_P(bh) ? FIX2LONG(bh) : 0;
     long en = FIXNUM_P(eh) ? FIX2LONG(eh) : 0;
     long h = bn ^ (en * 0x9E3779B97F4A7C15L) ^ (r->exclude_end ? 0x5A : 0);
@@ -51,7 +51,7 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     /* No block → Array stand-in (TODO: Enumerator once Fiber path is
      * GC-safe).  Array is close enough for most chain forms. */
     if (!korb_block_given(c)) {
-        return RESULT_OK(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
+        return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
     /* Beginless range: TypeError (can't iterate starting from -Inf). */
@@ -84,8 +84,8 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     }
     /* Non-numeric ranges: walk via #succ until > end.  Begin must respond
      * to #succ; otherwise TypeError. */
-    VALUE rt = korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("succ")) });
+    VALUE rt = UNWRAP(korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("succ")) }));
     if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
     if (!RTEST(rt)) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -99,14 +99,14 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
             korb_yield(c, 1, &cur);
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         } else {
-            VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
+            VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
             if (!FIXNUM_P(cmp)) break;
             long cv = FIX2LONG(cmp);
             if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
             korb_yield(c, 1, &cur);
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
-        cur = korb_funcall(c, cur, korb_intern("succ"), 0, NULL);
+        cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
@@ -118,7 +118,7 @@ static long rng_cmp(CTX *c, VALUE a, VALUE b) {
     if (FIXNUM_P(a) && FIXNUM_P(b)) {
         return (long)((intptr_t)a - (intptr_t)b);
     }
-    VALUE r = korb_funcall(c, a, korb_intern("<=>"), 1, &b);
+    VALUE r = SINK_RESULT(c, korb_funcall(c, a, korb_intern("<=>"), 1, &b));
     if (c->state != KORB_NORMAL || !FIXNUM_P(r)) return LONG_MAX;
     return FIX2LONG(r);
 }
@@ -131,14 +131,14 @@ static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
     struct korb_range *r = (struct korb_range *)self;
     if (korb_block_given(c)) {
         /* Block form: delegate to Enumerable#min by walking via each. */
-        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_funcall(c, arr, korb_intern("min"), argc, argv));
+        return korb_funcall(c, arr, korb_intern("min"), argc, argv);
     }
     if (argc >= 1) {
-        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_funcall(c, arr, korb_intern("min"), argc, argv));
+        return korb_funcall(c, arr, korb_intern("min"), argc, argv);
     }
     /* No block, no arg: min == begin (or nil if begin > end). */
     if (NIL_P(r->begin)) {
@@ -160,14 +160,14 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
 
     struct korb_range *r = (struct korb_range *)self;
     if (korb_block_given(c)) {
-        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_funcall(c, arr, korb_intern("max"), argc, argv));
+        return korb_funcall(c, arr, korb_intern("max"), argc, argv);
     }
     if (argc >= 1) {
-        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_funcall(c, arr, korb_intern("max"), argc, argv));
+        return korb_funcall(c, arr, korb_intern("max"), argc, argv);
     }
     if (NIL_P(r->end)) {
         VALUE eR = korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"));
@@ -180,7 +180,7 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
             if (FIXNUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_BIGNUM)) {
                 /* Integer: max == end - 1 */
                 VALUE one = INT2FIX(1);
-                return RESULT_OK(korb_funcall(c, r->end, korb_intern("-"), 1, &one));
+                return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
             }
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
@@ -195,7 +195,7 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
     /* Exclusive: max == end - 1 only for Integer end.  Else TypeError. */
     if (FIXNUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_BIGNUM)) {
         VALUE one = INT2FIX(1);
-        return RESULT_OK(korb_funcall(c, r->end, korb_intern("-"), 1, &one));
+        return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     return korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
@@ -249,11 +249,11 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
             double d = korb_num2dbl(nv);
             nv = INT2FIX((long)d);
         } else if (!SPECIAL_CONST_P(nv)) {
-            VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                nv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -265,9 +265,9 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
     }
     /* Non-numeric begin (`('a'..'e').first(2)`): delegate to to_a then take. */
     if (!FIXNUM_P(r->begin)) {
-        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
         if (c->state != KORB_NORMAL || BUILTIN_TYPE(arr) != T_ARRAY) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_funcall(c, arr, korb_intern("first"), 1, &nv));
+        return korb_funcall(c, arr, korb_intern("first"), 1, &nv);
     }
     long n = FIX2LONG(nv);
     if (n < 0) {
@@ -326,11 +326,11 @@ static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
         if (FLONUM_P(nv) || (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_FLOAT)) {
             nv = INT2FIX((long)korb_num2dbl(nv));
         } else if (!SPECIAL_CONST_P(nv)) {
-            VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                nv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -374,12 +374,12 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
     if (NIL_P(r->begin) || NIL_P(r->end)) return RESULT_OK(a);
     VALUE cur = r->begin;
     while (true) {
-        VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
+        VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
         if (!FIXNUM_P(cmp)) break;
         long cv = FIX2LONG(cmp);
         if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
         korb_ary_push(a, cur);
-        cur = korb_funcall(c, cur, korb_intern("succ"), 0, NULL);
+        cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(a);
@@ -444,9 +444,9 @@ static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     /* Materialize self via to_a then delegate to Array#zip. */
-    VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
     if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-    return RESULT_OK(korb_funcall(c, arr, korb_intern("zip"), argc, argv));
+    return korb_funcall(c, arr, korb_intern("zip"), argc, argv);
 }
 
 /* Range#each_with_index — yields (value, index) pairs. */
@@ -471,14 +471,14 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
     if (NIL_P(r->begin) || NIL_P(r->end)) return RESULT_OK(self);
     VALUE cur = r->begin;
     while (true) {
-        VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
+        VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
         if (!FIXNUM_P(cmp)) break;
         long cv = FIX2LONG(cmp);
         if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
         VALUE pair[2] = { cur, INT2FIX(idx) };
         korb_yield(c, 2, pair);
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
-        cur = korb_funcall(c, cur, korb_intern("succ"), 0, NULL);
+        cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         idx++;
     }
@@ -531,7 +531,7 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
      * ranges' size. */
     if (!b_numeric || !e_numeric) return RESULT_OK(Qnil);
     /* Numeric mixed: delegate to to_a length. */
-    VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
     if (c->state == KORB_NORMAL && BUILTIN_TYPE(arr) == T_ARRAY) {
         return RESULT_OK(INT2FIX(((struct korb_array *)arr)->len));
     }
@@ -564,11 +564,11 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
     VALUE arg = argv[0];
     VALUE end_copy = r->end;
     if (!NIL_P(r->begin)) {
-        VALUE cmp = korb_funcall(c, r->begin, korb_intern("<=>"), 1, &arg);
+        VALUE cmp = UNWRAP(korb_funcall(c, r->begin, korb_intern("<=>"), 1, &arg));
         if (!FIXNUM_P(cmp) || FIX2LONG(cmp) > 0) return RESULT_OK(Qfalse);
     }
     if (!NIL_P(r->end)) {
-        VALUE cmp = korb_funcall(c, arg, korb_intern("<=>"), 1, &end_copy);
+        VALUE cmp = UNWRAP(korb_funcall(c, arg, korb_intern("<=>"), 1, &end_copy));
         if (!FIXNUM_P(cmp)) return RESULT_OK(Qfalse);
         long cv = FIX2LONG(cmp);
         if (r->exclude_end ? (cv >= 0) : (cv > 0)) return RESULT_OK(Qfalse);
@@ -582,7 +582,7 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
-        return RESULT_OK(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
+        return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp));
@@ -703,7 +703,7 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
         }
         for (long i = start; i <= e; i++) {
             VALUE other = INT2FIX(i);
-            acc = korb_funcall(c, acc, op, 1, &other);
+            acc = UNWRAP(korb_funcall(c, acc, op, 1, &other));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
         return RESULT_OK(acc);

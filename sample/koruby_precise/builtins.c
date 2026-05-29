@@ -854,7 +854,7 @@ void korb_init_builtins(CTX *c) {
                                                              korb_intern("to_ary"))) {
                         return Qnil;
                     }
-                    VALUE r = korb_funcall(c, o, korb_intern("to_ary"), 0, NULL);
+                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_ary"), 0, NULL));
                     if (c->state == KORB_RAISE) return Qnil;
                     if (NIL_P(r)) return Qnil;
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) {
@@ -952,7 +952,7 @@ void korb_init_builtins(CTX *c) {
                     VALUE o = argv[0];
                     if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_HASH) return o;
                     if (SPECIAL_CONST_P(o)) return Qnil;
-                    VALUE r = korb_funcall(c, o, korb_intern("to_hash"), 0, NULL);
+                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_hash"), 0, NULL));
                     if (c->state == KORB_RAISE) {
                         VALUE bang = c->state_value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -1003,7 +1003,7 @@ void korb_init_builtins(CTX *c) {
                     VALUE o = argv[0];
                     if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_STRING) return o;
                     if (SPECIAL_CONST_P(o)) return Qnil;
-                    VALUE r = korb_funcall(c, o, korb_intern("to_str"), 0, NULL);
+                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_str"), 0, NULL));
                     if (c->state == KORB_RAISE) {
                         VALUE bang = c->state_value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));

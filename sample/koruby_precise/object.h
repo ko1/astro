@@ -701,9 +701,9 @@ VALUE korb_build_backtrace(CTX *c, int raise_line);
 void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
 
 /* method dispatch helper */
-VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
-VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
-VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
+RESULT korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+RESULT korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
 
 extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
 
@@ -720,21 +720,21 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name);
 /* Stable function-pointer addresses for mc->prologue — used as kind tags
  * in the guarded direct call below (compared by name, then dispatched
  * inline via the static-inline body in prologues.h). */
-VALUE prologue_ast_simple_0(CTX *c, struct Node *callsite, VALUE recv,
-                            uint32_t argc, uint32_t arg_index,
-                            struct korb_proc *block, struct method_cache *mc);
-VALUE prologue_ast_simple_1(CTX *c, struct Node *callsite, VALUE recv,
-                            uint32_t argc, uint32_t arg_index,
-                            struct korb_proc *block, struct method_cache *mc);
-VALUE prologue_ast_simple_2(CTX *c, struct Node *callsite, VALUE recv,
-                            uint32_t argc, uint32_t arg_index,
-                            struct korb_proc *block, struct method_cache *mc);
-VALUE prologue_ast_simple_3(CTX *c, struct Node *callsite, VALUE recv,
-                            uint32_t argc, uint32_t arg_index,
-                            struct korb_proc *block, struct method_cache *mc);
-VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
-                     uint32_t argc, uint32_t arg_index,
-                     struct korb_proc *block, struct method_cache *mc);
+RESULT prologue_ast_simple_0(CTX *c, struct Node *callsite, VALUE recv,
+                             uint32_t argc, uint32_t arg_index,
+                             struct korb_proc *block, struct method_cache *mc);
+RESULT prologue_ast_simple_1(CTX *c, struct Node *callsite, VALUE recv,
+                             uint32_t argc, uint32_t arg_index,
+                             struct korb_proc *block, struct method_cache *mc);
+RESULT prologue_ast_simple_2(CTX *c, struct Node *callsite, VALUE recv,
+                             uint32_t argc, uint32_t arg_index,
+                             struct korb_proc *block, struct method_cache *mc);
+RESULT prologue_ast_simple_3(CTX *c, struct Node *callsite, VALUE recv,
+                             uint32_t argc, uint32_t arg_index,
+                             struct korb_proc *block, struct method_cache *mc);
+RESULT prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
+                      uint32_t argc, uint32_t arg_index,
+                      struct korb_proc *block, struct method_cache *mc);
 
 /* FL_KWARGS used by prologue inline functions below — must be visible
  * before "prologues.h".  Real definition in terms of FL_USER is below;
@@ -807,7 +807,7 @@ extern RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m,
                                              ID name, struct korb_class *klass,
                                              VALUE recv);
 
-static inline __attribute__((always_inline)) VALUE
+static inline __attribute__((always_inline)) RESULT
 korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                           VALUE recv, ID name, uint32_t argc,
                           uint32_t arg_index, struct korb_proc *block,
@@ -820,7 +820,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
          * to include the target's class in its hierarchy. */
         if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
             if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-                return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
+                return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
             }
             if (mc->method->visibility == KORB_VIS_PROTECTED) {
                 struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -829,7 +829,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
                     if (k == target) { ok = true; break; }
                 }
-                if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
+                if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
             }
         }
         korb_prologue_t p = mc->prologue;
@@ -842,19 +842,12 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
              * self + args at the top of the value stack and call
              * prologue_cfunc_r_inl.  c->sp is NOT touched here — the cfunc
              * itself syncs `c->sp = sp` just before any alloc (see runtime.md
-             * §12.3).  Convert the returned RESULT to the legacy VALUE +
-             * c->state path so upstream callers don't need to change yet. */
+             * §12.3). */
             if (UNLIKELY(mc->cfunc_r != NULL)) {
                 VALUE *sp = c->sp;
                 sp[0] = recv;
                 for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
-                RESULT _rr = prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
-                if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-                    c->state = _rr.state;
-                    c->state_value = _rr.value;
-                    return Qnil;
-                }
-                return _rr.value;
+                return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
             }
             return prologue_cfunc_inl(c, callsite, recv, argc, arg_index, block, mc);
         }
@@ -862,7 +855,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
     }
     return korb_dispatch_call(c, callsite, recv, name, argc, arg_index, block, mc);
 }
-VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
+RESULT korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
 
 /* Cold tails for fast-path NODEs.  Bodies live in object.c and are
  * called via PLT/GOT from each SD.so, instead of being inlined into

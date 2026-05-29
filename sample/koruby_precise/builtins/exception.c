@@ -10,7 +10,7 @@
  * to `to_s`). */
 static VALUE exc_to_s_internal(CTX *c, VALUE self);
 static VALUE exc_message(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    return SINK_RESULT(c, korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
 }
 static VALUE exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
@@ -28,7 +28,7 @@ static VALUE exc_to_s_internal(CTX *c, VALUE self) {
     }
     /* CRuby calls #to_s on @message if it isn't a String. */
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
-        return korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
+        return SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
     }
     return msg;
 }
@@ -45,7 +45,7 @@ static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
      *   to_s == ""           → just the class name  (no #<...:>)
      *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
      *   to_s == anything else → "#<Class: <to_s>>" */
-    VALUE s = korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    VALUE s = SINK_RESULT(c, korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
     if (c->state == KORB_RAISE) return Qnil;
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
                        ? korb_str_cstr(s) : "";
@@ -119,7 +119,7 @@ static VALUE exc_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (eff_argc >= 1) {
         VALUE msg = argv[0];
         if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
-            VALUE s = korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
+            VALUE s = SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
         }
         if (!NIL_P(msg) || eff_argc >= 1) {
@@ -196,7 +196,7 @@ static VALUE exc_exception(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE n = korb_object_new(c, c->sp, k);
     VALUE msg = argv[0];
     if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
-        VALUE s = korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
+        VALUE s = SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
         if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
     }
     korb_ivar_set(n, korb_intern("@message"), msg);

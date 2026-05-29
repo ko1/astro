@@ -10,7 +10,7 @@
  * comparators like Comparable#> work for non-canonical <=> returns
  * (e.g. user code that returns 0.1 to mean "greater"). */
 static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
-    VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
+    VALUE r = SINK_RESULT(c, korb_funcall(c, self, korb_intern("<=>"), 1, &other));
     if (NIL_P(r)) {
         VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         /* CRuby's "comparison of X with Y failed" uses the class name on
@@ -86,7 +86,7 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     static __thread int cmp_eq_depth = 0;
     if (cmp_eq_depth >= 16) return RESULT_OK(Qfalse);
     cmp_eq_depth++;
-    VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
+    VALUE r = UNWRAP(korb_funcall(c, self, korb_intern("<=>"), 1, argv));
     cmp_eq_depth--;
     if (c->state == KORB_RAISE) {
         c->state = KORB_NORMAL;
@@ -143,7 +143,7 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
      * own <=> (CRuby uses min.<=>(max)) so user-defined comparison
      * decides; nil result OR positive sign → ArgumentError. */
     if (!NIL_P(lo) && !NIL_P(hi)) {
-        VALUE r = korb_funcall(c, lo, korb_intern("<=>"), 1, &hi);
+        VALUE r = UNWRAP(korb_funcall(c, lo, korb_intern("<=>"), 1, &hi));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         bool bad;
         if (NIL_P(r)) bad = true;
@@ -710,11 +710,11 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
     } else if (!SPECIAL_CONST_P(arg)) {
         /* Coerce via #to_str (CRuby semantics: const_get accepts a
          * String-convertible name). */
-        VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
-            VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 name = korb_intern_n(((struct korb_string *)r)->ptr,
@@ -766,11 +766,11 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
     if (!SYMBOL_P(name_arg) &&
         (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
         if (!SPECIAL_CONST_P(name_arg)) {
-            VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = UNWRAP(korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
+                name_arg = UNWRAP(korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -785,7 +785,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         namep = str->ptr; namelen = str->len;
     } else {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        VALUE inspv = korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL);
+        VALUE inspv = UNWRAP(korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL));
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
         return korb_raise(c, (struct korb_class *)eT,

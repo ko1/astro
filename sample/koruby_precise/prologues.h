@@ -85,8 +85,9 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
     return r;
 }
 
-/* CFUNC (LEGACY): just call the C function, then handle break-from-block. */
-static inline __attribute__((always_inline)) VALUE
+/* CFUNC (LEGACY): just call the C function, then handle break-from-block.
+ * Returns RESULT.  Legacy cfunc still sets c->state on raise → lift here. */
+static inline __attribute__((always_inline)) RESULT
 prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
                    uint32_t argc, uint32_t arg_index,
                    struct korb_proc *block, struct method_cache *mc)
@@ -94,10 +95,6 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE *argv = &c->current_frame->fp[arg_index];
     struct korb_proc *prev_block = c->current_block;
     c->current_block = block;
-    /* Push a minimal frame so the outer self lives in frame.prev->self
-     * across the cfunc's GC firings (= which can move outer self under
-     * moving GC).  C-local `prev_self` would go stale.  visit_roots
-     * scans frame.prev->self via the frame chain. */
     struct korb_frame cfr = {
         .prev = c->current_frame,
         .self = recv,
@@ -122,12 +119,18 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
     c->current_frame = cfr.prev;
     c->current_frame->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
     c->current_block = prev_block;
-    if (UNLIKELY(block && c->state == KORB_BREAK)) {
-        r = c->state_value;
+    /* Lift legacy c->state from the cfunc into RESULT.  Once all legacy
+     * cfuncs are migrated to cfunc_r (R4) this lift goes away. */
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        uint8_t state = c->state;
+        VALUE sv = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
+        /* break-from-block consumed at the cfunc/iterator boundary. */
+        if (block && state == KORB_BREAK) return RESULT_OK(sv);
+        return (RESULT){ sv, state };
     }
-    return r;
+    return RESULT_OK(r);
 }
 
 /* AST-method prologue, parameterized by PARAMS_KNOWN at compile time so
@@ -136,7 +139,7 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
  * block_given? / const access / blocked call) lets us skip c->current_block
  * save/restore, cref save/restore, and frame chain setup — about 10
  * stores per call on tight recursive paths (fib / ack / tak / incr). */
-static inline __attribute__((always_inline)) VALUE
+static inline __attribute__((always_inline)) RESULT
 prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                         uint32_t argc, uint32_t arg_index,
                         struct korb_proc *block, struct method_cache *mc,
@@ -159,10 +162,9 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * exactly match.  Too-few raises ArgumentError just like too-many. */
     if (UNLIKELY(argc != total)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                   "wrong number of arguments (given %u, expected %u)",
-                   argc, total));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eArg,
+                          "wrong number of arguments (given %u, expected %u)",
+                          argc, total);
     }
     /* Save outer fp only for new_fp computation; no C-local save of
      * self — outer frame's self is preserved via the frame chain
@@ -256,22 +258,8 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     /* baruby convention: body's `sp` parameter = frame TOP (= fp +
      * locals_cnt).  Body's local `i` is accessed as `sp[i - locals_cnt]`
-     * (= negative offset, baked by walker).  Use EVAL_R so the dispatch
-     * goes through the standard NODE function-pointer path (= same as
-     * what `EVAL` would do, just RESULT-native). */
+     * (= negative offset, baked by walker). */
     RESULT _br = EVAL(c, mc->body, new_fp + mc->locals_cnt);
-    VALUE r;
-    /* Lift RESULT.state into c->state for the surrounding legacy path
-     * (snapshot / dispatch_to_method's RETURN consumption etc. still
-     * reads c->state).  This bridge will go away once all the
-     * surrounding code goes RESULT-native (Phase 8d follow-ups). */
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
 
     c->current_frame = frame.prev;
     c->running_block = prev_running;
@@ -282,10 +270,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* If we're returning a Proc whose env points into the about-to-be-
      * popped frame, heap-snapshot it so the next stack push doesn't
      * trash the closure's captured state. */
-    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + mc->locals_cnt);
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + mc->locals_cnt);
-    }
+    korb_proc_snapshot_env_maybe(_br.value, new_fp, new_fp + mc->locals_cnt);
     /* Bindings created in this frame's lifetime: copy fp slots into
      * their heap snapshots so they hold final values after the frame
      * pops (CRuby heap-promote approximation). */
@@ -299,30 +284,26 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * Zero-fill the popped slots [prev_sp, c->sp) before lowering sp.
      * Subsequent sp-up by a sibling/later call will re-expose those
      * addresses; without the zero-clear the new frame would inherit
-     * this method's stale heap pointers (= a frame's last write to a
-     * local survives the pop, visit_roots picks it up later when sp
-     * grows back, and forwards a long-since-moved obj). */
+     * this method's stale heap pointers. */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
 
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        bool consume_return = (c->state == KORB_RETURN &&
+    if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
+        bool consume_return = (_br.state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
         /* break with NULL target: legacy "any method consumes" path
          * (yield-style break from a cfunc-driven loop, or break that
          * already escaped its inner while/loop).  break with concrete
          * target: only the matching frame consumes (set in proc_call
          * for &block-yield style escapes). */
-        bool consume_break = (c->state == KORB_BREAK &&
+        bool consume_break = (_br.state == KORB_BREAK &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
         if (consume_break || consume_return) {
-            r = c->state_value;
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
             c->state_target_frame = NULL;
+            return RESULT_OK(_br.value);
         }
     }
-    return r;
+    return _br;
 }
 
 /* AOT-baked variant: dispatcher is supplied as an argument.  The C
@@ -331,7 +312,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
  * call into a direct call which gcc can in turn inline at -O3.  Used
  * by the AOT specializer when it can statically determine that a hot
  * call site always reaches a specific method body. */
-static inline __attribute__((always_inline)) VALUE
+static inline __attribute__((always_inline)) RESULT
 prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
                                uint32_t argc, uint32_t arg_index,
                                struct korb_proc *block,
@@ -344,10 +325,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * exactly match.  Too-few raises ArgumentError just like too-many. */
     if (UNLIKELY(argc != total)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                   "wrong number of arguments (given %u, expected %u)",
-                   argc, total));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eArg,
+                          "wrong number of arguments (given %u, expected %u)",
+                          argc, total);
     }
     /* Save outer fp only for new_fp computation; no C-local save of
      * self — outer frame's self is preserved via the frame chain
@@ -431,14 +411,6 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * symbol; gcc emits a direct call instead of going through
      * mc->dispatcher (one indirect load + indirect call removed). */
     RESULT _br = static_disp(c, mc->body, new_fp + mc->locals_cnt);
-    VALUE r;
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
 
     c->current_frame = frame.prev;
     c->running_block = prev_running;
@@ -446,10 +418,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(!simple)) {
         c->current_block = prev_block;
     }
-    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + mc->locals_cnt);
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + mc->locals_cnt);
-    }
+    korb_proc_snapshot_env_maybe(_br.value, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
     }
@@ -458,24 +427,17 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
 
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        bool consume_return = (c->state == KORB_RETURN &&
+    if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
+        bool consume_return = (_br.state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
-        /* break with NULL target: legacy "any method consumes" path
-         * (yield-style break from a cfunc-driven loop, or break that
-         * already escaped its inner while/loop).  break with concrete
-         * target: only the matching frame consumes (set in proc_call
-         * for &block-yield style escapes). */
-        bool consume_break = (c->state == KORB_BREAK &&
+        bool consume_break = (_br.state == KORB_BREAK &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
         if (consume_break || consume_return) {
-            r = c->state_value;
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
             c->state_target_frame = NULL;
+            return RESULT_OK(_br.value);
         }
     }
-    return r;
+    return _br;
 }
 
 #endif

@@ -54,7 +54,7 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
         if (UNLIKELY(e->serial != korb_g_method_serial || e->gen != korb_g_gc_gen ||
                      e->klass != klass || e->name != name)) {
             struct korb_method *m = korb_class_find_method(klass, name);
-            if (!m) return korb_funcall(c, self, name, argc - 1, argv + 1);
+            if (!m) return SINK_RESULT(c, korb_funcall(c, self, name, argc - 1, argv + 1));
             korb_method_cache_fill(&e->mc, klass, m);
             e->klass = klass;
             e->name = name;
@@ -62,9 +62,9 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
             e->gen = korb_g_gc_gen;
         }
         uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
-        return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
+        return SINK_RESULT(c, e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc));
     }
-    return korb_funcall(c, self, name, argc - 1, argv + 1);
+    return SINK_RESULT(c, korb_funcall(c, self, name, argc - 1, argv + 1));
 }
 
 static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
@@ -143,11 +143,11 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
     if (!SYMBOL_P(v) &&
         (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) &&
         !SPECIAL_CONST_P(v)) {
-        VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (c->state == KORB_RAISE) return 0;
         if (RTEST(rt)) {
-            v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
+            v = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
             if (c->state == KORB_RAISE) return 0;
         }
     }
@@ -365,13 +365,13 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
      * crashes inside korb_yield with a NULL body. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return RESULT_OK(korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL));
+            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return RESULT_OK(korb_funcall(c, self, mo->name, 0, NULL));
+            return korb_funcall(c, self, mo->name, 0, NULL);
         }
         return RESULT_OK(Qnil);
     }
@@ -409,13 +409,13 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
             ID name = korb_sym2id(blk->self);
-            return RESULT_OK(korb_funcall(c, self, name, (uint32_t)argc, argv));
+            return korb_funcall(c, self, name, (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return RESULT_OK(korb_funcall(c, self, mo->name, (uint32_t)argc, argv));
+            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(Qnil);
     }
@@ -516,13 +516,13 @@ static RESULT method_call(CTX *c, int argc, VALUE *sp) {
      * define_method(:foo) doesn't redirect us into the new body. */
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     if (m->captured_method) {
-        extern VALUE korb_dispatch_to_method(CTX *c, struct korb_method *km,
-                                              struct korb_class *defining_class,
-                                              VALUE recv, ID name, int argc, VALUE *argv);
-        return RESULT_OK(korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
-                                        m->receiver, m->name, argc, argv));
+        extern RESULT korb_dispatch_to_method(CTX *c, struct korb_method *km,
+                                               struct korb_class *defining_class,
+                                               VALUE recv, ID name, int argc, VALUE *argv);
+        return korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
+                                        m->receiver, m->name, argc, argv);
     }
-    return RESULT_OK(korb_funcall(c, m->receiver, m->name, argc, argv));
+    return korb_funcall(c, m->receiver, m->name, argc, argv);
 }
 
 static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
@@ -745,7 +745,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
-        return RESULT_OK(korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL));
+        return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
     }
     VALUE r = korb_ary_new(c, c->sp);
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
@@ -902,7 +902,7 @@ static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
      * overrides #== / #equal? to return false, identical instances
      * still match. */
     if (self == argv[0]) return RESULT_OK(Qtrue);
-    return RESULT_OK(korb_funcall(c, self, korb_intern("=="), 1, argv));
+    return korb_funcall(c, self, korb_intern("=="), 1, argv);
 }
 
 

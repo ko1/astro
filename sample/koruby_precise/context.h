@@ -343,7 +343,7 @@ typedef RESULT (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE 
 
 /* Legacy prologue: chosen at method_cache fill time
  * (ast_simple / ast_general / cfunc). */
-typedef VALUE (*korb_prologue_t)(struct CTX_struct *c, struct Node *callsite,
+typedef RESULT (*korb_prologue_t)(struct CTX_struct *c, struct Node *callsite,
                                  VALUE recv, uint32_t argc, uint32_t arg_index,
                                  struct korb_proc *block, struct method_cache *mc);
 

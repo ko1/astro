@@ -47,7 +47,7 @@ static VALUE sym_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Symbol#succ — name's #succ wrapped back into a Symbol. */
 static VALUE sym_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
-    VALUE next_str = korb_funcall(c, s, korb_intern("succ"), 0, NULL);
+    VALUE next_str = SINK_RESULT(c, korb_funcall(c, s, korb_intern("succ"), 0, NULL));
     if (BUILTIN_TYPE(next_str) != T_STRING) return self;
     struct korb_string *ns = (struct korb_string *)next_str;
     return korb_id2sym(korb_intern_n(ns->ptr, ns->len));

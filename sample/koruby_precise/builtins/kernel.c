@@ -129,8 +129,8 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     }
     VALUE rt = Qfalse;
     if (!has_to_hash) {
-        rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                          (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+        rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                          (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
         if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
     }
     if (!has_to_hash && !RTEST(rt)) {
@@ -140,7 +140,7 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
                    korb_id_name(korb_class_of_class(v)->name)));
         return Qnil;
     }
-    VALUE r = korb_funcall(c, v, korb_intern("to_hash"), 0, NULL);
+    VALUE r = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_hash"), 0, NULL));
     if (c->state != KORB_NORMAL) return Qnil;
     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -193,18 +193,18 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
     VALUE list = argv[0];
     VALUE x    = argv[1];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
-        VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
-            list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
+            list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &x);
+        VALUE r = UNWRAP(korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &x));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
@@ -221,11 +221,11 @@ RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) return RESULT_OK(Qfalse);
     VALUE list = argv[0];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
-        VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
-            list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
+            list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
@@ -272,15 +272,15 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
          * one-element list. */
         if (!SPECIAL_CONST_P(list) &&
             (BUILTIN_TYPE(list) == T_CLASS || BUILTIN_TYPE(list) == T_MODULE)) {
-            VALUE r = korb_funcall(c, list, korb_intern("==="), 1, &exc);
+            VALUE r = UNWRAP(korb_funcall(c, list, korb_intern("==="), 1, &exc));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
             return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
         }
-        VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
-            list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
+            list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
             if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
@@ -297,7 +297,7 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eT,
                        "class or module required for rescue clause");
         }
-        VALUE r = korb_funcall(c, el, korb_intern("==="), 1, &exc);
+        VALUE r = UNWRAP(korb_funcall(c, el, korb_intern("==="), 1, &exc));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
@@ -314,7 +314,7 @@ RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
     if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(Qnil);
     VALUE v = argv[0];
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return RESULT_OK(v);
-    VALUE r = korb_funcall(c, v, korb_intern("to_proc"), 0, NULL);
+    VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_proc"), 0, NULL));
     if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     return RESULT_OK(r);
 }
@@ -634,7 +634,7 @@ static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE m = korb_funcall(c, self, korb_intern("=~"), 1, argv);
+    VALUE m = UNWRAP(korb_funcall(c, self, korb_intern("=~"), 1, argv));
     if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     return RESULT_OK(RTEST(m) ? Qfalse : Qtrue);
 }
@@ -725,11 +725,11 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
     if (!SYMBOL_P(name_arg) &&
         (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
         if (!SPECIAL_CONST_P(name_arg)) {
-            VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = UNWRAP(korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             if (RTEST(rt)) {
-                name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
+                name_arg = UNWRAP(korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             }
         }
@@ -765,7 +765,7 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
     struct korb_method *rtm = korb_class_find_method(klass, korb_intern("respond_to_missing?"));
     if (rtm) {
         VALUE args[2] = { korb_id2sym(name), (argc >= 2 ? argv[1] : Qfalse) };
-        VALUE r = korb_funcall(c, self, korb_intern("respond_to_missing?"), 2, args);
+        VALUE r = UNWRAP(korb_funcall(c, self, korb_intern("respond_to_missing?"), 2, args));
         return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
     }
     return RESULT_OK(Qfalse);
@@ -1174,7 +1174,7 @@ static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
      * to_ary first then falls back to to_a; for koruby's coverage
      * to_a is enough. */
     if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
-        return RESULT_OK(korb_funcall(c, v, korb_intern("to_a"), 0, NULL));
+        return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
     }
     VALUE r = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(r, v);
@@ -1421,7 +1421,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
             VALUE klass_v = (VALUE)korb_class_of_class(argv[0]);
             if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
                                                   korb_intern("to_str"))) {
-                coerced = korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL);
+                coerced = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }

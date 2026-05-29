@@ -76,7 +76,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, NULL, "no receiver for symbol proc");
         }
         ID name = korb_sym2id(p->self);
-        return RESULT_OK(korb_funcall(c, argv[0], name, argc - 1, argv + 1));
+        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
     }
     /* Method-proc shim: created by Method#to_proc; dispatch as
      * `m.receiver.send(m.name, *args)`. */
@@ -84,7 +84,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj *m = (struct korb_method_obj *)p->self;
-        return RESULT_OK(korb_funcall(c, m->receiver, m->name, argc, argv));
+        return korb_funcall(c, m->receiver, m->name, argc, argv);
     }
     /* Lambda is strict: argc must match params_cnt (or be in
      * required..total range when rest/optional are present).
@@ -232,11 +232,11 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
             arr = arg0;
         } else if (!SPECIAL_CONST_P(arg0)) {
-            VALUE rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            VALUE rt = UNWRAP(korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
             if (RTEST(rt)) {
-                VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                VALUE coerced = UNWRAP(korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL));
                 if (c->state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return RESULT_OK(Qnil);

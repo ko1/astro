@@ -32,11 +32,11 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
     VALUE init = argv[0];
     if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
         if (!SPECIAL_CONST_P(init)) {
-            VALUE rt = korb_funcall(c, init, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = UNWRAP(korb_funcall(c, init, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                init = korb_funcall(c, init, korb_intern("to_str"), 0, NULL);
+                init = UNWRAP(korb_funcall(c, init, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -104,11 +104,11 @@ static RESULT str_plus(CTX *c, int argc, VALUE *sp) {
         rs[1] = argv[0];
         if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
             if (!SPECIAL_CONST_P(rs[1])) {
-                VALUE rt = korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                VALUE rt = UNWRAP(korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
                 if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return RESULT_OK(Qnil); }
                 if (RTEST(rt)) {
-                    rs[1] = korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL);
+                    rs[1] = UNWRAP(korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL));
                     if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return RESULT_OK(Qnil); }
                 }
             }
@@ -242,7 +242,7 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
     }
     if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
         /* Try to_s as a fallback. */
-        rs[2] = korb_funcall(c, rs[1], korb_intern("to_s"), 0, NULL);
+        rs[2] = SINK_RESULT(c, korb_funcall(c, rs[1], korb_intern("to_s"), 0, NULL));
         if (!SPECIAL_CONST_P(rs[2]) && BUILTIN_TYPE(rs[2]) == T_STRING) {
             korb_str_concat(c, c->sp, rs[0], rs[2]);
             ok = true; goto done;
@@ -301,11 +301,11 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                VALUE r = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
+                VALUE r = UNWRAP(korb_funcall(c, other, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                     other = r;
@@ -313,12 +313,12 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
                 }
             }
             if (str_cmp_inverse_depth > 0) return RESULT_OK(Qnil);
-            rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                              (VALUE[]){ korb_id2sym(korb_intern("<=>")) });
+            rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                              (VALUE[]){ korb_id2sym(korb_intern("<=>")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 str_cmp_inverse_depth++;
-                VALUE r = korb_funcall(c, other, korb_intern("<=>"), 1, &self);
+                VALUE r = UNWRAP(korb_funcall(c, other, korb_intern("<=>"), 1, &self));
                 str_cmp_inverse_depth--;
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (FIXNUM_P(r)) {
@@ -510,11 +510,11 @@ static long str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv) {
     arg = argv[0];
     if (NIL_P(arg)) return n;
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
-        VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (c->state == KORB_RAISE) return n;
         if (RTEST(rt)) {
-            VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            VALUE r = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (c->state == KORB_RAISE) return n;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 arg = r;
@@ -958,8 +958,8 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
      * if the result isn't a String. */
     VALUE val = argv[argc - 1];
     if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
-        VALUE rt = korb_funcall(c, val, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = UNWRAP(korb_funcall(c, val, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (!RTEST(rt)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -968,7 +968,7 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
                        SPECIAL_CONST_P(val) ? "(special)"
                            : korb_id_name(korb_class_of_class(val)->name));
         }
-        VALUE coerced = korb_funcall(c, val, korb_intern("to_str"), 0, NULL);
+        VALUE coerced = UNWRAP(korb_funcall(c, val, korb_intern("to_str"), 0, NULL));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1190,11 +1190,11 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             if (RTEST(rt)) {
-                other = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
+                other = UNWRAP(korb_funcall(c, other, korb_intern("to_str"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             }
         }
@@ -2332,7 +2332,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
          * with the source method captured so #size works and chained
          * each(&blk) re-dispatches with the user's block. */
         VALUE arg = korb_id2sym(korb_intern("each_byte"));
-        return RESULT_OK(korb_funcall(c, self, korb_intern("to_enum"), 1, &arg));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
     }
     /* Read self from c->current_frame->self (auto-tracked). */
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
@@ -2570,11 +2570,11 @@ static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
         VALUE a = argv[i];
         if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
             if (!SPECIAL_CONST_P(a)) {
-                VALUE rt = korb_funcall(c, a, korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                VALUE rt = UNWRAP(korb_funcall(c, a, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (RTEST(rt)) {
-                    a = korb_funcall(c, a, korb_intern("to_str"), 0, NULL);
+                    a = UNWRAP(korb_funcall(c, a, korb_intern("to_str"), 0, NULL));
                     if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 }
             }
@@ -2715,11 +2715,11 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
 static VALUE str_coerce_arg(CTX *c, VALUE arg) {
     if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return arg;
     if (!SPECIAL_CONST_P(arg)) {
-        VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (c->state == KORB_RAISE) return Qundef;
         if (RTEST(rt)) {
-            VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            VALUE r = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (c->state == KORB_RAISE) return Qundef;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return r;
         }

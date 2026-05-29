@@ -20,7 +20,7 @@ static VALUE int_to_rational_obj(CTX *c, VALUE self) {
     VALUE klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Rational"));
     VALUE one = INT2FIX(1);
     VALUE args[2] = {self, one};
-    return korb_funcall(c, klass, korb_intern("new"), 2, args);
+    return SINK_RESULT(c, korb_funcall(c, klass, korb_intern("new"), 2, args));
 }
 
 /* CRuby's Numeric#coerce protocol: when an arithmetic op gets a non-
@@ -30,16 +30,16 @@ static VALUE int_to_rational_obj(CTX *c, VALUE self) {
  * caller can fall through to TypeError. */
 static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     /* Use respond_to? so mock objects (method_missing) are also seen. */
-    VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+    VALUE rt = SINK_RESULT(c, korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
     if (c->state == KORB_RAISE) return Qnil;
     if (!RTEST(rt)) return Qundef;
-    VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+    VALUE pair = SINK_RESULT(c, korb_funcall(c, other, korb_intern("coerce"), 1, &self));
     if (c->state != KORB_NORMAL) return Qnil;
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
     struct korb_array *p = (struct korb_array *)pair;
     if (p->len != 2) return Qundef;
-    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
+    return SINK_RESULT(c, korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]));
 }
 
 #define COERCE_OR_RAISE(c, v, op_name)                                  \
@@ -70,7 +70,7 @@ static RESULT int_plus(CTX *c, int argc, VALUE *sp) {
     }
     if (int_op_other_kind(argv[0])) {
         /* + is commutative — delegate to Rational#+/Complex#+. */
-        return RESULT_OK(korb_funcall(c, argv[0], korb_intern("+"), 1, &self));
+        return korb_funcall(c, argv[0], korb_intern("+"), 1, &self);
     }
     COERCE_OR_RAISE(c, argv[0], "+");
     return RESULT_OK(korb_int_plus(self, argv[0]));
@@ -85,7 +85,7 @@ static RESULT int_minus(CTX *c, int argc, VALUE *sp) {
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
-        return RESULT_OK(korb_funcall(c, r, korb_intern("-"), 1, &argv[0]));
+        return korb_funcall(c, r, korb_intern("-"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "-");
     return RESULT_OK(korb_int_minus(self, argv[0]));
@@ -103,7 +103,7 @@ static RESULT int_mul(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(korb_float_new(c, c->sp, korb_num2dbl(self) * korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
-        return RESULT_OK(korb_funcall(c, argv[0], korb_intern("*"), 1, &self));
+        return korb_funcall(c, argv[0], korb_intern("*"), 1, &self);
     }
     COERCE_OR_RAISE(c, argv[0], "*");
     return RESULT_OK(korb_int_mul(self, argv[0]));
@@ -118,7 +118,7 @@ static RESULT int_div(CTX *c, int argc, VALUE *sp) {
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
-        return RESULT_OK(korb_funcall(c, r, korb_intern("/"), 1, &argv[0]));
+        return korb_funcall(c, r, korb_intern("/"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "/");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
@@ -327,16 +327,16 @@ static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
     }
     /* Non-numeric: coerce protocol. */
     if (!SPECIAL_CONST_P(other)) {
-        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
-            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
-                return RESULT_OK(korb_funcall(c, p->ptr[0], korb_intern("<=>"), 1, &p->ptr[1]));
+                return korb_funcall(c, p->ptr[0], korb_intern("<=>"), 1, &p->ptr[1]);
             }
         }
     }
@@ -703,7 +703,7 @@ static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
         double q = floor(a / b);
         if (q >= (double)FIXNUM_MIN && q <= (double)FIXNUM_MAX) return RESULT_OK(INT2FIX((long)q));
         /* Build a Bignum from the float. */
-        return RESULT_OK(korb_funcall(c, korb_float_new(c, c->sp, q), korb_intern("to_i"), 0, NULL));
+        return korb_funcall(c, korb_float_new(c, c->sp, q), korb_intern("to_i"), 0, NULL);
     }
     /* Fixnum / Fixnum fast path. */
     if (FIXNUM_P(self) && FIXNUM_P(other)) {
@@ -730,16 +730,16 @@ static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
     }
     /* Try #coerce on other (CRuby's Numeric coerce protocol). */
     if (!SPECIAL_CONST_P(other)) {
-        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
-            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
-                return RESULT_OK(korb_funcall(c, p->ptr[0], korb_intern("div"), 1, &p->ptr[1]));
+                return korb_funcall(c, p->ptr[0], korb_intern("div"), 1, &p->ptr[1]);
             }
         }
     }
@@ -888,7 +888,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_STRING) {
         VALUE klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Kernel"));
         if (UNDEF_P(klass)) klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Float"));
-        VALUE f = korb_funcall(c, klass, korb_intern("Float"), 1, &other);
+        VALUE f = UNWRAP(korb_funcall(c, klass, korb_intern("Float"), 1, &other));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
             korb_ary_push(pair, f);
@@ -898,11 +898,11 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     }
     /* Object with #to_f: coerce via to_f to Float pair. */
     if (!SPECIAL_CONST_P(other)) {
-        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_f")) });
+        VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_f")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
-            VALUE f = korb_funcall(c, other, korb_intern("to_f"), 0, NULL);
+            VALUE f = UNWRAP(korb_funcall(c, other, korb_intern("to_f"), 0, NULL));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
                 korb_ary_push(pair, f);
@@ -1191,16 +1191,16 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
     }
     /* Non-numeric: try coerce protocol. */
     if (!SPECIAL_CONST_P(other)) {
-        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
-            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
-                return RESULT_OK(korb_funcall(c, p->ptr[0], korb_intern("divmod"), 1, &p->ptr[1]));
+                return korb_funcall(c, p->ptr[0], korb_intern("divmod"), 1, &p->ptr[1]);
             }
         }
     }
@@ -1441,7 +1441,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
                 }
                 if (has_mod) {
                     VALUE m = argv[1];
-                    return RESULT_OK(korb_funcall(c, big_r, korb_intern("%"), 1, &m));
+                    return korb_funcall(c, big_r, korb_intern("%"), 1, &m);
                 }
                 return RESULT_OK(big_r);
             }
@@ -1463,7 +1463,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             }
             if (has_mod) {
                 VALUE m = argv[1];
-                return RESULT_OK(korb_funcall(c, big_r, korb_intern("%"), 1, &m));
+                return korb_funcall(c, big_r, korb_intern("%"), 1, &m);
             }
             return RESULT_OK(big_r);
         }

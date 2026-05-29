@@ -1246,7 +1246,7 @@ VALUE korb_const_lookup(CTX *c, ID name) {
         struct korb_class *meta = korb_singleton_class_of(c, k);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
+            return SINK_RESULT(c, korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym));
         }
     }
     {
@@ -1794,7 +1794,7 @@ uint64_t korb_hash_value(CTX *c, VALUE v) {
          * lives on the Object class.  Otherwise we'd recurse forever. */
         if (m && m->defining_class != KORB_VM(c)->object_class &&
             m->defining_class != KORB_VM(c)->kernel_module) {
-            VALUE r = korb_funcall(c, v, korb_intern("hash"), 0, NULL);
+            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("hash"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
             if (FIXNUM_P(r)) return (uint64_t)FIX2LONG(r) * 11400714819323198485ULL;
         }
     }
@@ -1826,7 +1826,7 @@ bool korb_eql(CTX *c, VALUE a, VALUE b) {
         if (m && m->defining_class != KORB_VM(c)->object_class &&
             m->defining_class != KORB_VM(c)->kernel_module) {
             VALUE arg = b;
-            VALUE r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg);
+            VALUE r; { RESULT _r_r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
             return RTEST(r);
         }
     }
@@ -2277,7 +2277,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             return Qnil;
         }
         ID name = korb_sym2id(blk->self);
-        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+        return SINK_RESULT(c, korb_funcall(c, argv[0], name, argc - 1, argv + 1));
     }
     /* Method-proc shim (`&obj.method(:m)`): dispatch as receiver.send(name, *args). */
     if (blk->body == NULL && !SPECIAL_CONST_P(blk->self) &&
@@ -2285,7 +2285,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj { struct RBasic basic; VALUE receiver; ID name; };
         struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-        return korb_funcall(c, mo->receiver, mo->name, argc, argv);
+        return SINK_RESULT(c, korb_funcall(c, mo->receiver, mo->name, argc, argv));
     }
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
@@ -2418,11 +2418,11 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             arr = arg0;
         } else if (!SPECIAL_CONST_P(arg0)) {
             /* Try to_ary if it responds to it (honors respond_to_missing?). */
-            VALUE rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            VALUE rt; { RESULT _r_rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }); if (UNLIKELY(_r_rt.state != KORB_NORMAL)) { c->state = _r_rt.state; c->state_value = _r_rt.value; rt = Qnil; } else { rt = _r_rt.value; } }
             if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
             if (RTEST(rt)) {
-                VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                VALUE coerced; { RESULT _r_coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL); if (UNLIKELY(_r_coerced.state != KORB_NORMAL)) { c->state = _r_coerced.state; c->state_value = _r_coerced.value; coerced = Qnil; } else { coerced = _r_coerced.value; } }
                 if (c->state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
                     return Qnil;
@@ -3269,7 +3269,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         if (k && c) {
             struct korb_method *m = korb_class_find_method(k, korb_intern("inspect"));
             if (m && m->type == KORB_METHOD_AST) {
-                VALUE r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL);
+                VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
                 if (BUILTIN_TYPE(r) == T_STRING) return r;
             }
         }
@@ -3329,7 +3329,7 @@ VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
          * loop back here); only redirect when the user actually
          * overrode it as an AST method. */
         if (m && m->type == KORB_METHOD_AST) {
-            VALUE r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL);
+            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
             if (BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }
@@ -3346,7 +3346,7 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
         struct korb_class *klass = korb_class_of_class(v);
         struct korb_method *m = korb_class_find_method(klass, korb_intern("to_s"));
         if (m && m->type == KORB_METHOD_AST) {
-            VALUE r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL);
+            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
             /* If user's to_s returned something other than a String,
              * fall through to the default rendering rather than
              * crash inside korb_str_concat. */
@@ -3538,53 +3538,47 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name) {
  * non-inline wrappers exist so method_cache.prologue can hold a stable
  * function pointer in the main koruby binary; inside an SD the call is
  * compared against these names and inlined directly when it matches. */
-VALUE prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                     uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+RESULT prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                      uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 {
     /* When mc has a new-ABI cfunc_r set, bridge: stage self+args at the top
      * of the value stack and call prologue_cfunc_r_inl.  c->sp is NOT touched
      * here — the cfunc itself syncs `c->sp = sp` just before any alloc
-     * (runtime.md §12.3).  Convert returned RESULT back to legacy path. */
+     * (runtime.md §12.3). */
     if (UNLIKELY(mc->cfunc_r != NULL)) {
         VALUE *sp = c->sp;
         sp[0] = recv;
         for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
-        RESULT _rr = prologue_cfunc_r_inl(c, cs, (int)argc, sp + 1 + argc, bl, mc);
-        if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-            c->state = _rr.state;
-            c->state_value = _rr.value;
-            return Qnil;
-        }
-        return _rr.value;
+        return prologue_cfunc_r_inl(c, cs, (int)argc, sp + 1 + argc, bl, mc);
     }
     return prologue_cfunc_inl(c, cs, recv, argc, ai, bl, mc);
 }
 
-VALUE prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+RESULT prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 0); }
 
-VALUE prologue_ast_simple_1(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+RESULT prologue_ast_simple_1(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 1); }
 
-VALUE prologue_ast_simple_2(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+RESULT prologue_ast_simple_2(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 2); }
 
-VALUE prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+RESULT prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 3); }
 
-static VALUE prologue_ast_simple(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                                 uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+static RESULT prologue_ast_simple(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                                  uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, -1); }
 
 /* AST general: handles opt args, rest_slot, all the trimmings.  Same body
  * as the legacy korb_dispatch_call AST hot path. */
-static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
-                                  uint32_t argc, uint32_t arg_index,
-                                  struct korb_proc *block, struct method_cache *mc)
+static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
+                                   uint32_t argc, uint32_t arg_index,
+                                   struct korb_proc *block, struct method_cache *mc)
 {
     /* Don't C-local save outer self — outer.self lives in the frame
      * chain (visit_roots phase d).  After popping our frame the outer
@@ -3608,9 +3602,8 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->current_frame->fp += arg_index;
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
-        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
         c->current_block = prev_block;
-        return Qnil;
+        return korb_raise(c, NULL, "stack overflow");
     }
     /* Zero-fill the new frame's locals (= slots beyond argc) to Qnil so
      * an alloc inside the prologue / body doesn't see stale heap pointers
@@ -3671,13 +3664,12 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
 
     if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
         VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                   "wrong number of arguments (given %u, expected %u)",
-                   argc, mc->total_params_cnt));
         c->current_frame->fp = prev_fp;
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eArg,
+                          "wrong number of arguments (given %u, expected %u)",
+                          argc, mc->total_params_cnt);
     }
     /* Too few — argc must satisfy required + post (rest absorbs the
      * middle, optional defaults).  required+post is the floor regardless
@@ -3686,26 +3678,23 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         uint32_t min_argc = mc->required_params_cnt + mc->post_params_cnt;
         if (UNLIKELY(argc < min_argc)) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-            bool variadic = (mc->rest_slot >= 0) || (mc->total_params_cnt > min_argc);
             uint32_t opt_total = mc->total_params_cnt - mc->required_params_cnt - mc->post_params_cnt;
-            if (mc->rest_slot >= 0) {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                           "wrong number of arguments (given %u, expected %u+)",
-                           argc, min_argc));
-            } else if (opt_total > 0) {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                           "wrong number of arguments (given %u, expected %u..%u)",
-                           argc, min_argc, mc->total_params_cnt));
-            } else {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                           "wrong number of arguments (given %u, expected %u)",
-                           argc, min_argc));
-            }
-            (void)variadic;
             c->current_frame->fp = prev_fp;
             c->current_frame->cref = prev_cref;
             c->current_block = prev_block;
-            return Qnil;
+            if (mc->rest_slot >= 0) {
+                return korb_raise(c, (struct korb_class *)eArg,
+                                  "wrong number of arguments (given %u, expected %u+)",
+                                  argc, min_argc);
+            } else if (opt_total > 0) {
+                return korb_raise(c, (struct korb_class *)eArg,
+                                  "wrong number of arguments (given %u, expected %u..%u)",
+                                  argc, min_argc, mc->total_params_cnt);
+            } else {
+                return korb_raise(c, (struct korb_class *)eArg,
+                                  "wrong number of arguments (given %u, expected %u)",
+                                  argc, min_argc);
+            }
         }
     }
 
@@ -3899,50 +3888,36 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     VALUE *frame_lo = c->current_frame->fp;
     VALUE *frame_hi = c->current_frame->fp + mc->locals_cnt;
     RESULT _br = EVAL(c, mc->body, c->current_frame->fp + mc->locals_cnt);
-    VALUE r;
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     /* Same guard as proc_call: when an unhandled raise/throw escapes
-     * the body, r is a stale C-local with no consumer; dereffing it
-     * to inspect its type SEGVs under STRESS+PURGE. */
-    if (c->state == KORB_NORMAL || c->state == KORB_NEXT) {
-        korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
+     * the body, _br.value is a stale C-local with no consumer; dereffing
+     * it to inspect its type SEGVs under STRESS+PURGE. */
+    if (_br.state == KORB_NORMAL || _br.state == KORB_NEXT) {
+        korb_proc_snapshot_env_maybe(_br.value, frame_lo, frame_hi);
     }
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        korb_proc_snapshot_env_maybe(c->state_value, frame_lo, frame_hi);
+    if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
+        korb_proc_snapshot_env_maybe(_br.value, frame_lo, frame_hi);
     }
     c->current_frame->fp = prev_fp;
-    /* outer->self auto-fresh via frame chain — no C-local restore */
     c->current_frame->cref = prev_cref;
     c->current_block = prev_block;
     /* Restore sp + zero-fill the popped range so a sibling/later push
-     * doesn't re-expose this frame's stale heap ptrs (= same invariant
-     * as prologue_ast_simple_inl line 377).  Without this, sp grows
-     * unboundedly across calls through general, and visit_roots scans
-     * stale slots → "BAD SLOT" abort under STRESS. */
+     * doesn't re-expose this frame's stale heap ptrs. */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
 
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        bool consume_return = (c->state == KORB_RETURN &&
+    if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
+        bool consume_return = (_br.state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
-        bool consume_break = (c->state == KORB_BREAK &&
+        bool consume_break = (_br.state == KORB_BREAK &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
         if (consume_break || consume_return) {
-            r = c->state_value;
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
             c->state_target_frame = NULL;
+            return RESULT_OK(_br.value);
         }
     }
-    return r;
+    return _br;
 }
 
 void
@@ -3990,7 +3965,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         /* define_method: dispatch via the proc-method prologue which
          * pulls the proc from mc->method->u.proc.proc and invokes it
          * via proc_call (so closure env is preserved). */
-        extern VALUE prologue_proc_method(CTX *c, struct Node *callsite,
+        extern RESULT prologue_proc_method(CTX *c, struct Node *callsite,
                                           VALUE recv, uint32_t argc,
                                           uint32_t arg_index,
                                           struct korb_proc *block,
@@ -4039,15 +4014,15 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
  * trampoline (one per define_method).  See todo.md. */
 /* Prologue for define_method-defined methods: dispatch the captured
  * proc via proc_call so its env (closure) is preserved. */
-VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
-                           uint32_t argc, uint32_t arg_index,
-                           struct korb_proc *block, struct method_cache *mc)
+RESULT prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
+                            uint32_t argc, uint32_t arg_index,
+                            struct korb_proc *block, struct method_cache *mc)
 {
     (void)callsite; (void)block;
     extern RESULT proc_call(CTX *c, int argc, VALUE *sp);
-    if (!mc || !mc->method || mc->method->type != KORB_METHOD_PROC) return Qnil;
+    if (!mc || !mc->method || mc->method->type != KORB_METHOD_PROC) return RESULT_OK(Qnil);
     struct korb_proc *p = mc->method->u.proc.proc;
-    if (!p) return Qnil;
+    if (!p) return RESULT_OK(Qnil);
     /* args live at fp[arg_index..arg_index+argc-1]; pass that view. */
     VALUE *argv = &c->current_frame->fp[arg_index];
     /* Pin prev_self + prev_p_self in the GC root stack — both straddle
@@ -4078,19 +4053,11 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     sp[0] = (VALUE)p;
     for (uint32_t i = 0; i < argc; i++) sp[1 + i] = argv[i];
     RESULT _rr = proc_call(c, (int)argc, sp + 1 + argc);
-    VALUE r;
-    if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-        c->state = _rr.state;
-        c->state_value = _rr.value;
-        r = Qnil;
-    } else {
-        r = _rr.value;
-    }
     p->self = ppm_roots[1];
     p->is_lambda = prev_is_lambda;
     c->current_frame->self = ppm_roots[0];
     AROH_ROOT_STACK_SET_TOP(c, ppm_roots);
-    return r;
+    return _rr;
 }
 
 RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
@@ -4104,15 +4071,7 @@ RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
     struct korb_method *mm = klass ? korb_class_find_method(klass, korb_intern("method_missing")) : NULL;
     if (mm) {
         VALUE av[1] = { korb_id2sym(name) };
-        /* korb_dispatch_binop still returns VALUE — lift its c->state. */
-        VALUE r = korb_dispatch_binop(c, recv, korb_intern("method_missing"), 1, av);
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            RESULT res = (RESULT){ c->state_value, c->state };
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
-            return res;
-        }
-        return RESULT_OK(r);
+        return korb_dispatch_binop(c, recv, korb_intern("method_missing"), 1, av);
     }
     const char *kind = (m->visibility == KORB_VIS_PRIVATE) ? "private" : "protected";
     VALUE eNoMethodError = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -4133,9 +4092,9 @@ RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
     return exc_res;
 }
 
-VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
-                       uint32_t argc, uint32_t arg_index, struct korb_proc *block,
-                       struct method_cache *mc)
+RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
+                          uint32_t argc, uint32_t arg_index, struct korb_proc *block,
+                          struct method_cache *mc)
 {
     struct korb_class *klass = korb_class_of_class(recv);
 
@@ -4185,19 +4144,21 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
                       (ch >= '0' && ch <= '9') || ch == '_')) { bareword = false; break; }
             }
+            RESULT exc;
             if (recv == c->current_frame->self && bareword) {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eNo,
-                           "undefined local variable or method '%s' for %s",
-                           nm, korb_id_name(klass->name)));
+                exc = korb_raise(c, (struct korb_class *)eNo,
+                                 "undefined local variable or method '%s' for %s",
+                                 nm, korb_id_name(klass->name));
             } else {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
-                           nm, korb_id_name(klass->name)));
+                exc = korb_raise(c, (struct korb_class *)eNo,
+                                 "undefined method '%s' for %s",
+                                 nm, korb_id_name(klass->name));
             }
-            if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
-                korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
-                korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+            if (exc.state == KORB_RAISE && exc.value && !SPECIAL_CONST_P(exc.value)) {
+                korb_ivar_set(exc.value, korb_intern("@receiver"), recv);
+                korb_ivar_set(exc.value, korb_intern("@name"), korb_id2sym(name));
             }
-            return Qnil;
+            return exc;
         }
         if (mc) {
             korb_method_cache_fill(mc, klass, m);
@@ -4206,7 +4167,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             struct method_cache tmp = {0};
             korb_method_cache_fill(&tmp, klass, m);
             if (m->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-                return SINK_RESULT(c, korb_dispatch_visibility_raise(c, m, name, klass, recv));
+                return korb_dispatch_visibility_raise(c, m, name, klass, recv);
             }
             if (m->visibility == KORB_VIS_PROTECTED) {
                 struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -4214,7 +4175,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
                     if (k == m->defining_class) { ok = true; break; }
                 }
-                if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, m, name, klass, recv));
+                if (!ok) return korb_dispatch_visibility_raise(c, m, name, klass, recv);
             }
             return tmp.prologue(c, callsite, recv, argc, arg_index, block, &tmp);
         }
@@ -4223,7 +4184,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
      * for cache hits — same logic as the inline fast path. */
     if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
         if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
-            return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
+            return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
         }
         if (mc->method->visibility == KORB_VIS_PROTECTED) {
             struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
@@ -4231,7 +4192,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             for (struct korb_class *k = caller_klass; k; k = k->super) {
                 if (k == mc->method->defining_class) { ok = true; break; }
             }
-            if (!ok) return SINK_RESULT(c, korb_dispatch_visibility_raise(c, mc->method, name, klass, recv));
+            if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
         }
     }
     return mc->prologue(c, callsite, recv, argc, arg_index, block, mc);
@@ -4242,10 +4203,10 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
  * SD that contained the corresponding fast-path node.  Hoisting them
  * out shrinks all.so by ~10% and cuts AOT compile time. */
 
-#define COLD_BINOP_DEFAULT(OP_ID) do {            \
-    c->current_frame->fp[arg_index+1] = r;                       \
-    return korb_dispatch_binop(c, l, OP_ID, 1,    \
-                               &c->current_frame->fp[arg_index+1]); \
+#define COLD_BINOP_DEFAULT(OP_ID) do {                              \
+    c->current_frame->fp[arg_index+1] = r;                          \
+    return SINK_RESULT(c, korb_dispatch_binop(c, l, OP_ID, 1,       \
+                                              &c->current_frame->fp[arg_index+1])); \
 } while (0)
 
 __attribute__((noinline,cold)) VALUE
@@ -4285,7 +4246,7 @@ korb_node_mod_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
 }
 __attribute__((noinline,cold)) VALUE
 korb_node_uminus_slow(CTX *c, VALUE v) {
-    return korb_dispatch_binop(c, v, korb_intern("-@"), 0, NULL);
+    return SINK_RESULT(c, korb_dispatch_binop(c, v, korb_intern("-@"), 0, NULL));
 }
 __attribute__((noinline,cold)) VALUE
 korb_node_band_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
@@ -4329,10 +4290,10 @@ korb_node_aref_slow(CTX *c, VALUE r, VALUE i, uint32_t arg_index) {
     if (UNLIKELY(SPECIAL_CONST_P(r))) {
         if (NIL_P(r)) return Qnil;
         c->current_frame->fp[arg_index+1] = i;
-        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
+        return SINK_RESULT(c, korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]));
     }
     c->current_frame->fp[arg_index+1] = i;
-    return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
+    return SINK_RESULT(c, korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]));
 }
 
 __attribute__((noinline,cold)) VALUE
@@ -4352,11 +4313,11 @@ korb_node_aset_slow(CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index) {
  * lookup.  Used by Method#call to skip lookup and dispatch directly to
  * a captured method record (so define_method-based redefinition after
  * `instance_method(:foo)` doesn't redirect the call). */
-VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
-                               struct korb_class *defining_class,
-                               VALUE recv, ID name, int argc, VALUE *argv);
+RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
+                                struct korb_class *defining_class,
+                                VALUE recv, ID name, int argc, VALUE *argv);
 
-VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
+RESULT korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     struct korb_class *klass = korb_class_of_class(recv);
     struct korb_method *m = korb_class_find_method(klass, name);
     if (!m) {
@@ -4368,28 +4329,27 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
             VALUE *new_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
             new_argv[0] = korb_id2sym(name);
             for (int i = 0; i < argc; i++) new_argv[i + 1] = argv[i];
-            VALUE r = korb_dispatch_binop(c, recv, korb_intern("method_missing"), argc + 1, new_argv);
-            return r;
+            return korb_dispatch_binop(c, recv, korb_intern("method_missing"), argc + 1, new_argv);
         }
         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
-                 korb_id_name(name), korb_id_name(klass->name)));
-        if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
-            korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
-            korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+        RESULT exc = korb_raise(c, (struct korb_class *)eNo,
+                                "undefined method '%s' for %s",
+                                korb_id_name(name), korb_id_name(klass->name));
+        if (exc.state == KORB_RAISE && exc.value && !SPECIAL_CONST_P(exc.value)) {
+            korb_ivar_set(exc.value, korb_intern("@receiver"), recv);
+            korb_ivar_set(exc.value, korb_intern("@name"), korb_id2sym(name));
         }
-        return Qnil;
+        return exc;
     }
     return korb_dispatch_to_method(c, m, klass, recv, name, argc, argv);
 }
 
-VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
-                               struct korb_class *defining_class,
-                               VALUE recv, ID name, int argc, VALUE *argv) {
+RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
+                                struct korb_class *defining_class,
+                                VALUE recv, ID name, int argc, VALUE *argv) {
     if (m->type == KORB_METHOD_CFUNC) {
         /* Push a synthetic frame so the body sees self=recv via the
-         * frame chain, AND outer self is preserved automatically
-         * (= no stale C-local restore corrupts it on exit). */
+         * frame chain, AND outer self is preserved automatically. */
         struct korb_frame fr = {
             .prev = c->current_frame,
             .self = recv,
@@ -4401,38 +4361,38 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
             .last_match = Qnil,
         };
         c->current_frame = &fr;
-        VALUE r;
+        RESULT _rr;
         if (UNLIKELY(m->u.cfunc.func_r != NULL)) {
-            /* New sp-based RESULT ABI bridge: stage self + args at the top of
-             * the value stack and call func_r.  c->sp is NOT bumped here —
-             * the cfunc syncs `c->sp = sp` at alloc points (runtime.md §12.3).
-             * Convert returned RESULT back to legacy VALUE + c->state.
-             * Snapshot argv into a local buffer first: when argv lies inside
-             * the staging area (caller passed argv = sp + 1 etc.), the
-             * sp[1+i] = argv[i] copy would self-clobber on overlap. */
+            /* RESULT-native cfunc ABI: stage self + args at the top of the
+             * value stack and call func_r.  c->sp is NOT bumped here —
+             * the cfunc syncs c->sp = sp at alloc points (runtime.md
+             * §12.3).  Snapshot argv into a local buffer first: when argv
+             * lies inside the staging area, the sp[1+i] = argv[i] copy
+             * would self-clobber on overlap. */
             VALUE saved_argv[argc > 0 ? argc : 1];
             for (int i = 0; i < argc; i++) saved_argv[i] = argv[i];
             VALUE *sp = c->sp;
             sp[0] = recv;
             for (int i = 0; i < argc; i++) sp[1 + i] = saved_argv[i];
-            RESULT _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
-            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-                c->state = _rr.state;
-                c->state_value = _rr.value;
-                r = Qnil;
-            } else {
-                r = _rr.value;
-            }
+            _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
         } else {
-            r = m->u.cfunc.func(c, recv, argc, argv);
+            /* Legacy cfunc: VALUE return + c->state side-channel; lift. */
+            VALUE r = m->u.cfunc.func(c, recv, argc, argv);
+            if (UNLIKELY(c->state != KORB_NORMAL)) {
+                _rr = (RESULT){ c->state_value, c->state };
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+            } else {
+                _rr = RESULT_OK(r);
+            }
         }
         c->current_frame = fr.prev;
-        return r;
+        return _rr;
     }
     /* Proc-method (define_method'd): same frame-push pattern. */
     if (m->type == KORB_METHOD_PROC) {
         struct korb_proc *p = m->u.proc.proc;
-        if (!p) return Qnil;
+        if (!p) return RESULT_OK(Qnil);
         extern RESULT proc_call(CTX *c, int argc, VALUE *sp);
         struct korb_frame fr = {
             .prev = c->current_frame,
@@ -4450,16 +4410,8 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         sp[0] = (VALUE)p;
         for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
         RESULT _rr = proc_call(c, argc, sp + 1 + argc);
-        VALUE r;
-        if (UNLIKELY(_rr.state != KORB_NORMAL)) {
-            c->state = _rr.state;
-            c->state_value = _rr.value;
-            r = Qnil;
-        } else {
-            r = _rr.value;
-        }
         c->current_frame = fr.prev;
-        return r;
+        return _rr;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
     /* Peel trailing FL_KWARGS-tagged hash so kwarg-aware callees see
@@ -4479,10 +4431,9 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
         VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected %u) for %s",
-                   argc, m->u.ast.total_params_cnt, korb_id_name(name)));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                          "wrong number of arguments (given %d, expected %u) for %s",
+                          argc, m->u.ast.total_params_cnt, korb_id_name(name));
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
@@ -4492,8 +4443,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * dispatches don't leak high-water mark. */
     VALUE *new_fp = c->sp + 1;
     if (new_fp + m->u.ast.locals_cnt >= c->stack_end) {
-        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
-        return Qnil;
+        return korb_raise(c, NULL, "stack overflow");
     }
     /* Snapshot argv into a local buffer BEFORE the zero-fill — when argv
      * lies inside the about-to-be-zeroed frame area (= caller staged
@@ -4599,62 +4549,38 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     c->current_frame->cref = prev_cref2;
     /* Consume KORB_RETURN at the method boundary. */
     if (_br.state == KORB_RETURN) {
-        return _br.value;
+        return RESULT_OK(_br.value);
     }
-    /* Bridge: lift non-NORMAL state back to c->state for the legacy
-     * VALUE-returning caller path (korb_dispatch_to_method itself is
-     * still VALUE-returning; full RESULT-ization is a follow-up). */
-    if (_br.state != KORB_NORMAL) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        return Qnil;
-    }
-    return _br.value;
+    return _br;
 }
 
-VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
+RESULT korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
     return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
-/* RESULT-returning variant of korb_funcall.  Internally dispatches via
- * the legacy path, then converts c->state into RESULT.state for in-band
- * propagation.  Use in new-ABI cfuncs / helpers (where UNWRAP applies). */
+/* korb_funcall_r is an alias of korb_funcall (both RESULT-native now). */
 RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
-    VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        return res;
-    }
-    return RESULT_OK(r);
+    return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
 /* Same as korb_funcall, but the called method sees `block` as its
  * implicit block (yield / block_given?).  Used by Class#new to
  * forward `Foo.new { ... }`'s block into Foo#initialize. */
-VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
-
+RESULT korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
     struct korb_proc *prev = c->current_block;
     if (NIL_P(block) || SPECIAL_CONST_P(block) || BUILTIN_TYPE(block) != T_PROC) {
         c->current_block = NULL;
     } else {
         c->current_block = (struct korb_proc *)block;
     }
-    VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
+    RESULT r = korb_dispatch_binop(c, recv, mid, argc, argv);
     c->current_block = prev;
     return r;
 }
 
+/* Alias of korb_funcall_with_block. */
 RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
-    VALUE r = korb_funcall_with_block(c, recv, mid, argc, argv, block);
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        return res;
-    }
-    return RESULT_OK(r);
+    return korb_funcall_with_block(c, recv, mid, argc, argv, block);
 }
 
 /* ---- runtime init ---- */

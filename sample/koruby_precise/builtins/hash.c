@@ -25,12 +25,12 @@ static RESULT hash_aref(CTX *c, int argc, VALUE *sp) {
     if (kls == KORB_VM(c)->hash_class) {
         if (!NIL_P(h->default_proc)) {
             VALUE args[2] = {self, argv[0]};
-            return RESULT_OK(korb_funcall(c, h->default_proc, korb_intern("call"), 2, args));
+            return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
         }
         return RESULT_OK(h->default_value);
     }
     /* Subclass: defer to #default so overrides apply. */
-    return RESULT_OK(korb_funcall(c, self, korb_intern("default"), 1, &argv[0]));
+    return korb_funcall(c, self, korb_intern("default"), 1, &argv[0]);
 }
 static RESULT hash_aset(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -194,7 +194,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
              * unconditionally (covers method_missing-based mocks); only
              * skip if it raises NoMethodError. */
             if (!SPECIAL_CONST_P(arg)) {
-                arg = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
                 if (c->state == KORB_RAISE) {
                     /* swallow NoMethodError; propagate other errors */
                     VALUE bang = c->state_value;
@@ -607,21 +607,21 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         /* Try #to_hash first (CRuby checks before #to_ary). */
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) != T_HASH &&
             BUILTIN_TYPE(arg) != T_ARRAY) {
-            VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+            VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                VALUE coerced = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_HASH) {
                     arg = coerced;
                 }
             } else {
-                VALUE rt2 = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                         (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+                VALUE rt2 = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                         (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (RTEST(rt2)) {
-                    VALUE coerced = korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL);
+                    VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
                     if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                     if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
                         arg = coerced;
@@ -767,7 +767,7 @@ static RESULT hash_default_get(CTX *c, int argc, VALUE *sp) {
      * call the proc with (self, key); otherwise return default_value. */
     if (!NIL_P(h->default_proc) && argc >= 1) {
         VALUE args[2] = { self, argv[0] };
-        return RESULT_OK(korb_funcall(c, h->default_proc, korb_intern("call"), 2, args));
+        return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
     }
     return RESULT_OK(h->default_value);
 }
@@ -812,11 +812,11 @@ static RESULT hash_default_proc_set(CTX *c, int argc, VALUE *sp) {
     /* Coerce non-Proc via #to_proc (mock objects, etc.). */
     if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
         if (!SPECIAL_CONST_P(blk)) {
-            VALUE rt = korb_funcall(c, blk, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_proc")) });
+            VALUE rt = UNWRAP(korb_funcall(c, blk, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_proc")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                blk = korb_funcall(c, blk, korb_intern("to_proc"), 0, NULL);
+                blk = UNWRAP(korb_funcall(c, blk, korb_intern("to_proc"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -1075,11 +1075,11 @@ static RESULT hash_replace(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
-                other = korb_funcall(c, other, korb_intern("to_hash"), 0, NULL);
+                other = UNWRAP(korb_funcall(c, other, korb_intern("to_hash"), 0, NULL));
                 if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
@@ -1211,7 +1211,7 @@ static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int m
             best_key  = bk;
             first = false;
         } else {
-            VALUE cmp = korb_funcall(c, bk, korb_intern("<=>"), 1, &best_key);
+            VALUE cmp = SINK_RESULT(c, korb_funcall(c, bk, korb_intern("<=>"), 1, &best_key));
             if (FIXNUM_P(cmp)) {
                 long cv = FIX2LONG(cmp);
                 if ((max && cv > 0) || (!max && cv < 0)) {
@@ -1254,10 +1254,10 @@ static RESULT hash_sort(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(r, pair);
     }
     if (korb_block_given(c)) {
-        return RESULT_OK(korb_funcall_with_block(c, r, korb_intern("sort"), 0, NULL,
-                                        (VALUE)c->current_block));
+        return korb_funcall_with_block(c, r, korb_intern("sort"), 0, NULL,
+                                        (VALUE)c->current_block);
     }
-    return RESULT_OK(korb_funcall(c, r, korb_intern("sort"), 0, NULL));
+    return korb_funcall(c, r, korb_intern("sort"), 0, NULL);
 }
 
 /* Hash#deconstruct_keys — pattern-match support hook.  Spec: takes one
@@ -1319,7 +1319,7 @@ static RESULT hash_dig(CTX *c, int argc, VALUE *sp) {
                    "%s does not have #dig method",
                    korb_id_name(korb_class_of_class(first)->name));
     }
-    return RESULT_OK(korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1));
+    return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
 }
 
 /* ---------- Hash#has_value? / value? ---------- */
@@ -1389,7 +1389,7 @@ static RESULT hash_sort_by(CTX *c, int argc, VALUE *sp) {
     for (long i = 1; i < ka->len; i++) {
         long j = i;
         while (j > 0) {
-            VALUE cmp = korb_funcall(c, ka->ptr[j], korb_intern("<=>"), 1, &ka->ptr[j-1]);
+            VALUE cmp = UNWRAP(korb_funcall(c, ka->ptr[j], korb_intern("<=>"), 1, &ka->ptr[j-1]));
             if (!FIXNUM_P(cmp) || FIX2LONG(cmp) >= 0) break;
             VALUE tk = ka->ptr[j]; ka->ptr[j] = ka->ptr[j-1]; ka->ptr[j-1] = tk;
             VALUE tp = pa->ptr[j]; pa->ptr[j] = pa->ptr[j-1]; pa->ptr[j-1] = tp;
@@ -1438,7 +1438,7 @@ static RESULT hash_sum(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(addend, e->key);
             korb_ary_push(addend, e->value);
         }
-        acc = korb_funcall(c, acc, korb_intern("+"), 1, &addend);
+        acc = UNWRAP(korb_funcall(c, acc, korb_intern("+"), 1, &addend));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(acc);
