@@ -262,11 +262,11 @@ typedef struct {
 })
 
 /* LIFT_C_STATE / SINK_RESULT / LIFT_C_STATE_OR_OK macros removed in
- * Phase 8d-R5: c->state side-channel field deleted, all bridges gone. */
-
-/* Sync c->sp_top to sp before calling a function that may fire GC.  All
- * staged values on or below sp will then be in visit_roots scan range. */
-#define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
+ * Phase 8d-R5: c->state side-channel field deleted, all bridges gone.
+ *
+ * KORB_SYNC_SP also removed: sp staging now writes c->sp_top directly
+ * inside alloc helpers (= "alloc 関数が c, sp を受け取り、その中で c->sp = sp"
+ * design rule).  Callers don't sync. */
 
 /* =====================================================================
  * Dispatcher / prologue / cfunc function-pointer typedefs.
