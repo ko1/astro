@@ -452,31 +452,25 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
             VALUE sym = korb_id2sym(name);
             return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
         }
-        /* Build the error message via mod.name (or .inspect for an
-         * anonymous module).  Pin eName / name_v / prefix across the
-         * korb_funcall sites — each fires GC under STRESS+PURGE and a
-         * stale eName C-local would crash inside korb_raise →
-         * korb_exc_new → korb_object_new(c, c->sp_top, stale_class). */
-        RESULT _err = RESULT_OK(Qnil);
-        ARO_ROOT_SCOPE_START(c, ers, 3) {
-            ers[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-            RESULT _name_r = korb_funcall(c, p, korb_intern("name"), 0, NULL);
-            ers[1] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
-            if (NIL_P(ers[1]) || (BUILTIN_TYPE(ers[1]) == T_STRING &&
-                                  ((struct korb_string *)ers[1])->len == 0)) {
-                RESULT _ins_r = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
-                ers[2] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
-                                                       : korb_str_new_cstr(c, c->sp_top, "<anonymous>");
-            } else {
-                ers[2] = ers[1];
-            }
-            const char *prefix_str = (BUILTIN_TYPE(ers[2]) == T_STRING)
-                                       ? ((struct korb_string *)ers[2])->ptr : "?";
-            _err = korb_raise(c, (struct korb_class *)ers[0],
-                       "uninitialized constant %s::%s",
-                       prefix_str, korb_id_name(name));
-        } ARO_ROOT_SCOPE_END(c, ers);
-        return _err;
+        /* Park eName / name_v / prefix in sp[0..2] across korb_funcall sites. */
+        sp[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
+        sp[1] = 0;
+        sp[2] = 0;
+        RESULT _name_r = korb_funcall(c, p, korb_intern("name"), 0, NULL);
+        sp[1] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
+        if (NIL_P(sp[1]) || (BUILTIN_TYPE(sp[1]) == T_STRING &&
+                              ((struct korb_string *)sp[1])->len == 0)) {
+            RESULT _ins_r = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
+            sp[2] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
+                                                   : korb_str_new_cstr(c, sp + 3, "<anonymous>");
+        } else {
+            sp[2] = sp[1];
+        }
+        const char *prefix_str = (BUILTIN_TYPE(sp[2]) == T_STRING)
+                                   ? ((struct korb_string *)sp[2])->ptr : "?";
+        return korb_raise(c, (struct korb_class *)sp[0],
+                   "uninitialized constant %s::%s",
+                   prefix_str, korb_id_name(name));
     }
     return korb_raise_type_error(c, "%s is not a class/module",
                           NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
