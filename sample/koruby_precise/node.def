@@ -997,15 +997,12 @@ node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
 NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
 {
-    /* Pin r across korb_dispatch_call_cached: under STRESS+PURGE the
-     * dispatch sites internally fire GC during method lookup and the
-     * C local r would go stale. */
-    RESULT _ret;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = EVAL_ARG_UNWRAP(c, recv);
-        _ret = korb_dispatch_call_cached(c, n, rs[0], name, argc, arg_index, NULL, mc);
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _ret;
+    /* recv evaluation: GC inside the EVAL is responsible for syncing
+     * its own c->sp.  Once recv is back as a C-local, it's already
+     * forwarded — no further GC fires between assignment and the
+     * dispatch call's recv argument. */
+    VALUE r = EVAL_ARG_UNWRAP(c, recv);
+    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
 }
 
 /* Case/when's `===` dispatch: bypass visibility because CRuby calls
