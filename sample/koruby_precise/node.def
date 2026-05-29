@@ -135,11 +135,10 @@ node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
     if (name == korb_intern("$@")) {
         VALUE exc = korb_gvar_get(korb_intern("$!"));
         if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return RESULT_OK(Qnil);
-        VALUE bt = UNWRAP(korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL));
-        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; bt = Qnil; }
-        return RESULT_OK(bt);
+        RESULT _bt = korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL);
+        return RESULT_OK((_bt.state == KORB_NORMAL) ? _bt.value : Qnil);
     }
-    return RESULT_OK(LIFT_C_STATE(c, korb_gvar_get(name)));
+    return RESULT_OK(korb_gvar_get(name));
 }
 
 NODE_DEF
@@ -180,9 +179,9 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         }
         /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
         if (strcmp(nm, "$stdout") == 0 || strcmp(nm, "$stderr") == 0) {
-            VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("write")) }));
-            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            RESULT _rt_w = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("write")) });
+            VALUE rt = (_rt_w.state == KORB_NORMAL) ? _rt_w.value : Qfalse;
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                 struct korb_class *klass = korb_class_of_class(v);
@@ -196,12 +195,11 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
          * #to_int gives non-Integer, raise TypeError. */
         if (strcmp(nm, "$.") == 0) {
             if (SPECIAL_CONST_P(v) ? !FIXNUM_P(v) : BUILTIN_TYPE(v) != T_BIGNUM) {
-                VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-                if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+                RESULT _rt_t = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+                VALUE rt = (_rt_t.state == KORB_NORMAL) ? _rt_t.value : Qfalse;
                 if (RTEST(rt)) {
                     v = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
-                    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
                     bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
                                                      : BUILTIN_TYPE(v) == T_BIGNUM;
                     if (!is_int) {
@@ -459,27 +457,26 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
          * korb_funcall sites — each fires GC under STRESS+PURGE and a
          * stale eName C-local would crash inside korb_raise →
          * korb_exc_new → korb_object_new(c, c->sp, stale_class). */
+        RESULT _err = RESULT_OK(Qnil);
         ARO_ROOT_SCOPE_START(c, ers, 3) {
             ers[0] = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            ers[1] = UNWRAP(korb_funcall(c, p, korb_intern("name"), 0, NULL));
-            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; ers[1] = Qnil; }
+            RESULT _name_r = korb_funcall(c, p, korb_intern("name"), 0, NULL);
+            ers[1] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
             if (NIL_P(ers[1]) || (BUILTIN_TYPE(ers[1]) == T_STRING &&
                                   ((struct korb_string *)ers[1])->len == 0)) {
-                ers[2] = UNWRAP(korb_funcall(c, p, korb_intern("inspect"), 0, NULL));
-                if (c->state != KORB_NORMAL) {
-                    c->state = KORB_NORMAL; c->state_value = Qnil;
-                    ers[2] = korb_str_new_cstr(c, c->sp, "<anonymous>");
-                }
+                RESULT _ins_r = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
+                ers[2] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
+                                                       : korb_str_new_cstr(c, c->sp, "<anonymous>");
             } else {
                 ers[2] = ers[1];
             }
             const char *prefix_str = (BUILTIN_TYPE(ers[2]) == T_STRING)
                                        ? ((struct korb_string *)ers[2])->ptr : "?";
-            DROP_RESULT(korb_raise(c, (struct korb_class *)ers[0],
+            _err = korb_raise(c, (struct korb_class *)ers[0],
                        "uninitialized constant %s::%s",
-                       prefix_str, korb_id_name(name)));
+                       prefix_str, korb_id_name(name));
         } ARO_ROOT_SCOPE_END(c, ers);
-        return RESULT_OK(Qnil);
+        return _err;
     }
     return korb_raise_type_error(c, "%s is not a class/module",
                           NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
@@ -817,10 +814,10 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
             struct korb_class *super_meta = korb_class_of_class(rs[0]);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
                 VALUE child_v = rs[1];
-                korb_funcall(c, rs[0], korb_intern("inherited"), 1, &child_v);
-                if (c->state == KORB_RAISE) {
+                RESULT _ih = korb_funcall(c, rs[0], korb_intern("inherited"), 1, &child_v);
+                if (_ih.state != KORB_NORMAL) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return RESULT_OK(Qnil);
+                    return _ih;
                 }
             }
         }
@@ -889,10 +886,10 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
                 VALUE child_v = rs[0];
-                korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
-                if (c->state == KORB_RAISE) {
+                RESULT _ih = korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
+                if (_ih.state != KORB_NORMAL) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return RESULT_OK(Qnil);
+                    return _ih;
                 }
             }
         }
@@ -1940,12 +1937,11 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         return RESULT_OK(a);
     }
     /* respond_to?(:to_ary)? */
-    VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
-    if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+    RESULT _rt_a = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+    VALUE rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
     if (RTEST(rt)) {
         VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_ary"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (NIL_P(r)) {
             /* CRuby: to_ary returning nil wraps in [v]. */
             VALUE a = korb_ary_new_capa(c, c->sp, 1);
@@ -1996,13 +1992,12 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         }
         VALUE rt = Qfalse;
         if (!has_to_a) {
-            rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                              (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
-            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            RESULT _rt_a = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                              (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+            rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
         }
         if (has_to_a || RTEST(rt)) {
             VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_a"), 0, NULL));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
             if (BUILTIN_TYPE(r) == T_ARRAY) return RESULT_OK(r);
             /* CRuby: if to_a returns nil, treat the value as a single
              * element array.  Other non-Array results are TypeError. */
