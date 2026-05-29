@@ -273,7 +273,7 @@ int main(int argc, char *argv[])
         astro_build_begin_aot_session();
         if (!bcfg.out_exe) {
             rc = koruby_run_ast(c, ast);
-            if (rc != 0 && c->state == KORB_RAISE) return rc;
+            if (rc != 0) return rc;
         } else {
             (void)koruby_run_ast(c, ast);
         }
