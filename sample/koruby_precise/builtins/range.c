@@ -534,9 +534,19 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
             return RESULT_OK(UNDEF_P(finf) ? Qnil : finf);
         }
     }
-    /* Non-numeric (e.g. String range): CRuby returns nil for non-Numeric
-     * ranges' size. */
-    if (!b_numeric || !e_numeric) return RESULT_OK(Qnil);
+    /* Non-numeric ranges: CRuby returns nil for String / Symbol
+     * (which have #succ) but raises TypeError "can't iterate from X"
+     * for arbitrary objects without #succ. */
+    if (!b_numeric || !e_numeric) {
+        struct korb_class *bk = korb_class_of_class(r->begin);
+        bool has_succ = (bk && korb_class_find_method(bk, korb_intern("succ")));
+        if (!has_succ) {
+            return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                              "can't iterate from %s",
+                              bk ? korb_id_name(bk->name) : "(special)");
+        }
+        return RESULT_OK(Qnil);
+    }
     /* Numeric mixed: delegate to to_a length. */
     VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
     if (BUILTIN_TYPE(arr) == T_ARRAY) {
