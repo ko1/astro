@@ -823,8 +823,7 @@ void korb_init_builtins(CTX *c) {
         /* Array#initialize — populate (or replace contents of) an already
          * allocated Array.  Subclasses can override this. */
         extern RESULT ary_initialize(CTX *c, int argc, VALUE *sp);
-        korb_class_add_method_cfunc_r(KORB_VM(c)->array_class, korb_intern("initialize"),
-                                    ary_initialize, -1);
+        DEF_R_PRIV(KORB_VM(c)->array_class, "initialize", ary_initialize, -1);
         /* Array[] — class method that returns an Array literal of args. */
         RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp);
         korb_class_add_method_cfunc_r(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);
@@ -928,7 +927,7 @@ void korb_init_builtins(CTX *c) {
         korb_class_add_method_cfunc_r(cHshMeta, korb_intern("new"), hash_class_new, -1);
         /* Hash#initialize — subclasses can override; called by Hash.new
          * after the empty allocation. */
-        DEF_R(KORB_VM(c)->hash_class, "initialize", hash_initialize, -1);
+        DEF_R_PRIV(KORB_VM(c)->hash_class, "initialize", hash_initialize, -1);
         korb_class_add_method_cfunc_r(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
         KORB_VM(c)->hash_class->basic.klass = (VALUE)cHshMeta;
         /* Hash.try_convert(obj) — obj.to_hash if responding and returns
@@ -980,7 +979,7 @@ void korb_init_builtins(CTX *c) {
         /* String#initialize — subclasses can override; called by String.new
          * after the empty allocation. */
         extern RESULT str_initialize(CTX *c, int argc, VALUE *sp);
-        DEF_R(KORB_VM(c)->string_class, "initialize", str_initialize, -1);
+        DEF_R_PRIV(KORB_VM(c)->string_class, "initialize", str_initialize, -1);
         KORB_VM(c)->string_class->basic.klass = (VALUE)cStrMeta;
         /* String.try_convert(obj) — obj.to_str if responding and returns
          * String, else nil.  Raises TypeError if #to_str returns non-String. */
