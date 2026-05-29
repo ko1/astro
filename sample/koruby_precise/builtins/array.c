@@ -816,6 +816,22 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
                 continue;
             }
         }
+        /* CRuby fallback: if arg responds to #each, collect up to self's
+         * length via each.  Call Array.__zip_each__(obj, n) helper which
+         * uses each with break at size limit. */
+        VALUE rt_each = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                     (VALUE[]){ korb_id2sym(korb_intern("each")) });
+        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        if (RTEST(rt_each)) {
+            VALUE args[2] = { v, INT2FIX(a->len) };
+            VALUE arr = UNWRAP(korb_funcall_r(c,
+                (VALUE)KORB_VM(c)->array_class,
+                korb_intern("__zip_each__"), 2, args));
+            if (!SPECIAL_CONST_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
+                cooked[j] = arr;
+                continue;
+            }
+        }
         cooked[j] = Qnil;  /* fallback: nil tuple element */
     }
 

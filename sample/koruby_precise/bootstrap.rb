@@ -342,6 +342,25 @@ end
 class Array
   include Enumerable
   class << self
+    # Helper for Array#zip — collect up to n elements from obj using
+    # #each, padding with nil if obj is shorter.  C ary_zip calls this
+    # when both #to_ary and #to_a fail to produce an Array.
+    def __zip_each__(obj, n)
+      result = []
+      i = 0
+      begin
+        obj.each do |x|
+          break if i >= n
+          result << x
+          i += 1
+        end
+      rescue StopIteration
+        # OK
+      end
+      result << nil while result.size < n
+      result
+    end
+
     def try_convert(o)
       return o if o.is_a?(Array)
       return nil unless o.respond_to?(:to_ary)
