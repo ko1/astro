@@ -4189,106 +4189,107 @@ RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
 
 #define COLD_BINOP_DEFAULT(OP_ID) do {                              \
     c->current_frame->fp[arg_index+1] = r;                          \
-    return SINK_RESULT(c, korb_dispatch_binop(c, l, OP_ID, 1,       \
-                                              &c->current_frame->fp[arg_index+1])); \
+    return korb_dispatch_binop(c, l, OP_ID, 1,                      \
+                               &c->current_frame->fp[arg_index+1]); \
 } while (0)
 
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_plus_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     /* Fast paths only when both operands are EXACTLY String / Array
      * (not subclasses).  A subclass may have redefined `+`, in which
      * case we must dispatch to find the override. */
     if (BUILTIN_TYPE(l) == T_STRING && BUILTIN_TYPE(r) == T_STRING &&
         ((struct RBasic *)l)->klass == (VALUE)KORB_VM(c)->string_class) {
-        return korb_str_concat(c, c->sp, l, r);
+        return RESULT_OK(korb_str_concat(c, c->sp, l, r));
     }
     if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY &&
         ((struct RBasic *)l)->klass == (VALUE)KORB_VM(c)->array_class) {
         VALUE a = korb_ary_new_capa(c, c->sp, korb_ary_len(l) + korb_ary_len(r));
         for (long i = 0, n2 = korb_ary_len(l); i < n2; i++) korb_ary_push(a, korb_ary_aref(l, i));
         for (long i = 0, n2 = korb_ary_len(r); i < n2; i++) korb_ary_push(a, korb_ary_aref(r, i));
-        return a;
+        return RESULT_OK(a);
     }
     COLD_BINOP_DEFAULT(id_op_plus);
 }
 
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_minus_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_minus);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_mul_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_mul);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_div_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_div);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_mod_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_mod);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_uminus_slow(CTX *c, VALUE v) {
-    return SINK_RESULT(c, korb_dispatch_binop(c, v, korb_intern("-@"), 0, NULL));
+    return korb_dispatch_binop(c, v, korb_intern("-@"), 0, NULL);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_band_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_and);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_bor_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_or);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_bxor_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_xor);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_lshift_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_lshift);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_rshift_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_rshift);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_lt_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_lt);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_le_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_le);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_gt_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_gt);
 }
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_ge_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     COLD_BINOP_DEFAULT(id_op_ge);
 }
 
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_aref_slow(CTX *c, VALUE r, VALUE i, uint32_t arg_index) {
     if (UNLIKELY(SPECIAL_CONST_P(r))) {
-        if (NIL_P(r)) return Qnil;
+        if (NIL_P(r)) return RESULT_OK(Qnil);
         c->current_frame->fp[arg_index+1] = i;
-        return SINK_RESULT(c, korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]));
+        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
     }
     c->current_frame->fp[arg_index+1] = i;
-    return SINK_RESULT(c, korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]));
+    return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
 }
 
-__attribute__((noinline,cold)) VALUE
+__attribute__((noinline,cold)) RESULT
 korb_node_aset_slow(CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index) {
     if (UNLIKELY(SPECIAL_CONST_P(r))) {
-        if (NIL_P(r)) return v;
+        if (NIL_P(r)) return RESULT_OK(v);
     }
     VALUE *args = &c->current_frame->fp[arg_index+1];
     args[0] = i; args[1] = v;
-    korb_dispatch_binop(c, r, id_op_aset, 2, args);
-    return v;
+    RESULT _ar = korb_dispatch_binop(c, r, id_op_aset, 2, args);
+    if (UNLIKELY(_ar.state != KORB_NORMAL)) return _ar;
+    return RESULT_OK(v);
 }
 
 #undef COLD_BINOP_DEFAULT

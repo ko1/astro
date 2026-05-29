@@ -1230,7 +1230,7 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
             return RESULT_OK(korb_int_plus(l, r));
         }
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_plus_slow(c, l, r, arg_index)));
+        return korb_node_plus_slow(c, l, r, arg_index);
     }
     /* l is a heap object (string / array / float / etc.).  Park it in a
      * synthetic frame's last_line slot so visit_roots scans &fr.last_line
@@ -1258,7 +1258,7 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
         return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) + korb_flonum_to_double(r)));
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_plus_slow(c, l, r, arg_index)));
+    return korb_node_plus_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1276,7 +1276,7 @@ node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, 
             return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) - korb_flonum_to_double(r)));
         }
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_minus_slow(c, l, r, arg_index)));
+        return korb_node_minus_slow(c, l, r, arg_index);
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
@@ -1287,7 +1287,7 @@ node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, 
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_minus_slow(c, l, r, arg_index)));
+    return korb_node_minus_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1305,7 +1305,7 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
             return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) * korb_flonum_to_double(r)));
         }
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_mul_slow(c, l, r, arg_index)));
+        return korb_node_mul_slow(c, l, r, arg_index);
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
@@ -1316,7 +1316,7 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_mul_slow(c, l, r, arg_index)));
+    return korb_node_mul_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1340,7 +1340,7 @@ node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) / korb_flonum_to_double(r)));
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_div_slow(c, l, r, arg_index)));
+    return korb_node_div_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1360,7 +1360,7 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         return RESULT_OK(INT2FIX(m));
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_mod_slow(c, l, r, arg_index)));
+    return korb_node_mod_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1372,7 +1372,7 @@ node_uminus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *oper
         if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return RESULT_OK(INT2FIX(s));
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_uminus_slow(c, v)));
+    return korb_node_uminus_slow(c, v);
 }
 
 // ---------------- bit ops ----------------
@@ -1384,7 +1384,7 @@ node_bit_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs
     VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l & r);
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_band_slow(c, l, r, arg_index)));
+    return korb_node_band_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1394,7 +1394,7 @@ node_bit_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
     VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l | r);
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_bor_slow(c, l, r, arg_index)));
+    return korb_node_bor_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1404,7 +1404,7 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs
     VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK((l ^ r) | FIXNUM_FLAG);
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_bxor_slow(c, l, r, arg_index)));
+    return korb_node_bxor_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1422,7 +1422,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
             return RESULT_OK(korb_int_lshift(l, r));
         }
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_lshift_slow(c, l, r, arg_index)));
+        return korb_node_lshift_slow(c, l, r, arg_index);
     }
     /* l is a heap obj — pin via synthetic-frame's last_line slot
      * (see node_plus for the same pattern + rationale) so rhs eval's
@@ -1450,7 +1450,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
         return RESULT_OK(l);
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_lshift_slow(c, l, r, arg_index)));
+    return korb_node_lshift_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1464,7 +1464,7 @@ node_rshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
         return RESULT_OK(korb_int_rshift(l, r));
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_rshift_slow(c, l, r, arg_index)));
+    return korb_node_rshift_slow(c, l, r, arg_index);
 }
 
 // ---------------- comparisons ----------------
@@ -1478,7 +1478,7 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l < (intptr_t)r));
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_lt_slow(c, l, r, arg_index)));
+        return korb_node_lt_slow(c, l, r, arg_index);
     }
     /* Pin l across rhs GC fire — see node_plus. */
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
@@ -1490,7 +1490,7 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_lt_slow(c, l, r, arg_index)));
+    return korb_node_lt_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1502,7 +1502,7 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l <= (intptr_t)r));
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_le_slow(c, l, r, arg_index)));
+        return korb_node_le_slow(c, l, r, arg_index);
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
@@ -1513,7 +1513,7 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_le_slow(c, l, r, arg_index)));
+    return korb_node_le_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1525,7 +1525,7 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l > (intptr_t)r));
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_gt_slow(c, l, r, arg_index)));
+        return korb_node_gt_slow(c, l, r, arg_index);
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
@@ -1536,7 +1536,7 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_gt_slow(c, l, r, arg_index)));
+    return korb_node_gt_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1548,7 +1548,7 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l >= (intptr_t)r));
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return RESULT_OK(LIFT_C_STATE(c, korb_node_ge_slow(c, l, r, arg_index)));
+        return korb_node_ge_slow(c, l, r, arg_index);
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
@@ -1559,7 +1559,7 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_ge_slow(c, l, r, arg_index)));
+    return korb_node_ge_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -1701,7 +1701,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             }
         }
         c->last_cfunc_callsite = n;
-        ret = korb_node_aref_slow(c, r, i, arg_index);
+        ret = UNWRAP(korb_node_aref_slow(c, r, i, arg_index));
       aref_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
     return RESULT_OK(ret);
@@ -1745,7 +1745,7 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
         }
     }
     c->last_cfunc_callsite = n;
-    return RESULT_OK(LIFT_C_STATE(c, korb_node_aset_slow(c, r, i, v, arg_index)));
+    return korb_node_aset_slow(c, r, i, v, arg_index);
 }
 
 /* `obj[*args] = v` — splat-key form.  splat must be a node_splat_to_ary
