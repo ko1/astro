@@ -1,0 +1,495 @@
+// -*- mode: c -*-
+//
+// ancaml — MinCaml AST node evaluators (https://esumii.github.io/min-caml/).
+//
+// MinCaml is a monomorphic ML subset: unit / bool / int / float, plus heap
+// closures / tuples / arrays.  No strings, no lists, no polymorphism.  The
+// whole program is one expression.  Variables are resolved to (depth, idx)
+// frame coordinates by the parser (see parse.c); externals (print_int, ...)
+// are looked up by name via node_gref.  Children are evaluated with
+// EVAL_ARG so the specializer folds the dispatch chain into one SD; the
+// exceptions are function bodies and variable-arity children, which are
+// reached through a runtime dispatcher read (see node.h::ac_entries).
+//
+// Faithful to MinCaml's surface: int has only `+ - (unary -)`; all
+// multiplication / division is on float (`*. /.`).  Comparison desugars to
+// node_eq / node_le / node_not in the parser, exactly as MinCaml's parser
+// rewrites `<> < > >=` in terms of `=`, `<=` and `not`.
+
+// ---- constants -------------------------------------------------------
+
+NODE_DEF
+node_unit(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return AC_UNIT;
+}
+
+NODE_DEF
+node_bool(CTX * restrict c, NODE * restrict n, int32_t b)
+{
+    (void)c; (void)n;
+    return AC_BOOL(b);
+}
+
+NODE_DEF
+node_int(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    (void)c; (void)n;
+    return AC_INT(v);
+}
+
+// Wide integer literal (outside int32 range); stored as a raw 64-bit word.
+NODE_DEF
+node_int64(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return AC_INT((int64_t)v);
+}
+
+NODE_DEF
+node_float(CTX * restrict c, NODE * restrict n, double v)
+{
+    (void)c; (void)n;
+    return ac_make_float(v);
+}
+
+// ---- variable access -------------------------------------------------
+
+// Local variable: walk `depth` parent frames, read slot `idx`.
+NODE_DEF
+node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    struct ac_frame *f = c->env;
+    for (uint32_t i = 0; i < depth; i++) f = f->parent;
+    return f->slots[idx];
+}
+
+// External / library reference (print_int, sqrt, ...).
+NODE_DEF
+node_gref(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)c; (void)n;
+    return ac_lookup_external(name);
+}
+
+// ---- control flow ----------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    return (EVAL_ARG(c, cond) == AC_TRUE) ? EVAL_ARG(c, thn) : EVAL_ARG(c, els);
+}
+
+// `e1; e2` — evaluate e1 for effect, return e2.  MinCaml desugars this to
+// `let () = e1 in e2`; we keep it as a dedicated node so it adds no frame
+// slot (the parser's (depth, idx) numbering stays simple).
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+{
+    (void)n;
+    EVAL_ARG(c, first);
+    return EVAL_ARG(c, rest);
+}
+
+// `let x = value in body` — one fresh slot.
+NODE_DEF
+node_let(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    struct ac_frame *f = ac_new_frame(c->env, 1);
+    f->slots[0] = v;
+    struct ac_frame *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `let rec f <args> = fun-body in body` — pre-binds slot 0 so the `node_fun`
+// value can capture the frame and reference `f` recursively.
+NODE_DEF
+node_letrec(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    struct ac_frame *f = ac_new_frame(c->env, 1);
+    f->slots[0] = AC_UNIT;
+    struct ac_frame *saved = c->env;
+    c->env = f;
+    f->slots[0] = EVAL_ARG(c, value);     // node_fun, captures f
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `let (x0, ..., x{cnt-1}) = value in body` — destructure a tuple into a
+// fresh cnt-slot frame.
+NODE_DEF
+node_lettuple(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t cnt, NODE *body)
+{
+    (void)n;
+    VALUE tv = EVAL_ARG(c, value);
+    struct ac_obj *t = AC_PTR(tv);
+    struct ac_frame *f = ac_new_frame(c->env, (int)cnt);
+    for (uint32_t i = 0; i < cnt; i++) f->slots[i] = t->u.tup.items[i];
+    struct ac_frame *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// ---- functions and application --------------------------------------
+
+// Build a closure over the current frame.  `body` is reached at apply time
+// through a runtime dispatcher read, so the parser registers it as its own
+// code-store entry.  `is_leaf` (the body creates no inner closures) lets the
+// caller stack-allocate the parameter frame.
+NODE_DEF @noinline
+node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf)
+{
+    (void)n;
+    return ac_make_closure(body, c->env, (int)nparams, (int)is_leaf);
+}
+
+// Fast path for a direct call to a leaf closure of arity NP: the parameter
+// frame can't escape, so we put it on the C stack (alloca) and dispatch the
+// body inline, skipping the per-call GC_MALLOC in ac_apply.  A tail call
+// inside the body sets c->tail_pending; we hand it to ac_apply's trampoline.
+#define APP_LEAF(NP, AV)                                                  \
+    do {                                                                  \
+        if (LIKELY(AC_IS_PTR(f))) {                                      \
+            struct ac_obj * const _o = AC_PTR(f);                       \
+            if (LIKELY(_o->type == AC_CLOSURE &&                         \
+                       _o->u.closure.nparams == (NP) &&                   \
+                       _o->u.closure.is_leaf)) {                          \
+                struct ac_frame * const _fr = (struct ac_frame *)       \
+                    alloca(sizeof(struct ac_frame) + sizeof(VALUE) * (NP)); \
+                _fr->parent = _o->u.closure.env;                          \
+                _fr->nslots = (NP);                                       \
+                for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = (AV)[_i]; \
+                struct ac_frame * const _saved = c->env;                 \
+                c->env = _fr;                                             \
+                NODE * const _body = _o->u.closure.body;                  \
+                VALUE _r = (*_body->head.dispatcher)(c, _body);           \
+                c->env = _saved;                                          \
+                if (LIKELY(!c->tail_pending)) return _r;                  \
+                c->tail_pending = 0;                                      \
+                return ac_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);    \
+            }                                                             \
+        }                                                                 \
+    } while (0)
+
+NODE_DEF
+node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[1];
+    av[0] = EVAL_ARG(c, a0);
+    APP_LEAF(1, av);
+    return ac_apply(c, f, 1, av);
+}
+
+NODE_DEF
+node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    APP_LEAF(2, av);
+    return ac_apply(c, f, 2, av);
+}
+
+NODE_DEF
+node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    APP_LEAF(3, av);
+    return ac_apply(c, f, 3, av);
+}
+
+NODE_DEF
+node_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[4];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    av[3] = EVAL_ARG(c, a3);
+    APP_LEAF(4, av);
+    return ac_apply(c, f, 4, av);
+}
+
+// Arity >= 5: argument nodes live in the AC_CALL_ARGS side-table.
+NODE_DEF @noinline
+node_appn(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = AC_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return ac_apply(c, f, (int)argc, av);
+}
+
+// ---- tail-position application variants ------------------------------
+//
+// The parser's tail-marking pass (ac_mark_tail) rewrites an application in
+// tail position into one of these (same struct layout as the corresponding
+// node_app*).  Instead of recursing, a tail call to a closure records the
+// callee + arguments in the CTX and sets `tail_pending`; the enclosing
+// ac_apply (or APP_LEAF) loop re-enters, so tail recursion is O(1) stack.
+// Non-closure callees (a prim) or an unsupported arity fall back to a normal
+// apply.
+
+#define TAIL_SET(NP, AV)                                                  \
+    do {                                                                  \
+        if (LIKELY(AC_IS_PTR(f) && AC_PTR(f)->type == AC_CLOSURE &&    \
+                   AC_PTR(f)->u.closure.nparams == (NP))) {              \
+            c->tc_fn = f; c->tc_argc = (NP);                              \
+            for (int _i = 0; _i < (NP); _i++) c->tc_argv[_i] = (AV)[_i];  \
+            c->tail_pending = 1;                                          \
+            return AC_UNIT;                                              \
+        }                                                                 \
+    } while (0)
+
+NODE_DEF
+node_tail_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[1];
+    av[0] = EVAL_ARG(c, a0);
+    TAIL_SET(1, av);
+    return ac_apply(c, f, 1, av);
+}
+
+NODE_DEF
+node_tail_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    TAIL_SET(2, av);
+    return ac_apply(c, f, 2, av);
+}
+
+NODE_DEF
+node_tail_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    TAIL_SET(3, av);
+    return ac_apply(c, f, 3, av);
+}
+
+NODE_DEF
+node_tail_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[4];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    av[3] = EVAL_ARG(c, a3);
+    TAIL_SET(4, av);
+    return ac_apply(c, f, 4, av);
+}
+
+NODE_DEF @noinline
+node_tail_appn(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = AC_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    if (LIKELY(AC_IS_PTR(f) && AC_PTR(f)->type == AC_CLOSURE &&
+               AC_PTR(f)->u.closure.nparams == (int)argc && argc <= AC_TC_ARGMAX)) {
+        c->tc_fn = f; c->tc_argc = (int)argc;
+        for (uint32_t i = 0; i < argc; i++) c->tc_argv[i] = av[i];
+        c->tail_pending = 1;
+        return AC_UNIT;
+    }
+    return ac_apply(c, f, (int)argc, av);
+}
+
+// ---- integer arithmetic (MinCaml: only + - and unary -) -------------
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return AC_INT(AC_INT_VAL(av) + AC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return AC_INT(AC_INT_VAL(av) - AC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return AC_INT(-AC_INT_VAL(EVAL_ARG(c, e)));
+}
+
+// ---- float arithmetic (*. /. +. -. and unary -.) --------------------
+
+NODE_DEF
+node_fadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    double x = ac_get_float(c, EVAL_ARG(c, a));
+    double y = ac_get_float(c, EVAL_ARG(c, b));
+    return ac_make_float(x + y);
+}
+
+NODE_DEF
+node_fsub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    double x = ac_get_float(c, EVAL_ARG(c, a));
+    double y = ac_get_float(c, EVAL_ARG(c, b));
+    return ac_make_float(x - y);
+}
+
+NODE_DEF
+node_fmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    double x = ac_get_float(c, EVAL_ARG(c, a));
+    double y = ac_get_float(c, EVAL_ARG(c, b));
+    return ac_make_float(x * y);
+}
+
+NODE_DEF
+node_fdiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    double x = ac_get_float(c, EVAL_ARG(c, a));
+    double y = ac_get_float(c, EVAL_ARG(c, b));
+    return ac_make_float(x / y);
+}
+
+NODE_DEF
+node_fneg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return ac_make_float(-ac_get_float(c, EVAL_ARG(c, e)));
+}
+
+// ---- comparison & logical (MinCaml core: Eq, LE, Not) ----------------
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return AC_BOOL(ac_structural_eq(c, av, bv));
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(AC_IS_INT(av) & AC_IS_INT(bv)))
+        return AC_BOOL(AC_INT_VAL(av) <= AC_INT_VAL(bv));
+    return AC_BOOL(ac_compare(c, av, bv) <= 0);
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return (EVAL_ARG(c, e) == AC_FALSE) ? AC_TRUE : AC_FALSE;
+}
+
+// ---- tuples and arrays ----------------------------------------------
+
+// Tuple construction (variable arity); element nodes in AC_TUPLE_ITEMS.
+NODE_DEF @noinline
+node_tuple(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_t cnt)
+{
+    (void)n;
+    VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (cnt ? cnt : 1));
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *e = AC_TUPLE_ITEMS[items_idx + i];
+        items[i] = (*e->head.dispatcher)(c, e);
+    }
+    return ac_make_tuple((int)cnt, items);
+}
+
+// `Array.create size init`  (a.k.a. Array.make).
+NODE_DEF
+node_array(CTX * restrict c, NODE * restrict n, NODE *size, NODE *init)
+{
+    (void)n;
+    int64_t sz = AC_INT_VAL(EVAL_ARG(c, size));
+    VALUE iv = EVAL_ARG(c, init);
+    if (UNLIKELY(sz < 0 || sz > (int64_t)0x7fffffff))   // OCaml: Invalid_argument "Array.make"
+        ac_runtime_error(c, "Array.create: invalid array length");
+    return ac_make_array((int)sz, iv);
+}
+
+// `arr.(idx)`
+NODE_DEF
+node_get(CTX * restrict c, NODE * restrict n, NODE *arr, NODE *idx)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, arr);
+    int64_t i = AC_INT_VAL(EVAL_ARG(c, idx));
+    struct ac_obj *o = AC_PTR(a);
+    if (UNLIKELY(i < 0 || i >= o->u.arr.n))
+        ac_runtime_error(c, "array index out of bounds");
+    return o->u.arr.items[i];
+}
+
+// `arr.(idx) <- val`  (returns unit)
+NODE_DEF
+node_put(CTX * restrict c, NODE * restrict n, NODE *arr, NODE *idx, NODE *val)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, arr);
+    int64_t i = AC_INT_VAL(EVAL_ARG(c, idx));
+    VALUE v = EVAL_ARG(c, val);
+    struct ac_obj *o = AC_PTR(a);
+    if (UNLIKELY(i < 0 || i >= o->u.arr.n))
+        ac_runtime_error(c, "array index out of bounds");
+    o->u.arr.items[i] = v;
+    return AC_UNIT;
+}

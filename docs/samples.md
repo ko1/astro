@@ -3,8 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「25 サンプル並べて何が分かるか」を整理する
-(汎用言語 21 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
+を参照。本書は「26 サンプル並べて何が分かるか」を整理する
+(汎用言語 22 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
 JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 (`baruby` / `baruby_precise` / `arawk`) は本書他セクションで GC・テキスト
 処理側の観点で追記しているが、§3 の node.def 構成パターン軸では
@@ -36,6 +36,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `asom` | SOM (Smalltalk) | 純 OO, 動的 | 動 | int+double+bignum | AreWeFastYet 16 本完走 / SOM TestSuite 100% |
 | `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / 末尾呼出最適化 |
 | `asml` | Standard ML サブセット | 関数型, 静的 | 静 | int+real | **HM full** (Algorithm W + value restriction) / datatype / record / pattern match / **型駆動 dispatcher 特殊化** / SML/NJ v110.79 比 fib AOT 1.8×, strcat 2.7× 速 |
+| `ancaml` | MinCaml (単相 ML サブセット) | 関数型, 静的 | 静 | int + boxed float | **単相 HM 型推論** (破壊的単一化, 未解決変数は int に default) / de Bruijn `(depth,idx)` フレーム / 末尾呼出最適化 (トランポリン) + leaf フレーム alloca / `ocaml` と差分テスト (AOT fib は OCaml bytecode 超え)。**別実装リファレンス + `ANCAML=` ハーネス**同梱。**An\* シリーズ** (ASTro Nutshell) |
 | `astr` | R サブセット | 関数型, ベクタ | 動 | int+double+vec+str | tagged VALUE + libgc + ベクタ broadcast |
 | `arawk` | POSIX awk サブセット (regex 除く) | スクリプト, テキスト処理 | 動 | fixnum + double + 文字列 | UTF-8 codepoint / BEGIN/END/pattern-action / 6 形態 `getline` / `printf` 全書式 / 連想配列 / lazy field strnum / chunked input |
 | `luastro` | Lua 5.4 | 命令型, 動的 | 動 | int + float | metatable / coroutine (ucontext) / weak table / `__gc` |
@@ -53,7 +54,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 - **教育用最小 / 電卓**: `calc` / `abc`
 - **命令型 (古典)**: `pascalast` / `castro`
 - **動的言語のメインストリーム**: `naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`
-- **関数型**: `ascheme` / `astocaml` / `asml`
+- **関数型**: `ascheme` / `astocaml` / `asml` / `ancaml`
 - **OO 純化**: `asom`
 - **データ解析 / テキスト処理**: `astr` / `arawk`
 - **スタックマシン**: `aforth` / `wastro`
@@ -73,7 +74,7 @@ Ruby サブセット系には階層がある:
 moving + 14-way GC switch、 という pair-of-testbeds 構造。
 
 直交する軸として **型システム** で切ると:
-- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `asml` / `wastro` / `anpy`
+- **静的型** (parser-time に型確定 / または HM 推論): `pascalast` / `castro` / `astocaml` / `asml` / `ancaml` / `wastro` / `anpy`
 - **動的型**: 動的言語勢 8 つ (`naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`) + Scheme + Smalltalk + R + awk + Forth (cell 単位 untyped)
 - **型なし / DSL**: `calc` / `abc` / `astrogre` / `nuq` / `arjsv` / `arcel`
 
@@ -96,6 +97,7 @@ ASTro が想定外でも嵌まる例になっている。
 |---|---:|---:|
 | `calc`           |   6 |    36 |
 | `naruby`         |  32 |   479 |
+| `ancaml`         |  38 |   495 |
 | `abc`            |  40 |   361 |
 | `anpy`           |  41 |   361 |
 | `astr`           |  46 |   578 |
@@ -469,6 +471,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `ascheme` | tagged `int64` | libgc | S 式 reader → 構文ツリー → AST | 完全な末尾呼出最適化トランポリン, call/cc, 多値, port |
 | `astocaml` | tagged `int64` | libgc | 自前 lexer + parser | クロージャ環境チェイン, lazy, class/module |
 | `asml` | tagged `int64` (low-bit fixnum) | leak (interpreter-grade) | 自前 lexer + 再帰下降 | **HM 型推論 + Algorithm W**, 推論結果駆動の dispatcher 特殊化, value restriction, 末尾呼出トランポリン |
+| `ancaml` | tagged `int64` (low-bit fixnum) + boxed float | libgc | 自前 lexer + 再帰下降 | **単相 HM 型推論** (破壊的単一化), de Bruijn `(depth,idx)` フレーム解決, 末尾呼出トランポリン + leaf-frame alloca, `ocaml` 差分テスト |
 | `asom` | tagged `intptr_t` | libgc | 自前再帰下降 (`asom_parse.c`) | per-bucket free-list frame pool |
 | `aforth` | `int64_t` (data stack cell) | なし | 自前 tokenizer | DO-loop frame stack 並列, vars[] エリア |
 | `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + 再帰下降 + Pratt 式パーサ | metatable, **ucontext coroutine**, weak table, `__gc` |
@@ -736,6 +739,7 @@ toolchain 系は `ASTRO_BUILD_OPTS` 環境変数に分離。なお framework 共
 | `koruby` | CRuby 4.0 / YJIT | optcarrot | AOT で **~100 fps** (gcc-15 -O3、CRuby ~42 fps の **2.4×**、YJIT 175 fps の 0.57×)。PGO 効果は +1 fps |
 | `naruby` | gcc -O0..-O3 (同等 C) + CRuby/YJIT | 15 | **gcc -O3 と ≤1.1× が 5/15** (gcd, compose, collatz, early_return, prime_count)。fib/ackermann/tak のみ 4–13× 差 |
 | `astocaml` | OCaml 4.14 (toplevel/bytecode/native) | 5 | **toplevel 5/5 勝**、**bytecode 3/5 勝**、native (ocamlopt) は 3.5–20× 先 |
+| `ancaml` | OCaml 4.14 (bytecode `ocaml` / native `ocamlopt`) | 3 (fib/ffib/ack) | leaf-frame alloca + TCO で **interp 比 fib 3.1× / ack 1.7×**。**AOT fib は bytecode 超え** (0.151 vs 0.398s)、float-fib・ack は bytecode 負け (float boxing / 呼出境界が残る)。native (ocamlopt) は 1–2 桁先 |
 | `castro` | gcc -O0/-O1/-O3 (同 source) | 11 | **-O0 を 3 本上回り**、crc32 で **-O1 と 1.11× タイ**。-O3 への残ギャップ 3–5× |
 | `wastro` | native gcc -O2 / wasmtime (Cranelift JIT) | 3 | native に 3–6× 負け、wasmtime とはループでタイ・call で負け |
 | `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |

@@ -1,5 +1,8 @@
 # AnPy — ChocoPy on ASTro
 
+**AnPy** は **An\* シリーズ**（*ASTro **N**utshell* = 定番の題材言語を ASTro 上に
+「一口サイズ」で実装するシリーズ。AnPy = ChocoPy、[AnCaml](../ancaml/) = MinCaml、…）の一員。
+
 `AnPy` は [ChocoPy](https://chocopy.org/)（UC Berkeley CS164 で使われる **静的型付き
 Python 3.6 サブセット**）を ASTro フレームワーク上に実装したサンプル。型注釈・
 単一継承クラス・`int`/`bool`/`str`/リスト・`None`・グローバル/ネスト関数

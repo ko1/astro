@@ -45,14 +45,14 @@ docs/                   Design notes and papers
 
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
-**At a glance — 25 samples by paradigm:**
+**At a glance — 26 samples by paradigm:**
 
 | Group | Count | Samples |
 |---|---:|---|
 | Tutorial / calculators | 2 | `calc`, `abc` |
 | Ruby family | 5 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby` |
 | Other dynamic scripting | 3 | `luastro`, `jstro`, `pystro` |
-| Functional / OO academic | 4 | `ascheme`, `astocaml`, `asml`, `asom` |
+| Functional / OO academic | 5 | `ascheme`, `astocaml`, `asml`, `ancaml`, `asom` |
 | Statically-typed imperative | 3 | `pascalast`, `castro`, `anpy` |
 | Stack-based | 1 | `aforth` |
 | Data processing | 2 | `astr`, `arawk` |
@@ -89,6 +89,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`astocaml`](./sample/astocaml/) — **OCaml** subset (91 nodes) with HM-lite type inference, ADTs, exceptions, single-inheritance classes, real functor instantiation, TCO.
   35/35 tests; with `-c`, fib / ack / tak beat `ocamlc` bytecode and `ocaml` toplevel.
 - [`asml`](./sample/asml/) — **Standard ML** subset (85 nodes) with **full Hindley–Milner type inference** (Algorithm W + level-based generalisation + value restriction), ADTs with type parameters, **records** (`{x=1, y=2}` / `#field` / record patterns), pattern match, exceptions, refs.  Type errors halt at compile time; the type-checker drives lower-time dispatcher specialisation, and **generic dynamic-typecheck nodes are removed from `node.def` entirely** — only `_int` / `_real` / `_string` / `_poly` / `_bool` / `_unchecked` variants remain.  AOT pipeline includes `is_leaf`-driven C-stack alloca, `mark_tail_calls` post-pass, and astocaml-style aggressive cflags (`-fno-stack-clash-protection -flto`).  vs SML/NJ v110.79: AOT **1.8×** of SML/NJ on `fib` and **2.7× faster** on `strcat`; 30× gap on multi-arg curried recursion (next target: `app2`/`app3` lower-time folding).
+- [`ancaml`](./sample/ancaml/) — **[MinCaml](https://esumii.github.io/min-caml/)** (the monomorphic ML subset from Tohoku University's compiler course, 38 nodes): a from-scratch **Hindley–Milner inferer** (destructive unification, defaults free vars to `int`), **de Bruijn frame** variables resolved at parse time, boxed-float / closure / tuple / array values, and **tail-call elimination** (trampoline) + leaf-frame `alloca`.  Differential-tested vs the system `ocaml` (a two-line prelude reconciles `print_char`'s arg type and the removed `Array.create`); AOT `fib` beats OCaml bytecode (only native `ocamlopt` is ahead).  Ships a **self-contained reimplementation reference** ([`docs/mincaml_impl_spec.md`](./sample/ancaml/docs/mincaml_impl_spec.md)) and an implementation-agnostic harness (`ANCAML=/path ruby test/run_tests.rb`).  Part of the **An\*** series (*ASTro Nutshell* — bite-sized pedagogical "subject" languages; cf. [`anpy`](./sample/anpy/)).
 - [`asom`](./sample/asom/) — **[SOM](https://som-st.github.io/)** Smalltalk dialect (80 nodes) with type-specialized sends, control-flow inlining, Boehm GC + GMP.
   Passes the full SOM TestSuite (221/221); PG mode beats SOM++ on all 12 AreWeFastYet benches.
 
@@ -98,7 +99,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`castro`](./sample/castro/) — **C** subset (101 nodes) with tree-sitter-c front-end, 8-byte slot VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing.
   AOT beats `gcc -O0` on tight loops; `crc32` ties `gcc -O1`.
 - [`anpy`](./sample/anpy/) — **[ChocoPy](https://chocopy.org/)** (statically-typed Python 3.6 subset, 41 nodes): indentation lexer, a **static type checker** (conformance / assignment-compat / join + §5.2 rules), single-inheritance classes with dynamic dispatch, nested functions with `global`/`nonlocal` closures, lists/strings; tagged-immediate ints + Boehm GC.
-  Verified by **differential testing vs `python3`** (valid ChocoPy == valid Python 3.6) plus runtime-error and type-error-rejection cases.  Beats CPython 3.12 on loop-heavy code (loop/collatz/list 0.4–0.5×), trails on call-heavy code (per-call env-frame cost); geomean 1.26×.  Ships a **self-contained implementation reference** ([`docs/chocopy_impl_spec.md`](./sample/anpy/docs/chocopy_impl_spec.md)) and an **implementation-agnostic harness** (`ANPY=/path/to/impl ruby test/run_tests.rb`) so a from-scratch ChocoPy in any language can be checked against the same suite.
+  Verified by **differential testing vs `python3`** (valid ChocoPy == valid Python 3.6) plus runtime-error and type-error-rejection cases.  Beats CPython 3.12 on loop-heavy code (loop/collatz/list 0.4–0.5×), trails on call-heavy code (per-call env-frame cost); geomean 1.26×.  Ships a **self-contained implementation reference** ([`docs/chocopy_impl_spec.md`](./sample/anpy/docs/chocopy_impl_spec.md)) and an **implementation-agnostic harness** (`ANPY=/path/to/impl ruby test/run_tests.rb`) so a from-scratch ChocoPy in any language can be checked against the same suite.  First of the **An\*** series (*ASTro Nutshell* — bite-sized pedagogical "subject" languages; cf. [`ancaml`](./sample/ancaml/)).
 
 **Stack-based.**
 - [`aforth`](./sample/aforth/) — **Forth** subset (68 nodes) where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.
