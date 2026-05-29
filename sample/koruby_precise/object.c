@@ -1899,7 +1899,7 @@ VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl) {
     (void)c; (void)sp;
     struct korb_range *r = korb_xmalloc(sizeof(*r));
     r->basic.head.flags = T_RANGE;
-    r->basic.klass = korb_vm ? (VALUE)korb_vm->range_class : 0;
+    r->basic.klass = (VALUE)KORB_VM(c)->range_class;
     r->begin = b;
     r->end = e;
     r->exclude_end = excl;
@@ -1958,7 +1958,7 @@ VALUE korb_bignum_new_str(CTX *c, VALUE *sp, const char *str, int base) {
     (void)c; (void)sp;
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
+    b->basic.klass = (VALUE)KORB_VM(c)->integer_class;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_str(*z, str, base);
     b->mpz = z;
@@ -1980,7 +1980,7 @@ VALUE korb_bignum_new_long(CTX *c, VALUE *sp, long v) {
     if (FIXABLE(v)) return INT2FIX(v);
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
+    b->basic.klass = (VALUE)KORB_VM(c)->integer_class;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_si(*z, v);
     b->mpz = z;
@@ -2006,7 +2006,7 @@ VALUE korb_dbl2int(CTX *c, VALUE *sp, double v) {
     }
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
+    b->basic.klass = (VALUE)KORB_VM(c)->integer_class;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_d(*z, v);
     b->mpz = z;
@@ -2027,7 +2027,7 @@ static VALUE from_mpz(mpz_t z) {
     }
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
+    b->basic.klass = (VALUE)korb_vm->integer_class;
     mpz_t *bz = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set(*bz, z);
     mpz_clear(z);

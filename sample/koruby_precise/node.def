@@ -167,13 +167,13 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             read_only = true;
         }
         if (read_only) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             return korb_raise(c, (struct korb_class *)eN,
                        "%s is a read-only variable", nm);
         }
         if (string_only && !NIL_P(v) &&
             (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "value of %s must be String", nm);
         }
@@ -183,7 +183,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
                                     (VALUE[]){ korb_id2sym(korb_intern("write")) });
             VALUE rt = (_rt_w.state == KORB_NORMAL) ? _rt_w.value : Qfalse;
             if (!RTEST(rt)) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 struct korb_class *klass = korb_class_of_class(v);
                 return korb_raise(c, (struct korb_class *)eT,
                            "%s must have write method, %s given",
@@ -203,12 +203,12 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
                     bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
                                                      : BUILTIN_TYPE(v) == T_BIGNUM;
                     if (!is_int) {
-                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                         return korb_raise(c, (struct korb_class *)eT,
                                    "can't convert to Integer (#to_int returned non-Integer)");
                     }
                 } else {
-                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                     return korb_raise(c, (struct korb_class *)eT,
                                "no implicit conversion to Integer");
                 }
@@ -242,7 +242,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         if (strcmp(nm, "$@") == 0) {
             VALUE exc = korb_gvar_get(korb_intern("$!"));
             if (NIL_P(exc) || SPECIAL_CONST_P(exc)) {
-                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
                 return korb_raise(c, (struct korb_class *)eA, "$! not set");
             }
             korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
@@ -251,7 +251,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
         if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
             if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "$0 must be a String");
             }
@@ -286,7 +286,7 @@ node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
              * klass=Object) — it represents "default file scope", not
              * being inside `class Object`.  Object's private constants
              * are inaccessible from there per CRuby. */
-            if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+            if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
             if ((VALUE)cr->klass == p) { in_scope = true; break; }
         }
         if (!in_scope) return RESULT_OK(Qfalse);
@@ -342,9 +342,9 @@ node_const_defined_lex(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
             return RESULT_OK(Qtrue);
         }
     }
-    VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
+    VALUE v = korb_const_get_inherited(KORB_VM(c)->object_class, name);
     if (!UNDEF_P(v)) {
-        if (korb_const_is_private(korb_vm->object_class, name)) return RESULT_OK(Qfalse);
+        if (korb_const_is_private(KORB_VM(c)->object_class, name)) return RESULT_OK(Qfalse);
         return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -432,7 +432,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                     VALUE sym = korb_id2sym(name);
                     return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
                 }
-                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                 return korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
                            korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
@@ -459,7 +459,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
          * korb_exc_new → korb_object_new(c, c->sp, stale_class). */
         RESULT _err = RESULT_OK(Qnil);
         ARO_ROOT_SCOPE_START(c, ers, 3) {
-            ers[0] = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            ers[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             RESULT _name_r = korb_funcall(c, p, korb_intern("name"), 0, NULL);
             ers[1] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
             if (NIL_P(ers[1]) || (BUILTIN_TYPE(ers[1]) == T_STRING &&
@@ -623,7 +623,7 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
             }
         }
         if (!target_alive) {
-            VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+            VALUE eL = korb_const_get(KORB_VM(c)->object_class, korb_intern("LocalJumpError"));
             return korb_raise(c, (struct korb_class *)eL, "unexpected return");
         }
     }
@@ -765,7 +765,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
     /* rs[0] = super, rs[1] = klass — both held across alloc-can-GC sites
      * (korb_class_new, korb_funcall).  Pure C-locals would go stale. */
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = (VALUE)korb_vm->object_class;
+        rs[0] = (VALUE)KORB_VM(c)->object_class;
         if (super_expr) {
             VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) != T_CLASS) {
@@ -891,14 +891,14 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             return _e;
         }
         else {
-            struct korb_class *k = korb_class_new(c, c->sp, name, korb_vm->object_class, T_OBJECT);
+            struct korb_class *k = korb_class_new(c, c->sp, name, KORB_VM(c)->object_class, T_OBJECT);
             k->name = 0;
             rs[0] = (VALUE)k;
             korb_const_set(HOST_K, name, rs[0]);
-            struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
+            struct korb_class *super_meta = korb_class_of_class((VALUE)KORB_VM(c)->object_class);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
                 VALUE child_v = rs[0];
-                RESULT _ih = korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
+                RESULT _ih = korb_funcall(c, (VALUE)KORB_VM(c)->object_class, korb_intern("inherited"), 1, &child_v);
                 if (_ih.state != KORB_NORMAL) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
                     return _ih;
@@ -1337,7 +1337,7 @@ node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
-            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
             return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
         }
         long q = a / b;
@@ -1361,7 +1361,7 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
-            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
             return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
         }
         long m = a % b;
@@ -1680,7 +1680,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             if (LIKELY(!SPECIAL_CONST_P(r))) {
                 if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { ret = korb_ary_aref(r, FIX2LONG(i)); goto aref_done; }
                 if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc) &&
-                    korb_class_of_class(r) == korb_vm->hash_class) {
+                    korb_class_of_class(r) == KORB_VM(c)->hash_class) {
                     /* Subclasses might override #default — skip the fast
                      * path so hash_aref's slow path can dispatch the
                      * subclass method on miss. */
@@ -1735,13 +1735,13 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             long ii = FIX2LONG(i);
             struct korb_array *aa = (struct korb_array *)r;
             if (ii < 0 && ii + aa->len < 0) {
-                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                VALUE eIE = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
                 return korb_raise(c, (struct korb_class *)eIE,
                            "index %ld too small for array; minimum: -%ld",
                            ii, aa->len);
             }
             if (ii >= (long)(LONG_MAX / sizeof(VALUE))) {
-                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                VALUE eIE = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
                 return korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii);
             }
             korb_ary_aset(r, ii, v); return RESULT_OK(v);
@@ -1954,7 +1954,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
             return RESULT_OK(a);
         }
         if (BUILTIN_TYPE(r) != T_ARRAY) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "can't convert to Array (#to_ary gave non-Array)");
         }
@@ -2011,7 +2011,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
                 korb_ary_push(a, v);
                 return RESULT_OK(a);
             }
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "can't convert to Array (returned non-Array)");
         }
@@ -2116,7 +2116,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
                                           super_skip_n, &new_skip_n)
         : NULL;
     if (!sm) {
-        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        VALUE eNoMethod = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
         return korb_raise(c, (struct korb_class *)eNoMethod,
                    "super: no superclass method '%s'", korb_id_name(m->name));
     }
@@ -2207,7 +2207,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
                                           c->current_frame->super_skip_n, &new_skip_n)
         : NULL;
     if (!sm) {
-        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        VALUE eNoMethod = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
         return korb_raise(c, (struct korb_class *)eNoMethod,
                    "super: no superclass method '%s'", korb_id_name(m->name));
     }
@@ -2330,11 +2330,11 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
          * a user-defined one — receiving the original method's name
          * as the first arg. */
         struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
-        if (mm && mm->defining_class != korb_vm->object_class) {
+        if (mm && mm->defining_class != KORB_VM(c)->object_class) {
             VALUE name_sym = korb_id2sym(m->name);
             return korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
         }
-        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        VALUE eNoMethod = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
         return korb_raise(c, (struct korb_class *)eNoMethod,
                    "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
     }
@@ -2549,7 +2549,7 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
     struct korb_class *target;
     if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
         if (korb_obj_frozen_p(c->current_frame->self)) {
-            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
             return korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
                        ((struct korb_class *)c->current_frame->self)->name
@@ -2560,7 +2560,7 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
         /* Top-level `def self.foo`: target the receiver's singleton
          * class.  CRuby installs on main's singleton at top level. */
         if (korb_obj_frozen_p(c->current_frame->self)) {
-            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
             return korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
         }
         extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
@@ -2619,7 +2619,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
     sp[0] = EVAL_ARG_UNWRAP(c, recv_expr);
     c->sp = sp + 1;
     if (!SPECIAL_CONST_P(sp[0]) && korb_obj_frozen_p(sp[0])) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         const char *kind = "object";
         if (BUILTIN_TYPE(sp[0]) == T_CLASS) kind = "Class";
         else if (BUILTIN_TYPE(sp[0]) == T_MODULE) kind = "Module";
@@ -2650,7 +2650,7 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
     VALUE recv = EVAL_ARG_UNWRAP(c, recv_expr);
     if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         const char *kind = "object";
         if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
         else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
@@ -2739,8 +2739,8 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
          name == korb_intern("initialize_dup") ||
          name == korb_intern("initialize_clone") ||
          name == korb_intern("respond_to_missing?"));
-    bool top_level = (c->current_frame->cref && c->current_frame->cref->klass == korb_vm->object_class &&
-                      c->current_frame->cref->prev == NULL && target == korb_vm->object_class &&
+    bool top_level = (c->current_frame->cref && c->current_frame->cref->klass == KORB_VM(c)->object_class &&
+                      c->current_frame->cref->prev == NULL && target == KORB_VM(c)->object_class &&
                       c->current_frame == NULL);
     /* g_top_level_default_private toggles when `private`/`public` is
      * called at top-level.  Initial state: true (private by default). */
@@ -2821,7 +2821,7 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     struct korb_class *target = korb_host_class(c);
     struct korb_method *m = korb_class_find_method(target, old_id);
     if (!m) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_id),
@@ -2892,11 +2892,11 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
             if (korb_const_is_private((struct korb_class *)rs[0], name)) {
                 bool in_scope = false;
                 for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                    if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                    if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
                     if (cr->klass == (struct korb_class *)rs[0]) { in_scope = true; break; }
                 }
                 if (!in_scope) {
-                    VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                     struct korb_class *parent = (struct korb_class *)rs[0];
                     RESULT _e = korb_raise(c, (struct korb_class *)eName,
                                "private constant %s::%s referenced",
@@ -2909,7 +2909,7 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
                 }
             }
         }
-        rs[1] = (VALUE)korb_vm->object_class;  /* super */
+        rs[1] = (VALUE)KORB_VM(c)->object_class;  /* super */
         if (super_expr) {
             VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) == T_CLASS) {
@@ -2992,11 +2992,11 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
             if (korb_const_is_private((struct korb_class *)rs[0], name)) {
                 bool in_scope = false;
                 for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                    if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                    if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
                     if (cr->klass == (struct korb_class *)rs[0]) { in_scope = true; break; }
                 }
                 if (!in_scope) {
-                    VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                     struct korb_class *parent = (struct korb_class *)rs[0];
                     RESULT _e = korb_raise(c, (struct korb_class *)eName,
                                "private constant %s::%s referenced",
@@ -3009,7 +3009,7 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
                 }
             }
         }
-        rs[1] = (VALUE)korb_vm->object_class;  /* super */
+        rs[1] = (VALUE)KORB_VM(c)->object_class;  /* super */
         if (super_expr) {
             VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) == T_CLASS) rs[1] = sv;
@@ -3060,11 +3060,11 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         if (korb_const_is_private((struct korb_class *)sp[0], name)) {
             bool in_scope = false;
             for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
                 if (cr->klass == (struct korb_class *)sp[0]) { in_scope = true; break; }
             }
             if (!in_scope) {
-                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                 struct korb_class *p = (struct korb_class *)sp[0];
                 RESULT _e = korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
