@@ -1260,6 +1260,20 @@ static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_id2sym(f->method->name));
 }
 
+/* Kernel#global_variables — Array of Symbols naming each defined gvar. */
+static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    extern uint32_t koruby_gvars_size(void);
+    extern ID *koruby_gvars_keys(void);
+    uint32_t n = koruby_gvars_size();
+    ID *keys = koruby_gvars_keys();
+    VALUE arr = korb_ary_new_capa(c, c->sp, n);
+    for (uint32_t i = 0; i < n; i++) {
+        korb_ary_push(arr, korb_id2sym(keys[i]));
+    }
+    return RESULT_OK(arr);
+}
+
 /* Returns a Hash of {name_sym => current value} for the lvars in
  * the *caller* of the AST method that called this cfunc.  Concretely,
  * Kernel#binding (defined in bootstrap.rb) calls this — current_frame

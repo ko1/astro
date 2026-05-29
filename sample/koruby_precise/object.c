@@ -1256,6 +1256,7 @@ static struct {
  * under STRESS+PURGE. */
 uint32_t koruby_gvars_size(void) { return gvars.size; }
 VALUE *koruby_gvars_vals(void) { return gvars.vals; }
+ID *koruby_gvars_keys(void) { return gvars.keys; }
 
 VALUE korb_gvar_get(ID name) {
     for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) return gvars.vals[i];

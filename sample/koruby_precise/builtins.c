@@ -560,6 +560,14 @@ void korb_init_builtins(CTX *c) {
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
     DEF_R(KORB_VM(c)->object_class, "__method__",         kernel_method_name,        0);
     DEF_R(KORB_VM(c)->object_class, "__callee__",         kernel_method_name,        0);
+    DEF_R_PRIV(KORB_VM(c)->object_class, "global_variables",   kernel_global_variables,   0);
+    if (KORB_VM(c)->kernel_module) {
+        DEF_R_PRIV(KORB_VM(c)->kernel_module, "global_variables", kernel_global_variables, 0);
+        /* module_function semantics: also expose as a class method on
+         * Kernel so `Kernel.global_variables` works (CRuby compat). */
+        struct korb_class *kKerMeta = korb_singleton_class_of(c, KORB_VM(c)->kernel_module);
+        DEF_R(kKerMeta, "global_variables", kernel_global_variables, 0);
+    }
     DEF_R(KORB_VM(c)->object_class, "caller",             kernel_caller,            -1);
     DEF_R(KORB_VM(c)->object_class, "__capture_lvars__",  kernel_capture_lvars,      0);
     DEF_R(KORB_VM(c)->object_class, "local_variables",    kernel_local_variables,    0);
@@ -1381,6 +1389,8 @@ void korb_init_builtins(CTX *c) {
     /* gvars */
     korb_gvar_set(korb_intern("$stdout"), stdout_obj);
     korb_gvar_set(korb_intern("$stderr"), stderr_obj);
+    /* $stdin: minimal stub — full stdin IO support is out of scope. */
+    korb_gvar_set(korb_intern("$stdin"), Qnil);
 
     /* Symbol */
     {
