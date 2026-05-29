@@ -117,7 +117,7 @@ node_lvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
 NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, struct ivar_cache *cache@ref)
 {
-    return RESULT_OK(korb_ivar_get_ic(c->current_frame->self, name, cache));
+    return RESULT_OK(LIFT_C_STATE(c, korb_ivar_get_ic(c->current_frame->self, name, cache)));
 }
 
 NODE_DEF
@@ -139,7 +139,7 @@ node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
         if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; bt = Qnil; }
         return RESULT_OK(bt);
     }
-    return RESULT_OK(korb_gvar_get(name));
+    return RESULT_OK(LIFT_C_STATE(c, korb_gvar_get(name)));
 }
 
 NODE_DEF
@@ -386,7 +386,7 @@ node_cvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
     /* Class variable: walk the cref's class up its superclass chain
      * looking for @@name; missing → NameError. */
     extern VALUE korb_cvar_get(CTX *c, ID name);
-    return RESULT_OK(korb_cvar_get(c, name));
+    return RESULT_OK(LIFT_C_STATE(c, korb_cvar_get(c, name)));
 }
 
 NODE_DEF
@@ -401,7 +401,7 @@ node_cvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 {
-    return RESULT_OK(korb_const_lookup(c, name));
+    return RESULT_OK(LIFT_C_STATE(c, korb_const_lookup(c, name)));
 }
 
 NODE_DEF
