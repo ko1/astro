@@ -807,7 +807,7 @@ cfunc 側で:
 | 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | R1-R5 完了 (cfunc 全 RESULT 化 + c->state 削除) |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default + STRESS + STRESS+PURGE 全 mode PASS。 test_class.rb の post-body snapshot SEGV は fr.self 経由に変えて修正済。 c->sp を c->sp_top に rename し alloc 関数のみが書き換える design rule を明確化。 cfunc prologue cleanup は dispatcher API (korb_funcall/yield 等) の sp 持ち回りが前提なので一旦保留。 ARO_ROOT_SCOPE_START の sp staging 化を継続: 初期 ~50 件 → 残 22 件。 alloc helper 呼出の sp 引数は「sp + N」明示形式 (user 指示)。 caller 側で redundant な `c->sp_top = sp + N` (= 直後の alloc helper が自前で行う) は削除 (user 指示)。 rubyspec は今 session で Struct 130→184、 Range 458→526、 Array/Hash 系で多数の PASS 改善。 |
+| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default + STRESS + STRESS+PURGE 全 mode PASS。 test_class.rb の post-body snapshot SEGV は fr.self 経由に変えて修正済。 c->sp を c->sp_top に rename し alloc 関数のみが書き換える design rule を明確化。 cfunc prologue cleanup は dispatcher API (korb_funcall/yield 等) の sp 持ち回りが前提なので一旦保留。 **ARO_ROOT_SCOPE_START を全廃 (初期 ~50 件 → 0、実コード参照ゼロ)。** alloc helper 呼出の sp 引数は「sp + N」明示形式 (user 指示)。 caller 側で redundant な `c->sp_top = sp + N` (= 直後の alloc helper が自前で行う) は削除 (user 指示)。 移行先 pattern: AST node body は `sp[0]=...; c->sp_top=sp+N; ...` で staging、 cfunc/runtime helper (korb_raise/korb_inspect_inner 等) は `VALUE *sp = c->sp_top; sp[0]=...; c->sp_top = sp + N` 形。 rubyspec は今 session で Struct 130→184、 Range 458→526、 Array/Hash 系で多数の PASS 改善。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
