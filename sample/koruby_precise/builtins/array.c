@@ -2287,11 +2287,14 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
     }
     if (BUILTIN_TYPE(arg) == T_STRING) {
         /* join with sep — pin result + sep + per-iter element across
-         * each korb_to_s / korb_str_concat GC fire. */
+         * each korb_to_s / korb_str_concat GC fire.  CRITICAL: pin sep
+         * BEFORE any alloc — `arg` is a C-local that goes stale once
+         * korb_str_new fires GC, so rs[1] must be set first. */
         VALUE ret = Qnil;
         ARO_ROOT_SCOPE_START(c, rs, 3) {
+            rs[1] = arg;              /* separator (pin) — first! */
             rs[0] = korb_str_new(c, c->sp, "", 0);  /* result */
-            rs[1] = arg;              /* separator (pin) */
+            /* rs[1] is now the (possibly moved) separator */
             for (long i = 0; i < a->len; i++) {
                 if (i > 0) korb_str_concat(c, c->sp, rs[0], rs[1]);
                 rs[2] = a->ptr[i];
