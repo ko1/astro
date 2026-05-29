@@ -1045,11 +1045,14 @@ static RESULT ary_uniq(CTX *c, int argc, VALUE *sp) {
 
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new(c, c->sp_top);
+    /* CRuby Array#uniq uses eql? (with hash) — distinguishes 1 from 1.0
+     * and uses the user-defined #hash + #eql? when present. */
     for (long i = 0; i < a->len; i++) {
         bool dup = false;
         struct korb_array *ra = (struct korb_array *)r;
         for (long j = 0; j < ra->len; j++) {
-            if (korb_eq(c, ra->ptr[j], a->ptr[i])) { dup = true; break; }
+            if (ra->ptr[j] == a->ptr[i]) { dup = true; break; }
+            if (korb_eql(c, ra->ptr[j], a->ptr[i])) { dup = true; break; }
         }
         if (!dup) korb_ary_push(r, a->ptr[i]);
     }
