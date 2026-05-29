@@ -67,29 +67,45 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
     return korb_funcall(c, self, name, argc - 1, argv + 1);
 }
 
-static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return obj_send_impl(c, self, argc, argv, false);
+static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(obj_send_impl(c, self, argc, argv, false));
 }
 
-static VALUE obj_public_send(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return obj_send_impl(c, self, argc, argv, true);
+static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(obj_send_impl(c, self, argc, argv, true));
 }
 
-static VALUE obj_instance_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return Qnil;
-    return korb_ivar_get(self, name);
+    else return RESULT_OK(Qnil);
+    return RESULT_OK(korb_ivar_get(self, name));
 }
 
-static VALUE obj_instance_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return Qnil;
+static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 2) return RESULT_OK(Qnil);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return Qnil;
+    else return RESULT_OK(Qnil);
     /* Immediate values (true/false/nil/Integer/Symbol/Float) can't have
      * ivars; CRuby raises FrozenError ("can't modify frozen X").  Match
      * that semantic via a RuntimeError-class FrozenError. */
@@ -102,12 +118,11 @@ static VALUE obj_instance_variable_set(CTX *c, VALUE self, int argc, VALUE *argv
         else if (FIXNUM_P(self)) cn = "Integer";
         else if (FLONUM_P(self)) cn = "Float";
         else if (SYMBOL_P(self)) cn = "Symbol";
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
-                   "can't modify frozen %s", cn));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eF,
+                   "can't modify frozen %s", cn);
     }
     korb_ivar_set(self, name, argv[1]);
-    return argv[1];
+    return RESULT_OK(argv[1]);
 }
 
 /* Class#class_variable_get / set / defined? / class_variables.
@@ -160,14 +175,17 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
     return korb_intern_n(p, n);
 }
 extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
-VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) {
-        DROP_RESULT(korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module"));
-        return Qnil;
+        return korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module");
     }
-    if (argc < 1) return Qnil;
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return Qnil;
+    if (!name) return RESULT_OK(Qnil);
     /* Walk the receiver's class chain via the existing helper.  We
      * reuse korb_cvar_get which uses cref/current_class — set those
      * temporarily so the lookup roots at `self`. */
@@ -180,21 +198,24 @@ VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE v = korb_cvar_get(c, name);
     c->current_frame->cref = prev_cref;
     c->current_frame->current_class = prev_class;
-    return v;
+    return RESULT_OK(v);
 }
 
-VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qnil;
-    if (argc < 2) return Qnil;
+RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(Qnil);
+    if (argc < 2) return RESULT_OK(Qnil);
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
-                   korb_id_name(korb_class_of_class(self)->name)));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name));
     }
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return Qnil;
+    if (!name) return RESULT_OK(Qnil);
     extern RESULT korb_cvar_set(CTX *c, ID name, VALUE val);
     struct korb_class *prev_class = c->current_frame->current_class;
     struct korb_cref *prev_cref = c->current_frame->cref;
@@ -204,14 +225,18 @@ VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     korb_cvar_set(c, name, argv[1]);
     c->current_frame->cref = prev_cref;
     c->current_frame->current_class = prev_class;
-    return argv[1];
+    return RESULT_OK(argv[1]);
 }
 
-VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
+RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return Qfalse;
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qfalse;
+    if (!name) return RESULT_OK(Qfalse);
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(Qfalse);
     /* Walk super chain + transitive includes (CRuby semantics). */
     struct korb_class *root = (struct korb_class *)self;
     /* Open-coded recursive walk: use a small stack to avoid infinite
@@ -223,72 +248,84 @@ VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_class *cur = stack[--top];
         if (!cur) continue;
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
-            if (cur->cvars[i].name == name) return Qtrue;
+            if (cur->cvars[i].name == name) return RESULT_OK(Qtrue);
         }
         if (cur->super && top < 63) stack[top++] = cur->super;
         for (uint32_t i = 0; i < cur->includes_cnt && top < 63; i++) {
             stack[top++] = cur->includes[i];
         }
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 /* Object#singleton_class — return the per-instance metaclass,
  * creating one if needed.  All subsequent define_method on it adds
  * a method visible only to this object. */
-VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* CRuby: true / false / nil have no real singleton class; the
      * .singleton_class method returns the regular class (TrueClass /
      * FalseClass / NilClass).  Symbols and Integers raise TypeError
      * (immutable identity is shared across all instances). */
     if (NIL_P(self) || self == Qtrue || self == Qfalse) {
-        return (VALUE)korb_class_of_class(self);
+        return RESULT_OK((VALUE)korb_class_of_class(self));
     }
     if (SPECIAL_CONST_P(self) && (FIXNUM_P(self) || SYMBOL_P(self) || KORB_IS_FLOAT(self))) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "can't define singleton on %s",
-                   korb_id_name(korb_class_of_class(self)->name)));
-        return Qnil;
+                   korb_id_name(korb_class_of_class(self)->name));
     }
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
     struct korb_class *meta = korb_singleton_class_of_value(c, self);
     if (!meta) {
-        DROP_RESULT(korb_raise(c, NULL, "no singleton class for %s",
-                   korb_id_name(korb_class_of_class(self)->name)));
-        return Qnil;
+        return korb_raise(c, NULL, "no singleton class for %s",
+                   korb_id_name(korb_class_of_class(self)->name));
     }
-    return (VALUE)meta;
+    return RESULT_OK((VALUE)meta);
 }
 
 /* Class#allocate — create an instance without invoking initialize.
  * Used for serializers, Marshal.load, etc. */
-VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_CLASS) {
-        DROP_RESULT(korb_raise(c, NULL, "Class#allocate called on non-Class"));
-        return Qnil;
+        return korb_raise(c, NULL, "Class#allocate called on non-Class");
     }
     /* Singleton classes can't be instantiated. */
     if (((struct korb_class *)self)->basic.head.flags & FL_SINGLETON) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "can't create instance of singleton class"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of singleton class");
     }
-    return korb_object_new(c, c->sp, (struct korb_class *)self);
+    return RESULT_OK(korb_object_new(c, c->sp, (struct korb_class *)self));
 }
 
-VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return korb_ary_new(c, c->sp);
-    return korb_cvar_names(c, (struct korb_class *)self);
+RESULT mod_class_variables(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(korb_ary_new(c, c->sp));
+    return RESULT_OK(korb_cvar_names(c, (struct korb_class *)self));
 }
 
-static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return Qnil;
+    else return RESULT_OK(Qnil);
     /* Build a Method object: a small heap struct with receiver + name. */
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
@@ -299,35 +336,39 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->name = name;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&m->basic);
-    return (VALUE)m;
+    return RESULT_OK((VALUE)m);
 }
 
 /* Object#instance_eval { ... } / instance_eval(string) —
  * evaluate the block (or parsed string) with self = receiver. */
 extern VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                        const char *filename, VALUE recv);
-static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
         struct korb_string *s = (struct korb_string *)argv[0];
-        return korb_eval_string_in_self(c, s->ptr, (size_t)s->len, "(instance_eval)", self);
+        return RESULT_OK(korb_eval_string_in_self(c, s->ptr, (size_t)s->len, "(instance_eval)", self));
     }
-    if (!c->current_block) return Qnil;
+    if (!c->current_block) return RESULT_OK(Qnil);
     struct korb_proc *blk = c->current_block;
     /* Symbol-proc / Method-proc shim handling — see obj_instance_exec
      * for the reasoning.  Without this, `obj.instance_eval(&:to_s)`
      * crashes inside korb_yield with a NULL body. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
+            return RESULT_OK(korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL));
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, 0, NULL);
+            return RESULT_OK(korb_funcall(c, self, mo->name, 0, NULL));
         }
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     VALUE prev_blk_self = blk->self;
     blk->self = self;
@@ -342,14 +383,18 @@ static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_yield(c, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Object#instance_exec(*args) { |args| ... } — like instance_eval but
  * passes args to the block. */
-static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
-    if (!c->current_block) return Qnil;
+    if (!c->current_block) return RESULT_OK(Qnil);
     struct korb_proc *blk = c->current_block;
     /* &m where m is a Method or Symbol creates a "shim" proc whose body
      * is NULL and whose self points at the underlying Method/Symbol.
@@ -359,15 +404,15 @@ static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
             ID name = korb_sym2id(blk->self);
-            return korb_funcall(c, self, name, (uint32_t)argc, argv);
+            return RESULT_OK(korb_funcall(c, self, name, (uint32_t)argc, argv));
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
+            return RESULT_OK(korb_funcall(c, self, mo->name, (uint32_t)argc, argv));
         }
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     VALUE prev_blk_self = blk->self;
     blk->self = self;
@@ -379,25 +424,28 @@ static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_yield(c, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Module#instance_method(name) — returns an UnboundMethod, represented
  * as a Method object whose receiver is the class itself. */
-static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING)
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                               ((struct korb_string *)argv[0])->len);
-    else return Qnil;
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
+    else return RESULT_OK(Qnil);
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qnil);
     struct korb_method *km = korb_class_find_method((struct korb_class *)self, name);
     if (!km) {
-        DROP_RESULT(korb_raise(c, NULL, "undefined method '%s' for %s",
-                   korb_id_name(name), korb_id_name(((struct korb_class *)self)->name)));
-        return Qnil;
+        return korb_raise(c, NULL, "undefined method '%s' for %s",
+                   korb_id_name(name), korb_id_name(((struct korb_class *)self)->name));
     }
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
@@ -408,12 +456,16 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->captured_owner = (struct korb_class *)self;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&m->basic);
-    return (VALUE)m;
+    return RESULT_OK((VALUE)m);
 }
 
 /* Method#unbind — return an UnboundMethod (a Method-shaped record
  * whose receiver is the class instead of an instance). */
-static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *src = (struct korb_method_obj *)self;
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
@@ -425,12 +477,16 @@ static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->captured_owner = src->captured_owner;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&m->basic);
-    return (VALUE)m;
+    return RESULT_OK((VALUE)m);
 }
 
 /* UnboundMethod#bind(obj) — return a Method bound to obj. */
-static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT method_bind(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     struct korb_method_obj *src = (struct korb_method_obj *)self;
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
@@ -441,10 +497,14 @@ static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->captured_owner = src->captured_owner;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&m->basic);
-    return (VALUE)m;
+    return RESULT_OK((VALUE)m);
 }
 
-static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_call(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Method#call / Method#[] — dispatch to receiver.name(*args).
      * If we captured the method record at instance_method/method time,
      * dispatch through *that* method directly so a later
@@ -454,13 +514,17 @@ static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         extern VALUE korb_dispatch_to_method(CTX *c, struct korb_method *km,
                                               struct korb_class *defining_class,
                                               VALUE recv, ID name, int argc, VALUE *argv);
-        return korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
-                                        m->receiver, m->name, argc, argv);
+        return RESULT_OK(korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
+                                        m->receiver, m->name, argc, argv));
     }
-    return korb_funcall(c, m->receiver, m->name, argc, argv);
+    return RESULT_OK(korb_funcall(c, m->receiver, m->name, argc, argv));
 }
 
-static VALUE method_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Method#to_proc — return a shim Proc whose body == NULL and whose
      * self is the Method object.  korb_yield_slow / proc_call detect this
      * and dispatch as `m.receiver.send(m.name, *args)`.  Mirror the
@@ -490,13 +554,17 @@ static VALUE method_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     p->is_lambda = true;       /* methods have strict arity, like lambdas */
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&p->basic);
-    return (VALUE)p;
+    return RESULT_OK((VALUE)p);
 }
 
-static VALUE method_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_arity(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     struct korb_method *km = korb_class_find_method(korb_class_of_class(m->receiver), m->name);
-    if (!km) return INT2FIX(0);
+    if (!km) return RESULT_OK(INT2FIX(0));
     if (km->type == KORB_METHOD_AST) {
         long req = (long)km->u.ast.required_params_cnt;
         long total = (long)km->u.ast.total_params_cnt;
@@ -507,21 +575,29 @@ static VALUE method_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
         bool has_opt = opt > 0;
         bool has_kwh = km->u.ast.kwh_save_slot >= 0;
         long req_total = req + post;  /* required = pre + post */
-        if (has_rest || has_opt || has_kwh) return INT2FIX(-(req_total + 1));
-        return INT2FIX(req_total);
+        if (has_rest || has_opt || has_kwh) return RESULT_OK(INT2FIX(-(req_total + 1)));
+        return RESULT_OK(INT2FIX(req_total));
     }
-    if (km->type == KORB_METHOD_CFUNC && km->u.cfunc.argc < 0) return INT2FIX(-1);
-    return INT2FIX(km->type == KORB_METHOD_CFUNC ? km->u.cfunc.argc : 0);
+    if (km->type == KORB_METHOD_CFUNC && km->u.cfunc.argc < 0) return RESULT_OK(INT2FIX(-1));
+    return RESULT_OK(INT2FIX(km->type == KORB_METHOD_CFUNC ? km->u.cfunc.argc : 0));
 }
 
-static VALUE method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_name(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
-    return korb_id2sym(m->name);
+    return RESULT_OK(korb_id2sym(m->name));
 }
 
-static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_receiver(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
-    return m->receiver;
+    return RESULT_OK(m->receiver);
 }
 
 /* Method#parameters / Proc#parameters — return [[kind, name], ...].
@@ -594,7 +670,11 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
     return r;
 }
 
-static VALUE method_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     struct korb_class *k;
     if (!SPECIAL_CONST_P(m->receiver) &&
@@ -603,12 +683,16 @@ static VALUE method_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     } else {
         k = korb_class_of_class(m->receiver);
     }
-    return method_params_for_method(c, korb_class_find_method(k, m->name));
+    return RESULT_OK(method_params_for_method(c, korb_class_find_method(k, m->name)));
 }
 
 /* Method#source_location — [file, line] of the method's body node,
  * or nil for cfunc / synthesized methods. */
-static VALUE method_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     struct korb_class *k;
     if (!SPECIAL_CONST_P(m->receiver) &&
@@ -618,23 +702,27 @@ static VALUE method_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
         k = korb_class_of_class(m->receiver);
     }
     struct korb_method *km = korb_class_find_method(k, m->name);
-    if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return Qnil;
+    if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return RESULT_OK(Qnil);
     struct Node *body = km->u.ast.body;
     VALUE r = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp, body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(body->head.line));
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Proc#source_location — same shape, drawn from blk->body. */
-VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_PROC) return Qnil;
+RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(Qnil);
     struct korb_proc *p = (struct korb_proc *)self;
-    if (!p->body) return Qnil;
+    if (!p->body) return RESULT_OK(Qnil);
     VALUE r = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp, p->body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(p->body->head.line));
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Proc#parameters — derive from korb_proc fields.  Method-proc shims
@@ -642,13 +730,17 @@ VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
  * method's #parameters so things like
  *   "".method(:gsub).to_proc.parameters
  * report [[:rest]] from the cfunc rather than [].  */
-VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new(c, c->sp);
+RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(korb_ary_new(c, c->sp));
     struct korb_proc *p = (struct korb_proc *)self;
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
-        return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
+        return RESULT_OK(korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL));
     }
     VALUE r = korb_ary_new(c, c->sp);
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
@@ -754,10 +846,14 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         korb_ary_push(r, pair);
     }
-    return r;
+    return RESULT_OK(r);
 }
 
-static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     /* If the "receiver" is itself a class/module (UnboundMethod from
      * instance_method), search it as the lookup root rather than its
@@ -770,59 +866,82 @@ static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
         root = korb_class_of_class(m->receiver);
     }
     struct korb_method *km = korb_class_find_method(root, m->name);
-    if (km && km->defining_class) return (VALUE)km->defining_class;
-    return (VALUE)root;
+    if (km && km->defining_class) return RESULT_OK((VALUE)km->defining_class);
+    return RESULT_OK((VALUE)root);
 }
 
-static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
+static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
     /* CRuby: argument must be a Class or Module; otherwise TypeError. */
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "class or module required"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "class or module required");
     }
-    return KORB_BOOL((VALUE)korb_class_of_class(self) == argv[0]);
+    return RESULT_OK(KORB_BOOL((VALUE)korb_class_of_class(self) == argv[0]));
 }
 
-static VALUE obj_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* default === is "object_id-or-==": same identity (a == b VALUE)
      * passes immediately, otherwise dispatch through user-defined #==.
      * This matches CRuby's Kernel#=== behavior — even if a user
      * overrides #== / #equal? to return false, identical instances
      * still match. */
-    if (self == argv[0]) return Qtrue;
-    return korb_funcall(c, self, korb_intern("=="), 1, argv);
+    if (self == argv[0]) return RESULT_OK(Qtrue);
+    return RESULT_OK(korb_funcall(c, self, korb_intern("=="), 1, argv));
 }
 
 
 /* ---------- Object#tap / #then / #itself ---------- */
-VALUE obj_tap(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (c->current_block) {
         VALUE av[1] = { self };
         korb_yield(c, 1, av);
     }
-    return self;
+    return RESULT_OK(self);
 }
-VALUE obj_then(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT obj_then(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (c->current_block) {
         VALUE av[1] = { self };
-        return korb_yield(c, 1, av);
+        return RESULT_OK(korb_yield(c, 1, av));
     }
-    return self;
+    return RESULT_OK(self);
 }
-VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
+RESULT obj_itself(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+ return RESULT_OK(self); }
 
 
 /* ---------- Object#dup / clone / instance_variables ---------- */
 static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
 
 static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
-static VALUE obj_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* clone(freeze: nil/true/false) — `freeze: true` (default) preserves
      * the source's frozen-ness; `false` produces an unfrozen copy even if
      * the source was frozen; `nil` (only Ruby 3.0+) is the same as default
@@ -839,10 +958,14 @@ static VALUE obj_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
     }
-    return obj_dup_impl_freeze(c, self, true, freeze_arg);
+    return RESULT_OK(obj_dup_impl_freeze(c, self, true, freeze_arg));
 }
-static VALUE obj_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return obj_dup_impl_freeze(c, self, false, -1);
+static RESULT obj_dup(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(obj_dup_impl_freeze(c, self, false, -1));
 }
 static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
     return obj_dup_impl_freeze(c, self, preserve_frozen, -1);
@@ -984,9 +1107,13 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
     }
     return r;
 }
-static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE arr = korb_ary_new(c, c->sp);
-    if (SPECIAL_CONST_P(self)) return arr;
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(arr);
     /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
      * C.instance_variables == [:@x]).  Stored on the class itself in
      * class_ivars[]. */
@@ -1002,9 +1129,9 @@ static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
                 korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
             }
         }
-        return arr;
+        return RESULT_OK(arr);
     }
-    if (BUILTIN_TYPE(self) != T_OBJECT) return arr;
+    if (BUILTIN_TYPE(self) != T_OBJECT) return RESULT_OK(arr);
     struct korb_object *o = (struct korb_object *)self;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     /* Only report ivars that have been set (i.e. slot has a non-Qundef
@@ -1021,11 +1148,15 @@ static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
         }
     }
-    return arr;
+    return RESULT_OK(arr);
 }
 
-static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
+static RESULT obj_ivar_defined_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
@@ -1037,14 +1168,13 @@ static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
         const char *cn = SPECIAL_CONST_P(argv[0]) ? "(special)"
                               : korb_id_name(korb_class_of_class(argv[0])->name);
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "%s is not a symbol nor a string", cn));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", cn);
     }
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return Qfalse;
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return RESULT_OK(Qfalse);
     /* CRuby: ivar is "defined" once it has been set, even to nil.
      * korb_ivar_get returns Qnil for both unset and set-to-nil — use
      * korb_ivar_defined directly so we don't lose that distinction. */
-    return KORB_BOOL(korb_ivar_defined(self, name));
+    return RESULT_OK(KORB_BOOL(korb_ivar_defined(self, name)));
 }
 

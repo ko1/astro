@@ -80,13 +80,13 @@ void korb_init_builtins(CTX *c) {
             extern VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv);
             extern VALUE kernel_not(CTX *c, VALUE self, int argc, VALUE *argv);
             DEF(cBasic, "__id__", kernel_object_id, 0);
-            DEF(cBasic, "__send__", obj_send, -1);
+            DEF_R(cBasic, "__send__", obj_send, -1);
             DEF(cBasic, "==", kernel_eq, 1);
             DEF(cBasic, "!=", kernel_neq, 1);
             DEF(cBasic, "!", kernel_not, 0);
             DEF(cBasic, "equal?", kernel_eq, 1);
-            DEF(cBasic, "instance_eval", obj_instance_eval, -1);
-            DEF(cBasic, "instance_exec", obj_instance_exec, -1);
+            DEF_R(cBasic, "instance_eval", obj_instance_eval, -1);
+            DEF_R(cBasic, "instance_exec", obj_instance_exec, -1);
         }
     }
     /* Object methods */
@@ -185,21 +185,21 @@ void korb_init_builtins(CTX *c) {
         DEF(korb_vm->kernel_module, "is_a?", kernel_is_a_p, 1);
         DEF(korb_vm->kernel_module, "kind_of?", kernel_is_a_p, 1);
     }
-    DEF(korb_vm->object_class, "methods", obj_methods, -1);
+    DEF_R(korb_vm->object_class, "methods", obj_methods, -1);
     {
-        VALUE obj_public_methods(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE obj_private_methods(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE obj_protected_methods(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "public_methods",    obj_public_methods,    -1);
-        DEF(korb_vm->object_class, "private_methods",   obj_private_methods,   -1);
-        DEF(korb_vm->object_class, "protected_methods", obj_protected_methods, -1);
+        RESULT obj_public_methods(CTX *c, int argc, VALUE *sp);
+        RESULT obj_private_methods(CTX *c, int argc, VALUE *sp);
+        RESULT obj_protected_methods(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "public_methods",    obj_public_methods,    -1);
+        DEF_R(korb_vm->object_class, "private_methods",   obj_private_methods,   -1);
+        DEF_R(korb_vm->object_class, "protected_methods", obj_protected_methods, -1);
     }
-    DEF(korb_vm->object_class, "singleton_methods", obj_singleton_methods, -1);
+    DEF_R(korb_vm->object_class, "singleton_methods", obj_singleton_methods, -1);
     {
-        VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "singleton_class", obj_singleton_class, 0);
+        RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "singleton_class", obj_singleton_class, 0);
     }
-    DEF(korb_vm->object_class, "define_singleton_method", obj_define_singleton_method, -1);
+    DEF_R(korb_vm->object_class, "define_singleton_method", obj_define_singleton_method, -1);
     DEF(korb_vm->object_class, "block_given?", kernel_block_given, 0);
     DEF_PRIV(korb_vm->object_class, "throw",        kernel_throw,      -1);
     DEF_PRIV(korb_vm->object_class, "catch",        kernel_catch,      -1);
@@ -283,21 +283,21 @@ void korb_init_builtins(CTX *c) {
     korb_const_set(korb_vm->float_class, korb_intern("MAX"),      korb_float_new(c, c->sp, 1.7976931348623157e+308));
     korb_const_set(korb_vm->float_class, korb_intern("MIN"),      korb_float_new(c, c->sp, 2.2250738585072014e-308));
     korb_const_set(korb_vm->float_class, korb_intern("EPSILON"),  korb_float_new(c, c->sp, 2.220446049250313e-16));
-    DEF(korb_vm->float_class, "+", flt_plus, 1);
-    DEF(korb_vm->float_class, "-", flt_minus, 1);
-    DEF(korb_vm->float_class, "*", flt_mul, 1);
-    DEF(korb_vm->float_class, "/", flt_div, 1);
-    DEF(korb_vm->float_class, "to_s", flt_to_s, 0);
-    extern VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv);
-    DEF(korb_vm->float_class, "to_i",   flt_to_i, 0);
-    DEF(korb_vm->float_class, "to_int", flt_to_i, 0);
-    DEF(korb_vm->float_class, "step", flt_step, -1);
-    DEF(korb_vm->float_class, "nan?",      flt_nan_p,      0);
-    DEF(korb_vm->float_class, "infinite?", flt_infinite_p, 0);
-    DEF(korb_vm->float_class, "finite?",   flt_finite_p,   0);
-    DEF(korb_vm->float_class, "zero?",     flt_zero_p,     0);
-    DEF(korb_vm->float_class, "positive?", flt_positive_p, 0);
-    DEF(korb_vm->float_class, "negative?", flt_negative_p, 0);
+    DEF_R(korb_vm->float_class, "+", flt_plus, 1);
+    DEF_R(korb_vm->float_class, "-", flt_minus, 1);
+    DEF_R(korb_vm->float_class, "*", flt_mul, 1);
+    DEF_R(korb_vm->float_class, "/", flt_div, 1);
+    DEF_R(korb_vm->float_class, "to_s", flt_to_s, 0);
+    extern RESULT flt_to_i(CTX *c, int argc, VALUE *sp);
+    DEF_R(korb_vm->float_class, "to_i",   flt_to_i, 0);
+    DEF_R(korb_vm->float_class, "to_int", flt_to_i, 0);
+    DEF_R(korb_vm->float_class, "step", flt_step, -1);
+    DEF_R(korb_vm->float_class, "nan?",      flt_nan_p,      0);
+    DEF_R(korb_vm->float_class, "infinite?", flt_infinite_p, 0);
+    DEF_R(korb_vm->float_class, "finite?",   flt_finite_p,   0);
+    DEF_R(korb_vm->float_class, "zero?",     flt_zero_p,     0);
+    DEF_R(korb_vm->float_class, "positive?", flt_positive_p, 0);
+    DEF_R(korb_vm->float_class, "negative?", flt_negative_p, 0);
 
     /* String */
     /* String#encoding stub — return Encoding::UTF_8.  */
@@ -390,31 +390,37 @@ void korb_init_builtins(CTX *c) {
     }
 
     /* Class */
-    DEF(korb_vm->class_class, "new", class_new, -1);
+    DEF_R(korb_vm->class_class, "new", class_new, -1);
     {
-        VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->class_class, "allocate", class_allocate, 0);
+        RESULT class_allocate(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->class_class, "allocate", class_allocate, 0);
     }
-    DEF(korb_vm->class_class, "name", class_name, 0);
+    DEF_R(korb_vm->class_class, "name", class_name, 0);
 
     /* Module — applies to both Class and Module */
-    DEF(korb_vm->module_class, "name", class_name, 0);
-    DEF(korb_vm->module_class, "attr_reader",   module_attr_reader,   -1);
+    DEF_R(korb_vm->module_class, "name", class_name, 0);
+    DEF_R(korb_vm->module_class, "attr_reader",   module_attr_reader,   -1);
     /* Module#attr — historical:
      *   attr :foo            → reader only
      *   attr :foo, true      → reader + writer (deprecated form)
      *   attr :foo, :bar, ... → readers for each (when args are all symbols) */
     {
-        VALUE _module_attr(CTX *c, VALUE self, int argc, VALUE *argv) {
-            VALUE module_attr_reader(CTX *, VALUE, int, VALUE *);
-            VALUE module_attr_writer(CTX *, VALUE, int, VALUE *);
+        RESULT _module_attr(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            RESULT module_attr_reader(CTX *, int, VALUE *);
+            RESULT module_attr_writer(CTX *, int, VALUE *);
             if (argc == 2 && (argv[1] == Qtrue || argv[1] == Qfalse)) {
                 bool writable = (argv[1] == Qtrue);
-                VALUE r = module_attr_reader(c, self, 1, argv);
-                if (c->state == KORB_RAISE) return Qnil;
+                /* call module_attr_reader with [self, argv[0]] staged */
+                sp[0] = self;
+                sp[1] = argv[0];
+                VALUE r = UNWRAP(module_attr_reader(c, 1, sp + 2));
                 if (writable) {
-                    VALUE w = module_attr_writer(c, self, 1, argv);
-                    if (c->state == KORB_RAISE) return Qnil;
+                    sp[0] = self;
+                    sp[1] = argv[0];
+                    VALUE w = UNWRAP(module_attr_writer(c, 1, sp + 2));
                     /* CRuby returns [reader_sym, writer_sym] in this form. */
                     VALUE arr = korb_ary_new_capa(c, c->sp, 2);
                     if (BUILTIN_TYPE(r) == T_ARRAY && ((struct korb_array *)r)->len > 0) {
@@ -423,70 +429,70 @@ void korb_init_builtins(CTX *c) {
                     if (BUILTIN_TYPE(w) == T_ARRAY && ((struct korb_array *)w)->len > 0) {
                         korb_ary_push(arr, ((struct korb_array *)w)->ptr[0]);
                     }
-                    return arr;
+                    return RESULT_OK(arr);
                 }
-                return r;
+                return RESULT_OK(r);
             }
-            return module_attr_reader(c, self, argc, argv);
+            return module_attr_reader(c, argc, sp);
         }
-        DEF(korb_vm->module_class, "attr", _module_attr, -1);
+        DEF_R(korb_vm->module_class, "attr", _module_attr, -1);
     }
-    DEF(korb_vm->module_class, "attr_writer",   module_attr_writer,   -1);
-    DEF(korb_vm->module_class, "attr_accessor", module_attr_accessor, -1);
-    DEF(korb_vm->module_class, "include",       module_include,       -1);
+    DEF_R(korb_vm->module_class, "attr_writer",   module_attr_writer,   -1);
+    DEF_R(korb_vm->module_class, "attr_accessor", module_attr_accessor, -1);
+    DEF_R(korb_vm->module_class, "include",       module_include,       -1);
     /* Toplevel `include M` — main / Object forwards to Object#include.
      * `extend self` and similar; expose on Object too as a private
      * method so any context (including main / class bodies of plain
      * objects) can call it. */
-    DEF(korb_vm->object_class, "include",       module_include,       -1);
-    DEF(korb_vm->object_class, "private",       module_private,       -1);
-    DEF(korb_vm->object_class, "public",        module_public,        -1);
-    DEF(korb_vm->module_class, "private",       module_private,       -1);
-    DEF(korb_vm->module_class, "public",        module_public,        -1);
-    DEF(korb_vm->module_class, "protected",     module_protected,     -1);
-    DEF(korb_vm->module_class, "module_function", module_module_function, -1);
-    DEF(korb_vm->module_class, "define_method", module_define_method, -1);
-    DEF(korb_vm->module_class, "alias_method",  module_alias_method,  -1);
-    DEF(korb_vm->module_class, "undef_method",  module_undef_method,  -1);
-    DEF(korb_vm->module_class, "remove_method", module_remove_method, -1);
-    DEF(korb_vm->module_class, "const_get",     module_const_get,     -1);
-    DEF(korb_vm->module_class, "const_set",     module_const_set,     -1);
-    DEF(korb_vm->module_class, "const_defined?", module_const_defined_p, -1);
-    DEF(korb_vm->module_class, "remove_const",  module_remove_const,  -1);
-    DEF(korb_vm->module_class, "remove_class_variable", module_remove_class_variable, -1);
+    DEF_R(korb_vm->object_class, "include",       module_include,       -1);
+    DEF_R(korb_vm->object_class, "private",       module_private,       -1);
+    DEF_R(korb_vm->object_class, "public",        module_public,        -1);
+    DEF_R(korb_vm->module_class, "private",       module_private,       -1);
+    DEF_R(korb_vm->module_class, "public",        module_public,        -1);
+    DEF_R(korb_vm->module_class, "protected",     module_protected,     -1);
+    DEF_R(korb_vm->module_class, "module_function", module_module_function, -1);
+    DEF_R(korb_vm->module_class, "define_method", module_define_method, -1);
+    DEF_R(korb_vm->module_class, "alias_method",  module_alias_method,  -1);
+    DEF_R(korb_vm->module_class, "undef_method",  module_undef_method,  -1);
+    DEF_R(korb_vm->module_class, "remove_method", module_remove_method, -1);
+    DEF_R(korb_vm->module_class, "const_get",     module_const_get,     -1);
+    DEF_R(korb_vm->module_class, "const_set",     module_const_set,     -1);
+    DEF_R(korb_vm->module_class, "const_defined?", module_const_defined_p, -1);
+    DEF_R(korb_vm->module_class, "remove_const",  module_remove_const,  -1);
+    DEF_R(korb_vm->module_class, "remove_class_variable", module_remove_class_variable, -1);
     {
-        VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->module_class, "private_class_method",   module_private_class_method, -1);
-    DEF(korb_vm->module_class, "public_class_method",    module_public_class_method,  -1);
-    DEF(korb_vm->module_class, "private_constant",       module_private_constant,     -1);
-    DEF(korb_vm->module_class, "public_constant",        module_public_constant,      -1);
-    DEF(korb_vm->module_class, "class_variable_get",     mod_class_variable_get,     -1);
-        DEF(korb_vm->module_class, "class_variable_set",     mod_class_variable_set,     -1);
-        DEF(korb_vm->module_class, "class_variable_defined?", mod_class_variable_defined_p, -1);
-        DEF(korb_vm->module_class, "class_variables",        mod_class_variables,        -1);
+        RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp);
+        RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp);
+        RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp);
+        RESULT mod_class_variables(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->module_class, "private_class_method",   module_private_class_method, -1);
+    DEF_R(korb_vm->module_class, "public_class_method",    module_public_class_method,  -1);
+    DEF_R(korb_vm->module_class, "private_constant",       module_private_constant,     -1);
+    DEF_R(korb_vm->module_class, "public_constant",        module_public_constant,      -1);
+    DEF_R(korb_vm->module_class, "class_variable_get",     mod_class_variable_get,     -1);
+        DEF_R(korb_vm->module_class, "class_variable_set",     mod_class_variable_set,     -1);
+        DEF_R(korb_vm->module_class, "class_variable_defined?", mod_class_variable_defined_p, -1);
+        DEF_R(korb_vm->module_class, "class_variables",        mod_class_variables,        -1);
     }
-    DEF(korb_vm->module_class, "===",           class_eqq,            1);
+    DEF_R(korb_vm->module_class, "===",           class_eqq,            1);
     /* Class < Module — Class instances inherit Module's methods.
      * No need to mirror module_* onto korb_vm->class_class. */
 
     /* Comparable instance methods */
-    DEF(korb_vm->comparable_module, "<",          cmp_lt,       1);
-    DEF(korb_vm->comparable_module, "<=",         cmp_le,       1);
-    DEF(korb_vm->comparable_module, ">",          cmp_gt,       1);
-    DEF(korb_vm->comparable_module, ">=",         cmp_ge,       1);
-    DEF(korb_vm->comparable_module, "==",         cmp_eq,       1);
-    DEF(korb_vm->comparable_module, "between?",   cmp_between, -1);
-    DEF(korb_vm->comparable_module, "clamp",      cmp_clamp,   -1);
+    DEF_R(korb_vm->comparable_module, "<",          cmp_lt,       1);
+    DEF_R(korb_vm->comparable_module, "<=",         cmp_le,       1);
+    DEF_R(korb_vm->comparable_module, ">",          cmp_gt,       1);
+    DEF_R(korb_vm->comparable_module, ">=",         cmp_ge,       1);
+    DEF_R(korb_vm->comparable_module, "==",         cmp_eq,       1);
+    DEF_R(korb_vm->comparable_module, "between?",   cmp_between, -1);
+    DEF_R(korb_vm->comparable_module, "clamp",      cmp_clamp,   -1);
 
     /* extra Object methods */
     /* Object dup / clone / instance_variables */
-    DEF(korb_vm->object_class, "dup",                obj_dup,                   0);
-    DEF(korb_vm->object_class, "clone",              obj_clone,                 0);
-    DEF(korb_vm->object_class, "instance_variables", obj_instance_variables,    0);
-    DEF(korb_vm->object_class, "instance_variable_defined?", obj_ivar_defined_p, 1);
+    DEF_R(korb_vm->object_class, "dup",                obj_dup,                   0);
+    DEF_R(korb_vm->object_class, "clone",              obj_clone,                 0);
+    DEF_R(korb_vm->object_class, "instance_variables", obj_instance_variables,    0);
+    DEF_R(korb_vm->object_class, "instance_variable_defined?", obj_ivar_defined_p, 1);
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
     DEF(korb_vm->object_class, "__method__",         kernel_method_name,        0);
     DEF(korb_vm->object_class, "__callee__",         kernel_method_name,        0);
@@ -512,8 +518,8 @@ void korb_init_builtins(CTX *c) {
     /* Range#exclude_end? */
     DEF_R(korb_vm->range_class, "exclude_end?",       rng_exclude_end_p,         0);
     /* Class ancestors / Module#prepend */
-    DEF(korb_vm->module_class, "ancestors",          class_ancestors,           0);
-    DEF(korb_vm->module_class, "prepend",            module_prepend,           -1);
+    DEF_R(korb_vm->module_class, "ancestors",          class_ancestors,           0);
+    DEF_R(korb_vm->module_class, "prepend",            module_prepend,           -1);
     {
         VALUE module_include_p(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (argc < 1) return Qfalse;
@@ -533,23 +539,23 @@ void korb_init_builtins(CTX *c) {
         }
         DEF(korb_vm->module_class, "include?",       module_include_p,         1);
     }
-    DEF(korb_vm->object_class, "extend",             obj_extend,               -1);
-    DEF(korb_vm->object_class, "send",                  obj_send,                 -1);
-    DEF(korb_vm->object_class, "__send__",              obj_send,                 -1);
-    DEF(korb_vm->object_class, "public_send",           obj_public_send,          -1);
-    DEF(korb_vm->object_class, "instance_variable_get", obj_instance_variable_get, 1);
-    DEF(korb_vm->object_class, "instance_variable_set", obj_instance_variable_set, 2);
-    DEF(korb_vm->object_class, "method",                obj_method,                1);
-    DEF(korb_vm->object_class, "instance_of?",          obj_instance_of_p,         1);
-    DEF(korb_vm->object_class, "===",                   obj_eqq,                   1);
+    DEF_R(korb_vm->object_class, "extend",             obj_extend,               -1);
+    DEF_R(korb_vm->object_class, "send",                  obj_send,                 -1);
+    DEF_R(korb_vm->object_class, "__send__",              obj_send,                 -1);
+    DEF_R(korb_vm->object_class, "public_send",           obj_public_send,          -1);
+    DEF_R(korb_vm->object_class, "instance_variable_get", obj_instance_variable_get, 1);
+    DEF_R(korb_vm->object_class, "instance_variable_set", obj_instance_variable_set, 2);
+    DEF_R(korb_vm->object_class, "method",                obj_method,                1);
+    DEF_R(korb_vm->object_class, "instance_of?",          obj_instance_of_p,         1);
+    DEF_R(korb_vm->object_class, "===",                   obj_eqq,                   1);
     {
-        VALUE obj_tap(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE obj_then(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "tap",        obj_tap,    0);
-        DEF(korb_vm->object_class, "then",       obj_then,   0);
-        DEF(korb_vm->object_class, "yield_self", obj_then,   0);
-        DEF(korb_vm->object_class, "itself",     obj_itself, 0);
+        RESULT obj_tap(CTX *c, int argc, VALUE *sp);
+        RESULT obj_then(CTX *c, int argc, VALUE *sp);
+        RESULT obj_itself(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "tap",        obj_tap,    0);
+        DEF_R(korb_vm->object_class, "then",       obj_then,   0);
+        DEF_R(korb_vm->object_class, "yield_self", obj_then,   0);
+        DEF_R(korb_vm->object_class, "itself",     obj_itself, 0);
     }
     DEF_R_PRIV(korb_vm->object_class, "format",            kernel_format,            -1);
     DEF_R_PRIV(korb_vm->object_class, "sprintf",           kernel_format,            -1);
@@ -598,27 +604,27 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->integer_class, "coerce", int_coerce, 1);
     DEF(korb_vm->integer_class, "abs2",   int_abs2,   0);
     DEF_R(korb_vm->float_class, "coerce", flt_coerce, 1);
-    DEF(korb_vm->float_class, "abs2",   flt_abs2,   0);
+    DEF_R(korb_vm->float_class, "abs2",   flt_abs2,   0);
 
     /* extra Float */
-    DEF(korb_vm->float_class, "floor", flt_floor, -1);
-    DEF(korb_vm->float_class, "===",   flt_eqq, 1);
-    DEF(korb_vm->float_class, "**",    flt_pow, 1);
-    DEF(korb_vm->float_class, "<",     flt_lt, 1);
-    DEF(korb_vm->float_class, "<=",    flt_le, 1);
-    DEF(korb_vm->float_class, ">",     flt_gt, 1);
-    DEF(korb_vm->float_class, ">=",    flt_ge, 1);
-    DEF(korb_vm->float_class, "<=>",   flt_cmp, 1);
-    DEF(korb_vm->float_class, "==",    flt_eqq, 1);
-    DEF(korb_vm->float_class, "to_i",  flt_to_i, 0);
-    DEF(korb_vm->float_class, "to_f",  flt_to_f, 0);
-    DEF(korb_vm->float_class, "-@",    flt_uminus, 0);
-    DEF(korb_vm->float_class, "+@",    flt_uplus, 0);
-    DEF(korb_vm->float_class, "abs",   flt_abs, 0);
-    DEF(korb_vm->float_class, "magnitude", flt_abs, 0);
-    DEF(korb_vm->float_class, "ceil",     flt_ceil,    -1);
-    DEF(korb_vm->float_class, "round",    flt_round,   -1);
-    DEF(korb_vm->float_class, "truncate", flt_truncate, 0);
+    DEF_R(korb_vm->float_class, "floor", flt_floor, -1);
+    DEF_R(korb_vm->float_class, "===",   flt_eqq, 1);
+    DEF_R(korb_vm->float_class, "**",    flt_pow, 1);
+    DEF_R(korb_vm->float_class, "<",     flt_lt, 1);
+    DEF_R(korb_vm->float_class, "<=",    flt_le, 1);
+    DEF_R(korb_vm->float_class, ">",     flt_gt, 1);
+    DEF_R(korb_vm->float_class, ">=",    flt_ge, 1);
+    DEF_R(korb_vm->float_class, "<=>",   flt_cmp, 1);
+    DEF_R(korb_vm->float_class, "==",    flt_eqq, 1);
+    DEF_R(korb_vm->float_class, "to_i",  flt_to_i, 0);
+    DEF_R(korb_vm->float_class, "to_f",  flt_to_f, 0);
+    DEF_R(korb_vm->float_class, "-@",    flt_uminus, 0);
+    DEF_R(korb_vm->float_class, "+@",    flt_uplus, 0);
+    DEF_R(korb_vm->float_class, "abs",   flt_abs, 0);
+    DEF_R(korb_vm->float_class, "magnitude", flt_abs, 0);
+    DEF_R(korb_vm->float_class, "ceil",     flt_ceil,    -1);
+    DEF_R(korb_vm->float_class, "round",    flt_round,   -1);
+    DEF_R(korb_vm->float_class, "truncate", flt_truncate, 0);
 
     /* extra String */
     DEF_R(korb_vm->string_class, "split",       str_split,       -1);
@@ -665,7 +671,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "%",           str_percent,     -1);
     DEF_R(korb_vm->string_class, "bytesize",    str_bytesize,     0);
     DEF(korb_vm->string_class, "inspect",     kernel_inspect,   0);
-    DEF(korb_vm->string_class, "dup",         obj_dup,          0);
+    DEF_R(korb_vm->string_class, "dup",         obj_dup,          0);
     DEF_R(korb_vm->string_class, "=~",          str_match_op, 1);
     DEF_R(korb_vm->string_class, "match?",      str_match_p, -1);
     DEF_R(korb_vm->string_class, "match",       str_match, -1);
@@ -778,7 +784,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "getbyte",       str_getbyte,       1);
     /* Numeric eql? — type-strict */
     DEF(korb_vm->integer_class, "eql?",          int_eql,           1);
-    DEF(korb_vm->float_class, "eql?",          flt_eql,           1);
+    DEF_R(korb_vm->float_class, "eql?",          flt_eql,           1);
     DEF(korb_vm->array_class, "each_cons",      ary_each_cons,  1);
     DEF(korb_vm->array_class, "minmax_by",      ary_minmax_by,  0);
     DEF(korb_vm->array_class, "assoc",       ary_assoc,       1);
@@ -1068,7 +1074,7 @@ void korb_init_builtins(CTX *c) {
     /* implementing as: replace class_new */
     /* We modify class_new defined above — but it's static.  Instead add a layered method. */
     {
-        extern VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT class_new(CTX *c, int argc, VALUE *sp);
         /* not exposed — we need a wrapper.  Define inline: */
     }
     /* Add struct_class_new under name "new" on Struct.  Since dispatch goes through
@@ -1078,7 +1084,7 @@ void korb_init_builtins(CTX *c) {
      * pointing to struct_class_new. */
     {
         struct korb_class *cStructMeta = korb_class_new(c, c->sp, korb_intern("StructMeta"), korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cStructMeta, korb_intern("new"), struct_class_new, -1);
+        korb_class_add_method_cfunc_r(cStructMeta, korb_intern("new"), struct_class_new, -1);
         cStruct->basic.klass = (VALUE)cStructMeta;
     }
 
@@ -1265,8 +1271,8 @@ void korb_init_builtins(CTX *c) {
         DEF(cSymMeta, "new",      _new_disallowed,       -1);
     }
     {
-        VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->symbol_class, "to_sym",  obj_itself, 0);
+        RESULT obj_itself(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->symbol_class, "to_sym",  obj_itself, 0);
     }
     DEF_R(korb_vm->symbol_class, "to_s", sym_to_s, 0);
     DEF_R(korb_vm->symbol_class, "id2name", sym_to_s, 0);
@@ -1307,26 +1313,26 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->nil_class,   "nil?", nil_nil_p, 0);
 
     /* Proc */
-    DEF(korb_vm->proc_class, "call", proc_call, -1);
-    DEF(korb_vm->proc_class, "[]", proc_call, -1);
+    DEF_R(korb_vm->proc_class, "call", proc_call, -1);
+    DEF_R(korb_vm->proc_class, "[]", proc_call, -1);
     /* Proc#=== — same as #call.  Used by case/when with a proc value
      * pattern (`case x; when ->(...) { ... }`) and by pattern matching
      * (`case x; in ->(...) { ... }`). */
-    DEF(korb_vm->proc_class, "===", proc_call, -1);
-    DEF(korb_vm->proc_class, "lambda?", proc_lambda_p, 0);
-    DEF(korb_vm->proc_class, "arity", proc_arity, 0);
+    DEF_R(korb_vm->proc_class, "===", proc_call, -1);
+    DEF_R(korb_vm->proc_class, "lambda?", proc_lambda_p, 0);
+    DEF_R(korb_vm->proc_class, "arity", proc_arity, 0);
     {
-        VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->proc_class, "parameters",      proc_parameters,      0);
-        DEF(korb_vm->proc_class, "source_location", proc_source_location, 0);
+        RESULT proc_parameters(CTX *c, int argc, VALUE *sp);
+        RESULT proc_source_location(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->proc_class, "parameters",      proc_parameters,      0);
+        DEF_R(korb_vm->proc_class, "source_location", proc_source_location, 0);
     }
-    DEF(korb_vm->proc_class, "==", proc_eq, 1);
-    DEF(korb_vm->proc_class, "eql?", proc_eq, 1);
+    DEF_R(korb_vm->proc_class, "==", proc_eq, 1);
+    DEF_R(korb_vm->proc_class, "eql?", proc_eq, 1);
     {
         struct korb_class *cProcMeta = korb_class_new(c, c->sp, korb_intern("ProcMeta"),
                                                       korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cProcMeta, korb_intern("new"), proc_class_new, -1);
+        korb_class_add_method_cfunc_r(cProcMeta, korb_intern("new"), proc_class_new, -1);
         /* Proc.allocate raises TypeError (CRuby) — no proc allocation
          * without a block. */
         {
@@ -1342,8 +1348,8 @@ void korb_init_builtins(CTX *c) {
         korb_vm->proc_class->basic.klass = (VALUE)cProcMeta;
     }
     {
-        VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->proc_class, "to_proc", obj_itself, 0);
+        RESULT obj_itself(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->proc_class, "to_proc", obj_itself, 0);
     }
 
     /* Time stub class (Process is set up earlier with proper meta). */
@@ -1425,41 +1431,41 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cMethod = korb_class_new(c, c->sp, korb_intern("Method"), korb_vm->object_class, T_DATA);
         korb_const_set(korb_vm->object_class, korb_intern("Method"), (VALUE)cMethod);
-        korb_class_add_method_cfunc(cMethod, korb_intern("call"),     method_call,     -1);
-        korb_class_add_method_cfunc(cMethod, korb_intern("[]"),       method_call,     -1);
-        korb_class_add_method_cfunc(cMethod, korb_intern("to_proc"),  method_to_proc,   0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("arity"),      method_arity,      0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("name"),       method_name,       0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("receiver"),   method_receiver,   0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("owner"),      method_owner,      0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("bind"),       method_bind,       1);
-        korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),     method_unbind,     0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("parameters"),      method_parameters,      0);
-        korb_class_add_method_cfunc(cMethod, korb_intern("source_location"), method_source_location, 0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("call"),     method_call,     -1);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("[]"),       method_call,     -1);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("to_proc"),  method_to_proc,   0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("arity"),      method_arity,      0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("name"),       method_name,       0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("receiver"),   method_receiver,   0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("owner"),      method_owner,      0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("bind"),       method_bind,       1);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("unbind"),     method_unbind,     0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("parameters"),      method_parameters,      0);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("source_location"), method_source_location, 0);
         korb_vm->method_class = cMethod;
     }
-    DEF(korb_vm->object_class, "instance_eval",    obj_instance_eval,       -1);
-    DEF(korb_vm->object_class, "instance_exec",    obj_instance_exec,       -1);
-    DEF(korb_vm->module_class, "instance_method",  module_instance_method,   1);
-    DEF(korb_vm->module_class, "instance_methods", module_instance_methods, -1);
-    DEF(korb_vm->module_class, "method_defined?",            module_method_defined_p,           -1);
-    DEF(korb_vm->module_class, "public_method_defined?",     module_public_method_defined_p,    -1);
-    DEF(korb_vm->module_class, "private_method_defined?",    module_private_method_defined_p,   -1);
-    DEF(korb_vm->module_class, "protected_method_defined?",  module_protected_method_defined_p, -1);
-    DEF(korb_vm->module_class, "private_instance_methods",   module_private_instance_methods,   -1);
-    DEF(korb_vm->module_class, "public_instance_methods",    module_public_instance_methods,    -1);
-    DEF(korb_vm->module_class, "protected_instance_methods", module_protected_instance_methods, -1);
-    DEF(korb_vm->module_class, "constants",        module_constants,         0);
-    DEF(korb_vm->module_class, "class_eval",       module_class_eval,       -1);
-    DEF(korb_vm->module_class, "module_eval",      module_class_eval,       -1);
-    DEF(korb_vm->module_class, "class_exec",       module_class_exec,       -1);
-    DEF(korb_vm->module_class, "module_exec",      module_class_exec,       -1);
-    DEF(korb_vm->module_class, "<",                module_lt,                1);
-    DEF(korb_vm->module_class, "<=",               module_le,                1);
-    DEF(korb_vm->module_class, "<=>",              module_cmp,               1);
-    DEF(korb_vm->module_class, ">",                module_gt,                1);
-    DEF(korb_vm->module_class, ">=",               module_ge,                1);
-    DEF(korb_vm->class_class, "superclass",       class_superclass,         0);
+    DEF_R(korb_vm->object_class, "instance_eval",    obj_instance_eval,       -1);
+    DEF_R(korb_vm->object_class, "instance_exec",    obj_instance_exec,       -1);
+    DEF_R(korb_vm->module_class, "instance_method",  module_instance_method,   1);
+    DEF_R(korb_vm->module_class, "instance_methods", module_instance_methods, -1);
+    DEF_R(korb_vm->module_class, "method_defined?",            module_method_defined_p,           -1);
+    DEF_R(korb_vm->module_class, "public_method_defined?",     module_public_method_defined_p,    -1);
+    DEF_R(korb_vm->module_class, "private_method_defined?",    module_private_method_defined_p,   -1);
+    DEF_R(korb_vm->module_class, "protected_method_defined?",  module_protected_method_defined_p, -1);
+    DEF_R(korb_vm->module_class, "private_instance_methods",   module_private_instance_methods,   -1);
+    DEF_R(korb_vm->module_class, "public_instance_methods",    module_public_instance_methods,    -1);
+    DEF_R(korb_vm->module_class, "protected_instance_methods", module_protected_instance_methods, -1);
+    DEF_R(korb_vm->module_class, "constants",        module_constants,         0);
+    DEF_R(korb_vm->module_class, "class_eval",       module_class_eval,       -1);
+    DEF_R(korb_vm->module_class, "module_eval",      module_class_eval,       -1);
+    DEF_R(korb_vm->module_class, "class_exec",       module_class_exec,       -1);
+    DEF_R(korb_vm->module_class, "module_exec",      module_class_exec,       -1);
+    DEF_R(korb_vm->module_class, "<",                module_lt,                1);
+    DEF_R(korb_vm->module_class, "<=",               module_le,                1);
+    DEF_R(korb_vm->module_class, "<=>",              module_cmp,               1);
+    DEF_R(korb_vm->module_class, ">",                module_gt,                1);
+    DEF_R(korb_vm->module_class, ">=",               module_ge,                1);
+    DEF_R(korb_vm->class_class, "superclass",       class_superclass,         0);
 
     /* Math module — populated with libm-backed functions and constants. */
     {
@@ -1503,9 +1509,9 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cModMeta = korb_class_new(c, c->sp, korb_intern("ModuleMeta"),
                                                      korb_vm->class_class, T_CLASS);
-        DEF(cModMeta, "new", module_new_class_func, -1);
+        DEF_R(cModMeta, "new", module_new_class_func, -1);
         /* Module.nesting — same metaclass. */
-        DEF(cModMeta, "nesting", module_class_nesting, 0);
+        DEF_R(cModMeta, "nesting", module_class_nesting, 0);
         korb_vm->module_class->basic.klass = (VALUE)cModMeta;
     }
 

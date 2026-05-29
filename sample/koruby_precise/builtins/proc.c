@@ -4,59 +4,77 @@
 extern VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
 /* Proc#lambda? — true for ->{} / lambda{}, false for Proc.new / { } blocks. */
-static VALUE proc_lambda_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_PROC) return Qfalse;
-    return KORB_BOOL(((struct korb_proc *)self)->is_lambda);
+static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(((struct korb_proc *)self)->is_lambda));
 }
 
 /* Proc#arity — count of required positional args (req + post).
  * Non-lambda procs: opt-only blocks return non-negative arity (req).
  * Any *rest makes it negative: -(req + 1).
  * Lambdas: opt also makes it negative. */
-static VALUE proc_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_PROC) return INT2FIX(0);
+static RESULT proc_arity(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(INT2FIX(0));
     struct korb_proc *p = (struct korb_proc *)self;
-    if (!p->body && p->params_cnt == 0 && p->rest_slot < 0) return INT2FIX(0);
+    if (!p->body && p->params_cnt == 0 && p->rest_slot < 0) return RESULT_OK(INT2FIX(0));
     long required = (long)p->params_cnt - (long)p->opt_cnt + (long)p->post_cnt;
     if (required < 0) required = 0;
     bool has_rest = (p->rest_slot >= 0);
     bool has_opt = (p->opt_cnt > 0);
-    if (has_rest) return INT2FIX(-(required + 1));
-    if (p->is_lambda && has_opt) return INT2FIX(-(required + 1));
-    return INT2FIX(required);
+    if (has_rest) return RESULT_OK(INT2FIX(-(required + 1)));
+    if (p->is_lambda && has_opt) return RESULT_OK(INT2FIX(-(required + 1)));
+    return RESULT_OK(INT2FIX(required));
 }
 
 /* Proc#== — same Proc identity. */
-static VALUE proc_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(self == argv[0]);
+static RESULT proc_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(self == argv[0]));
 }
 
 /* Proc.new — captures the current block as a Proc. */
-static VALUE proc_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT proc_class_new(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (!c->current_block) {
-        DROP_RESULT(korb_raise(c, NULL, "tried to create Proc object without a block"));
-        return Qnil;
+        return korb_raise(c, NULL, "tried to create Proc object without a block");
     }
-    return (VALUE)c->current_block;
+    return RESULT_OK((VALUE)c->current_block);
 }
 
-VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT proc_call(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Proc#call is the "escape" path: the proc may be invoked long after
      * its enclosing scope is gone, so we cannot share its env with that
      * scope's stack slots.  Push a fresh frame on top of the current sp,
      * snapshot the captured env into it, then evaluate the body. */
-    if (BUILTIN_TYPE(self) != T_PROC) return Qnil;
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(Qnil);
     struct korb_proc *p = (struct korb_proc *)self;
     /* Symbol-proc shim: created by Symbol#to_proc; dispatch as
      * `argv[0].send(symbol, *rest)`. */
     if (p->body == NULL && SYMBOL_P(p->self)) {
         if (argc < 1) {
-            DROP_RESULT(korb_raise(c, NULL, "no receiver for symbol proc"));
-            return Qnil;
+            return korb_raise(c, NULL, "no receiver for symbol proc");
         }
         ID name = korb_sym2id(p->self);
-        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+        return RESULT_OK(korb_funcall(c, argv[0], name, argc - 1, argv + 1));
     }
     /* Method-proc shim: created by Method#to_proc; dispatch as
      * `m.receiver.send(m.name, *args)`. */
@@ -64,7 +82,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
         struct korb_method_obj *m = (struct korb_method_obj *)p->self;
-        return korb_funcall(c, m->receiver, m->name, argc, argv);
+        return RESULT_OK(korb_funcall(c, m->receiver, m->name, argc, argv));
     }
     /* Lambda is strict: argc must match params_cnt (or be in
      * required..total range when rest/optional are present).
@@ -84,10 +102,9 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required || (uint32_t)eff_argc > total_pos) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+            return korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u)",
-                     eff_argc, total_pos));
-            return Qnil;
+                     eff_argc, total_pos);
         }
     } else if (p->is_lambda) {
         /* Lambda with rest: lower bound on required positional args. */
@@ -102,10 +119,9 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+            return korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u+)",
-                     eff_argc, required));
-            return Qnil;
+                     eff_argc, required);
         }
     }
     VALUE *prev_fp = c->current_frame->fp;
@@ -133,9 +149,9 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE *new_fp = p->env;
     VALUE *fresh_env = NULL;     /* non-null when we cloned */
     if (UNLIKELY(!new_fp)) {
-        DROP_RESULT(korb_raise(c, NULL, "proc with no env"));
+        return korb_raise(c, NULL, "proc with no env");
         AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     /* Slot collision guard: when prev_fp is inside the env's range
      * (a method's frame sits on top of env), the block body's nested
@@ -214,14 +230,14 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                 VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
                 if (c->state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
                 if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                               "can't convert to Array (#to_ary gave non-Array)"));
+                    return korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)");
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
                 arr = coerced;
             }
@@ -403,7 +419,7 @@ redo_proc:
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 c->state_target_frame = NULL;
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eL, "break from proc-closure"));
+                return korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
                 r = Qnil;
             }
         }
@@ -446,9 +462,9 @@ redo_proc:
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[3]));
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                DROP_RESULT(korb_raise(c, (struct korb_class *)urs[0], "%s", buf));
+                return korb_raise(c, (struct korb_class *)urs[0], "%s", buf);
             } else {
-                DROP_RESULT(korb_raise(c, NULL, "%s", buf));
+                return korb_raise(c, NULL, "%s", buf);
             }
             /* Stash tag/value on the exception for catch to re-extract. */
             if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
@@ -462,13 +478,13 @@ redo_proc:
          * Convert to a SyntaxError-like raise so `rescue` can catch. */
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "Invalid retry"));
+            return korb_raise(c, (struct korb_class *)eSE, "Invalid retry");
         } else {
-            DROP_RESULT(korb_raise(c, NULL, "Invalid retry"));
+            return korb_raise(c, NULL, "Invalid retry");
         }
     }
     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
 #undef prev_self
-    return r;
+    return RESULT_OK(r);
 }
 

@@ -41,56 +41,83 @@ static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
     return 0;
 }
 
-static VALUE cmp_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) < 0);
+static RESULT cmp_lt(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) < 0));
 }
-static VALUE cmp_le(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) <= 0);
+static RESULT cmp_le(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) <= 0));
 }
-static VALUE cmp_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) > 0);
+static RESULT cmp_gt(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) > 0));
 }
-static VALUE cmp_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) >= 0);
+static RESULT cmp_ge(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) >= 0));
 }
-static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* CRuby fast path: identical objects compare equal without
      * invoking #<=>.  Avoids infinite recursion when #<=> calls super
      * and the only resolved super is BasicObject (no <=>). */
-    if (argc >= 1 && self == argv[0]) return Qtrue;
+    if (argc >= 1 && self == argv[0]) return RESULT_OK(Qtrue);
     /* Recursion guard: when a user-defined <=> ends up calling ==
      * (directly or through Object's eq dispatch), we'd recurse forever.
      * CRuby's rb_exec_recursive marks (recv, mid) and returns nil on
      * re-entry; we approximate with a thread-local depth counter,
      * returning false past a sane depth. */
     static __thread int cmp_eq_depth = 0;
-    if (cmp_eq_depth >= 16) return Qfalse;
+    if (cmp_eq_depth >= 16) return RESULT_OK(Qfalse);
     cmp_eq_depth++;
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
     cmp_eq_depth--;
     if (c->state == KORB_RAISE) {
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
-        return Qfalse;
+        return RESULT_OK(Qfalse);
     }
-    if (NIL_P(r)) return Qfalse;
-    if (FIXNUM_P(r)) return KORB_BOOL(FIX2LONG(r) == 0);
-    if (FLONUM_P(r)) return KORB_BOOL(korb_flonum_to_double(r) == 0.0);
+    if (NIL_P(r)) return RESULT_OK(Qfalse);
+    if (FIXNUM_P(r)) return RESULT_OK(KORB_BOOL(FIX2LONG(r) == 0));
+    if (FLONUM_P(r)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(r) == 0.0));
     if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) {
-        return KORB_BOOL(((struct korb_float *)r)->value == 0.0);
+        return RESULT_OK(KORB_BOOL(((struct korb_float *)r)->value == 0.0));
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
-static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc < 2) {
-        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc));
-        return Qnil;
+        return korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
     }
     long lo = korb_cmp_call(c, self, argv[0]);
     long hi = korb_cmp_call(c, self, argv[1]);
-    return KORB_BOOL(lo >= 0 && hi <= 0);
+    return RESULT_OK(KORB_BOOL(lo >= 0 && hi <= 0));
 }
-static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Two forms:
      *   clamp(min, max)  — both bounds explicit
      *   clamp(range)     — bounds taken from range.begin / range.end
@@ -101,9 +128,8 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (r->exclude_end) {
             /* `clamp(a...b)` is rejected (no clean cap on b's value). */
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                       "cannot clamp with an exclusive range"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eArg,
+                       "cannot clamp with an exclusive range");
         }
         lo = r->begin;
         hi = r->end;
@@ -111,15 +137,14 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         lo = argv[0];
         hi = argv[1];
     } else {
-        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc));
-        return Qnil;
+        return korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc);
     }
     /* If both bounds are non-nil, verify lo <= hi.  Use the bounds'
      * own <=> (CRuby uses min.<=>(max)) so user-defined comparison
      * decides; nil result OR positive sign → ArgumentError. */
     if (!NIL_P(lo) && !NIL_P(hi)) {
         VALUE r = korb_funcall(c, lo, korb_intern("<=>"), 1, &hi);
-        if (c->state == KORB_RAISE) return Qnil;
+        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         bool bad;
         if (NIL_P(r)) bad = true;
         else if (FIXNUM_P(r)) bad = FIX2LONG(r) > 0;
@@ -128,14 +153,13 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         else bad = false;
         if (bad) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-                       "min argument must be smaller than max argument"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eArg,
+                       "min argument must be smaller than max argument");
         }
     }
-    if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return lo;
-    if (!NIL_P(hi) && korb_cmp_call(c, self, hi) > 0) return hi;
-    return self;
+    if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return RESULT_OK(lo);
+    if (!NIL_P(hi) && korb_cmp_call(c, self, hi) > 0) return RESULT_OK(hi);
+    return RESULT_OK(self);
 }
 
 /* alias_method(:new_name, :existing_name) — register the existing
@@ -182,25 +206,40 @@ static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VA
     return self;
 }
 
-static VALUE module_undef_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return module_undef_or_remove_method_impl(c, self, argc, argv, true);
+static RESULT module_undef_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(module_undef_or_remove_method_impl(c, self, argc, argv, true));
 }
 
-static VALUE module_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return module_undef_or_remove_method_impl(c, self, argc, argv, false);
+static RESULT module_remove_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(module_undef_or_remove_method_impl(c, self, argc, argv, false));
 }
 
-static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT module_undef_or_remove_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Backwards-compat shim — old binding.  Treat as remove_method semantics. */
-    return module_undef_or_remove_method_impl(c, self, argc, argv, false);
+    return RESULT_OK(module_undef_or_remove_method_impl(c, self, argc, argv, false));
 }
 
-static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT module_alias_method(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc < 2) {
-        DROP_RESULT(korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc));
-        return Qnil;
+        return korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
     }
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(self);
     struct korb_class *klass = (struct korb_class *)self;
     ID new_name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern(korb_str_cstr(argv[0]));
     ID old_name = SYMBOL_P(argv[1]) ? korb_sym2id(argv[1]) : korb_intern(korb_str_cstr(argv[1]));
@@ -213,14 +252,13 @@ static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+        return korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_name),
-                   klass->name ? korb_id_name(klass->name) : "?"));
-        return Qnil;
+                   klass->name ? korb_id_name(klass->name) : "?");
     }
     korb_class_alias_method(klass, new_name, m);
-    return korb_id2sym(new_name);
+    return RESULT_OK(korb_id2sym(new_name));
 }
 
 static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *argv,
@@ -334,42 +372,66 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
     }
     return r;
 }
-static VALUE module_private(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE);
+static RESULT module_private(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE));
 }
-static VALUE module_public(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PUBLIC);
+static RESULT module_public(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(module_set_visibility(c, self, argc, argv, KORB_VIS_PUBLIC));
 }
-static VALUE module_protected(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED);
+static RESULT module_protected(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED));
 }
-static VALUE module_const_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT module_const_defined_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc < 1 || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE))
-        return Qfalse;
+        return RESULT_OK(Qfalse);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING)
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
-    else return Qfalse;
+    else return RESULT_OK(Qfalse);
     /* Walks includes/super by default; the optional second arg `inherit`
      * (default true) controls whether to search ancestors.  When false,
      * only the receiver's own constant table is consulted. */
     bool inherit = true;
     if (argc >= 2) inherit = RTEST(argv[1]);
     extern bool korb_const_has_inherited(struct korb_class *klass, ID name);
-    return KORB_BOOL(inherit
+    return RESULT_OK(KORB_BOOL(inherit
         ? korb_const_has_inherited((struct korb_class *)self, name)
-        : korb_const_has((struct korb_class *)self, name));
+        : korb_const_has((struct korb_class *)self, name)));
 }
-static VALUE module_module_function(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
+static RESULT module_module_function(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+ return RESULT_OK(self); }
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */
-static VALUE struct_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* attr_accessor for each member */
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return Qnil;
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long n = members->len;
     for (long i = 0; i < n && i < argc; i++) {
@@ -382,13 +444,17 @@ static VALUE struct_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
         ID iv_id = korb_intern(iv);
         korb_ivar_set(self, iv_id, argv[i]);
     }
-    return self;
+    return RESULT_OK(self);
 }
 
-static VALUE struct_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_ary_new(c, c->sp);
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp));
     struct korb_array *members = (struct korb_array *)members_v;
     VALUE r = korb_ary_new_capa(c, c->sp, members->len);
     for (long i = 0; i < members->len; i++) {
@@ -401,14 +467,18 @@ static VALUE struct_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
         ID iv_id = korb_intern(iv);
         korb_ary_push(r, korb_ivar_get(self, iv_id));
     }
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Struct#[] — read by index or symbol. */
-static VALUE struct_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return Qnil;
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long idx = -1;
     if (FIXNUM_P(argv[0])) {
@@ -422,22 +492,26 @@ static VALUE struct_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
     }
-    if (idx < 0 || idx >= members->len) return Qnil;
+    if (idx < 0 || idx >= members->len) return RESULT_OK(Qnil);
     ID name = SYMBOL_P(members->ptr[idx]) ? korb_sym2id(members->ptr[idx]) :
               korb_intern(korb_str_cstr(members->ptr[idx]));
     const char *base = korb_id_name(name);
     long bl = strlen(base);
     char *iv = korb_xmalloc_atomic(bl + 2);
     iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-    return korb_ivar_get(self, korb_intern(iv));
+    return RESULT_OK(korb_ivar_get(self, korb_intern(iv)));
 }
 
 /* Struct#[]= */
-static VALUE struct_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return Qnil;
+static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 2) return RESULT_OK(Qnil);
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return Qnil;
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long idx = -1;
     if (FIXNUM_P(argv[0])) {
@@ -451,7 +525,7 @@ static VALUE struct_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
     }
-    if (idx < 0 || idx >= members->len) return Qnil;
+    if (idx < 0 || idx >= members->len) return RESULT_OK(Qnil);
     ID name = SYMBOL_P(members->ptr[idx]) ? korb_sym2id(members->ptr[idx]) :
               korb_intern(korb_str_cstr(members->ptr[idx]));
     const char *base = korb_id_name(name);
@@ -459,34 +533,48 @@ static VALUE struct_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     char *iv = korb_xmalloc_atomic(bl + 2);
     iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
     korb_ivar_set(self, korb_intern(iv), argv[1]);
-    return argv[1];
+    return RESULT_OK(argv[1]);
 }
 
 /* Struct#each — yield each value. */
-static VALUE struct_each(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = struct_to_a(c, self, 0, NULL);
+static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    sp[0] = self;
+    VALUE arr = UNWRAP(struct_to_a(c, 0, sp + 1));
     struct korb_array *a = (struct korb_array *)arr;
     for (long i = 0; i < a->len; i++) {
-        korb_yield(c, 1, &a->ptr[i]);
-        if (c->state == KORB_RAISE) return Qnil;
+        UNWRAP(korb_yield_r(c, 1, &a->ptr[i]));
     }
-    return self;
+    return RESULT_OK(self);
 }
 
 /* Struct#== — same struct class + equal members. */
-static VALUE struct_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(argv[0])) return Qfalse;
-    if (((struct RBasic *)self)->klass != ((struct RBasic *)argv[0])->klass) return Qfalse;
-    VALUE a = struct_to_a(c, self, 0, NULL);
-    VALUE b = struct_to_a(c, argv[0], 0, NULL);
-    return korb_funcall(c, a, korb_intern("=="), 1, &b);
+static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(argv[0])) return RESULT_OK(Qfalse);
+    if (((struct RBasic *)self)->klass != ((struct RBasic *)argv[0])->klass) return RESULT_OK(Qfalse);
+    sp[0] = self;
+    VALUE a = UNWRAP(struct_to_a(c, 0, sp + 1));
+    sp[1] = argv[0];
+    VALUE b = UNWRAP(struct_to_a(c, 0, sp + 2));
+    return korb_funcall_r(c, a, korb_intern("=="), 1, &b);
 }
 
 /* Struct#to_h */
-static VALUE struct_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_hash_new(c, c->sp);
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp));
     struct korb_array *members = (struct korb_array *)members_v;
     VALUE h = korb_hash_new(c, c->sp);
     for (long i = 0; i < members->len; i++) {
@@ -498,26 +586,38 @@ static VALUE struct_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         korb_hash_aset(c, h, members->ptr[i], korb_ivar_get(self, korb_intern(iv)));
     }
-    return h;
+    return RESULT_OK(h);
 }
 
 /* Struct#size / length */
-static VALUE struct_size(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return INT2FIX(0);
-    return INT2FIX(((struct korb_array *)members_v)->len);
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(INT2FIX(0));
+    return RESULT_OK(INT2FIX(((struct korb_array *)members_v)->len));
 }
 
 /* Struct.members at the class level — return the members array. */
-static VALUE struct_class_members(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_CLASS) return korb_ary_new(c, c->sp);
+static RESULT struct_class_members(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_CLASS) return RESULT_OK(korb_ary_new(c, c->sp));
     VALUE members_v = korb_const_get((struct korb_class *)self, korb_intern("__members__"));
-    if (UNDEF_P(members_v)) return korb_ary_new(c, c->sp);
-    return members_v;
+    if (UNDEF_P(members_v)) return RESULT_OK(korb_ary_new(c, c->sp));
+    return RESULT_OK(members_v);
 }
 
-static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Struct.new(:a, :b, keyword_init: true) — strip trailing options
      * Hash before treating remaining args as member names.  We don't
      * implement keyword_init semantics differently from positional
@@ -535,24 +635,29 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Install Struct's standard instance methods FIRST, then let
      * attr_accessor overwrite any collisions (e.g. Data.define(:length)
      * means user-given `length` accessor wins over Struct#length). */
-    korb_class_add_method_cfunc(klass, korb_intern("initialize"), struct_initialize, -1);
-    korb_class_add_method_cfunc(klass, korb_intern("to_a"),       struct_to_a,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("values"),     struct_to_a,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("members"),    struct_to_a,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("[]"),         struct_aref,        1);
-    korb_class_add_method_cfunc(klass, korb_intern("[]="),        struct_aset,       -1);
-    korb_class_add_method_cfunc(klass, korb_intern("each"),       struct_each,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("==" ),        struct_eq,          1);
-    korb_class_add_method_cfunc(klass, korb_intern("to_h"),       struct_to_h,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("size"),       struct_size,        0);
-    korb_class_add_method_cfunc(klass, korb_intern("length"),     struct_size,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("initialize"), struct_initialize, -1);
+    korb_class_add_method_cfunc_r(klass, korb_intern("to_a"),       struct_to_a,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("values"),     struct_to_a,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("members"),    struct_to_a,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("[]"),         struct_aref,        1);
+    korb_class_add_method_cfunc_r(klass, korb_intern("[]="),        struct_aset,       -1);
+    korb_class_add_method_cfunc_r(klass, korb_intern("each"),       struct_each,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("==" ),        struct_eq,          1);
+    korb_class_add_method_cfunc_r(klass, korb_intern("to_h"),       struct_to_h,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("size"),       struct_size,        0);
+    korb_class_add_method_cfunc_r(klass, korb_intern("length"),     struct_size,        0);
     /* Now attr_accessor — overrides Struct#length etc. when a member
      * shadows a standard name. */
-    module_attr_accessor(c, (VALUE)klass, argc, argv);
+    {
+        /* stage [klass, argv...] for module_attr_accessor cfunc_r ABI */
+        c->sp[0] = (VALUE)klass;
+        for (int i = 0; i < argc; i++) c->sp[1 + i] = argv[i];
+        DROP_RESULT(module_attr_accessor(c, argc, c->sp + 1 + argc));
+    }
     /* class-level .members */
     {
         struct korb_class *meta = korb_singleton_class_of(c, klass);
-        korb_class_add_method_cfunc(meta, korb_intern("members"),
+        korb_class_add_method_cfunc_r(meta, korb_intern("members"),
                                      struct_class_members, 0);
     }
     /* If a block was given, evaluate it with self = the new class
@@ -586,12 +691,16 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         c->current_frame->cref = prev_cref;
         if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
     }
-    return (VALUE)klass;
+    return RESULT_OK((VALUE)klass);
 }
 
-static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
-    if (argc < 1) return Qnil;
+static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qnil);
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name;
     VALUE arg = argv[0];
     if (SYMBOL_P(arg)) name = korb_sym2id(arg);
@@ -603,10 +712,10 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
          * String-convertible name). */
         VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (c->state == KORB_RAISE) return Qnil;
+        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
             VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
-            if (c->state == KORB_RAISE) return Qnil;
+            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 name = korb_intern_n(((struct korb_string *)r)->ptr,
                                      ((struct korb_string *)r)->len);
@@ -614,15 +723,13 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
-                   korb_id_name(korb_class_of_class(arg)->name)));
-        return Qnil;
+                   korb_id_name(korb_class_of_class(arg)->name));
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "no implicit conversion of (special) into String"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of (special) into String");
     }
 have_name:;
     bool inherit = true;
@@ -633,24 +740,26 @@ have_name:;
         : korb_const_get((struct korb_class *)self, name);
     if (UNDEF_P(v)) {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
+        return korb_raise(c, (struct korb_class *)eName,
                    "uninitialized constant %s::%s",
                    korb_id_name(((struct korb_class *)self)->name),
-                   korb_id_name(name)));
-        return Qnil;
+                   korb_id_name(name));
     }
-    return v;
+    return RESULT_OK(v);
 }
 
-static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
-    if (argc < 2) return Qnil;
+static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qnil);
+    if (argc < 2) return RESULT_OK(Qnil);
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
-                   korb_id_name(korb_class_of_class(self)->name)));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name));
     }
     /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
     VALUE name_arg = argv[0];
@@ -659,10 +768,10 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!SPECIAL_CONST_P(name_arg)) {
             VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (c->state == KORB_RAISE) return Qnil;
+            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
-                if (c->state == KORB_RAISE) return Qnil;
+                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
     }
@@ -679,9 +788,8 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE inspv = korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL);
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "%s is not a symbol nor a string", insp));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", insp);
     }
     /* Constant name must start with an uppercase ASCII letter and consist
      * of word characters; mirror MRI's rb_is_const_id check. */
@@ -695,13 +803,12 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!valid) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
-                   "wrong constant name %.*s", namelen, namep));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eN,
+                   "wrong constant name %.*s", namelen, namep);
     }
     ID name = korb_intern_n(namep, namelen);
     korb_const_set((struct korb_class *)self, name, argv[1]);
-    return argv[1];
+    return RESULT_OK(argv[1]);
 }
 
 /* (string ext folded into builtins/string.c) */
