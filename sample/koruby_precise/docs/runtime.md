@@ -807,7 +807,7 @@ cfunc 側で:
 | 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | 未着手 |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=2291 (80 spec、 2026-05-29 時点)、 全 24 test suite が default/STRESS/STRESS+PURGE 全 mode PASS。 it_behaves_like 再有効化 + Hash#each Enumerator + Math hyperbolic + PM_BACK_REFERENCE_READ_NODE で $!/$&/$+ などを gvar_get に dispatch (5bf1078e) で大幅改善。 |
+| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=8138/300 spec (2026-05-29 時点、 random sweep)、 全 26 test suite が default/STRESS/STRESS+PURGE 全 mode PASS。 Phase 8d-R5 完了 (c->state 撤去) + ary/Hash 系 recursion guard + Object#method() bug fix + Range#step 負方向 + Enumerable に chain/filter_map/chunk/compact/minmax_by/reverse_each/slice_after/slice_before 追加 + NilClass/TrueClass/FalseClass .allocate/.new disallowed + Symbol#name/[]/slice + Range#overlap? + Struct#dig/deconstruct/deconstruct_keys + Method#=== + Numeric デフォルト method 一通り + __method__ block 内 logic + Kernel#global_variables 等で大幅改善。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
