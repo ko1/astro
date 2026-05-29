@@ -2,6 +2,7 @@
 
 /* ---------- Symbol#to_proc ---------- */
 static RESULT sym_to_proc(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -37,6 +38,7 @@ static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(s);
 }
 static RESULT sym_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -44,6 +46,7 @@ static RESULT sym_eq(CTX *c, int argc, VALUE *sp) {
 }
 /* Symbol#<=> — compares by name. */
 static RESULT sym_cmp(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -55,10 +58,11 @@ static RESULT sym_cmp(CTX *c, int argc, VALUE *sp) {
 }
 /* Symbol#succ — name's #succ wrapped back into a Symbol. */
 static RESULT sym_succ(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE s = korb_str_new_cstr(c, sp, korb_id_name(korb_sym2id(self)));
+    VALUE s = korb_str_new_cstr(c, c->sp_top, korb_id_name(korb_sym2id(self)));
     VALUE next_str = UNWRAP(korb_funcall(c, s, korb_intern("succ"), 0, NULL));
     if (BUILTIN_TYPE(next_str) != T_STRING) return RESULT_OK(self);
     struct korb_string *ns = (struct korb_string *)next_str;
@@ -67,6 +71,7 @@ static RESULT sym_succ(CTX *c, int argc, VALUE *sp) {
 
 /* Symbol#size / length — character count of the symbol's name. */
 static RESULT sym_length(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -91,6 +96,7 @@ static RESULT sym_length(CTX *c, int argc, VALUE *sp) {
 }
 /* Symbol#empty? */
 static RESULT sym_empty_p(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -98,6 +104,7 @@ static RESULT sym_empty_p(CTX *c, int argc, VALUE *sp) {
 }
 /* Symbol#upcase / downcase / capitalize / swapcase — return new Symbol. */
 static RESULT sym_upcase(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -113,6 +120,7 @@ static RESULT sym_upcase(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(r);
 }
 static RESULT sym_downcase(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -128,6 +136,7 @@ static RESULT sym_downcase(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(r);
 }
 static RESULT sym_capitalize(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -143,6 +152,7 @@ static RESULT sym_capitalize(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_id2sym(korb_intern_n(buf, (long)n)));
 }
 static RESULT sym_swapcase(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 

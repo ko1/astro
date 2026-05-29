@@ -9,7 +9,7 @@
  * Float / Bignum / any other Numeric is reduced to its sign so that
  * comparators like Comparable#> work for non-canonical <=> returns
  * (e.g. user code that returns 0.1 to mean "greater"). */
-static long korb_cmp_call(CTX *c, VALUE *sp, VALUE self, VALUE other, RESULT *err) {
+static long korb_cmp_call(CTX *c, VALUE self, VALUE other, RESULT *err) {
     RESULT _r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
     if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
     VALUE r = _r.value;
@@ -18,7 +18,7 @@ static long korb_cmp_call(CTX *c, VALUE *sp, VALUE self, VALUE other, RESULT *er
         /* CRuby's "comparison of X with Y failed" uses the class name on
          * the LHS but inspect-style for non-builtin RHS values
          * (`"comparison of String with 7 failed"`). */
-        VALUE oi = korb_inspect(c, sp, other);
+        VALUE oi = korb_inspect(c, c->sp_top, other);
         const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                                 ? korb_str_cstr(oi)
                                 : korb_id_name(korb_class_of_class(other)->name);
@@ -44,42 +44,47 @@ static long korb_cmp_call(CTX *c, VALUE *sp, VALUE self, VALUE other, RESULT *er
 }
 
 static RESULT cmp_lt(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     RESULT _err = RESULT_OK(Qnil);
-    long cv = korb_cmp_call(c, sp, self, argv[0], &_err);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
     if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(cv < 0));
 }
 static RESULT cmp_le(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     RESULT _err = RESULT_OK(Qnil);
-    long cv = korb_cmp_call(c, sp, self, argv[0], &_err);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
     if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(cv <= 0));
 }
 static RESULT cmp_gt(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     RESULT _err = RESULT_OK(Qnil);
-    long cv = korb_cmp_call(c, sp, self, argv[0], &_err);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
     if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(cv > 0));
 }
 static RESULT cmp_ge(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     RESULT _err = RESULT_OK(Qnil);
-    long cv = korb_cmp_call(c, sp, self, argv[0], &_err);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
     if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(cv >= 0));
 }
 static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -114,6 +119,7 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
                       korb_id_name(korb_class_of_class(argv[0])->name));
 }
 static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -121,13 +127,14 @@ static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
         return korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
     }
     RESULT _err = RESULT_OK(Qnil);
-    long lo = korb_cmp_call(c, sp, self, argv[0], &_err);
+    long lo = korb_cmp_call(c, self, argv[0], &_err);
     if (_err.state != KORB_NORMAL) return _err;
-    long hi = korb_cmp_call(c, sp, self, argv[1], &_err);
+    long hi = korb_cmp_call(c, self, argv[1], &_err);
     if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(lo >= 0 && hi <= 0));
 }
 static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -173,12 +180,12 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
     }
     RESULT _err2 = RESULT_OK(Qnil);
     if (!NIL_P(lo)) {
-        long cv = korb_cmp_call(c, sp, self, lo, &_err2);
+        long cv = korb_cmp_call(c, self, lo, &_err2);
         if (_err2.state != KORB_NORMAL) return _err2;
         if (cv < 0) return RESULT_OK(lo);
     }
     if (!NIL_P(hi)) {
-        long cv = korb_cmp_call(c, sp, self, hi, &_err2);
+        long cv = korb_cmp_call(c, self, hi, &_err2);
         if (_err2.state != KORB_NORMAL) return _err2;
         if (cv > 0) return RESULT_OK(hi);
     }
@@ -229,6 +236,7 @@ static RESULT module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, V
 }
 
 static RESULT module_undef_method(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -236,6 +244,7 @@ static RESULT module_undef_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_remove_method(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -243,6 +252,7 @@ static RESULT module_remove_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_undef_or_remove_method(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -251,6 +261,7 @@ static RESULT module_undef_or_remove_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_alias_method(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -341,7 +352,7 @@ static RESULT module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE
  * called at top-level. */
 bool g_top_level_default_private = true;
 
-static RESULT module_set_visibility(CTX *c, VALUE *sp, VALUE self, int argc, VALUE *argv,
+static RESULT module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
                                    enum korb_visibility v)
 {
     if (argc == 0) {
@@ -376,7 +387,7 @@ static RESULT module_set_visibility(CTX *c, VALUE *sp, VALUE self, int argc, VAL
         }
         return RESULT_OK(argv[0]);
     }
-    VALUE r = korb_ary_new_capa(c, sp, argc);
+    VALUE r = korb_ary_new_capa(c, c->sp_top, argc);
     for (int i = 0; i < argc; i++) {
         if (SYMBOL_P(argv[i])) korb_ary_push(r, argv[i]);
         else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
@@ -389,24 +400,28 @@ static RESULT module_set_visibility(CTX *c, VALUE *sp, VALUE self, int argc, VAL
     return RESULT_OK(r);
 }
 static RESULT module_private(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PRIVATE);
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE);
 }
 static RESULT module_public(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PUBLIC);
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PUBLIC);
 }
 static RESULT module_protected(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PROTECTED);
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED);
 }
 static RESULT module_const_defined_p(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -429,12 +444,14 @@ static RESULT module_const_defined_p(CTX *c, int argc, VALUE *sp) {
         : korb_const_has((struct korb_class *)self, name)));
 }
 static RESULT module_module_function(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
  return RESULT_OK(self); }
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */
 static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -458,14 +475,15 @@ static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, sp));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp_top));
     struct korb_array *members = (struct korb_array *)members_v;
-    VALUE r = korb_ary_new_capa(c, sp, members->len);
+    VALUE r = korb_ary_new_capa(c, c->sp_top, members->len);
     for (long i = 0; i < members->len; i++) {
         ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
                   korb_intern(korb_str_cstr(members->ptr[i]));
@@ -481,6 +499,7 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#[] — read by index or symbol. */
 static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -536,6 +555,7 @@ static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#[]= */
 static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -593,6 +613,7 @@ static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#each — yield each value. */
 static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -607,6 +628,7 @@ static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#== — same struct class + equal members. */
 static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -641,14 +663,15 @@ static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#to_h — with optional block that transforms each [key, value] pair. */
 static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, sp));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp_top));
     struct korb_array *members = (struct korb_array *)members_v;
-    VALUE h = korb_hash_new(c, sp);
+    VALUE h = korb_hash_new(c, c->sp_top);
     sp[0] = h; /* keep alive across yields */
     bool has_block = (c->current_block != NULL);
     for (long i = 0; i < members->len; i++) {
@@ -697,6 +720,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#size / length */
 static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -708,16 +732,18 @@ static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
 
 /* Struct.members at the class level — return the members array. */
 static RESULT struct_class_members(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (BUILTIN_TYPE(self) != T_CLASS) return RESULT_OK(korb_ary_new(c, sp));
+    if (BUILTIN_TYPE(self) != T_CLASS) return RESULT_OK(korb_ary_new(c, c->sp_top));
     VALUE members_v = korb_const_get((struct korb_class *)self, korb_intern("__members__"));
-    if (UNDEF_P(members_v)) return RESULT_OK(korb_ary_new(c, sp));
+    if (UNDEF_P(members_v)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     return RESULT_OK(members_v);
 }
 
 static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -735,12 +761,12 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         if (UNDEF_P(kw_init_val)) kw_init_val = Qundef;
         argc--;
     }
-    struct korb_class *klass = korb_class_new(c, sp, korb_intern("Struct"), KORB_VM(c)->object_class, T_OBJECT);
+    struct korb_class *klass = korb_class_new(c, c->sp_top, korb_intern("Struct"), KORB_VM(c)->object_class, T_OBJECT);
     /* Reset name so const_set can rename anonymous Struct subclasses to
      * their constant path (Object → "Foo", or Mod → "Mod::Foo"). */
     klass->name = 0;
     /* save members */
-    VALUE members = korb_ary_new_from_values(c, sp, argc, argv);
+    VALUE members = korb_ary_new_from_values(c, c->sp_top, argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);
     /* Install Struct's standard instance methods FIRST, then let
      * attr_accessor overwrite any collisions (e.g. Data.define(:length)
@@ -894,11 +920,11 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
             VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
             if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) {
-                return RESULT_OK(korb_hash_new(c, sp));
+                return RESULT_OK(korb_hash_new(c, c->sp_top));
             }
             struct korb_array *members = (struct korb_array *)members_v;
             struct korb_array *keys = (struct korb_array *)argv[0];
-            VALUE result = korb_hash_new(c, sp);
+            VALUE result = korb_hash_new(c, c->sp_top);
             /* CRuby: if keys.length > members.length, return empty hash. */
             if (keys->len > members->len) return RESULT_OK(result);
             for (long i = 0; i < keys->len; i++) {
@@ -1023,11 +1049,11 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             static __thread VALUE ins_stk[64];
             static __thread int ins_top = 0;
             for (int j = 0; j < ins_top; j++) {
-                if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, sp, "#<struct ...>"));
+                if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "#<struct ...>"));
             }
             if (ins_top < 64) { ins_stk[ins_top] = self; ins_top++; }
             struct korb_class *kl = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-            VALUE result = korb_str_new_cstr(c, sp, "#<struct ");
+            VALUE result = korb_str_new_cstr(c, c->sp_top, "#<struct ");
             sp[0] = result;
             /* Skip class name when class is anonymous or its name is a
              * tentative path through an anonymous ancestor (k->anon_parent
@@ -1136,6 +1162,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1187,6 +1214,7 @@ have_name:;
 }
 
 static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
