@@ -2328,6 +2328,19 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * creates_proc blocks share env directly (faster, and matches
      * shared-state semantics for `count += 1`-style accumulators). */
     bool fresh_env_path = blk->creates_proc;
+    /* Method-overlaps-env: the yielding method's frame sits above the
+     * block's captured env (e.g. `def my_fi(&blk); obj.each { blk.call }; end`
+     * — each runs above my_fi but the inner block's env = my_fi's fp).
+     * Body's sp = env + env_size would reset c->sp BELOW the active
+     * method's high-water mark; subsequent callee dispatches stage
+     * recv/args at c->sp[0/1+i] = old_method_fp[locals] and corrupt
+     * the active method's locals (yield-args-corruption bug,
+     * 2026-05-29).  Force fresh-env clone so the body's sp lives
+     * above c->sp's current value. */
+    bool method_overlaps_env_y = (c->current_frame->fp &&
+                                  c->current_frame->fp != blk->env &&
+                                  c->current_frame->fp > blk->env);
+    if (method_overlaps_env_y) fresh_env_path = true;
     VALUE *fp;
     VALUE *outer_env_ptr = blk->env;
     /* Generous slack past env_size: when the block calls Ruby methods,

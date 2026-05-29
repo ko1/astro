@@ -928,6 +928,14 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
      * (via the slow path's fresh-env-with-writeback) so each captured
      * proc has its own block-locals. */
     if (UNLIKELY(blk->creates_proc)) return korb_yield_slow(c, blk, argc, argv);
+    /* Method-overlaps-env: when the active method's frame sits ABOVE the
+     * block's captured env (yielding method called from a deeper frame
+     * than the one that created the block), running body at env aliases
+     * the active method's locals.  Fall to slow path which has the
+     * fresh-env clone fix.  See korb_yield_slow comment for details. */
+    if (UNLIKELY(c->current_frame->fp && c->current_frame->fp > blk->env)) {
+        return korb_yield_slow(c, blk, argc, argv);
+    }
     /* Common case: single arg, single param, no destructure.  Inline.
      * Skip when post params or rest are present — those need destructure. */
     if (LIKELY(argc == 1 && blk->params_cnt == 1 && blk->post_cnt == 0 &&
