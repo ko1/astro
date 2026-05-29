@@ -716,3 +716,52 @@ Phase 2-4 の移行期間中、 新 `cfunc_r` と旧 `cfunc` は両立する:
   返り RESULT を c->state + VALUE に変換して upstream に返す。
 
 すべて新 ABI に sweep 完了したら、 legacy field と bridge を撤廃する。
+
+### 12.8 Subclass.new での initialize dispatch (2026-05-29)
+
+CRuby semantics: `class S < String; def initialize(...); ...; end; end;
+S.new(...)` で S#initialize が dispatch される必要がある。 我々の C
+{ary,hash,str}_class_new が初期実装では allocate して直接結果を返していた
+ため、 subclass の override が無視されていた。
+
+修正後の流れ:
+1. allocate empty obj of self's class (`korb_str_new(c, c->sp, "", 0)` 等)
+2. retag `basic.klass = self` if subclass
+3. **stage `sp[0] = obj, sp[1..argc] = argv[i]` on sp**
+4. **bump `c->sp = sp + 1 + argc`** so the AST dispatcher's
+   `[prev_sp, new_sp)` zero-fill on return doesn't clobber `sp[0]`
+5. `korb_funcall_r(c, obj, :initialize, argc, sp + 1)` で dispatch
+6. **`obj = sp[0]`** で re-read (GC が dispatch 中に obj を移動した可能性)
+7. restore `c->sp = prev_sp` & return `obj`
+
+ステップ 4 は caller 側の workaround。 本来は callee
+(`korb_dispatch_to_method`) が argv ポインタから new_fp 位置を算定すべき
+だが、 試みた centralized fix は他のコールパスを壊した。 caller-side
+bump で当面安定。
+
+### 12.9 Generic ivar 側 table (2026-05-29)
+
+T_OBJECT 以外の heap 型 (T_STRING / T_ARRAY / T_HASH / T_RANGE / ...) は
+`struct korb_xxx` に `ivars[]` field を持たない。 これを足すと size と
+visit_roots の対応が大変なので、 `korb_vm->generic_ivars` という Hash の
+side table を導入:
+
+- outer hash: `obj pointer (as VALUE) → inner Hash`
+- inner hash: `Symbol → VALUE`
+- outer は `compare_by_identity = true` で pointer 一致判定
+- libc-allocated 型は move しないため pointer key で安定
+- `korb_ivar_set/get/_ic_slow` で T_OBJECT 以外は side table に fallback
+- `koruby_visit_roots` に `&korb_vm->generic_ivars` を追加して GC tracking
+
+これで `class S < String; def initialize; @x = 1; end; end; S.new.instance_variable_get(:@x)`
+が動く。
+
+### 12.10 AST dispatcher の argv-snapshot (2026-05-29)
+
+`korb_dispatch_to_method` の AST 経路は `new_fp = c->sp + 1` から
+`[c->sp, new_sp) を zero-fill する。 caller が argv を sp 上に staging
+した場合 (cfunc_r ABI の標準) は argv が clobber される。
+
+修正: AST 経路の入口で argv を `VALUE saved_argv[argc]` (VLA) に snapshot
+してから zero-fill。 caller がどこに argv を置いていても安全。 同様の
+snapshot を cfunc_r 経路にも適用 (consistency)。
