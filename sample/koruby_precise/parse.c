@@ -5300,8 +5300,14 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_super_forward();
       }
 
+      case PM_BACK_REFERENCE_READ_NODE: {
+          /* Back references — $&, $`, $', $+ are regex-match special
+           * globals.  Read via the standard gvar_get path so existing
+           * value (set by regex match etc.) is returned. */
+          pm_back_reference_read_node_t *n = (pm_back_reference_read_node_t *)node;
+          return ALLOC_node_gvar_get(intern_constant(tc->parser, n->name));
+      }
       case PM_NUMBERED_REFERENCE_READ_NODE:
-      case PM_BACK_REFERENCE_READ_NODE:
         return ALLOC_node_nil();
 
       case PM_X_STRING_NODE: {
