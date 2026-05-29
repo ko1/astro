@@ -730,6 +730,7 @@ class Integer
   include Comparable
 
   def gcd(other)
+    raise TypeError, "not an integer" unless other.is_a?(Integer)
     a = self.abs
     b = other.abs
     while b != 0
@@ -741,11 +742,13 @@ class Integer
   end
 
   def lcm(other)
+    raise TypeError, "not an integer" unless other.is_a?(Integer)
     return 0 if self == 0 || other == 0
     (self * other).abs / gcd(other)
   end
 
   def gcdlcm(other)
+    raise TypeError, "not an integer" unless other.is_a?(Integer)
     [gcd(other), lcm(other)]
   end
 
