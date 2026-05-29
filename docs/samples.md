@@ -3,8 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「24 サンプル並べて何が分かるか」を整理する
-(汎用言語 20 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
+を参照。本書は「25 サンプル並べて何が分かるか」を整理する
+(汎用言語 21 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
 JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 (`baruby` / `baruby_precise` / `arawk`) は本書他セクションで GC・テキスト
 処理側の観点で追記しているが、§3 の node.def 構成パターン軸では
@@ -42,6 +42,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |
 | `jstro` | JavaScript (ES2023+) | OO, 動的 | 動 | small integer (SMI) + inline flonum | **V8 風 hidden class + inline cache (IC)**, Map/Set/Symbol/Proxy/Promise(sync) |
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
+| `anpy` | ChocoPy (静的型 Python 3.6) | OO, 静的 | 静 | tagged immediate int + None/bool + heap | **静的型検査器**（適合/代入互換/join + §5.2 規則）、単一継承クラス + 動的ディスパッチ、`global`/`nonlocal` クロージャ、`python3` と差分テスト |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
 | `nuq` | (jq 1.7 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtin、jq 1.7 公式 524/526 |
@@ -72,7 +73,7 @@ Ruby サブセット系には階層がある:
 moving + 14-way GC switch、 という pair-of-testbeds 構造。
 
 直交する軸として **型システム** で切ると:
-- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `asml` / `wastro`
+- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `asml` / `wastro` / `anpy`
 - **動的型**: 動的言語勢 8 つ (`naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`) + Scheme + Smalltalk + R + awk + Forth (cell 単位 untyped)
 - **型なし / DSL**: `calc` / `abc` / `astrogre` / `nuq` / `arjsv` / `arcel`
 
@@ -96,6 +97,7 @@ ASTro が想定外でも嵌まる例になっている。
 | `calc`           |   6 |    36 |
 | `naruby`         |  32 |   479 |
 | `abc`            |  40 |   361 |
+| `anpy`           |  41 |   361 |
 | `astr`           |  46 |   578 |
 | `arjsv`          |  47 |   971 |
 | `baruby`         |  52 |   751 |
@@ -170,7 +172,10 @@ node.def 数値だけ保守する。)
 の言語ではノードも 1 つで終わる。最も素朴。`abc` も `node_add(l, r)` は
 1 個で、値が任意精度十進 1 種類なのは同じ — fixnum 即値 / GMP ヒープの
 二段は **ノードではなく `bc_add` ヘルパ内**で分岐するので、node.def 上は
-単型のまま (cf. §4 の値表現)。
+単型のまま (cf. §4 の値表現)。`anpy` (ChocoPy) も興味深い: **静的型付き**言語なのに
+node.def の `node_add` は 1 個で、`int`/`str`/`list` の分岐は `anpy_add` ヘルパ内の
+runtime tag 判定で行う。型は別パスの**静的型検査器** (check.c) が担い、ノード自体は
+tagged-value のまま単型。「型検査は分離、実行は dynamic-tagged」という構成。
 
 #### (b) 静的型 — 型ごとに別ノード
 
@@ -469,6 +474,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + 再帰下降 + Pratt 式パーサ | metatable, **ucontext coroutine**, weak table, `__gc` |
 | `jstro` | tagged `JsValue` (uint64_t) | 自前 mark-sweep GC + safepoint | 自前 lexer + parser | **hidden class IC, shape transition, closure box** |
 | `castro` | union `{i, d, p}` | leak | tree-sitter-c (Ruby 側で IR 構築) | 1 slot = 8 byte の slot メモリモデル, goto-dispatch |
+| `anpy` | tagged: 即値 int + None/bool 小定数 + heap (str/list/obj/closure/class) | Boehm libgc | 自前インデント lexer + 再帰下降 | **静的型検査器** (適合/代入互換/join + §5.2 規則)、字句環境フレーム + cell 共有で `global`/`nonlocal` クロージャ、属性スロット平坦化 + メソッド表で動的ディスパッチ |
 | `pascalast` | `int64_t` | libgc | 自前 lexer + parser | display 配列 (nested proc), variant record |
 | `wastro` | `uint64_t` (raw bits) | leak | WAT tokenizer + 2 系統 (S 式 / stack-style) + .wasm decoder | typed slot union frame, spec-test runner |
 | `astrogre` | `int64_t` (内部表現) | leak | 自前 regex parser | Aho-Corasick prefilter, Boyer-Moore-like memmem, scanner ノード |
@@ -515,6 +521,7 @@ ASTro は plain interpreter / AOT / Profile-Guided / JIT の 4 モードを
 |---|:-:|:-:|:-:|:-:|
 | `calc`           | ✓ | ✓ |   |   |
 | `abc`            | ✓ | ✓ |   |   |
+| `anpy`           | ✓ | ✓ |   |   |
 | `naruby`         | ✓ | ✓ | ✓ | ✓ |
 | `baruby`         | ✓ | ✓ | ✓ |   |
 | `baruby_precise` | ✓ | △ |   |   |
@@ -566,6 +573,7 @@ PG パスを引き継いだが、 fork 直後で JIT (`-j`) は未配線
 |---|---|---|---|---|---|---|---|
 | `calc`           | `--no-compile` | (default) | — | — | — | — | `-q` |
 | `abc`            | `--plain` | `--aot-compile --run` | `--aot-compile` / `--build OUT` | (`--pg-compile`) | (`make clean`) | `--disasm` | `-q` |
+| `anpy`           | `--plain` | `--aot-compile --run` | `--aot-compile` / `--build OUT` | (`--pg-compile`) | (`make clean`) | `--dump-ast` | `-q` |
 | `naruby`         | `-i` / `--plain` | `-c` / `--aot` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg` | `--ccs` | — | `-q` |
 | `baruby`         | `-i` / `--plain` | `-c` / `--aot` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg` / `--pg-compile` | `--ccs` / `--clear-code-store` | — | `-q` |
 | `baruby_precise` | `-i` / `--plain` | `-c` / `--aot` (iter 36 で修復) | — | `-p` / `--pg` | `--ccs` | — | `-q` |
@@ -660,6 +668,7 @@ PG パスを引き継いだが、 fork 直後で JIT (`-j`) は未配線
 - **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)、`arcel` (各サブコマンドの引数として)、 `arawk` (awk one-liner)、`abc` (`-e EXPR`)
 - **stdin から読む**: `ascheme` (`-`)、`abc` (非 tty の stdin を丸ごと実行)
 - **複数ファイルを順に実行** (共有 state): `abc` (`abc f1 f2 ...`、本物の bc 流儀)
+- **ファイル/標準入力でプログラム全体を実行**: `anpy` (ChocoPy ソース 1 本を型検査 → 実行)
 - **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)、`arcel repl` (1 行 1 JSON envelope を stdin から)、`abc` (tty stdin。 ブレース均衡まで行を蓄積)
 - **クラス名 / モジュール名指定** (file path ではない): `asom` (`asom <ClassName>`)、`wastro` (`wastro module.wat <export> [args...]`)
 - **サブコマンド形式**: `arcel {eval|bench|repl} -e EXPR ...` (cel-go / cel-cpp と同形式 — harness が binary 入替で切り替えられる)
@@ -692,7 +701,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 
 この標準化は `runtime/astro_build.{c,h}` (`astro_build_extract_flags` +
 `astro_print_build_help`) として実装済で、**`calc` / `naruby` / `koruby` /
-`abc` が移行済**。中でも `abc` は per-sample alias を一切持たず
+`abc` / `anpy` が移行済**。中でも `abc` / `anpy` は per-sample alias を一切持たず
 (`--plain` / `--aot-compile` / `--pg-compile` / `--run` / `--build OUT` /
 `-q` / `-v` / `-h` / `--version` を全て framework に委ね、固有フラグは
 `-e` / `-l` / `-w` / `--disasm` のみ)、統一 CLI の参照実装になっている。
@@ -731,6 +740,7 @@ toolchain 系は `ASTRO_BUILD_OPTS` 環境変数に分離。なお framework 共
 | `wastro` | native gcc -O2 / wasmtime (Cranelift JIT) | 3 | native に 3–6× 負け、wasmtime とはループでタイ・call で負け |
 | `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |
 | `astrogre` | ripgrep / GNU grep / Onigmo | 17 | **vs Onigmo 8/8 勝** (3–15×)、**vs grep 6/8 勝** (最大 10×)、ripgrep には 3/8 + 1 タイ (識別子系で 10× 負け) |
+| `anpy` | CPython 3.12 | 7 | **ループ主体は CPython 超え** (`loop_sum` 0.53× / `collatz` 0.53× / `list_sum` 0.41×)、呼び出し主体は負け (`tak` 6.2× / `fib` 3.7× — 呼び出しごとの env フレーム確保 + 名前ハッシュ)。geomean 1.26×。AOT ~0.95×（dispatch は畳むが env/helper が残る）。次の一手は名前→スロット解決 |
 | `abc` | GNU bc 1.07.1 | 8 | **interp で全 8 本 bc 超え (geomean ~6×)** — 多倍長が効く `factorial` **42×** / `sqrt_loop` **25×** (GMP `mpz_mul`/`mpz_sqrt`)、整数ループは LSB-tag fixnum で 2–5×。`bc` との出力一致を確認しつつ計測。AOT 列は **~1.0× (横ばい)**: 算術が `bc_add` 等 out-of-line helper のまま SD に inline されず、dispatch 除去の取り分が小さい (helper の statement-expr 化が次の一手) |
 | `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
 | `baruby` | (自 interp baseline、 perf 最適化は未着手) | 6 GC lifecycle bench | plain → AOT (`-c`) で `gc_combined` 2.74× / `list_alloc` 2.02× / `fib_pair` 2.00× / `substr_churn` 1.78× / `binary_trees` 1.34× / `string_concat` 1.01× (ホットパスが allocator 内に消えると AOT 利得が薄れる) |

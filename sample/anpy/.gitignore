@@ -1,0 +1,17 @@
+# ASTroGen-generated sources
+node_alloc.c
+node_dispatch.c
+node_dump.c
+node_emit_ast.c
+node_eval.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+
+# Build artifacts
+anpy
+*.o
+
+# ASTro code store (rebuilt on demand)
+code_store/

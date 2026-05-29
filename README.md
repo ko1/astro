@@ -45,7 +45,7 @@ docs/                   Design notes and papers
 
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
-**At a glance — 24 samples by paradigm:**
+**At a glance — 25 samples by paradigm:**
 
 | Group | Count | Samples |
 |---|---:|---|
@@ -53,7 +53,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 | Ruby family | 5 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby` |
 | Other dynamic scripting | 3 | `luastro`, `jstro`, `pystro` |
 | Functional / OO academic | 4 | `ascheme`, `astocaml`, `asml`, `asom` |
-| Statically-typed imperative | 2 | `pascalast`, `castro` |
+| Statically-typed imperative | 3 | `pascalast`, `castro`, `anpy` |
 | Stack-based | 1 | `aforth` |
 | Data processing | 2 | `astr`, `arawk` |
 | Non-source / DSL | 5 | `wastro`, `astrogre`, `nuq`, `arjsv`, `arcel` |
@@ -97,6 +97,8 @@ ASTro samples span a wide range of language families to exercise the framework a
   **Wins outright on tight constant-folding loops vs `fpc -O3`** (collatz 0.4× / leibniz 0.6× / mandelbrot 0.8×).
 - [`castro`](./sample/castro/) — **C** subset (101 nodes) with tree-sitter-c front-end, 8-byte slot VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing.
   AOT beats `gcc -O0` on tight loops; `crc32` ties `gcc -O1`.
+- [`anpy`](./sample/anpy/) — **[ChocoPy](https://chocopy.org/)** (statically-typed Python 3.6 subset, 41 nodes): indentation lexer, a **static type checker** (conformance / assignment-compat / join + §5.2 rules), single-inheritance classes with dynamic dispatch, nested functions with `global`/`nonlocal` closures, lists/strings; tagged-immediate ints + Boehm GC.
+  Verified by **differential testing vs `python3`** (valid ChocoPy == valid Python 3.6) plus runtime-error and type-error-rejection cases.  Beats CPython 3.12 on loop-heavy code (loop/collatz/list 0.4–0.5×), trails on call-heavy code (per-call env-frame cost); geomean 1.26×.
 
 **Stack-based.**
 - [`aforth`](./sample/aforth/) — **Forth** subset (68 nodes) where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.

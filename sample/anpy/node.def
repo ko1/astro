@@ -1,0 +1,361 @@
+// -*- mode: c -*-
+//
+// AnPy (ChocoPy) AST node evaluators.
+//
+// VALUE is a tagged word (int immediate / None / True / False / heap ptr).
+// The current lexical environment lives in c->env; `return` unwinds via
+// c->returning + c->retval (checked by seq/loops and caught at the call
+// boundary).  Children are evaluated via EVAL_ARG so the specializer can
+// fold the dispatch chain; operand order is spelled out where it matters.
+
+// ---- leaves ----------------------------------------------------------
+
+NODE_DEF
+node_nil(CTX *c, NODE *n)
+{
+    (void)c; (void)n;
+    return ANPY_NONE;          // pass / empty / sentinel
+}
+
+NODE_DEF
+node_int(CTX *c, NODE *n, int32_t v)
+{
+    (void)c; (void)n;
+    return INT2VAL(v);
+}
+
+NODE_DEF
+node_bool(CTX *c, NODE *n, int32_t b)
+{
+    (void)c; (void)n;
+    return BOOL2VAL(b);
+}
+
+NODE_DEF
+node_none(CTX *c, NODE *n)
+{
+    (void)c; (void)n;
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_strlit(CTX *c, NODE *n, const char *s)
+{
+    (void)c; (void)n;
+    return (VALUE)anpy_str_new(s, (int32_t)strlen(s));
+}
+
+NODE_DEF
+node_name(CTX *c, NODE *n, const char *name)
+{
+    (void)n;
+    anpy_cell *cell = env_lookup(c->env, name);
+    return cell ? cell->v : ANPY_NONE;
+}
+
+// ---- arithmetic ------------------------------------------------------
+
+NODE_DEF
+node_neg(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    return INT2VAL(-VAL2INT(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return anpy_add(c, a, b);
+}
+
+NODE_DEF
+node_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return INT2VAL(VAL2INT(a) - VAL2INT(b));
+}
+
+NODE_DEF
+node_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return INT2VAL(VAL2INT(a) * VAL2INT(b));
+}
+
+// Python floor-division (//).
+NODE_DEF
+node_fdiv(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    intptr_t a = VAL2INT(EVAL_ARG(c, l)), b = VAL2INT(EVAL_ARG(c, r));
+    if (b == 0) { anpy_runtime_error(c, "Division by zero"); return INT2VAL(0); }
+    intptr_t q = a / b, rem = a % b;
+    if (rem != 0 && ((rem < 0) != (b < 0))) q -= 1;
+    return INT2VAL(q);
+}
+
+// Python floor-modulo (%).
+NODE_DEF
+node_mod(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    intptr_t a = VAL2INT(EVAL_ARG(c, l)), b = VAL2INT(EVAL_ARG(c, r));
+    if (b == 0) { anpy_runtime_error(c, "Division by zero"); return INT2VAL(0); }
+    intptr_t rem = a % b;
+    if (rem != 0 && ((rem < 0) != (b < 0))) rem += b;
+    return INT2VAL(rem);
+}
+
+// ---- comparisons -----------------------------------------------------
+
+NODE_DEF
+node_lt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(VAL2INT(a) < VAL2INT(b));
+}
+
+NODE_DEF
+node_le(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(VAL2INT(a) <= VAL2INT(b));
+}
+
+NODE_DEF
+node_gt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(VAL2INT(a) > VAL2INT(b));
+}
+
+NODE_DEF
+node_ge(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(VAL2INT(a) >= VAL2INT(b));
+}
+
+NODE_DEF
+node_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(anpy_eq(c, a, b));
+}
+
+NODE_DEF
+node_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(!anpy_eq(c, a, b));
+}
+
+NODE_DEF
+node_is(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return BOOL2VAL(a == b);
+}
+
+// ---- logical (short-circuit) ----------------------------------------
+
+NODE_DEF
+node_and(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    if (EVAL_ARG(c, l) == ANPY_FALSE) return ANPY_FALSE;
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_or(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    (void)n;
+    if (EVAL_ARG(c, l) == ANPY_TRUE) return ANPY_TRUE;
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_not(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    return BOOL2VAL(EVAL_ARG(c, e) == ANPY_FALSE);
+}
+
+NODE_DEF
+node_cond(CTX *c, NODE *n, NODE *then, NODE *cond, NODE *els)
+{
+    (void)n;
+    return (EVAL_ARG(c, cond) == ANPY_TRUE) ? EVAL_ARG(c, then) : EVAL_ARG(c, els);
+}
+
+// ---- compound expressions -------------------------------------------
+
+NODE_DEF
+node_listexpr(CTX *c, NODE *n, NODE *items)
+{
+    (void)n;
+    return anpy_make_list(c, items);
+}
+
+// cons cell of a list display / call-argument list; walked by node.c helpers.
+NODE_DEF
+node_elt(CTX *c, NODE *n, NODE *expr, NODE *next)
+{
+    (void)n; (void)next;
+    return EVAL_ARG(c, expr);
+}
+
+NODE_DEF
+node_index(CTX *c, NODE *n, NODE *seq, NODE *idx)
+{
+    (void)n;
+    VALUE s = EVAL_ARG(c, seq);
+    VALUE i = EVAL_ARG(c, idx);
+    return anpy_index(c, s, i);
+}
+
+NODE_DEF
+node_attr(CTX *c, NODE *n, NODE *obj, const char *name)
+{
+    (void)n;
+    return anpy_getattr(c, EVAL_ARG(c, obj), name);
+}
+
+NODE_DEF
+node_call(CTX *c, NODE *n, const char *name, NODE *args)
+{
+    (void)n;
+    return anpy_do_call(c, name, args);
+}
+
+NODE_DEF
+node_method(CTX *c, NODE *n, NODE *recv, const char *name, NODE *args)
+{
+    (void)n;
+    VALUE r = EVAL_ARG(c, recv);
+    return anpy_do_method(c, r, name, args);
+}
+
+// ---- statements ------------------------------------------------------
+
+NODE_DEF
+node_exprstmt(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    EVAL_ARG(c, e);
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_assign_var(CTX *c, NODE *n, const char *name, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    anpy_cell *cell = env_lookup(c->env, name);
+    if (cell) cell->v = v;
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_assign_attr(CTX *c, NODE *n, NODE *obj, const char *name, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);          // rhs first (per spec)
+    VALUE o = EVAL_ARG(c, obj);
+    anpy_setattr(c, o, name, v);
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_assign_index(CTX *c, NODE *n, NODE *seq, NODE *idx, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);          // rhs first
+    VALUE s = EVAL_ARG(c, seq);
+    VALUE i = EVAL_ARG(c, idx);
+    anpy_index_set(c, s, i, v);
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_massign(CTX *c, NODE *n, NODE *value, NODE *targets)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);          // evaluate rhs exactly once
+    anpy_massign(c, targets, v);
+    return ANPY_NONE;
+}
+
+// one multi-assign target; walked by anpy_massign.
+NODE_DEF
+node_tgt(CTX *c, NODE *n, int32_t kind, const char *name, NODE *obj, NODE *idx, NODE *next)
+{
+    (void)c; (void)n; (void)kind; (void)name; (void)obj; (void)idx; (void)next;
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_if(CTX *c, NODE *n, NODE *cond, NODE *then, NODE *els)
+{
+    (void)n;
+    if (EVAL_ARG(c, cond) == ANPY_TRUE) return EVAL_ARG(c, then);
+    return EVAL_ARG(c, els);
+}
+
+NODE_DEF
+node_while(CTX *c, NODE *n, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (EVAL_ARG(c, cond) == ANPY_TRUE) {
+        EVAL_ARG(c, body);
+        if (c->returning) break;
+    }
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_for(CTX *c, NODE *n, const char *name, NODE *iter, NODE *body)
+{
+    (void)n;
+    VALUE it = EVAL_ARG(c, iter);
+    return anpy_do_for(c, name, it, body);
+}
+
+NODE_DEF
+node_return(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    c->retval = EVAL_ARG(c, e);
+    c->returning = true;
+    return c->retval;
+}
+
+NODE_DEF
+node_return_none(CTX *c, NODE *n)
+{
+    (void)n;
+    c->retval = ANPY_NONE;
+    c->returning = true;
+    return ANPY_NONE;
+}
+
+NODE_DEF
+node_seq(CTX *c, NODE *n, NODE *head, NODE *tail)
+{
+    (void)n;
+    EVAL_ARG(c, head);
+    if (c->returning) return ANPY_NONE;
+    return EVAL_ARG(c, tail);
+}
