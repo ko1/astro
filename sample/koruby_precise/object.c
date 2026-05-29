@@ -4368,6 +4368,13 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
         return Qnil;
     }
+    /* Snapshot argv into a local buffer BEFORE the zero-fill — when argv
+     * lies inside the about-to-be-zeroed frame area (= caller staged
+     * args at c->sp[1..argc] before calling korb_funcall), the zero-fill
+     * would clobber the values otherwise.  The VLA is bounded by argc,
+     * which is finite for any real call site. */
+    VALUE saved_argv[argc > 0 ? argc : 1];
+    for (int i = 0; i < argc; i++) saved_argv[i] = argv[i];
     /* CRITICAL ordering — extend sp + zero-fill BEFORE any alloc and before
      * copying args.  Reasoning:
      *  - new_fp..new_fp+locals_cnt is the new frame's slot range.
@@ -4382,8 +4389,8 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
         c->sp = new_sp;
     }
-    /* Now safe to copy args + alloc rest array. */
-    for (int i = 0; i < argc; i++) new_fp[i] = argv[i];
+    /* Now safe to copy args (from the snapshot) + alloc rest array. */
+    for (int i = 0; i < argc; i++) new_fp[i] = saved_argv[i];
     /* rest_slot collection */
     if (m->u.ast.rest_slot >= 0) {
         long extra = (long)argc - (long)(m->u.ast.total_params_cnt - 1);

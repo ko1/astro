@@ -2161,6 +2161,18 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         return Qnil;
     }
     if (sm->type == KORB_METHOD_CFUNC) {
+        if (sm->u.cfunc.func_r != NULL) {
+            VALUE *sp_top = c->sp;
+            sp_top[0] = c->current_frame->self;
+            for (int i = 0; i < (int)argc; i++) sp_top[1 + i] = c->current_frame->fp[arg_index + i];
+            RESULT _rr = sm->u.cfunc.func_r(c, (int)argc, sp_top + 1 + argc);
+            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+                c->state = _rr.state;
+                c->state_value = _rr.value;
+                return Qnil;
+            }
+            return _rr.value;
+        }
         return sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
     }
     if (sm->type == KORB_METHOD_PROC) {
@@ -2252,7 +2264,22 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->type == KORB_METHOD_CFUNC) {
         struct korb_proc *prev_block = c->current_block;
         c->current_block = blk_proc;
-        VALUE r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+        VALUE r;
+        if (sm->u.cfunc.func_r != NULL) {
+            VALUE *sp_top = c->sp;
+            sp_top[0] = c->current_frame->self;
+            for (int i = 0; i < (int)argc; i++) sp_top[1 + i] = c->current_frame->fp[arg_index + i];
+            RESULT _rr = sm->u.cfunc.func_r(c, (int)argc, sp_top + 1 + argc);
+            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+                c->state = _rr.state;
+                c->state_value = _rr.value;
+                r = Qnil;
+            } else {
+                r = _rr.value;
+            }
+        } else {
+            r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+        }
         c->current_block = prev_block;
         return r;
     }
@@ -2419,7 +2446,22 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             forward_buf[argc++] = c->current_frame->fp[m->u.ast.kwh_save_slot];
         }
     }
-    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf);
+    if (sm->type == KORB_METHOD_CFUNC) {
+        if (sm->u.cfunc.func_r != NULL) {
+            /* New-ABI cfunc: stage [self, args...] above c->sp and dispatch. */
+            VALUE *sp_top = c->sp;
+            sp_top[0] = c->current_frame->self;
+            for (int i = 0; i < argc; i++) sp_top[1 + i] = forward_buf[i];
+            RESULT _rr = sm->u.cfunc.func_r(c, argc, sp_top + 1 + argc);
+            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+                c->state = _rr.state;
+                c->state_value = _rr.value;
+                return Qnil;
+            }
+            return _rr.value;
+        }
+        return sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf);
+    }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);

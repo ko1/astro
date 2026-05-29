@@ -3446,17 +3446,11 @@ static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_array *)arr)->basic.klass = self;
     }
-    /* Stage [arr, argv...] on sp.  CRITICAL: bump c->sp past the staging
-     * before dispatching; korb_dispatch_to_method's AST path uses c->sp
-     * as the new-frame base, and zero-fills [c->sp .. new_sp), so any
-     * args we leave at c->sp[1..argc] would be clobbered before being
-     * copied. */
-    VALUE *staging = sp;
-    staging[0] = arr;
-    for (int i = 0; i < argc; i++) staging[1 + i] = argv[i];
-    c->sp = staging + 1 + argc;
-    UNWRAP(korb_funcall_r(c, arr, korb_intern("initialize"), argc, staging + 1));
-    c->sp = sp;
+    /* Stage [arr, argv...] on sp.  korb_funcall_r bumps c->sp past the
+     * argv area itself so the dispatcher doesn't clobber. */
+    sp[0] = arr;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    UNWRAP(korb_funcall_r(c, arr, korb_intern("initialize"), argc, sp + 1));
     return RESULT_OK(arr);
 }
 
