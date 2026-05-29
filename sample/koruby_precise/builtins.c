@@ -951,6 +951,28 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->hash_class, "key?",       hash_key_p,      1);
     DEF_R(KORB_VM(c)->hash_class, "has_key?",   hash_key_p,      1);
     DEF_R(KORB_VM(c)->hash_class, "include?",   hash_key_p,      1);
+    /* Hash#key(val) — return first key whose value == val, or nil. */
+    {
+        RESULT _hash_key(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            if (argc < 1) return RESULT_OK(Qnil);
+            if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_HASH) return RESULT_OK(Qnil);
+            struct korb_hash *h = (struct korb_hash *)self;
+            VALUE target = argv[0];
+            for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+                /* Use korb_eq for value compare. */
+                if (e->value == target) return RESULT_OK(e->key);
+                if (!SPECIAL_CONST_P(e->value) && !SPECIAL_CONST_P(target)) {
+                    VALUE r = UNWRAP(korb_funcall(c, e->value, korb_intern("=="), 1, &target));
+                    if (RTEST(r)) return RESULT_OK(e->key);
+                }
+            }
+            return RESULT_OK(Qnil);
+        }
+        DEF_R(KORB_VM(c)->hash_class, "key", _hash_key, 1);
+    }
     DEF_R(KORB_VM(c)->hash_class, "merge",      hash_merge,     -1);
     DEF_R(KORB_VM(c)->hash_class, "merge!",     hash_merge_bang,-1);
     DEF_R(KORB_VM(c)->hash_class, "invert",     hash_invert,     0);

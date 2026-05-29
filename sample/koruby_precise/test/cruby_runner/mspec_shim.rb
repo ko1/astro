@@ -21,10 +21,13 @@ class MSpecError < StandardError; end
 # describe blocks: just run the body in a fresh context.  Save any
 # before/after hooks so subsequent `it` runs can fire them.
 def describe(name, *opts, &blk)
-  # Shared spec: `describe :name, shared: true do ... end` — drop on
-  # the floor (it_behaves_like is a no-op anyway).
+  # Shared spec: `describe :name, shared: true do ... end` — register
+  # so it_behaves_like can re-run the block in the caller's context.
   shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
-  return if shared
+  if shared
+    ($ms_shared_specs ||= {})[name] = blk
+    return
+  end
   # Push prev state onto a stack instead of using begin/ensure locals:
   # the latter triggers a koruby bug where `name` / locals become nil
   # at ensure time when an inner `it`'s rescue body contains a block
@@ -914,9 +917,28 @@ end
 # Thread/Fiber etc. references inside shared specs).  Keep no-op for
 # now; rubyspec's coverage of shared-spec-driven tests is small enough
 # to not be worth the regressions.
-$ms_shared_specs = {}
-def it_behaves_like(*_args, &_blk); end
-def it_should_behave_like(*_args, &_blk); end
+$ms_shared_specs ||= {}
+# it_behaves_like(:shared_name, method=nil, object=nil) — run a shared
+# describe block.  The shared block reads @method / @object as ivars on
+# the spec's binding self (= main at top level).  Set those ivars before
+# calling, restoring on exit.
+def it_behaves_like(name, method_sym = nil, object = nil)
+  blk = $ms_shared_specs[name]
+  return unless blk
+  prev_m = self.instance_variable_get(:@method) rescue nil
+  prev_o = self.instance_variable_get(:@object) rescue nil
+  self.instance_variable_set(:@method, method_sym) rescue nil
+  self.instance_variable_set(:@object, object) rescue nil
+  begin
+    blk.call
+  rescue => e
+    $ms_error += 1
+    puts "  ERR #{$ms_describe} :#{name}: #{e.class}: #{e.message}"
+  end
+  self.instance_variable_set(:@method, prev_m) rescue nil
+  self.instance_variable_set(:@object, prev_o) rescue nil
+end
+def it_should_behave_like(*args, &_blk); it_behaves_like(*args); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
