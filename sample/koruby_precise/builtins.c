@@ -356,7 +356,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->array_class, "to_s", ary_inspect, 0);
     DEF_R(korb_vm->array_class, "==", ary_eq, 1);   /* Phase 3 PoC: new sp/RESULT ABI */
     DEF(korb_vm->array_class, "dup", ary_dup, 0);
-    DEF(korb_vm->array_class, "to_h", ary_to_h, 0);
+    DEF_R(korb_vm->array_class, "to_h", ary_to_h, 0);
 
     /* Hash */
     DEF(korb_vm->hash_class, "[]", hash_aref, 1);

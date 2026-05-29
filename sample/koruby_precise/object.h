@@ -889,6 +889,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
  * into RESULT.state for in-band propagation.  Use in new-ABI cfuncs /
  * helpers (where UNWRAP propagates the state). */
 RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+/* korb_yield_r — defined as a static inline below near korb_yield. */
 RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 
 

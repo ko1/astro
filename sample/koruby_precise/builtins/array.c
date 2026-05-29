@@ -468,53 +468,49 @@ static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
  * into a Hash.  With a block, the block's return value (a 2-element
  * Array) supplies the pair for each element — mirrors CRuby's
  * `[1,2,3].to_h { |i| [i, i*i] }` form. */
-static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
+/* Array#to_h — new sp/RESULT ABI (cfunc_r).  Migrated from legacy
+ * VALUE/c->state cfunc as part of Phase 8 staged migration.  Uses
+ * korb_funcall_r + UNWRAP for in-band exception propagation. */
+static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
     if (argc > 0) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eA,
+        return korb_raise_argument_error(c,
                    "wrong number of arguments (given %d, expected 0)", argc);
-        return Qnil;
     }
+    VALUE self = sp[-1];
     const struct korb_array *a = (const struct korb_array *)self;
-    VALUE h = korb_hash_new(c, c->sp);
+    VALUE h = korb_hash_new(c, sp);
     bool has_block = korb_block_given(c);
     for (long i = 0; i < a->len; i++) {
         VALUE pair = a->ptr[i];
         if (has_block) {
-            pair = korb_yield(c, 1, &a->ptr[i]);
-            if (c->state != KORB_NORMAL) return Qnil;
+            pair = UNWRAP(korb_yield_r(c, 1, &a->ptr[i]));
         }
         /* CRuby: try to_ary for non-Array elements (but not to_a). */
         if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
             if (!SPECIAL_CONST_P(pair)) {
-                VALUE rt = korb_funcall(c, pair, korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
-                if (c->state == KORB_RAISE) return Qnil;
+                VALUE arg = korb_id2sym(korb_intern("to_ary"));
+                VALUE rt = UNWRAP(korb_funcall_r(c, pair, korb_intern("respond_to?"), 1, &arg));
                 if (RTEST(rt)) {
-                    pair = korb_funcall(c, pair, korb_intern("to_ary"), 0, NULL);
-                    if (c->state == KORB_RAISE) return Qnil;
+                    pair = UNWRAP(korb_funcall_r(c, pair, korb_intern("to_ary"), 0, NULL));
                 }
             }
             if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
-                VALUE eType = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eType,
+                return korb_raise_type_error(c,
                            "wrong element type %s at %ld (expected array)",
                            SPECIAL_CONST_P(pair) ? "(special)"
                                : korb_id_name(korb_class_of_class(pair)->name),
                            i);
-                return Qnil;
             }
         }
         struct korb_array *p = (struct korb_array *)pair;
         if (p->len != 2) {
-            VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eA,
+            return korb_raise_argument_error(c,
                        "wrong array length at %ld (expected 2, was %ld)", i, p->len);
-            return Qnil;
         }
         korb_hash_aset(c, h, p->ptr[0], p->ptr[1]);
     }
-    return h;
+    return RESULT_OK(h);
 }
 /* New sp-based RESULT-returning ABI (Phase 3 PoC).
  *
@@ -532,22 +528,10 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
         /* CRuby: rhs not an Array → try rhs.==(self) if it responds_to?
          * :to_ary (Array-like mock objects).  Otherwise false. */
         if (!SPECIAL_CONST_P(sp[-1])) {
-            VALUE rt = korb_funcall(c, sp[-1], korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
-            if (c->state == KORB_RAISE) {
-                RESULT rr = { c->state_value, (uint8_t)c->state };
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                return rr;
-            }
+            VALUE arg_sym = korb_id2sym(korb_intern("to_ary"));
+            VALUE rt = UNWRAP(korb_funcall_r(c, sp[-1], korb_intern("respond_to?"), 1, &arg_sym));
             if (RTEST(rt)) {
-                VALUE r = korb_funcall(c, sp[-1], korb_intern("=="), 1, &sp[-2]);
-                if (c->state == KORB_RAISE) {
-                    RESULT rr = { c->state_value, (uint8_t)c->state };
-                    c->state = KORB_NORMAL;
-                    c->state_value = Qnil;
-                    return rr;
-                }
+                VALUE r = UNWRAP(korb_funcall_r(c, sp[-1], korb_intern("=="), 1, &sp[-2]));
                 return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
             }
         }
@@ -566,6 +550,8 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
          * true via NaN.equal?(NaN)). */
         if (a == b) continue;
         bool eq = korb_eq(c, a, b);
+        /* korb_eq still uses the legacy c->state side-channel; bridge it
+         * into RESULT for in-band propagation. */
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             RESULT r = { c->state_value, (uint8_t)c->state };
             c->state = KORB_NORMAL;
@@ -574,21 +560,12 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
         }
         /* Element-level user-dispatch fallback for mock-style ==: only
          * when a is a user-defined object (not built-in numeric / string
-         * / collection).  Skip if both are Arrays (handled by korb_eq's
-         * recursion already, which CRuby does too).  Avoid recursing into
-         * non-trivial Array<->non-Array element pairs here to keep the
-         * cost predictable. */
+         * / collection). */
         if (!eq && !FIXNUM_P(a) && !FLONUM_P(a) && !SPECIAL_CONST_P(a)) {
             enum korb_type ta = BUILTIN_TYPE(a);
             if (ta != T_STRING && ta != T_ARRAY && ta != T_HASH &&
                 ta != T_RANGE && ta != T_BIGNUM && ta != T_FLOAT) {
-                VALUE r = korb_funcall(c, a, korb_intern("=="), 1, &b);
-                if (c->state == KORB_RAISE) {
-                    RESULT rr = { c->state_value, (uint8_t)c->state };
-                    c->state = KORB_NORMAL;
-                    c->state_value = Qnil;
-                    return rr;
-                }
+                VALUE r = UNWRAP(korb_funcall_r(c, a, korb_intern("=="), 1, &b));
                 eq = RTEST(r);
             }
         }
