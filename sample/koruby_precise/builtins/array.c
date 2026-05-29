@@ -2231,31 +2231,29 @@ static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
 
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return RESULT_OK(Qnil);
-    /* Pin running-min m + its key mk + per-iter probe value v + key k
-     * across korb_yield / funcall GC fires. */
-    RESULT _ret = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 4) {
-        rs[0] = a->ptr[0];                                /* m: running min */
-        RESULT _y0 = korb_yield(c, 1, &rs[0]);            /* mk: m's key */
-        if (_y0.state != KORB_NORMAL) { _ret = _y0; goto done_min_by; }
-        rs[1] = _y0.value;
-        for (long i = 1; i < a->len; i++) {
-            rs[2] = a->ptr[i];                            /* v: probe */
-            RESULT _y = korb_yield(c, 1, &rs[2]);         /* k: v's key */
-            if (_y.state != KORB_NORMAL) { _ret = _y; goto done_min_by; }
-            rs[3] = _y.value;
-            RESULT _cmp = korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]);
-            if (_cmp.state != KORB_NORMAL) { _ret = _cmp; goto done_min_by; }
-            VALUE cmp = _cmp.value;
-            long sign = 0;
-            if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
-            else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
-            if (sign > 0) { rs[0] = rs[2]; rs[1] = rs[3]; }
-        }
-        _ret = RESULT_OK(rs[0]);
-done_min_by: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _ret;
+    /* Park m / mk / v / k in sp[0..3] across korb_yield / funcall GC fires. */
+    sp[0] = a->ptr[0];                            /* m: running min */
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[3] = 0;
+    c->sp_top = sp + 4;
+    RESULT _y0 = korb_yield(c, 1, &sp[0]);
+    if (_y0.state != KORB_NORMAL) return _y0;
+    sp[1] = _y0.value;
+    for (long i = 1; i < a->len; i++) {
+        sp[2] = a->ptr[i];
+        RESULT _y = korb_yield(c, 1, &sp[2]);
+        if (_y.state != KORB_NORMAL) return _y;
+        sp[3] = _y.value;
+        RESULT _cmp = korb_funcall(c, sp[1], korb_intern("<=>"), 1, &sp[3]);
+        if (_cmp.state != KORB_NORMAL) return _cmp;
+        VALUE cmp = _cmp.value;
+        long sign = 0;
+        if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
+        else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
+        if (sign > 0) { sp[0] = sp[2]; sp[1] = sp[3]; }
+    }
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
@@ -2347,30 +2345,29 @@ static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
 
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return RESULT_OK(Qnil);
-    /* Pin running-max + key + per-iter probe + key — see ary_min_by. */
-    RESULT _ret = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 4) {
-        rs[0] = a->ptr[0];
-        RESULT _y0 = korb_yield(c, 1, &rs[0]);
-        if (_y0.state != KORB_NORMAL) { _ret = _y0; goto done_max_by; }
-        rs[1] = _y0.value;
-        for (long i = 1; i < a->len; i++) {
-            rs[2] = a->ptr[i];
-            RESULT _y = korb_yield(c, 1, &rs[2]);
-            if (_y.state != KORB_NORMAL) { _ret = _y; goto done_max_by; }
-            rs[3] = _y.value;
-            RESULT _cmp = korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]);
-            if (_cmp.state != KORB_NORMAL) { _ret = _cmp; goto done_max_by; }
-            VALUE cmp = _cmp.value;
-            long sign = 0;
-            if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
-            else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
-            if (sign < 0) { rs[0] = rs[2]; rs[1] = rs[3]; }
-        }
-        _ret = RESULT_OK(rs[0]);
-done_max_by: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _ret;
+    /* Park m / mk / v / k in sp[0..3] across korb_yield / funcall. */
+    sp[0] = a->ptr[0];
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[3] = 0;
+    c->sp_top = sp + 4;
+    RESULT _y0 = korb_yield(c, 1, &sp[0]);
+    if (_y0.state != KORB_NORMAL) return _y0;
+    sp[1] = _y0.value;
+    for (long i = 1; i < a->len; i++) {
+        sp[2] = a->ptr[i];
+        RESULT _y = korb_yield(c, 1, &sp[2]);
+        if (_y.state != KORB_NORMAL) return _y;
+        sp[3] = _y.value;
+        RESULT _cmp = korb_funcall(c, sp[1], korb_intern("<=>"), 1, &sp[3]);
+        if (_cmp.state != KORB_NORMAL) return _cmp;
+        VALUE cmp = _cmp.value;
+        long sign = 0;
+        if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
+        else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
+        if (sign < 0) { sp[0] = sp[2]; sp[1] = sp[3]; }
+    }
+    return RESULT_OK(sp[0]);
 }
 
 /* Try #to_int on argv; return Qundef if it doesn't respond, or
