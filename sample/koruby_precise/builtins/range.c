@@ -19,8 +19,7 @@ static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
      * propagates (CRuby semantics). */
     if (!NIL_P(argv[0]) && !NIL_P(argv[1])) {
         VALUE arg2[1] = { argv[1] };
-        VALUE cmp = korb_funcall(c, argv[0], korb_intern("<=>"), 1, arg2);
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE cmp = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("<=>"), 1, arg2));
         if (NIL_P(cmp)) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg, "bad value for range");
