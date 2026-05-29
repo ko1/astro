@@ -413,15 +413,29 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
     long step = argc >= 1 && FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 1;
     if (step == 0) return RESULT_OK(self);
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
-    if (r->exclude_end) e--;
+    if (r->exclude_end) {
+        if (step > 0) e--;
+        else if (step < 0) e++;
+    }
     if (!korb_block_given(c)) {
         VALUE a = korb_ary_new(c, c->sp);
-        for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
+        if (step > 0) {
+            for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
+        } else {
+            for (long i = b; i >= e; i += step) korb_ary_push(a, INT2FIX(i));
+        }
         return RESULT_OK(a);
     }
-    for (long i = b; i <= e; i += step) {
-        VALUE v = INT2FIX(i);
-        CHECK(korb_yield(c, 1, &v));
+    if (step > 0) {
+        for (long i = b; i <= e; i += step) {
+            VALUE v = INT2FIX(i);
+            CHECK(korb_yield(c, 1, &v));
+        }
+    } else {
+        for (long i = b; i >= e; i += step) {
+            VALUE v = INT2FIX(i);
+            CHECK(korb_yield(c, 1, &v));
+        }
     }
     return RESULT_OK(self);
 }
