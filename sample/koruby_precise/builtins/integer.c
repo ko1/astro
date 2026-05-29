@@ -30,9 +30,10 @@ static VALUE int_to_rational_obj(CTX *c, VALUE self) {
  * caller can fall through to TypeError. */
 static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     /* Use respond_to? so mock objects (method_missing) are also seen. */
-    VALUE rt = SINK_RESULT(c, korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
-    if (c->state == KORB_RAISE) return Qnil;
+    RESULT _rt_rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+    if (_rt_rt.state == KORB_RAISE) return Qnil;
+    VALUE rt = _rt_rt.value;
     if (!RTEST(rt)) return Qundef;
     VALUE pair = SINK_RESULT(c, korb_funcall(c, other, korb_intern("coerce"), 1, &self));
     if (c->state != KORB_NORMAL) return Qnil;

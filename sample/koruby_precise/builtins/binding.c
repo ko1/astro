@@ -61,9 +61,9 @@ static ID binding_arg_to_id(CTX *c, VALUE arg, bool *ok) {
      * routes here.  Use respond_to? to filter so non-stringy objects
      * fall through to error rather than NoMethodError. */
     if (!SPECIAL_CONST_P(arg) && c) {
-        VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (c->state == KORB_RAISE) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+        RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        VALUE rt = (_rt_rt.state == KORB_NORMAL) ? _rt_rt.value : (Qfalse);
         if (RTEST(rt)) {
             VALUE s = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (c->state == KORB_NORMAL && !SPECIAL_CONST_P(s) &&

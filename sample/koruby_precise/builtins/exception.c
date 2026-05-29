@@ -57,8 +57,9 @@ static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
      *   to_s == ""           → just the class name  (no #<...:>)
      *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
      *   to_s == anything else → "#<Class: <to_s>>" */
-    VALUE s = SINK_RESULT(c, korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
-    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    RESULT _rt_s = korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    if (_rt_s.state == KORB_RAISE) return RESULT_OK(Qnil);
+    VALUE s = _rt_s.value;
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
                        ? korb_str_cstr(s) : "";
     if (ms[0] == '\0') return RESULT_OK(korb_str_new_cstr(c, c->sp, kn));

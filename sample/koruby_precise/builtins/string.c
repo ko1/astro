@@ -503,12 +503,14 @@ static long str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv) {
     arg = argv[0];
     if (NIL_P(arg)) return n;
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
-        VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (c->state == KORB_RAISE) return n;
+        RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (_rt_rt.state == KORB_RAISE) return n;
+        VALUE rt = _rt_rt.value;
         if (RTEST(rt)) {
-            VALUE r = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-            if (c->state == KORB_RAISE) return n;
+            RESULT _rt_r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (_rt_r.state == KORB_RAISE) return n;
+            VALUE r = _rt_r.value;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 arg = r;
                 goto have_str;
@@ -2708,12 +2710,14 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
 static VALUE str_coerce_arg(CTX *c, VALUE arg) {
     if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return arg;
     if (!SPECIAL_CONST_P(arg)) {
-        VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (c->state == KORB_RAISE) return Qundef;
+        RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (_rt_rt.state == KORB_RAISE) return Qundef;
+        VALUE rt = _rt_rt.value;
         if (RTEST(rt)) {
-            VALUE r = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-            if (c->state == KORB_RAISE) return Qundef;
+            RESULT _rt_r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (_rt_r.state == KORB_RAISE) return Qundef;
+            VALUE r = _rt_r.value;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }

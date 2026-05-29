@@ -129,9 +129,9 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     }
     VALUE rt = Qfalse;
     if (!has_to_hash) {
-        rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                          (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
-        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+        RESULT _rt_rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                          (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+        rt = (_rt_rt.state == KORB_NORMAL) ? _rt_rt.value : (Qfalse);
     }
     if (!has_to_hash && !RTEST(rt)) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));

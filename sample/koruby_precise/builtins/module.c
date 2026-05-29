@@ -28,12 +28,14 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
-            VALUE rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (c->state == KORB_RAISE) return false;
+            RESULT _rt_rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (_rt_rt.state == KORB_RAISE) return false;
+            VALUE rt = _rt_rt.value;
             if (RTEST(rt)) {
-                v = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
-                if (c->state == KORB_RAISE) return false;
+                RESULT _rt_v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
+                if (_rt_v.state == KORB_RAISE) return false;
+                v = _rt_v.value;
             }
         }
     }
@@ -1154,12 +1156,14 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         if (!SYMBOL_P(arg) &&
             (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
             !SPECIAL_CONST_P(arg)) {
-            VALUE rt = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (c->state == KORB_RAISE) return Qnil;
+            RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (_rt_rt.state == KORB_RAISE) return Qnil;
+            VALUE rt = _rt_rt.value;
             if (RTEST(rt)) {
-                arg = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-                if (c->state == KORB_RAISE) return Qnil;
+                RESULT _rt_arg = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+                if (_rt_arg.state == KORB_RAISE) return Qnil;
+                arg = _rt_arg.value;
             }
         }
         ID name = 0;

@@ -858,12 +858,14 @@ static int ary_flatten_into(CTX *c, VALUE r, VALUE src, long depth,
             /* Try #to_ary if the element responds to it (CRuby flattens
              * via #to_ary, not method_missing).  Skip on Array — it
              * already IS an array. */
-            VALUE rt = SINK_RESULT(c, korb_funcall(c, el, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
-            if (c->state == KORB_RAISE) return -1;
+            RESULT _rt_rt = korb_funcall(c, el, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (_rt_rt.state == KORB_RAISE) return -1;
+            VALUE rt = _rt_rt.value;
             if (RTEST(rt)) {
-                VALUE ar = SINK_RESULT(c, korb_funcall(c, el, korb_intern("to_ary"), 0, NULL));
-                if (c->state == KORB_RAISE) return -1;
+                RESULT _rt_ar = korb_funcall(c, el, korb_intern("to_ary"), 0, NULL);
+                if (_rt_ar.state == KORB_RAISE) return -1;
+                VALUE ar = _rt_ar.value;
                 if (NIL_P(ar)) {
                     /* nil result: leave element as is. */
                 } else if (SPECIAL_CONST_P(ar) || BUILTIN_TYPE(ar) != T_ARRAY) {
@@ -2327,18 +2329,17 @@ done_max_by: ;
     return RESULT_OK(ret);
 }
 
-/* Try #to_int on argv; return Qundef if it doesn't respond. */
-static VALUE ary_try_to_int(CTX *c, VALUE v) {
-    if (FIXNUM_P(v)) return v;
-    if (SPECIAL_CONST_P(v)) return Qundef;
-    VALUE rt = SINK_RESULT(c, korb_funcall(c, v, korb_intern("respond_to?"), 1,
+/* Try #to_int on argv; return Qundef if it doesn't respond, or
+ * propagate raise via RESULT. */
+static RESULT ary_try_to_int(CTX *c, VALUE v) {
+    if (FIXNUM_P(v)) return RESULT_OK(v);
+    if (SPECIAL_CONST_P(v)) return RESULT_OK(Qundef);
+    VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
                             (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-    if (c->state == KORB_RAISE) return Qnil;
-    if (!RTEST(rt)) return Qundef;
-    VALUE iv = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
-    if (c->state == KORB_RAISE) return Qnil;
-    if (!FIXNUM_P(iv)) return Qundef;
-    return iv;
+    if (!RTEST(rt)) return RESULT_OK(Qundef);
+    VALUE iv = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
+    if (!FIXNUM_P(iv)) return RESULT_OK(Qundef);
+    return RESULT_OK(iv);
 }
 
 /* Common helper: remove a[start, len] in place and return the removed
@@ -2367,9 +2368,9 @@ static RESULT ary_slice_bang(CTX *c, int argc, VALUE *sp) {
     /* (start, len) form: returns Array (possibly empty), or nil if start
      * out of range. */
     if (argc == 2) {
-        VALUE iv0 = ary_try_to_int(c, argv[0]);
-        VALUE iv1 = ary_try_to_int(c, argv[1]);
-        if (UNDEF_P(iv0) || UNDEF_P(iv1) || c->state == KORB_RAISE) {
+        VALUE iv0 = UNWRAP(ary_try_to_int(c, argv[0]));
+        VALUE iv1 = UNWRAP(ary_try_to_int(c, argv[1]));
+        if (UNDEF_P(iv0) || UNDEF_P(iv1) ) {
             if (c->state != KORB_RAISE) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
@@ -2406,8 +2407,8 @@ static RESULT ary_slice_bang(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(ary_remove_range(c, a, b, len));
     }
     /* (idx) form: returns single element (or nil). */
-    VALUE iv = ary_try_to_int(c, argv[0]);
-    if (UNDEF_P(iv) || c->state == KORB_RAISE) {
+    VALUE iv = UNWRAP(ary_try_to_int(c, argv[0]));
+    if (UNDEF_P(iv) ) {
         if (c->state != KORB_RAISE) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
@@ -2438,9 +2439,9 @@ static RESULT ary_slice(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_array *a = (struct korb_array *)self;
     if (argc == 2) {
-        VALUE iv0 = ary_try_to_int(c, argv[0]);
-        VALUE iv1 = ary_try_to_int(c, argv[1]);
-        if (UNDEF_P(iv0) || UNDEF_P(iv1) || c->state == KORB_RAISE) {
+        VALUE iv0 = UNWRAP(ary_try_to_int(c, argv[0]));
+        VALUE iv1 = UNWRAP(ary_try_to_int(c, argv[1]));
+        if (UNDEF_P(iv0) || UNDEF_P(iv1) ) {
             if (c->state != KORB_RAISE) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
@@ -2479,8 +2480,8 @@ static RESULT ary_slice(CTX *c, int argc, VALUE *sp) {
         for (long i = 0; i < len; i++) korb_ary_push(r2, a->ptr[b + i]);
         return RESULT_OK(r2);
     }
-    VALUE iv = ary_try_to_int(c, argv[0]);
-    if (UNDEF_P(iv) || c->state == KORB_RAISE) {
+    VALUE iv = UNWRAP(ary_try_to_int(c, argv[0]));
+    if (UNDEF_P(iv) ) {
         if (c->state != KORB_RAISE) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,

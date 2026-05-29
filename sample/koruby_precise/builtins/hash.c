@@ -1181,8 +1181,9 @@ static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int m
         VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
-        VALUE bk = SINK_RESULT(c, korb_yield(c, 1, &pair));
-        if (c->state == KORB_RAISE) return Qnil;
+        RESULT _rt_bk = korb_yield(c, 1, &pair);
+        if (_rt_bk.state == KORB_RAISE) return Qnil;
+        VALUE bk = _rt_bk.value;
         if (first) {
             best_pair = pair;
             best_key  = bk;
