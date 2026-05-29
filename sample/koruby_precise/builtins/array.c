@@ -3159,7 +3159,20 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        return korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+        VALUE e = UNWRAP(korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv));
+        /* Cycle size: ary.len * n for positive n, 0 for <=0, Infinity for nil arg. */
+        VALUE size_val;
+        if (argc < 1 || NIL_P(argv[0])) {
+            VALUE finf = korb_const_get(KORB_VM(c)->float_class, korb_intern("INFINITY"));
+            size_val = UNDEF_P(finf) ? Qnil : finf;
+        } else if (FIXNUM_P(argv[0])) {
+            long n = FIX2LONG(argv[0]);
+            size_val = n > 0 ? INT2FIX((long)a->len * n) : INT2FIX(0);
+        } else {
+            size_val = Qnil;
+        }
+        korb_ivar_set(e, korb_intern("@__size"), size_val);
+        return RESULT_OK(e);
     }
     long n = -1;  /* -1 means infinite */
     if (argc >= 1 && !NIL_P(argv[0])) {
