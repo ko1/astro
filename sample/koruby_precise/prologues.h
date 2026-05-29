@@ -66,71 +66,11 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
     c->last_cfunc_callsite = prev_cs;
     c->current_frame = cfr.prev;
     c->current_block = prev_block;
-    /* Safety net: if the cfunc_r body called a legacy VALUE-returning
-     * helper (korb_funcall / korb_yield) that set c->state but the body
-     * forgot to convert, lift the legacy state into RESULT.state here. */
-    if (UNLIKELY(r.state == KORB_NORMAL && c->state != KORB_NORMAL)) {
-        r = (RESULT){ c->state_value, (uint8_t)c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-    }
-    /* break-from-block: convert KORB_BREAK back to NORMAL with the carried value.
-     * State carried in r.state for new ABI; we also clear c->state in case
-     * a legacy helper inside the cfunc wrote it. */
+    /* break-from-block: convert KORB_BREAK back to NORMAL with the carried value. */
     if (UNLIKELY(block && r.state == KORB_BREAK)) {
         r = RESULT_OK(r.value);
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
     }
     return r;
-}
-
-/* CFUNC (LEGACY): just call the C function, then handle break-from-block.
- * Returns RESULT.  Legacy cfunc still sets c->state on raise → lift here. */
-static inline __attribute__((always_inline)) RESULT
-prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
-                   uint32_t argc, uint32_t arg_index,
-                   struct korb_proc *block, struct method_cache *mc)
-{
-    VALUE *argv = &c->current_frame->fp[arg_index];
-    struct korb_proc *prev_block = c->current_block;
-    c->current_block = block;
-    struct korb_frame cfr = {
-        .prev = c->current_frame,
-        .self = recv,
-        .method = mc->method,
-        .block = block,
-        .caller_node = callsite,
-        .fp = c->current_frame->fp,
-        .locals_cnt = 0,
-        .super_skip_n = 0,
-        .last_line = Qnil,
-        .last_match = Qnil,
-        .caller_running_block = NULL,
-        .frame_id = 0,
-        .bindings_head = NULL,
-    };
-    c->current_frame = &cfr;
-    c->current_frame->self = recv;
-    struct Node *prev_cs = c->last_cfunc_callsite;
-    c->last_cfunc_callsite = callsite;
-    VALUE r = mc->cfunc(c, recv, argc, argv);
-    c->last_cfunc_callsite = prev_cs;
-    c->current_frame = cfr.prev;
-    c->current_frame->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
-    c->current_block = prev_block;
-    /* Lift legacy c->state from the cfunc into RESULT.  Once all legacy
-     * cfuncs are migrated to cfunc_r (R4) this lift goes away. */
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        uint8_t state = c->state;
-        VALUE sv = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        /* break-from-block consumed at the cfunc/iterator boundary. */
-        if (block && state == KORB_BREAK) return RESULT_OK(sv);
-        return (RESULT){ sv, state };
-    }
-    return RESULT_OK(r);
 }
 
 /* AST-method prologue, parameterized by PARAMS_KNOWN at compile time so

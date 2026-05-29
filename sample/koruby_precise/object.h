@@ -547,21 +547,19 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
  * (different klass / unset slot / first write past current capa) goes
  * through the slow path which handles growth + slot assignment. */
 extern RESULT_FN RESULT korb_raise_frozen_modification(CTX *c, VALUE obj);
-static inline __attribute__((always_inline)) void
+static inline __attribute__((always_inline)) RESULT
 korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) {
         /* true / false / nil / Integer / Float / Symbol can't have
          * ivars — CRuby raises FrozenError on attempts. */
-        DROP_RESULT(korb_raise_frozen_modification(c, obj));
-        return;
+        return korb_raise_frozen_modification(c, obj);
     }
     if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) {
         korb_ivar_set_ic_slow(obj, name, val, cache);
-        return;
+        return RESULT_OK(Qnil);
     }
     if (UNLIKELY(((struct RBasic *)obj)->head.flags & FL_FROZEN)) {
-        DROP_RESULT(korb_raise_frozen_modification(c, obj));
-        return;
+        return korb_raise_frozen_modification(c, obj);
     }
     struct korb_object *o = (struct korb_object *)obj;
     if (LIKELY(cache->gen == korb_g_gc_gen &&
@@ -569,10 +567,11 @@ korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache
         uint32_t s = (uint32_t)cache->slot;
         if (LIKELY(s < o->ivar_cnt)) {
             o->ivars[s] = val;
-            return;
+            return RESULT_OK(Qnil);
         }
     }
     korb_ivar_set_ic_slow(obj, name, val, cache);
+    return RESULT_OK(Qnil);
 }
 
 /* string */
@@ -838,18 +837,15 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
         if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 2);
         if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc) {
-            /* New sp-based RESULT ABI: when mc->cfunc_r is set, stage
-             * self + args at the top of the value stack and call
-             * prologue_cfunc_r_inl.  c->sp is NOT touched here — the cfunc
-             * itself syncs `c->sp = sp` just before any alloc (see runtime.md
-             * §12.3). */
-            if (UNLIKELY(mc->cfunc_r != NULL)) {
-                VALUE *sp = c->sp;
-                sp[0] = recv;
-                for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
-                return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
-            }
-            return prologue_cfunc_inl(c, callsite, recv, argc, arg_index, block, mc);
+            /* sp-based RESULT ABI: stage self + args at the top of the
+             * value stack and call prologue_cfunc_r_inl.  c->sp is NOT
+             * touched here — the cfunc itself syncs `c->sp = sp` just
+             * before any alloc (see runtime.md §12.3).  All cfuncs use
+             * the func_r ABI now; legacy prologue_cfunc_inl is gone. */
+            VALUE *sp = c->sp;
+            sp[0] = recv;
+            for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
+            return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
         }
         return p(c, callsite, recv, argc, arg_index, block, mc);
     }
@@ -1010,7 +1006,7 @@ void korb_init_builtins(CTX *c);
 struct korb_fiber;
 VALUE korb_fiber_new(struct korb_proc *block);
 RESULT korb_fiber_resume(CTX *c, VALUE fib, int argc, VALUE *argv);
-VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv);
+RESULT korb_fiber_yield(CTX *c, int argc, VALUE *argv);
 
 /* file load (parse + eval) */
 RESULT korb_load_file(CTX *c, const char *path);
@@ -1039,14 +1035,7 @@ static inline bool korb_obj_frozen_p(VALUE v) {
     if (SPECIAL_CONST_P(v)) return true;
     return (RBASIC(v)->head.flags & FL_FROZEN) != 0;
 }
-#define CHECK_FROZEN_RET(c, self, ret) do { \
-    if (UNLIKELY(korb_obj_frozen_p(self))) { \
-        VALUE _eFrozen = korb_const_get(korb_vm->object_class, korb_intern("FrozenError")); \
-        DROP_RESULT(korb_raise((c), (struct korb_class *)_eFrozen, "can't modify frozen object")); \
-        return (ret); \
-    } \
-} while (0)
-/* RESULT-returning version: short-circuits the enclosing RESULT function
+/* RESULT-returning frozen check: short-circuits the enclosing RESULT function
  * with a raised FrozenError. */
 #define CHECK_FROZEN_R(c, self) do { \
     if (UNLIKELY(korb_obj_frozen_p(self))) { \

@@ -22,20 +22,15 @@ static RESULT ivar_getter_dispatch(CTX *c, int argc, VALUE *sp) {
  */
 
 /* Resolve an attr_*'s name argument: accept Symbol/String, fall back
- * to #to_str.  Returns 0 (and raises) on TypeError / invalid name.
- * Sets *out_id on success. */
-static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
+ * to #to_str.  On NORMAL writes *out_id; on raise returns the RESULT. */
+static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
-            RESULT _rt_rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (_rt_rt.state == KORB_RAISE) return false;
-            VALUE rt = _rt_rt.value;
+            VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                RESULT _rt_v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
-                if (_rt_v.state == KORB_RAISE) return false;
-                v = _rt_v.value;
+                v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
             }
         }
     }
@@ -46,38 +41,34 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
                              ((struct korb_string *)v)->len);
     } else {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
                    SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name)));
-        return false;
+                       : korb_id_name(korb_class_of_class(arg)->name));
     }
     const char *base = korb_id_name(name);
     if (!base || (!((base[0] >= 'a' && base[0] <= 'z') ||
                     (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
         VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
-                   "invalid attribute name '%s'", base ? base : ""));
-        return false;
+        return korb_raise(c, (struct korb_class *)eN,
+                   "invalid attribute name '%s'", base ? base : "");
     }
     *out_id = name;
     (void)meth;
-    return true;
+    return RESULT_OK(Qnil);
 }
 
-/* Frozen check: receiver class/module must not be frozen.  Returns
- * false (and raises FrozenError) on failure. */
-static bool attr_check_frozen(CTX *c, VALUE self) {
+/* Frozen check: receiver class/module must not be frozen. */
+static RESULT attr_check_frozen(CTX *c, VALUE self) {
     if (korb_obj_frozen_p(self)) {
         VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         struct korb_class *k = (struct korb_class *)self;
         const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
+        return korb_raise(c, (struct korb_class *)eF,
                    "can't modify frozen %s: %s",
-                   BUILTIN_TYPE(self) == T_MODULE ? "Module" : "Class", cn));
-        return false;
+                   BUILTIN_TYPE(self) == T_MODULE ? "Module" : "Class", cn);
     }
-    return true;
+    return RESULT_OK(Qnil);
 }
 static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -87,12 +78,12 @@ static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
         return korb_raise(c, NULL, "attr_reader: not on a class/module");
     }
-    if (!attr_check_frozen(c, self)) return RESULT_OK(Qnil);
+    CHECK(attr_check_frozen(c, self));
     struct korb_class *klass = (struct korb_class *)self;
     VALUE result = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         ID name;
-        if (!attr_resolve_name(c, argv[i], &name, "attr_reader")) return RESULT_OK(Qnil);
+        CHECK(attr_resolve_name(c, argv[i], &name, "attr_reader"));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
@@ -113,12 +104,12 @@ static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
         return korb_raise(c, NULL, "attr_writer: not on a class/module");
     }
-    if (!attr_check_frozen(c, self)) return RESULT_OK(Qnil);
+    CHECK(attr_check_frozen(c, self));
     struct korb_class *klass = (struct korb_class *)self;
     VALUE result = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         ID name;
-        if (!attr_resolve_name(c, argv[i], &name, "attr_writer")) return RESULT_OK(Qnil);
+        CHECK(attr_resolve_name(c, argv[i], &name, "attr_writer"));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *sn = korb_xmalloc_atomic(bl + 2);
@@ -1139,9 +1130,9 @@ static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
 /* Module#private_class_method(:foo, ...) — mark singleton method as
  * private.  Stub-level: just set visibility flag.  We keep things
  * simple — return self regardless. */
-static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
+static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
                                   enum korb_visibility v) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(self);
     extern struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *);
     struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
     /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
@@ -1155,14 +1146,10 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         if (!SYMBOL_P(arg) &&
             (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
             !SPECIAL_CONST_P(arg)) {
-            RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (_rt_rt.state == KORB_RAISE) return Qnil;
-            VALUE rt = _rt_rt.value;
+            VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                RESULT _rt_arg = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
-                if (_rt_arg.state == KORB_RAISE) return Qnil;
-                arg = _rt_arg.value;
+                arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             }
         }
         ID name = 0;
@@ -1172,32 +1159,30 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
                                  ((struct korb_string *)arg)->len);
         if (!name) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+            return korb_raise(c, (struct korb_class *)eT,
                        "%s is not a symbol nor a string",
                        SPECIAL_CONST_P(argv[i]) ? "(special)"
-                           : korb_id_name(korb_class_of_class(argv[i])->name)));
-            return Qnil;
+                           : korb_id_name(korb_class_of_class(argv[i])->name));
         }
         struct korb_method *m = meta ? korb_class_find_method(meta, name) : NULL;
         if (!m) {
             VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             const char *cn = (((struct korb_class *)self)->name)
                               ? korb_id_name(((struct korb_class *)self)->name) : "(anon)";
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+            return korb_raise(c, (struct korb_class *)eN,
                        "undefined method '%s' for class '%s'",
-                       korb_id_name(name), cn));
-            return Qnil;
+                       korb_id_name(name), cn);
         }
         m->visibility = v;
     }
-    return self;
+    return RESULT_OK(self);
 }
 static RESULT module_private_class_method(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(class_visibility_set(c, self, argc, argv, KORB_VIS_PRIVATE));
+    return class_visibility_set(c, self, argc, argv, KORB_VIS_PRIVATE);
 }
 
 static RESULT module_public_class_method(CTX *c, int argc, VALUE *sp) {
@@ -1205,7 +1190,7 @@ static RESULT module_public_class_method(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(class_visibility_set(c, self, argc, argv, KORB_VIS_PUBLIC));
+    return class_visibility_set(c, self, argc, argv, KORB_VIS_PUBLIC);
 }
 
 /* Module#private_constant / public_constant — visibility on constants. */

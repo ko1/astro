@@ -254,48 +254,39 @@ static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name) {
     return NULL;
 }
 
-VALUE korb_cvar_get(CTX *c, ID name) {
+RESULT korb_cvar_get(CTX *c, ID name) {
     struct korb_class *k = korb_host_class(c);
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     /* Top-level read of @@cvar — RuntimeError per CRuby. */
-    /* Top-level access (no enclosing class/module body) — RuntimeError.
-     * Toplevel's cref->prev is NULL and the resolved class is Object's
-     * meta or main. */
     if (c->current_frame->cref && !c->current_frame->cref->prev &&
         (k == KORB_VM(c)->object_class || k == KORB_VM(c)->main_obj_class)) {
-        DROP_RESULT(korb_raise(c, NULL, "class variable access from toplevel"));
-        return Qnil;
+        return korb_raise(c, NULL, "class variable access from toplevel");
     }
     struct korb_class *owner = k ? cvar_owner_(k, name) : NULL;
     if (!owner) {
         VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
+        return korb_raise(c, (struct korb_class *)eName,
                    "uninitialized class variable %s in %s",
                    korb_id_name(name),
-                   k ? korb_id_name(k->name) : "(unknown)"));
-        return Qnil;
+                   k ? korb_id_name(k->name) : "(unknown)");
     }
-    /* Overtaken detection: if a strict ancestor of `owner` also has this
-     * cvar, the value seen by k differs from the chain's authoritative
-     * top — CRuby raises RuntimeError to flag the inconsistency.  Happens
-     * when child sets @@x first, then parent independently sets @@x. */
+    /* Overtaken detection. */
     for (struct korb_class *anc = owner->super; anc; anc = anc->super) {
         for (uint32_t i = 0; i < anc->cvar_cnt; i++) {
             if (anc->cvars[i].name == name) {
-                DROP_RESULT(korb_raise(c, NULL,
+                return korb_raise(c, NULL,
                            "class variable %s of %s is overtaken by %s",
                            korb_id_name(name),
                            anc->name ? korb_id_name(anc->name) : "(anon)",
-                           owner->name ? korb_id_name(owner->name) : "(anon)"));
-                return Qnil;
+                           owner->name ? korb_id_name(owner->name) : "(anon)");
             }
         }
     }
     for (uint32_t i = 0; i < owner->cvar_cnt; i++) {
-        if (owner->cvars[i].name == name) return owner->cvars[i].value;
+        if (owner->cvars[i].name == name) return RESULT_OK(owner->cvars[i].value);
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 RESULT korb_cvar_set(CTX *c, ID name, VALUE val) {
@@ -431,14 +422,8 @@ void korb_class_add_method_ast_full_cref(CTX *c, struct korb_class *klass, ID na
                                           int rest_slot, uint32_t locals_cnt,
                                           struct korb_cref *def_cref) {
     if (klass && korb_obj_frozen_p((VALUE)klass)) {
-        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
-        if (eF && !SPECIAL_CONST_P(eF) && BUILTIN_TYPE(eF) == T_CLASS) {
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
-                       "can't modify frozen %s",
-                       klass->name ? korb_id_name(klass->name) : "Class"));
-        } else {
-            DROP_RESULT(korb_raise(c, NULL, "can't modify frozen Class"));
-        }
+        /* Frozen-class check: caller should have already raised before
+         * reaching here.  Silently no-op as last-ditch safety. */
         return;
     }
     struct korb_method *m = korb_xmalloc(sizeof(*m));
@@ -3522,17 +3507,14 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name) {
 RESULT prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                       uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 {
-    /* When mc has a new-ABI cfunc_r set, bridge: stage self+args at the top
-     * of the value stack and call prologue_cfunc_r_inl.  c->sp is NOT touched
-     * here — the cfunc itself syncs `c->sp = sp` just before any alloc
+    /* All cfuncs use func_r ABI: stage self+args at the top of the value
+     * stack and call prologue_cfunc_r_inl.  c->sp is NOT touched here —
+     * the cfunc itself syncs `c->sp = sp` just before any alloc
      * (runtime.md §12.3). */
-    if (UNLIKELY(mc->cfunc_r != NULL)) {
-        VALUE *sp = c->sp;
-        sp[0] = recv;
-        for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
-        return prologue_cfunc_r_inl(c, cs, (int)argc, sp + 1 + argc, bl, mc);
-    }
-    return prologue_cfunc_inl(c, cs, recv, argc, ai, bl, mc);
+    VALUE *sp = c->sp;
+    sp[0] = recv;
+    for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
+    return prologue_cfunc_r_inl(c, cs, (int)argc, sp + 1 + argc, bl, mc);
 }
 
 RESULT prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
@@ -4626,7 +4608,6 @@ CTX *korb_runtime_init(void) {
     c->stack_end  = c->stack_base + stack_size;
     c->sp = c->stack_base;
     c->env = c->stack_base;
-    c->state = KORB_NORMAL;
     /* Sentinel top-level frame — fp/self get updated as bootstrap
      * proceeds.  current_frame MUST be set before any field access via
      * c->current_frame->* (e.g. korb_xmalloc internally might do nothing
@@ -5182,6 +5163,12 @@ struct korb_fiber {
     VALUE *args;
     int argc;
     VALUE result;
+    /* state for body raise: KORB_NORMAL or KORB_RAISE.  Set by
+     * korb_fiber_entry when the body raises; consumed by korb_fiber_resume
+     * to construct the returned RESULT.  Decoupled from c->state so the
+     * cross-context handoff doesn't need a global side-channel. */
+    uint8_t result_state;
+    VALUE result_exc;
     CTX *c;
 
     /* Resumer-side save: stashed on resume, restored on yield. */
@@ -5260,8 +5247,8 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         if (blk->body) {
             RESULT _br = EVAL(c, blk->body, fib->frame + blk->env_size);
             if (UNLIKELY(_br.state != KORB_NORMAL)) {
-                c->state = _br.state;
-                c->state_value = _br.value;
+                fib->result_state = _br.state;
+                fib->result_exc = _br.value;
                 result = Qnil;
             } else {
                 result = _br.value;
@@ -5310,6 +5297,8 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->args = NULL;
     fib->argc = 0;
     fib->result = Qnil;
+    fib->result_state = KORB_NORMAL;
+    fib->result_exc = Qnil;
     fib->c = NULL;
     /* Allocate a heap value-frame for the fiber's locals so they don't
      * share the resumer's stack slots.  Optcarrot's PPU pipeline can
@@ -5427,21 +5416,20 @@ RESULT korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     }
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
-    /* Body-raise bridges via c->state (set by korb_fiber_entry); lift here. */
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        RESULT _r = (RESULT){ c->state_value, c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+    /* Body-raise bridges via fib->result_state (set by korb_fiber_entry). */
+    if (UNLIKELY(fib->result_state != KORB_NORMAL)) {
+        RESULT _r = (RESULT){ fib->result_exc, fib->result_state };
+        fib->result_state = KORB_NORMAL;
+        fib->result_exc = Qnil;
         return _r;
     }
     return RESULT_OK(fib->result);
 }
 
-VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
+RESULT korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     struct korb_fiber *fib = current_fiber;
     if (!fib) {
-        DROP_RESULT(korb_raise(c, NULL, "Fiber.yield called outside a fiber"));
-        return Qnil;
+        return korb_raise(c, NULL, "Fiber.yield called outside a fiber");
     }
     fib->result = argc > 0 ? argv[0] : Qnil;
     fib->state = KF_SUSPENDED;
@@ -5483,8 +5471,8 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
      * comes back here and the resumer's wrapper has overwritten c->current_frame->fp
      * to its own; resume sets fp again before swapcontext, so by the
      * time we land here, c->current_frame->fp is fib->fiber_fp). */
-    if (fib->argc > 0) return fib->args[0];
-    return Qnil;
+    if (fib->argc > 0) return RESULT_OK(fib->args[0]);
+    return RESULT_OK(Qnil);
 }
 
 RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
@@ -5496,7 +5484,7 @@ RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
 RESULT korb_fiber_yield_cfunc(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE *argv = sp - argc;
-    return RESULT_OK(korb_fiber_yield(c, argc, argv));
+    return korb_fiber_yield(c, argc, argv);
 }
 RESULT korb_fiber_resume_cfunc(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;

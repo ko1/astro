@@ -142,7 +142,9 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     }
     /* (b) CTX-held VALUEs. */
     visit_value_slot(ctx, fn, &c->current_frame->self);
-    visit_value_slot(ctx, fn, &c->state_value);
+    /* c->state / c->state_value field 削除済 (Phase 8d-R5).  THROW/RAISE
+     * values now propagate via RESULT.value through the call chain so
+     * there's nothing here to visit. */
     visit_ptr_slot(ctx, fn, (void **)&c->current_frame->current_class);
     /* (c+d) current_frame chain — visit all per-frame heap refs INCLUDING
      * each frame's cref chain.  Method dispatch sets frame.cref =
@@ -516,7 +518,6 @@ koruby_setup_ctx(const char *current_file)
     c->top_cref.prev = NULL;
     c->current_frame->cref = &c->top_cref;
     c->current_frame->current_file = current_file;
-    c->state = KORB_NORMAL;
     c->method_serial = korb_vm->method_serial;
     return c;
 }

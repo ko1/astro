@@ -192,11 +192,11 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
     struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };
     c->current_frame->cref = &tmp_cref;
     c->current_frame->current_class = (struct korb_class *)self;
-    extern VALUE korb_cvar_get(CTX *c, ID name);
-    VALUE v = korb_cvar_get(c, name);
+    extern RESULT korb_cvar_get(CTX *c, ID name);
+    RESULT _r = korb_cvar_get(c, name);
     c->current_frame->cref = prev_cref;
     c->current_frame->current_class = prev_class;
-    return RESULT_OK(v);
+    return _r;
 }
 
 RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {

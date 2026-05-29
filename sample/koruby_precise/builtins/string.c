@@ -1289,9 +1289,9 @@ static RESULT str_empty_p(CTX *c, int argc, VALUE *sp) {
 /* Generic in-place case mutator: walks the buffer and applies `xform`
  * to each byte.  Returns self if anything changed, nil otherwise
  * (matching CRuby's `!` semantics).  Frozen-checked. */
-static VALUE str_case_bang(CTX * restrict c, VALUE self, char (*xform)(char)) {
-    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
-    CHECK_FROZEN_RET(c, self, Qnil);
+static RESULT str_case_bang(CTX * restrict c, VALUE self, char (*xform)(char)) {
+    if (BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qnil);
+    CHECK_FROZEN_R(c, self);
     struct korb_string *s = (struct korb_string *)self;
     /* Buffer may be shared (from a dup or substr); allocate fresh
      * before mutating so we don't trample the source. */
@@ -1303,9 +1303,9 @@ static VALUE str_case_bang(CTX * restrict c, VALUE self, char (*xform)(char)) {
         buf[i] = ch;
     }
     buf[s->len] = 0;
-    if (!changed) return Qnil;
+    if (!changed) return RESULT_OK(Qnil);
     s->ptr = buf;
-    return self;
+    return RESULT_OK(self);
 }
 
 static char xform_upcase(char ch)   { return (ch >= 'a' && ch <= 'z') ? ch - 32 : ch; }
@@ -1321,21 +1321,21 @@ static RESULT str_upcase_bang(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(str_case_bang(c, self, xform_upcase));
+    return str_case_bang(c, self, xform_upcase);
 }
 static RESULT str_downcase_bang(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(str_case_bang(c, self, xform_downcase));
+    return str_case_bang(c, self, xform_downcase);
 }
 static RESULT str_swapcase_bang(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(str_case_bang(c, self, xform_swapcase));
+    return str_case_bang(c, self, xform_swapcase);
 }
 
 /* String#capitalize! — first char up, rest down.  Returns self if
@@ -1743,19 +1743,19 @@ static RESULT str_tr_s(CTX *c, int argc, VALUE *sp) {
 }
 
 /* tr! / tr_s!: in-place.  Return self if changed, nil otherwise. */
-static VALUE str_tr_bang_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze) {
-    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
-    CHECK_FROZEN_RET(c, self, Qnil);
+static RESULT str_tr_bang_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze) {
+    if (BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qnil);
+    CHECK_FROZEN_R(c, self);
     struct korb_string * const s = (struct korb_string *)self;
     VALUE replaced = str_tr_impl(c, self, argc, argv, squeeze);
-    if (BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
     const struct korb_string * const r = (const struct korb_string *)replaced;
-    if (r->len == s->len && memcmp(r->ptr, s->ptr, s->len) == 0) return Qnil;
+    if (r->len == s->len && memcmp(r->ptr, s->ptr, s->len) == 0) return RESULT_OK(Qnil);
     char * const buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
     s->ptr = buf;
     s->len = r->len;
-    return self;
+    return RESULT_OK(self);
 }
 
 static RESULT str_tr_bang(CTX *c, int argc, VALUE *sp) {
@@ -1763,7 +1763,7 @@ static RESULT str_tr_bang(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(str_tr_bang_impl(c, self, argc, argv, false));
+    return str_tr_bang_impl(c, self, argc, argv, false);
 }
 
 static RESULT str_tr_s_bang(CTX *c, int argc, VALUE *sp) {
@@ -1771,7 +1771,7 @@ static RESULT str_tr_s_bang(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(str_tr_bang_impl(c, self, argc, argv, true));
+    return str_tr_bang_impl(c, self, argc, argv, true);
 }
 
 /* sprintf — limited; supports %d %s %x %o %X %b %f %g %% %c, with width/0pad */

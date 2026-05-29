@@ -226,10 +226,9 @@ typedef struct {
  * to the return type itself, so this is the cleanest way to apply it. */
 #define RESULT_FN __attribute__((warn_unused_result))
 
-/* Discharge a RESULT explicitly without propagating it — used for legacy
- * VALUE-returning cfuncs that call korb_raise() with c->state side-channel.
- * (void)foo() doesn't silence warn_unused_result on its own; capture into
- * a local and read a field. */
+/* Discharge a RESULT explicitly without propagating it.  Rarely used now
+ * (Phase 8d-R5 RESULT-ized all helpers); kept for the cases where the
+ * caller really wants to ignore a raise. */
 #define DROP_RESULT(call) do {                                  \
     RESULT _drop_r = (call);                                    \
     (void)_drop_r.value;                                        \
@@ -262,63 +261,8 @@ typedef struct {
     (void)_r;                                             \
 })
 
-/* LIFT_C_STATE — bridge a legacy VALUE-returning helper into the RESULT
- * world.  Captures c->state after the call; if non-NORMAL, early-returns
- * the lifted RESULT (clearing c->state on the way out so callers don't
- * see it twice).  Used while we incrementally migrate korb_dispatch_*,
- * korb_funcall, etc. */
-#define LIFT_C_STATE(c, call) ({                          \
-    VALUE _lv = (call);                                   \
-    if (__builtin_expect((c)->state != KORB_NORMAL, 0)) { \
-        RESULT _ls = (RESULT){ (c)->state_value, (c)->state }; \
-        (c)->state = KORB_NORMAL;                         \
-        (c)->state_value = Qnil;                          \
-        return _ls;                                       \
-    }                                                     \
-    _lv;                                                  \
-})
-
-/* SINK_RESULT — reverse bridge: a RESULT-returning helper called from
- * within a legacy VALUE-returning function.  Pushes non-NORMAL state into
- * c->state and yields Qnil; on NORMAL yields the value.  Use as:
- *   VALUE r = SINK_RESULT(c, korb_some_call_r(...));
- * Used in step-by-step migration of R1 (dispatch helpers) when an inner
- * helper has been RESULT-ized but its caller is still VALUE-returning.
- *
- * !! TRANSITIONAL !! Every SINK_RESULT site is a candidate for removal
- * once the surrounding function migrates to RESULT — at that point it
- * should be replaced with `UNWRAP(...)`.  Leaving SINK_RESULT in a
- * RESULT-native function would route RESULT → c->state → RESULT (two
- * branches on state) instead of just propagating the RESULT directly.
- * Phase 8d-final R5 deletes this macro AND verifies zero call sites. */
-#define SINK_RESULT(c, call) ({                              \
-    RESULT _sr = (call);                                     \
-    VALUE _sv;                                               \
-    if (__builtin_expect(_sr.state != KORB_NORMAL, 0)) {     \
-        (c)->state = _sr.state;                              \
-        (c)->state_value = _sr.value;                        \
-        _sv = Qnil;                                          \
-    } else {                                                 \
-        _sv = _sr.value;                                     \
-    }                                                        \
-    _sv;                                                     \
-})
-
-/* Same as LIFT_C_STATE but synthesizes the RESULT (no early return).
- * Use at the very end of a node body when c->sp restore (or other
- * cleanup) must happen after a legacy call but before the lift. */
-#define LIFT_C_STATE_OR_OK(c, v) ({                                \
-    VALUE _lvv = (v);                                              \
-    RESULT _lrr;                                                   \
-    if (UNLIKELY((c)->state != KORB_NORMAL)) {                     \
-        _lrr = (RESULT){ (c)->state_value, (c)->state };           \
-        (c)->state = KORB_NORMAL;                                  \
-        (c)->state_value = Qnil;                                   \
-    } else {                                                       \
-        _lrr = (RESULT){ _lvv, KORB_NORMAL };                      \
-    }                                                              \
-    _lrr;                                                          \
-})
+/* LIFT_C_STATE / SINK_RESULT / LIFT_C_STATE_OR_OK macros removed in
+ * Phase 8d-R5: c->state side-channel field deleted, all bridges gone. */
 
 /* Sync c->sp to sp before calling a function that may fire GC.  All
  * staged values on or below sp will then be in visit_roots scan range. */
@@ -507,16 +451,12 @@ typedef struct CTX_struct {
 
     state_serial_t method_serial;
 
-    /* unified exceptional control state.  When state != KORB_NORMAL, all
-     * EVAL_ARG sites bail out and propagate.  state_value carries the
-     * payload (exception object / return value / break value). */
-    int   state;
-    VALUE state_value;
     /* For KORB_RETURN: target frame pointer.  When non-NULL, the return
      * is non-local (block/proc → enclosing method); each method dispatch
      * checks `state_target_frame == &my_frame` and only consumes when
      * matched.  NULL for plain method-local return (lambda body, def
-     * body). */
+     * body).  Not bridged through c->state — set by node_return and
+     * read by prologue at consume time. */
     void *state_target_frame;
 
     /* for call site & frame info */
