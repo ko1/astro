@@ -143,34 +143,79 @@ module Enumerable
     nil
   end
 
-  def any?(&blk)
+  def any?(*args, &blk)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    pattern = args.empty? ? nil : args[0]
     result = false
-    if blk
-      each { |x| if blk.call(x); result = true; break; end }
-    else
-      each { |x| if x; result = true; break; end }
-    end
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
+      v = if pattern
+            pattern === x
+          elsif blk
+            blk.call(*xs)
+          else
+            x
+          end
+      if v; result = true; break; end
+    }
     result
   end
 
-  def all?(&blk)
+  def all?(*args, &blk)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    pattern = args.empty? ? nil : args[0]
     result = true
-    if blk
-      each { |x| unless blk.call(x); result = false; break; end }
-    else
-      each { |x| unless x; result = false; break; end }
-    end
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
+      v = if pattern
+            pattern === x
+          elsif blk
+            blk.call(*xs)
+          else
+            x
+          end
+      unless v; result = false; break; end
+    }
     result
   end
 
-  def none?(&blk)
+  def none?(*args, &blk)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    pattern = args.empty? ? nil : args[0]
     result = true
-    if blk
-      each { |x| if blk.call(x); result = false; break; end }
-    else
-      each { |x| if x; result = false; break; end }
-    end
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
+      v = if pattern
+            pattern === x
+          elsif blk
+            blk.call(*xs)
+          else
+            x
+          end
+      if v; result = false; break; end
+    }
     result
+  end
+
+  def one?(*args, &blk)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    pattern = args.empty? ? nil : args[0]
+    count = 0
+    each { |*xs|
+      x = xs.size <= 1 ? xs.first : xs
+      v = if pattern
+            pattern === x
+          elsif blk
+            blk.call(*xs)
+          else
+            x
+          end
+      if v
+        count += 1
+        return false if count > 1
+      end
+    }
+    count == 1
   end
 
   def sort(&blk)
