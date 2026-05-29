@@ -206,6 +206,11 @@ void korb_init_builtins(CTX *c) {
     if (KORB_VM(c)->kernel_module) {
         DEF_R_PRIV(KORB_VM(c)->kernel_module, "throw", kernel_throw, -1);
         DEF_R_PRIV(KORB_VM(c)->kernel_module, "catch", kernel_catch, -1);
+        /* module_function semantics — also accessible as Kernel.throw / .catch. */
+        if (cKerMeta) {
+            DEF_R(cKerMeta, "throw", kernel_throw, -1);
+            DEF_R(cKerMeta, "catch", kernel_catch, -1);
+        }
     }
     DEF_R_PRIV(KORB_VM(c)->object_class, "require_relative", kernel_require_relative, 1);
     DEF_R_PRIV(KORB_VM(c)->object_class, "require", kernel_require, 1);
