@@ -207,8 +207,24 @@ module Enumerable
   end
 
   def include?(target)
+    # CRuby Enumerable#include? uses rb_equal(elem, target) — calls
+    # elem.==(target).  Integer#== / String#== use coerce so the
+    # other direction is tried for cross-type comparisons; we don't
+    # have full coerce in pure Ruby, so attempt the reverse if the
+    # forward miss returned false against an object whose class isn't
+    # one of the built-ins (mimics what Integer#== would do via coerce).
     found = false
-    each { |x| if x == target; found = true; break; end }
+    each do |x|
+      if x == target
+        found = true; break
+      elsif !target.equal?(x) && (Integer === x || Float === x || String === x || Symbol === x) &&
+            !(Integer === target || Float === target || String === target || Symbol === target)
+        # Built-in elem vs user-class target → also try target.==(x).
+        if target == x
+          found = true; break
+        end
+      end
+    end
     found
   end
 
