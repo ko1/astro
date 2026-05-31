@@ -183,9 +183,12 @@ aro_gc_init(CTX *c)
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;             /* CTX → ASTroGC を bind */
-    const char *stress_env = getenv("BARUBY_GC_STRESS");
+    /* ASTRO_GC_* is the canonical name; BARUBY_GC_* kept as a fallback
+     * (shared runtime — other precise samples still use the old name). */
+    const char *stress_env = getenv("ASTRO_GC_STRESS");
+    if (!stress_env) stress_env = getenv("BARUBY_GC_STRESS");
     bool stress = stress_env != NULL;
-    bool purge  = getenv("BARUBY_GC_PURGE")  != NULL;
+    bool purge  = (getenv("ASTRO_GC_PURGE") != NULL) || (getenv("BARUBY_GC_PURGE") != NULL);
     ARO_GC_COMMON(c)->stress = stress;
     ARO_GC_COMMON(c)->purge  = purge;
     if (stress) {
