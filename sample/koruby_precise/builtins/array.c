@@ -797,8 +797,11 @@ static RESULT ary_lshift(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    korb_ary_push(c, c->sp_top, self, argv[0]);
-    return RESULT_OK(self);
+    /* korb_ary_push parks self at sp[0] and re-derives it after the grow
+     * GC, so sp[0] holds the forwarded handle on return; the C-local self
+     * is stale.  Return the parked (forwarded) slot. */
+    korb_ary_push(c, sp, self, argv[0]);
+    return RESULT_OK(sp[0]);
 }
 static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;

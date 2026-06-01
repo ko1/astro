@@ -1420,8 +1420,13 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
     if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_array_op_redefined)) {
         CHECK_FROZEN_R(c, l);
-        korb_ary_push(c, c->sp_top, l, r);
-        return RESULT_OK(l);
+        /* korb_ary_push parks l at lslot[0] and re-derives it after the
+         * grow GC; the C-local l is stale on return.  Return the parked
+         * (forwarded) slot, not l.  This is the moving-GC bug behind the
+         * stored-closure `a << x` crash under STRESS+PURGE. */
+        VALUE *const lslot = c->sp_top;
+        korb_ary_push(c, lslot, l, r);
+        return RESULT_OK(lslot[0]);
     }
     c->last_cfunc_callsite = n;
     return korb_node_lshift_slow(c, l, r, arg_index);

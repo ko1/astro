@@ -20,18 +20,19 @@ def test_proc_basic
 end
 
 # --- closures capturing & mutating ---
-# NOTE: a stored Proc/lambda that captures a moving Array and mutates it across
-# repeated `.call` from inside another block crashes under STRESS+PURGE — the
-# captured value goes stale through proc_call's epilogue (same control-flow /
-# dispatch rooting family as test_alias_redef / test_fiber).  See
-# docs/spec_port_pending.md.  The closure-mutation cases are commented out until
-# that subsystem is fixed; the non-closure accumulation cases stay.
+# A stored Proc/lambda that captures a moving Array and mutates it with `<<`
+# across repeated `.call` from inside another block used to crash under
+# STRESS+PURGE: EVAL_node_lshift's Array fast-path returned the stale C-local
+# `l` after korb_ary_push relocated it.  Fixed by returning the parked
+# (forwarded) slot — now exercised here in both modes.
 def test_closure_capture
-  # PENDING (STRESS crash): stored-Proc captured-array mutation across .call
-  # acc = []
-  # collect = ->(x) { acc << x }
-  # [1, 2, 3].each { |x| collect.call(x) }
-  # assert_equal [1, 2, 3], acc
+  acc = []
+  collect = ->(x) { acc << x }
+  [1, 2, 3].each { |x| collect.call(x) }
+  assert_equal [1, 2, 3], acc
+  doubler = ->(x) { acc << x * 2 }
+  [10, 20].each { |x| doubler.call(x) }
+  assert_equal [1, 2, 3, 20, 40], acc
   sum = 0
   [10, 20, 30].each { |x| sum += x }
   assert_equal 60, sum
