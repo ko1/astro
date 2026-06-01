@@ -5530,6 +5530,60 @@ RESULT korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     return RESULT_OK(Qnil);
 }
 
+/* ---- GC: scan a fiber's roots (called from visit_roots' libc registry) ----
+ * The CTX value-stack (c->stack_base..sp_top) and c->current_frame chain that
+ * visit_roots scans cover only the CURRENTLY executing context.  When a fiber
+ * runs, the suspended resumer's stack/frames are NOT scanned; when the resumer
+ * runs, suspended fibers' stacks/frames are NOT scanned.  Either way their
+ * VALUEs go stale under a moving GC (= the Enumerator/fiber stale-self crash).
+ * This walks the saved state of the other side. */
+static inline void kf_visit_val(void *ctx, koruby_edge_fn fn, VALUE *slot) {
+    VALUE v = *slot;
+    if (v == 0 || SPECIAL_CONST_P(v)) return;
+    fn(ctx, (void **)slot);
+}
+static void kf_visit_frame_chain(void *ctx, koruby_edge_fn fn, struct korb_frame *f) {
+    int depth = 0;
+    /* Forward only the guarded VALUE roots (self/$_/$~).  The cref /
+     * current_class / block pointer fields of a suspended fiber/resumer frame
+     * can hold uninitialized or stale raw pointers (e.g. cref into reused
+     * C-stack), and forwarding through &cr->klass of a garbage cref writes to
+     * arbitrary (read-only) memory.  self is the root that actually goes stale
+     * across the fiber switch (the Enumerator stale-self crash); cref/class
+     * are handled normally when the frame becomes c->current_frame again. */
+    for (; f && depth < 256; f = f->prev, depth++) {
+        /* The saved fiber/resumer frame chain is not always cleanly
+         * NULL-terminated (a frame can carry an uninitialized/stale prev,
+         * e.g. 0xa8...02), so stop the walk at any implausible frame pointer
+         * (misaligned or tiny) rather than dereferencing garbage. */
+        if (((uintptr_t)f & 0x7) != 0 || (uintptr_t)f < 0x10000) break;
+        kf_visit_val(ctx, fn, &f->self);
+        kf_visit_val(ctx, fn, &f->last_line);
+        kf_visit_val(ctx, fn, &f->last_match);
+    }
+}
+void korb_scan_fiber_roots(VALUE fibv, void *ctx, koruby_edge_fn fn) {
+    struct korb_fiber *fib = (struct korb_fiber *)fibv;
+    if (fib->state == KF_DEAD) return;
+    kf_visit_val(ctx, fn, &fib->result);
+    kf_visit_val(ctx, fn, &fib->result_exc);
+    kf_visit_val(ctx, fn, &fib->fiber_bang);
+    for (int i = 0; i < fib->argc && fib->args; i++) kf_visit_val(ctx, fn, &fib->args[i]);
+    if (fib->state == KF_SUSPENDED) {
+        /* Fiber's own saved stack + frame chain (its live state while parked). */
+        for (VALUE *p = fib->frame; p < fib->fiber_sp; p++) kf_visit_val(ctx, fn, p);
+        kf_visit_frame_chain(ctx, fn, fib->fiber_current_frame);
+    } else if (fib == current_fiber) {
+        /* The running fiber's own stack is the live c->stack (scanned by
+         * phase a); scan the suspended resumer's saved stack + frame chain. */
+        if (fib->resumer_stack_base && fib->resumer_sp)
+            for (VALUE *p = fib->resumer_stack_base; p < fib->resumer_sp; p++)
+                kf_visit_val(ctx, fn, p);
+        kf_visit_frame_chain(ctx, fn, fib->resumer_current_frame);
+        kf_visit_val(ctx, fn, &fib->resumer_bang);
+    }
+}
+
 RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
     /* sp is passed directly to korb_fiber_new — c->sp_top sync happens
      * inside the alloc helper (which currently is a no-op since

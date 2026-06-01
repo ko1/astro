@@ -423,6 +423,11 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
               struct korb_method_obj *m = (struct korb_method_obj *)b;
               if (b->klass == (VALUE)korb_vm->method_class) {
                   visit_value_slot(ctx, fn, &m->receiver);
+              } else if (korb_vm->fiber_class &&
+                         b->klass == (VALUE)korb_vm->fiber_class) {
+                  /* Fiber: scan its suspended stack/frames (or, while it runs,
+                   * its suspended resumer's) — see korb_scan_fiber_roots. */
+                  korb_scan_fiber_roots((VALUE)b, ctx, fn);
               }
               break;
           }

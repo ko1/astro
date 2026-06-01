@@ -596,6 +596,10 @@ typedef struct CTX_struct {
  * header only declares the dispatch surface. */
 typedef void (*koruby_edge_fn)(void *ctx, void **slot);
 void koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn);
+/* Scan a Fiber's saved roots (suspended fiber stack/frames, or — for the
+ * running fiber — its suspended resumer's stack/frames).  Defined in object.c
+ * where the korb_fiber struct is visible; called from the registry walk. */
+void korb_scan_fiber_roots(VALUE fibv, void *ctx, koruby_edge_fn fn);
 void koruby_scan_edges(void *payload, size_t payload_size,
                        void *ctx, koruby_edge_fn fn);
 
