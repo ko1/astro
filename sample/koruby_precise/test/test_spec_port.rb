@@ -175,11 +175,89 @@ def test_range_core
   assert_equal 15, (1..5).reduce(0) { |a, b| a + b }
 end
 
+# --- Array#zip / #flatten / #compact / #uniq (zip_spec.rb, flatten_spec.rb) ---
+def test_array_combine
+  assert_equal [[1, 4], [2, 5], [3, 6]], [1, 2, 3].zip([4, 5, 6])
+  assert_equal [[1, "a"], [2, "b"]], [1, 2].zip(["a", "b"])
+  assert_equal [1, 2, 3, 4], [1, [2, [3, [4]]]].flatten
+  assert_equal [1, 2, 3], [1, nil, 2, nil, 3].compact
+  assert_equal [1, 2, 3], [1, 1, 2, 2, 3, 3].uniq
+  assert_equal [1, 2, 3, 4], [1, 2] + [3, 4]
+  assert_equal [1, 2], [1, 2, 3] - [3]
+  assert_equal [1, 2, 1, 2], [1, 2] * 2
+end
+
+# --- Array#each_with_index / #each_with_object / #group_by (enumerable) ---
+def test_array_enum2
+  acc = []
+  [10, 20, 30].each_with_index { |v, i| acc << [i, v] }
+  assert_equal [[0, 10], [1, 20], [2, 30]], acc
+  r = [1, 2, 3, 4].each_with_object([]) { |x, memo| memo << x * x }
+  assert_equal [1, 4, 9, 16], r
+  # PENDING: group_by returns {} because it uses `h[k] ||= []` and the
+  # obj[i]=<Array literal> writeback is dropped.  See docs/spec_port_pending.md.
+  # g = [1, 2, 3, 4, 5, 6].group_by { |x| x % 3 }
+  # assert_equal [3, 6], g[0]
+  # assert_equal 3, g.size
+  assert_equal [[1, 2], [3, 4]], [1, 2, 3, 4].each_slice(2).to_a
+  assert_equal [4, 5], [1, 2, 3, 4, 5].drop(3)
+  assert_equal [1, 2], [1, 2, 3, 4, 5].take(2)
+end
+
+# --- Array#combination / #permutation / #product (combinatorics) ---
+def test_array_combinatorics
+  # with-block forms work; the no-block `.to_a` enumerator form raises
+  # StopIteration (enumerator gap, see pending) so test the block forms.
+  acc = []
+  [1, 2, 3].combination(2) { |c| acc << c }
+  assert_equal [[1, 2], [1, 3], [2, 3]], acc
+  pacc = []
+  [1, 2, 3].permutation(2) { |p| pacc << p }
+  assert_equal 6, pacc.size
+  assert_equal [[1, 3], [1, 4], [2, 3], [2, 4]], [1, 2].product([3, 4])
+  assert_equal [[1, 4], [2, 5], [3, 6]], [[1, 2, 3], [4, 5, 6]].transpose
+  # PENDING: `combination(n).to_a` (no-block enumerator) raises StopIteration.
+end
+
+# --- Hash mutation: #[]= / #delete / #merge! / #each + build (hash specs) ---
+def test_hash_mutate
+  h = {}
+  10.times { |i| h[i] = i * i }
+  assert_equal 10, h.size
+  assert_equal 81, h[9]
+  h.delete(5)
+  assert_equal false, h.key?(5)
+  assert_equal 9, h.size
+  h2 = { "x" => 1 }
+  h2.merge!("y" => 2, "z" => 3)
+  assert_equal 3, h2.size
+  inv = { 1 => "a", 2 => "b" }.invert
+  assert_equal 1, inv["a"]
+end
+
+# --- mixed object graphs under GC pressure (stress rooting) ---
+def test_object_graph
+  pairs = (1..20).map { |i| [i.to_s, i * 2] }
+  h = {}
+  pairs.each { |k, v| h[k] = v }
+  assert_equal 20, h.size
+  assert_equal 40, h["20"]
+  nested = (1..5).map { |i| (1..i).to_a }
+  assert_equal [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [1, 2, 3, 4, 5]], nested
+  total = nested.map { |a| a.reduce(0) { |s, x| s + x } }.reduce(:+)
+  assert_equal 35, total
+  strs = (1..10).map { |i| "item#{i}" }
+  assert_equal "item5", strs[4]
+  assert_equal 10, strs.uniq.length
+end
+
 TESTS = %i[
   test_array_first_last test_array_push_pop test_array_include_index
   test_array_enum test_array_slice test_array_sort
   test_string_build test_string_split test_string_transform test_string_format
   test_hash_core test_hash_enum test_integer_iter test_range_core
+  test_array_combine test_array_enum2 test_array_combinatorics
+  test_hash_mutate test_object_graph
 ]
 TESTS.each { |t| run_test(t) }
 report("SpecPort")

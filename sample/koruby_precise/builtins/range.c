@@ -3,6 +3,30 @@
 /* ---------- Range ---------- */
 extern VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl);
 
+/* KORB_RNG_YIELD_FRAME — park a cross-yield root (an accumulator array or a
+ * moving accumulator value) in a synthetic frame's last_line slot, made
+ * current for the duration of a yield loop.  Structurally identical to
+ * array.c's KORB_ARY_YIELD_FRAME: korb_yield runs the block body at the
+ * block's own (lower) sp, shrinking the GC scan range [stack_base, c->sp_top),
+ * so a root parked in an sp[] slot above that level gets collected under the
+ * moving GC.  The frame chain is ALWAYS walked by visit_roots (last_line /
+ * last_match are forwarded), so a root stashed there survives.  Caller MUST
+ * restore c->current_frame = fr.prev on every exit path. */
+#define KORB_RNG_YIELD_FRAME(c, fr, init_expr)                       \
+    struct korb_frame fr = {                                         \
+        .prev          = (c)->current_frame,                         \
+        .self          = (c)->current_frame->self,                   \
+        .fp            = (c)->current_frame->fp,                      \
+        .cref          = (c)->current_frame->cref,                   \
+        .current_class = (c)->current_frame->current_class,          \
+        .current_file  = (c)->current_frame->current_file,           \
+        .block         = (c)->current_frame->block,                  \
+        .last_line     = Qnil,                                       \
+        .last_match    = (c)->current_frame->last_match,             \
+    };                                                               \
+    fr.last_line = (init_expr);                                      \
+    (c)->current_frame = &fr
+
 static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
     VALUE self = sp[-argc - 1];
@@ -606,13 +630,20 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    sp[0] = korb_ary_new(c, sp + 1);
+    /* Park the result array in a synthetic frame across the per-element
+     * korb_yield (the block body may allocate and move the result under a
+     * moving GC).  Source elements are fixnums derived from `i`, so they
+     * need no re-rooting.  See KORB_RNG_YIELD_FRAME / array.c ary_map. */
+    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = UNWRAP(korb_yield(c, 1, &v));
-        korb_ary_push(c, sp + 1, sp[0], m);
+        RESULT _y = korb_yield(c, 1, &v);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
     }
-    return RESULT_OK(sp[0]);
+    VALUE result = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
@@ -624,13 +655,19 @@ static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    sp[0] = korb_ary_new(c, sp + 1);
+    /* Park the result array in a synthetic frame across the per-element
+     * korb_yield (see rng_map / array.c ary_select).  Selected elements are
+     * fixnums derived from `i`. */
+    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = UNWRAP(korb_yield(c, 1, &v));
-        if (RTEST(m)) korb_ary_push(c, sp + 1, sp[0], v);
+        RESULT _y = korb_yield(c, 1, &v);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        if (RTEST(_y.value)) korb_ary_push(c, c->sp_top, fr.last_line, v);
     }
-    return RESULT_OK(sp[0]);
+    VALUE result = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
@@ -704,29 +741,42 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
         op = korb_sym2id(argv[argc - 1]);
         sym_idx = argc - 1;
     }
-    VALUE acc;
+    /* `acc` can be a moving handle (e.g. a String built by :+ or by the
+     * block).  Park it in a synthetic frame across the per-element
+     * funcall / korb_yield so a moving GC can't collect it.  Elements are
+     * fixnums derived from `i`. */
     long start;
     if (op != 0) {
+        VALUE acc0;
         if (sym_idx == 0) {            /* (:+) */
             if (b > e) return RESULT_OK(Qnil);
-            acc = INT2FIX(b);
+            acc0 = INT2FIX(b);
             start = b + 1;
         } else {                        /* (init, :+) */
-            acc = argv[0];
+            acc0 = argv[0];
             start = b;
         }
+        KORB_RNG_YIELD_FRAME(c, fr, acc0);
         for (long i = start; i <= e; i++) {
             VALUE other = INT2FIX(i);
-            acc = UNWRAP(korb_funcall(c, acc, op, 1, &other));
+            RESULT _r = korb_funcall(c, fr.last_line, op, 1, &other);
+            if (_r.state != KORB_NORMAL) { c->current_frame = fr.prev; return _r; }
+            fr.last_line = _r.value;
         }
-        return RESULT_OK(acc);
+        VALUE result = fr.last_line;
+        c->current_frame = fr.prev;
+        return RESULT_OK(result);
     }
-    acc = argc > 0 ? argv[0] : INT2FIX(b++);
+    KORB_RNG_YIELD_FRAME(c, fr, argc > 0 ? argv[0] : INT2FIX(b++));
     for (long i = b; i <= e; i++) {
-        VALUE args[2] = { acc, INT2FIX(i) };
-        acc = UNWRAP(korb_yield(c, 2, args));
+        VALUE args[2] = { fr.last_line, INT2FIX(i) };
+        RESULT _y = korb_yield(c, 2, args);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        fr.last_line = _y.value;
     }
-    return RESULT_OK(acc);
+    VALUE result = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 
