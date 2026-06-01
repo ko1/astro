@@ -30,9 +30,10 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 | class_new/obj_dup/module/str_clone/const_path/str | 1964 | 53 |
 | **yield self-chain** + str/module builtins | 2093 | 47 |
 | ary_mul / str_tr_bang / instance_variables / splat root-stack | 2107 | 46 |
-| **rest-gather staging** (|*xs| 修正) | **2246** | **38** |
+| **rest-gather staging** (|*xs| 修正) | 2246 | 38 |
+| ary_try_to_int / str_replace / node_bit_or / fetch_values | **2605** | **34** |
 
-PASS が **12.5×** (179→2246)、CRASH が **−72%** (138→38)。FAIL/ERR が増えたのは、crash していた file が完走して
+PASS が **14.5×** (179→2605)、CRASH が **−75%** (138→34)。FAIL/ERR が増えたのは、crash していた file が完走して
 feature-gap の assertion (未実装メソッド等) を露出するようになったため (= 前進)。
 
 ### 第2弾で効いた追加 framework fix
