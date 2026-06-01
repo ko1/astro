@@ -20,3 +20,15 @@ rubyspec から port した test (test/test_spec_port.rb) で判明した、GC �
   → 正しい修正は parse.c + node.def 両方で node_aset の recv/idx slot を val リテラルと
     非衝突に予約する必要があり、 regression リスク高。 dedicated に直す案件として pending。
   regression test: test/test_aset_literal.rb。
+
+- **stored-Proc captured-array mutation crashes under STRESS** (control-flow rooting):
+  `f = ->(x){ acc << x }; (1..30).each{|x| f.call(x) }` で acc (closure capture の
+  moving array) が proc_call の epilogue で stale → SEGV。直接 `acc<<x` は OK。
+  flat_map / each_with_object (bootstrap.rb の Enumerable、 内部で stored block を
+  loop call) が依存。crash は proc_call (builtins/proc.c:377) の
+  korb_proc_snapshot_env_maybe(_br.value) で _br.value を BUILTIN_TYPE deref。
+  = method dispatch / proc_call / frame-transition で moving value を C-local 保持する
+  共通 subsystem の rooting gap (test_alias_redef = korb_class_of_class(recv),
+  test_fiber と同族)。 rubyspec STRESS の CRASH=143 の大半はこの共通経路由来 (個別
+  builtin 修正では CRASH 数が動かないことで確認済)。 dedicated な dispatch/proc-call
+  value-rooting の作り直しが要る = 次の本丸。
