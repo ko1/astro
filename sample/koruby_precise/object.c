@@ -2531,8 +2531,17 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
             if (argc <= start) {
                 fp[blk->rest_slot] = korb_ary_new(c, c->sp_top);
             } else {
-                VALUE rest = korb_ary_new_capa(c, c->sp_top, (long)(argc - start));
-                for (uint32_t i = start; i < argc; i++) korb_ary_push(c, c->sp_top, rest, args_buf[i]);
+                /* Stage the rest args in the value stack BEFORE korb_ary_new_capa
+                 * fires GC: args_buf is an unscanned C-stack snapshot, so a bare
+                 * args_buf[i] read after the alloc would be a stale (moved) heap
+                 * pointer.  Staged at rsp[0..n) they sit below the new sp_top the
+                 * alloc publishes, so visit_roots forwards them; then the
+                 * pre-sized pushes (no further GC) copy the live values in. */
+                uint32_t n = argc - start;
+                VALUE *const rsp = c->sp_top;
+                for (uint32_t i = 0; i < n; i++) rsp[i] = args_buf[start + i];
+                VALUE rest = korb_ary_new_capa(c, rsp + n, (long)n);
+                for (uint32_t i = 0; i < n; i++) korb_ary_push(c, rsp + n + 1, rest, rsp[i]);
                 fp[blk->rest_slot] = rest;
             }
         }
