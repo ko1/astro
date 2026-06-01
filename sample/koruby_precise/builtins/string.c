@@ -1783,12 +1783,15 @@ static RESULT str_tr_s(CTX *c, int argc, VALUE *sp) {
 static RESULT str_tr_bang_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze) {
     if (BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qnil);
     CHECK_FROZEN_R(c, self);
-    struct korb_string * const s = (struct korb_string *)self;
     VALUE replaced = str_tr_impl(c, self, argc, argv, squeeze);
     if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
-    const struct korb_string * const r = (const struct korb_string *)replaced;
+    /* self moved across str_tr_impl (strings are moving) — re-read from its
+     * GC-scanned slot.  argv == sp - argc, so argv[-1] is sp[-argc-1] = self. */
+    self = argv[-1];
+    struct korb_string *const s = (struct korb_string *)self;
+    const struct korb_string *const r = (const struct korb_string *)replaced;
     if (r->len == s->len && memcmp(r->ptr, s->ptr, s->len) == 0) return RESULT_OK(Qnil);
-    char * const buf = korb_xmalloc_atomic(r->len + 1);
+    char *const buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
     s->ptr = buf;
     s->len = r->len;
