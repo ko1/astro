@@ -513,24 +513,38 @@ static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
                                      enum korb_visibility vis) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new(c, c->sp_top);
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    struct korb_class *k = (struct korb_class *)self;
-    VALUE r = korb_ary_new(c, c->sp_top);
+    /* Park the result array (msp[0]) and the current class (msp[1]) across
+     * the per-method korb_ary_push / korb_id2sym GC points — classes are
+     * arena (moving), so the C-locals would go stale.  Method-table buckets
+     * are libc (non-moving), so an entry pointer `e` stays valid across GC;
+     * only the class struct (holding the buckets ptr) moves, so re-read it
+     * from msp[1] each time. */
+    VALUE *const msp = c->sp_top;
+    msp[0] = self;                          /* park class BEFORE korb_ary_new GC */
+    msp[1] = korb_ary_new(c, msp + 1);      /* result array (msp[0] stays scanned) */
     bool first = true;
-    while (k) {
-        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
-            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+    while (msp[0]) {
+        struct korb_class *k = (struct korb_class *)msp[0];
+        uint32_t bcnt = k->methods.bucket_cnt;
+        for (uint32_t b = 0; b < bcnt; b++) {
+            struct korb_method_table_entry *e =
+                ((struct korb_class *)msp[0])->methods.buckets[b];
+            for (; e; e = e->next) {
                 /* When inherit=false, only methods defined DIRECTLY on
                  * this class count — drop entries that came from an
                  * included module (include_depth > 0). */
                 if (!include_inherited && first && e->include_depth > 0) continue;
-                if (e->method && e->method->visibility == vis) korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
+                if (e->method && e->method->visibility == vis) {
+                    VALUE sym = korb_id2sym(e->name);
+                    korb_ary_push(c, msp + 2, msp[1], sym);
+                }
             }
         }
         first = false;
         if (!include_inherited) break;
-        k = k->super;
+        msp[0] = (VALUE)((struct korb_class *)msp[0])->super;
     }
-    return r;
+    return msp[1];
 }
 static RESULT module_private_instance_methods(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -860,17 +874,29 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
                            "can't inherit uninitialized class");
             }
         }
-        struct korb_class *nk = korb_class_new(c, c->sp_top, korb_intern("(anon)"),
-                                               super, super->instance_type);
+        /* korb_class_new + the inherited funcall fire GC and classes are
+         * arena (moving) — park super at sp[0] and the new class at sp[1]
+         * and re-read them from those GC-scanned slots.  Pre-intern IDs so
+         * no symbol-table GC fires while sp[0] sits at sp (not yet covered
+         * by c->sp_top until korb_class_new bumps it). */
+        const ID anon_id = korb_intern("(anon)");
+        const ID inherited_id = korb_intern("inherited");
+        sp[0] = (VALUE)super;
+        struct korb_class *nk = korb_class_new(c, sp + 1, anon_id,
+                                               (struct korb_class *)sp[0],
+                                               ((struct korb_class *)sp[0])->instance_type);
+        sp[1] = (VALUE)nk;
         /* Fire `inherited` on the parent — same as `class C < P; end`. */
         {
-            struct korb_class *super_meta = korb_class_of_class((VALUE)super);
-            if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-                VALUE child_v = (VALUE)nk;
-                CHECK(korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v));
+            struct korb_class *super_meta = korb_class_of_class(sp[0]);
+            if (super_meta && korb_class_find_method(super_meta, inherited_id)) {
+                VALUE child_v = sp[1];
+                CHECK(korb_funcall(c, sp[0], inherited_id, 1, &child_v));
             }
         }
-        
+        super = (struct korb_class *)sp[0];   /* re-read after funcall GC */
+        nk = (struct korb_class *)sp[1];
+
         if (c->current_block) {
             VALUE prev_self = c->current_frame->self;
             struct korb_class *prev_class = c->current_frame->current_class;

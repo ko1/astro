@@ -2481,6 +2481,9 @@ static RESULT str_clone(CTX *c, int argc, VALUE *sp) {
 
     const struct korb_string *s = (const struct korb_string *)self;
     VALUE r = korb_str_new(c, c->sp_top, s->ptr, s->len);
+    /* self moved across korb_str_new (strings are moving) — re-read from the
+     * GC-scanned staging slot before the frozen check. */
+    self = sp[-argc - 1];
     if (korb_obj_frozen_p(self)) {
         ((struct RBasic *)r)->head.flags |= FL_FROZEN;
     }

@@ -1068,6 +1068,10 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
     if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     enum korb_type t = BUILTIN_TYPE(self);
     VALUE r = self;
+    /* For T_OBJECT, set to the parked [self, r] slot pair so the
+     * initialize_copy/clone hook dispatch below can read the live (forwarded)
+     * source/result rather than the stale C-locals. */
+    VALUE *t_obj_dup_slots = NULL;
     if (t == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)self;
         struct korb_class *k = (struct korb_class *)o->basic.klass;
@@ -1078,7 +1082,15 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         if (!preserve_frozen && k && k->name == korb_intern("(singleton)")) {
             while (k && k->name == korb_intern("(singleton)")) k = k->super;
         }
-        r = korb_object_new(c, c->sp_top, k);
+        /* korb_object_new fires GC and objects are arena (moving) — park the
+         * source self at dsp[0] and re-read `o` from it so the ivar copy
+         * below reads the live (forwarded) source, not a stale C-local. */
+        VALUE *const dsp = c->sp_top;
+        dsp[0] = self;
+        r = korb_object_new(c, dsp + 1, k);
+        dsp[1] = r;                 /* park result alongside source */
+        t_obj_dup_slots = dsp;      /* survives to the initialize_copy hook */
+        o = (struct korb_object *)dsp[0];
         struct korb_object *no = (struct korb_object *)r;
         for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
             no->ivars[i] = o->ivars[i];
@@ -1185,7 +1197,8 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
             ((struct RBasic *)r)->head.flags |= FL_FROZEN;
         } else if (freeze_arg == 0) {
             ((struct RBasic *)r)->head.flags &= ~FL_FROZEN;
-        } else if (preserve_frozen && korb_obj_frozen_p(self)) {
+        } else if (preserve_frozen &&
+                   korb_obj_frozen_p(t_obj_dup_slots ? t_obj_dup_slots[0] : self)) {
             ((struct RBasic *)r)->head.flags |= FL_FROZEN;
         }
     }
@@ -1195,13 +1208,18 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
      * extra state.  Only fire when the user actually defined the hook
      * (the default Object#initialize_copy is a no-op). */
     if (r != self && !SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_OBJECT) {
-        struct korb_class *k = korb_class_of_class(r);
+        /* The hook only fires for T_OBJECT, where source+result are parked in
+         * t_obj_dup_slots — read them fresh (the C-local `self` went stale at
+         * korb_object_new, and `r` goes stale across the hook funcall). */
+        VALUE *const hs = t_obj_dup_slots;
+        struct korb_class *k = korb_class_of_class(hs ? hs[1] : r);
         ID hook = preserve_frozen ? korb_intern("initialize_clone")
                                    : korb_intern("initialize_copy");
         if (k && korb_class_find_method(k, hook)) {
-            VALUE args[1] = { self };
-            CHECK(korb_funcall(c, r, hook, 1, args));
+            VALUE args[1] = { hs ? hs[0] : self };
+            CHECK(korb_funcall(c, hs ? hs[1] : r, hook, 1, args));
         }
+        if (hs) r = hs[1];          /* re-read result after the hook GC */
     }
     return RESULT_OK(r);
 }
