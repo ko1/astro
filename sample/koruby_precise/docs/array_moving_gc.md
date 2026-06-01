@@ -32,9 +32,22 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 | ary_mul / str_tr_bang / instance_variables / splat root-stack | 2107 | 46 |
 | **rest-gather staging** (|*xs| 修正) | 2246 | 38 |
 | ary_try_to_int / str_replace / node_bit_or / fetch_values | 2605 | 34 |
-| **Range→arena 移行** + range.c cascade | **2739** | **29** |
+| Range→arena 移行 + range.c cascade | 2739 | 29 |
+| str_unpack / ary_try_to_int 等 + **Fiber stack GC scan** | **2802** | **21** |
 
-PASS が **15.3×** (179→2739)、CRASH が **−79%** (138→29)。
+PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
+
+### Fiber/Enumerator の stack GC scan (each_byte.to_a 等の crash 解消)
+Enumerator は内部で Fiber を使う (`_start` が `Fiber.new`)。visit_roots は現在実行中の
+context (`c->stack_base..sp_top` + `c->current_frame`) しか scan しないため、**fiber 実行中は
+suspended な resumer の stack/frame が、resumer 実行中は suspended fiber の stack/frame が
+forward されず stale 化** していた (`"hello".each_byte.to_a` 等が SEGV、frame.self が死んで
+`__rescue_class_check` dispatch で crash)。`korb_scan_fiber_roots` (object.c) を追加し libc
+registry の T_DATA fiber case から呼ぶ: suspended fiber は自身の saved stack+frames、実行中
+fiber は suspended resumer の stack+frames を scan。frame chain は self/$_/$~ のみ forward
+(cref/class の生 ptr は uninit/stale で read-only code 書込み crash、garbage prev は
+alignment guard で打切り)。string/each_byte ほか Enumerator 経由 spec が CRASH→完走。
+残: test_fiber は別の深い stale-recv (fiber 固有 frame 管理 bug)。
 
 ### Range→arena 移行 (string range crash の根本解消)
 range も array 同様 **moving (aro_gc_alloc)** に移行した。korb_range は固定長
