@@ -31,9 +31,23 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 | **yield self-chain** + str/module builtins | 2093 | 47 |
 | ary_mul / str_tr_bang / instance_variables / splat root-stack | 2107 | 46 |
 | **rest-gather staging** (|*xs| 修正) | 2246 | 38 |
-| ary_try_to_int / str_replace / node_bit_or / fetch_values | **2605** | **34** |
+| ary_try_to_int / str_replace / node_bit_or / fetch_values | 2605 | 34 |
+| **Range→arena 移行** + range.c cascade | **2739** | **29** |
 
-PASS が **14.5×** (179→2605)、CRASH が **−75%** (138→34)。FAIL/ERR が増えたのは、crash していた file が完走して
+PASS が **15.3×** (179→2739)、CRASH が **−79%** (138→29)。
+
+### Range→arena 移行 (string range crash の根本解消)
+range も array 同様 **moving (aro_gc_alloc)** に移行した。korb_range は固定長
+struct (payload 無し) なので array より簡単: korb_range_new を korb_xmalloc から
+aro_gc_alloc に変え、begin/end を alloc GC 跨ぎで sp park、libc registry 登録を削除。
+scan_edges の T_RANGE が begin/end を walk するので registry 不要。
+- **真因だった begin 破壊**: node_range_new が begin を先評価 → end eval の GC で
+  begin (C-local) が stale 化 → range の begin field に stale を格納していた。
+  begin を AROH_ROOT_STACK に park して解決。
+- moving 化に伴い range.c の `struct korb_range *r` C-local 保持を一掃
+  (rng_to_a/min/max/step/include/each_with_index、re-read + field local capture +
+  return self→sp[-argc-1] + non-numeric は synthetic frame)。
+- これで range each/to_a/begin/include/first/new が STRESS+PURGE で動作。FAIL/ERR が増えたのは、crash していた file が完走して
 feature-gap の assertion (未実装メソッド等) を露出するようになったため (= 前進)。
 
 ### 第2弾で効いた追加 framework fix

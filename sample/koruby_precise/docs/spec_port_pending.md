@@ -40,7 +40,13 @@ rubyspec から port した test (test/test_spec_port.rb) で判明した、GC �
   initialize, ary_lshift の builtin stale-self も修正。
   → rubyspec STRESS sweep: PASS 179→555 (CRASH 138→81 以降さらに低下)。
 
-- **[PENDING] string range の STRESS+PURGE crash (range→arena 未移行)**:
+- **[FIXED 2026-06] string range の STRESS+PURGE crash — range→arena 移行で解消**:
+  range を moving (aro_gc_alloc) 化し、真因の node_range_new の begin 先評価 stale
+  (begin が end eval の GC で死んで range->begin に stale 格納) を AROH_ROOT_STACK park
+  で解決。range.c の moving-r cascade も一掃。each/to_a/begin/include/first/new が動作。
+  残 edge: step(大配列 grow)/min/max(niche)/symbol succ/reverse_each。詳細は array_moving_gc.md。
+
+- **[旧 PENDING の記録] string range の STRESS+PURGE crash (range→arena 未移行)**:
   `("a".."e").each {...}` や単に `r=("a".."e"); GC; r.begin` が STRESS+PURGE で SEGV /
   `r.begin` が `false` に化ける。begin と end が **両方 heap obj (string)** のときだけ
   begin が壊れる (`5.."e"` や `"a"..nil` は OK)。rng_each 非依存の pre-existing GC bug。
