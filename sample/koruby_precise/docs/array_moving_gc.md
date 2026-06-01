@@ -16,6 +16,44 @@
 rubyspec が clean HEAD 比 **+5481** (旧 struct-only WIP の 4.4 倍)。Array が moving GC で
 正しく動くようになり、以前 crash/abort していた多数の spec が完走するようになった。
 
+## STRESS+PURGE rooting campaign (2026-06-01 第2弾)
+
+curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す** と多数の latent crash が
+残っていた。`tools/sp_stress_sweep.sh` (182-file fixed list を STRESS+PURGE で完走 PASS/CRASH 集計)
+で計測しながら、支配的 crash site から潰した。
+
+| 段階 | rubyspec STRESS PASS | CRASH |
+|---|---|---|
+| campaign 開始時 | 179 | 138 |
+| dispatch recv + array builtins | 555 | 81 |
+| **eval_frame_chain** + lshift + rng_each | 1092 | 80 |
+| class_new/obj_dup/module/str_clone/const_path/str | **1964** | **53** |
+
+PASS が **11×**、CRASH が **−61%**。FAIL/ERR が増えたのは、crash していた file が完走して
+feature-gap の assertion (未実装メソッド等) を露出するようになったため (= 前進)。
+
+### 効いた fix (大きい順)
+1. **eval_frame_chain** (最大、PASS 555→1092): `korb_eval_string` の top_frame は制御フロー隔離で
+   `prev=NULL` push されるため、nested require/load 中に外側 (suspended) eval top_frame が
+   `visit_roots` の head chain から切れ、その間に `main_obj` が動くと `frame->self` が stale 化。
+   → `DISPATCH_node_ivar_get` / `korb_class_of_class(recv)` SEGV (mspec harness 全体で多発)。
+   CTX に `eval_frame_chain` stack を追加し全 eval top_frame を walk。`korb_frame.eval_prev` で linked。
+2. **dispatch recv** (`korb_dispatch_to_method` AST path): rest-array/kwh alloc の GC を跨いで
+   recv stale。CTX `dispatch_recv_root` に park。
+3. **EVAL_node_lshift** の Array fast-path (`a<<x`): grow 後 stale C-local l を return →
+   stored-closure `acc<<x` crash の真因 (`a.push` は別 path で OK だった)。
+4. **builtin stale-self / class-self handle** 多数: ary_first_n/last_n/delete_at/class_brackets/
+   initialize, class_new, module_methods_by_vis, obj_dup, str_clone, str_include, str_sub_bang,
+   node_const_path_get の parent module 等。型は IDIOM A (GC 後 `sp[-argc-1]` 再読込) /
+   B (synthetic frame) / C (class handle sp park + re-derive) の 3 つ。
+
+### 残課題 (campaign 後、CRASH=53)
+- **string 系 builtin の self-by-value impl** (str_tr_bang_impl 等) — parking 規約が無く mechanical follow-up。
+- **string range の STRESS crash** — range が xmalloc (非moving) で begin/end の moving string が
+  libc-obj registry forward の timing で破壊される (`spec_port_pending.md`)。range→arena 移行が要る。
+- **clone_spec** — str_clone 後も singleton/frozen edge で koruby_scan_edges 内 crash。
+- test_fiber (gate の残 1)。
+
 ## 設計の要点
 
 ### 旧 WIP がなぜ失敗したか
