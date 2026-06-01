@@ -1953,37 +1953,54 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     /* CRuby: if value responds to to_a, call it.  to_a must return Array.
      * For BasicObject (which has no #respond_to?) and similar minimal
      * classes, fall back to a direct method-table lookup so a singleton
-     * `def obj.to_a` is still detected. */
+     * `def obj.to_a` is still detected.
+     *
+     * v must survive the respond_to?/to_a funcalls and korb_ary_new_capa
+     * (all GC points) but this node shares `sp` with its caller (EVAL_ARG
+     * passes the same sp), so we can't park v in an sp slot without
+     * clobbering the caller's recv/args.  Use the dedicated GC root stack
+     * (same mechanism as proc_call / korb_yield_slow); pop on every exit. */
+    VALUE *const vroot = AROH_ROOT_STACK_TOP(c);
+    vroot[0] = v;
+    AROH_ROOT_STACK_SET_TOP(c, vroot + 1);
     {
+        const ID id_to_a = korb_intern("to_a");
         bool has_to_a = false;
-        if (!SPECIAL_CONST_P(v)) {
-            struct korb_class *vk = (struct korb_class *)((struct RBasic *)v)->klass;
-            has_to_a = vk && korb_class_find_method(vk, korb_intern("to_a")) != NULL;
+        if (!SPECIAL_CONST_P(vroot[0])) {
+            struct korb_class *vk = (struct korb_class *)((struct RBasic *)vroot[0])->klass;
+            has_to_a = vk && korb_class_find_method(vk, id_to_a) != NULL;
         }
         VALUE rt = Qfalse;
         if (!has_to_a) {
-            RESULT _rt_a = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                              (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+            VALUE to_a_sym = korb_id2sym(id_to_a);
+            RESULT _rt_a = korb_funcall(c, vroot[0], korb_intern("respond_to?"), 1, &to_a_sym);
             rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
         }
         if (has_to_a || RTEST(rt)) {
-            VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_a"), 0, NULL));
-            if (BUILTIN_TYPE(r) == T_ARRAY) return RESULT_OK(r);
+            RESULT _tr = korb_funcall(c, vroot[0], id_to_a, 0, NULL);
+            if (_tr.state != KORB_NORMAL) { AROH_ROOT_STACK_SET_TOP(c, vroot); return _tr; }
+            VALUE r = _tr.value;
+            if (BUILTIN_TYPE(r) == T_ARRAY) { AROH_ROOT_STACK_SET_TOP(c, vroot); return RESULT_OK(r); }
             /* CRuby: if to_a returns nil, treat the value as a single
              * element array.  Other non-Array results are TypeError. */
             if (NIL_P(r)) {
                 VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-                korb_ary_push(c, c->sp_top, a, v);
+                korb_ary_push(c, c->sp_top, a, vroot[0]);
+                AROH_ROOT_STACK_SET_TOP(c, vroot);
                 return RESULT_OK(a);
             }
+            AROH_ROOT_STACK_SET_TOP(c, vroot);
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "can't convert to Array (returned non-Array)");
         }
     }
-    VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-    korb_ary_push(c, c->sp_top, a, v);
-    return RESULT_OK(a);
+    {
+        VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
+        korb_ary_push(c, c->sp_top, a, vroot[0]);
+        AROH_ROOT_STACK_SET_TOP(c, vroot);
+        return RESULT_OK(a);
+    }
 }
 
 NODE_DEF
