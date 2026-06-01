@@ -414,66 +414,70 @@ node_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
 NODE_DEF
 node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent, ID name)
 {
-    VALUE p = EVAL_ARG_UNWRAP(c, parent);
-    if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
+    /* Park the parent (sp[0]) across every GC point below — classes/modules
+     * are arena (moving), and korb_singleton_class_of / const_missing &
+     * NameError funcalls all fire GC, leaving a bare C-local `p` stale.
+     * Re-read p from sp[0] at each use; NameError construction shifts to
+     * sp[1..3] with sp+4 staging. */
+    sp[0] = EVAL_ARG_UNWRAP(c, parent);
+    if (BUILTIN_TYPE(sp[0]) == T_CLASS || BUILTIN_TYPE(sp[0]) == T_MODULE) {
         /* private_constant enforcement: explicit `Mod::FOO` from
          * outside Mod's lexical scope is a NameError — but if Mod
          * defines const_missing, dispatch to that first (CRuby gives
          * the metaprogramming hook precedence over visibility error). */
         extern bool korb_const_is_private(const struct korb_class *, ID);
-        if (korb_const_is_private((struct korb_class *)p, name)) {
+        if (korb_const_is_private((struct korb_class *)sp[0], name)) {
             bool in_scope = false;
             for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                if ((VALUE)cr->klass == p) { in_scope = true; break; }
+                if ((VALUE)cr->klass == sp[0]) { in_scope = true; break; }
             }
             if (!in_scope) {
-                struct korb_class *p_meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)p);
+                struct korb_class *p_meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)sp[0]);
                 if (p_meta && korb_class_find_method(p_meta, korb_intern("const_missing"))) {
                     VALUE sym = korb_id2sym(name);
-                    return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+                    return korb_funcall(c, sp[0], korb_intern("const_missing"), 1, &sym);
                 }
                 VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                 return korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
-                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+                           korb_id_name(((struct korb_class *)sp[0])->name), korb_id_name(name));
             }
         }
         /* Walk super chain AND includes — but stop short of Object's
          * own namespace.  CRuby's `Sub::CONST` lookup does NOT find
          * top-level constants visible only via Object inheritance. */
-        VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
+        VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)sp[0], name);
         if (!UNDEF_P(v)) return RESULT_OK(v);
         /* const_missing hook: if the class defines a (singleton) method
          * named const_missing, dispatch to it with the missing name as
          * a Symbol — CRuby's protocol for autoload / lazy const lookup. */
-        struct korb_class *p_class = (struct korb_class *)p;
-        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, p_class);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)sp[0]);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+            return korb_funcall(c, sp[0], korb_intern("const_missing"), 1, &sym);
         }
-        /* Park eName / name_v / prefix in sp[0..2] across korb_funcall sites. */
-        sp[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-        sp[1] = 0;
+        /* Park eName / name_v / prefix in sp[1..3] across korb_funcall sites. */
+        sp[1] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         sp[2] = 0;
-        RESULT _name_r = korb_funcall(c, p, korb_intern("name"), 0, NULL);
-        sp[1] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
-        if (NIL_P(sp[1]) || (BUILTIN_TYPE(sp[1]) == T_STRING &&
-                              ((struct korb_string *)sp[1])->len == 0)) {
-            RESULT _ins_r = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
-            sp[2] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
-                                                   : korb_str_new_cstr(c, sp + 3, "<anonymous>");
+        sp[3] = 0;
+        RESULT _name_r = korb_funcall(c, sp[0], korb_intern("name"), 0, NULL);
+        sp[2] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
+        if (NIL_P(sp[2]) || (BUILTIN_TYPE(sp[2]) == T_STRING &&
+                              ((struct korb_string *)sp[2])->len == 0)) {
+            RESULT _ins_r = korb_funcall(c, sp[0], korb_intern("inspect"), 0, NULL);
+            sp[3] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
+                                                   : korb_str_new_cstr(c, sp + 4, "<anonymous>");
         } else {
-            sp[2] = sp[1];
+            sp[3] = sp[2];
         }
-        const char *prefix_str = (BUILTIN_TYPE(sp[2]) == T_STRING)
-                                   ? ((struct korb_string *)sp[2])->ptr : "?";
-        return korb_raise(c, (struct korb_class *)sp[0],
+        const char *prefix_str = (BUILTIN_TYPE(sp[3]) == T_STRING)
+                                   ? ((struct korb_string *)sp[3])->ptr : "?";
+        return korb_raise(c, (struct korb_class *)sp[1],
                    "uninitialized constant %s::%s",
                    prefix_str, korb_id_name(name));
     }
     return korb_raise_type_error(c, "%s is not a class/module",
-                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
+                          NIL_P(sp[0]) ? "nil" : korb_id_name(korb_class_of_class(sp[0])->name));
 }
 
 // ---------------- syntax / control ----------------
