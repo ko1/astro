@@ -1733,12 +1733,14 @@ static RESULT str_unpack(CTX *c, int argc, VALUE *sp) {
 
     /* R5: park the result array at sp[0] — it is held across the push grows
      * and korb_str_new / korb_float_new GC points below; staging happens at
-     * sp+1.  (self is a String, whose payload is still libc-stable, so `src`
-     * does not move.) */
+     * sp+1.  The string HANDLE is moving, so re-read self from its slot after
+     * korb_ary_new / korb_str_cstr; the byte buffer s->ptr is libc-stable
+     * once read, so `src` stays valid for the whole loop. */
     sp[0] = korb_ary_new(c, sp + 1);
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(sp[0]);
     const char *fmt = korb_str_cstr(argv[0]);
     long fmt_len = (long)strlen(fmt);
+    self = sp[-argc - 1];   /* re-read: moving handle stale across the allocs */
     struct korb_string *s = (struct korb_string *)self;
     const unsigned char *src = (const unsigned char *)s->ptr;
     long src_len = s->len;
