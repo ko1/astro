@@ -692,22 +692,25 @@ static RESULT method_receiver(CTX *c, int argc, VALUE *sp) {
  * arrays [:req] / [:opt] / etc.  CRuby accepts that form for
  * anonymous parameters. */
 static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
-    VALUE r = korb_ary_new(c, c->sp_top);
-    if (!km) return r;
+    /* r parked at vsp[0], current pair at vsp[1]; pushes/allocs stage at
+     * vsp+2 so both survive the korb_ary_new_capa / korb_intern GC points. */
+    VALUE *const vsp = c->sp_top;
+    vsp[0] = korb_ary_new(c, vsp + 2);
+    if (!km) return vsp[0];
     if (km->type == KORB_METHOD_CFUNC) {
         int n = km->u.cfunc.argc;
         if (n < 0) {
-            VALUE pair = korb_ary_new_capa(c, c->sp_top, 1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
-            korb_ary_push(r, pair);
+            vsp[1] = korb_ary_new_capa(c, vsp + 2, 1);
+            korb_ary_push(c, vsp + 2, vsp[1], korb_id2sym(korb_intern("rest")));
+            korb_ary_push(c, vsp + 2, vsp[0], vsp[1]);
         } else {
             for (int i = 0; i < n; i++) {
-                VALUE pair = korb_ary_new_capa(c, c->sp_top, 1);
-                korb_ary_push(pair, korb_id2sym(korb_intern("req")));
-                korb_ary_push(r, pair);
+                vsp[1] = korb_ary_new_capa(c, vsp + 2, 1);
+                korb_ary_push(c, vsp + 2, vsp[1], korb_id2sym(korb_intern("req")));
+                korb_ary_push(c, vsp + 2, vsp[0], vsp[1]);
             }
         }
-        return r;
+        return vsp[0];
     }
     if (km->type == KORB_METHOD_AST) {
         /* parse.c counts required_params_cnt as the *pre-rest* required
@@ -732,16 +735,16 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
          * those, so always include a name when one exists. */
         #define PUSH_PARAM(kind_str, slot)                                  \
             do {                                                              \
-                VALUE _pair = korb_ary_new_capa(c, c->sp_top, 2);                            \
-                korb_ary_push(_pair, korb_id2sym(korb_intern((kind_str))));   \
+                vsp[1] = korb_ary_new_capa(c, vsp + 2, 2);                     \
+                korb_ary_push(c, vsp + 2, vsp[1], korb_id2sym(korb_intern((kind_str)))); \
                 if (names && (slot) >= 0 && (slot) < locals_cnt &&            \
                     names[(slot)] != 0) {                                     \
                     const char *_n = korb_id_name(names[(slot)]);             \
                     if (_n && _n[0] != 0 && !(_n[0] == '_' && _n[1] == 0)) {  \
-                        korb_ary_push(_pair, korb_id2sym(names[(slot)]));     \
+                        korb_ary_push(c, vsp + 2, vsp[1], korb_id2sym(names[(slot)])); \
                     }                                                          \
                 }                                                              \
-                korb_ary_push(r, _pair);                                       \
+                korb_ary_push(c, vsp + 2, vsp[0], vsp[1]);                     \
             } while (0)
         long slot = 0;
         for (long i = 0; i < pre_req; i++) { PUSH_PARAM("req", slot); slot++; }
@@ -751,9 +754,9 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
         if (has_kwh)   { PUSH_PARAM("keyrest", km->u.ast.kwh_save_slot); }
         if (has_block) { PUSH_PARAM("block",   km->u.ast.block_slot); }
         #undef PUSH_PARAM
-        return r;
+        return vsp[0];
     }
-    return r;
+    return vsp[0];
 }
 
 static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
@@ -790,10 +793,10 @@ static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
     struct korb_method *km = korb_class_find_method(k, m->name);
     if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return RESULT_OK(Qnil);
     struct Node *body = km->u.ast.body;
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp_top, body->head.source_file) : Qnil);
-    korb_ary_push(r, INT2FIX(body->head.line));
-    return RESULT_OK(r);
+    sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+    korb_ary_push(c, sp + 1, sp[0], body->head.source_file ? korb_str_new_cstr(c, sp + 1, body->head.source_file) : Qnil);
+    korb_ary_push(c, sp + 1, sp[0], INT2FIX(body->head.line));
+    return RESULT_OK(sp[0]);
 }
 
 /* Proc#source_location — same shape, drawn from blk->body. */
@@ -805,10 +808,10 @@ RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
     if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(Qnil);
     struct korb_proc *p = (struct korb_proc *)self;
     if (!p->body) return RESULT_OK(Qnil);
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp_top, p->body->head.source_file) : Qnil);
-    korb_ary_push(r, INT2FIX(p->body->head.line));
-    return RESULT_OK(r);
+    sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+    korb_ary_push(c, sp + 1, sp[0], p->body->head.source_file ? korb_str_new_cstr(c, sp + 1, p->body->head.source_file) : Qnil);
+    korb_ary_push(c, sp + 1, sp[0], INT2FIX(p->body->head.line));
+    return RESULT_OK(sp[0]);
 }
 
 /* Proc#parameters — derive from korb_proc fields.  Method-proc shims
@@ -828,7 +831,9 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
     }
-    VALUE r = korb_ary_new(c, c->sp_top);
+    /* r parked at sp[0], current pair at sp[1]; pushes/allocs stage at sp+2
+     * so both survive the korb_ary_new_capa / korb_intern GC points. */
+    sp[0] = korb_ary_new(c, sp + 2);
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
     /* names[] is indexed from prism's locals.ids[] (lvar 0 = first local).
      * Proc params live at fp[param_base + i] = fp[slot_base + i]; the name
@@ -838,26 +843,26 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
      * param_base. */
     uint32_t req_cnt = (p->params_cnt > p->opt_cnt) ? p->params_cnt - p->opt_cnt : 0;
     for (uint32_t i = 0; i < p->params_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
+        sp[1] = korb_ary_new_capa(c, sp + 2, 2);
         const char *kind;
         if (i < req_cnt) {
             kind = p->is_lambda ? "req" : "opt";
         } else {
             kind = "opt";
         }
-        korb_ary_push(pair, korb_id2sym(korb_intern(kind)));
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern(kind)));
         if (names) {
             ID nm = names[i];
             const char *n = nm ? korb_id_name(nm) : "";
             if (n && n[0] != 0) {
-                korb_ary_push(pair, korb_id2sym(nm));
+                korb_ary_push(c, sp + 2, sp[1], korb_id2sym(nm));
             }
         }
-        korb_ary_push(r, pair);
+        korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     if (p->rest_slot >= 0 && !p->implicit_rest) {
-        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+        sp[1] = korb_ary_new_capa(c, sp + 2, 2);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("rest")));
         bool added_name = false;
         if (names) {
             long li = (long)p->rest_slot - (long)p->param_base;
@@ -865,35 +870,35 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
                 ID nm = names[li];
                 const char *n = nm ? korb_id_name(nm) : "";
                 if (n && n[0] != 0) {
-                    korb_ary_push(pair, korb_id2sym(nm));
+                    korb_ary_push(c, sp + 2, sp[1], korb_id2sym(nm));
                     added_name = true;
                 }
             }
         }
         /* Anonymous splat `*` — CRuby returns the literal name `:*`. */
         if (!added_name) {
-            korb_ary_push(pair, korb_id2sym(korb_intern("*")));
+            korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("*")));
         }
-        korb_ary_push(r, pair);
+        korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     /* Post params (after rest). */
     for (uint32_t i = 0; i < p->post_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(pair, korb_id2sym(korb_intern("req")));
+        sp[1] = korb_ary_new_capa(c, sp + 2, 2);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("req")));
         long abs = (long)p->param_base + (long)p->params_cnt + (p->rest_slot >= 0 ? 1 : 0) + (long)i;
         long li = abs - (long)p->param_base;
         if (names && li >= 0) {
             ID nm = names[li];
             const char *n = nm ? korb_id_name(nm) : "";
             if (n && n[0] != 0) {
-                korb_ary_push(pair, korb_id2sym(nm));
+                korb_ary_push(c, sp + 2, sp[1], korb_id2sym(nm));
             }
         }
-        korb_ary_push(r, pair);
+        korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     if (p->kwh_save_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
+        sp[1] = korb_ary_new_capa(c, sp + 2, 2);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("keyrest")));
         bool added_name = false;
         if (names) {
             long li = (long)p->kwh_save_slot - (long)p->param_base;
@@ -901,20 +906,20 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
                 ID nm = names[li];
                 const char *n = nm ? korb_id_name(nm) : "";
                 if (n && n[0] != 0) {
-                    korb_ary_push(pair, korb_id2sym(nm));
+                    korb_ary_push(c, sp + 2, sp[1], korb_id2sym(nm));
                     added_name = true;
                 }
             }
         }
         if (!added_name) {
-            korb_ary_push(pair, korb_id2sym(korb_intern("**")));
+            korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("**")));
         }
-        korb_ary_push(r, pair);
+        korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     /* Block parameter `&blk`: param appears at the end of the list. */
     if (p->block_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(pair, korb_id2sym(korb_intern("block")));
+        sp[1] = korb_ary_new_capa(c, sp + 2, 2);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("block")));
         bool added_name = false;
         if (names) {
             long li = (long)p->block_slot - (long)p->param_base;
@@ -922,17 +927,17 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
                 ID nm = names[li];
                 const char *n = nm ? korb_id_name(nm) : "";
                 if (n && n[0] != 0) {
-                    korb_ary_push(pair, korb_id2sym(nm));
+                    korb_ary_push(c, sp + 2, sp[1], korb_id2sym(nm));
                     added_name = true;
                 }
             }
         }
         if (!added_name) {
-            korb_ary_push(pair, korb_id2sym(korb_intern("&")));
+            korb_ary_push(c, sp + 2, sp[1], korb_id2sym(korb_intern("&")));
         }
-        korb_ary_push(r, pair);
+        korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
-    return RESULT_OK(r);
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
@@ -1080,9 +1085,14 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         }
         if (no->ivar_cnt < o->ivar_cnt) no->ivar_cnt = o->ivar_cnt;
     } else if (t == T_ARRAY) {
-        struct korb_array *a = (struct korb_array *)self;
-        r = korb_ary_new_capa(c, c->sp_top, a->len);
-        for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+        /* Park source (vsp[0]) and result (vsp[1]) across the push GC
+         * points; re-read the source via korb_ary_aref each iteration. */
+        VALUE *const vsp = c->sp_top;
+        vsp[0] = self;
+        long n = ((struct korb_array *)self)->len;
+        vsp[1] = korb_ary_new_capa(c, vsp + 2, n);
+        for (long i = 0; i < n; i++) korb_ary_push(c, vsp + 2, vsp[1], korb_ary_aref(vsp[0], i));
+        r = vsp[1];
     } else if (t == T_STRING) {
         r = korb_str_new(c, c->sp_top, korb_str_cstr(self), korb_str_len(self));
     } else if (t == T_HASH) {
@@ -1200,8 +1210,9 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp_top);
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(arr);
+    /* Result parked at sp[0]; korb_ary_push growth is the GC point. */
+    sp[0] = korb_ary_new(c, sp + 1);
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(sp[0]);
     /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
      * C.instance_variables == [:@x]).  Stored on the class itself in
      * class_ivars[]. */
@@ -1210,16 +1221,16 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
         for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
             const char *base = korb_id_name(k->class_ivars[i].name);
             if (base && base[0] == '@') {
-                korb_ary_push(arr, korb_id2sym(k->class_ivars[i].name));
+                korb_ary_push(c, sp + 1, sp[0], korb_id2sym(k->class_ivars[i].name));
             } else {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "@%s", base ? base : "");
-                korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
+                korb_ary_push(c, sp + 1, sp[0], korb_id2sym(korb_intern(buf)));
             }
         }
-        return RESULT_OK(arr);
+        return RESULT_OK(sp[0]);
     }
-    if (BUILTIN_TYPE(self) != T_OBJECT) return RESULT_OK(arr);
+    if (BUILTIN_TYPE(self) != T_OBJECT) return RESULT_OK(sp[0]);
     struct korb_object *o = (struct korb_object *)self;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     /* Only report ivars that have been set (i.e. slot has a non-Qundef
@@ -1229,14 +1240,14 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
         const char *base = korb_id_name(k->ivar_names[i]);
         /* The stored ID may already include the leading `@`; if not, prefix. */
         if (base && base[0] == '@') {
-            korb_ary_push(arr, korb_id2sym(k->ivar_names[i]));
+            korb_ary_push(c, sp + 1, sp[0], korb_id2sym(k->ivar_names[i]));
         } else {
             char buf[64];
             snprintf(buf, sizeof(buf), "@%s", base ? base : "");
-            korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
+            korb_ary_push(c, sp + 1, sp[0], korb_id2sym(korb_intern(buf)));
         }
     }
-    return RESULT_OK(arr);
+    return RESULT_OK(sp[0]);
 }
 
 /* Kernel#remove_instance_variable — un-set the named ivar and return

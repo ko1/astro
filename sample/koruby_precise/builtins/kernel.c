@@ -193,7 +193,7 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        VALUE r = UNWRAP(korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &x));
+        VALUE r = UNWRAP(korb_funcall(c, korb_ary_items(a)[i], korb_intern("==="), 1, &x));
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -218,7 +218,7 @@ RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        if (RTEST(a->ptr[i])) return RESULT_OK(Qtrue);
+        if (RTEST(korb_ary_items(a)[i])) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
 }
@@ -273,7 +273,7 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        VALUE el = a->ptr[i];
+        VALUE el = korb_ary_items(a)[i];
         if (SPECIAL_CONST_P(el) ||
             (BUILTIN_TYPE(el) != T_CLASS && BUILTIN_TYPE(el) != T_MODULE)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -362,7 +362,7 @@ static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
         if (BUILTIN_TYPE(v) == T_ARRAY) {
             struct korb_array *a = (struct korb_array *)v;
             for (long j = 0; j < a->len; j++) {
-                VALUE s = korb_to_s_dispatch(c, a->ptr[j]);
+                VALUE s = korb_to_s_dispatch(c, korb_ary_items(a)[j]);
                 fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
                 fputc('\n', out);
             }
@@ -774,8 +774,8 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
     VALUE tag = argv[0];
     VALUE val = argc >= 2 ? argv[1] : Qnil;
     VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(pair, tag);
-    korb_ary_push(pair, val);
+    korb_ary_push(c, c->sp_top, pair, tag);
+    korb_ary_push(c, c->sp_top, pair, val);
     return (RESULT){ pair, KORB_THROW };
 }
 
@@ -794,8 +794,8 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
     if (_br.state == KORB_THROW && !SPECIAL_CONST_P(_br.value) &&
         BUILTIN_TYPE(_br.value) == T_ARRAY) {
         struct korb_array *pair = (struct korb_array *)_br.value;
-        if (pair->len == 2 && korb_eq(c, pair->ptr[0], tag)) {
-            return RESULT_OK(pair->ptr[1]);
+        if (pair->len == 2 && korb_eq(c, korb_ary_items(pair)[0], tag)) {
+            return RESULT_OK(korb_ary_items(pair)[1]);
         }
     }
     /* state == RAISE with UncaughtThrowError: proc_call already converted
@@ -1113,7 +1113,7 @@ static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
         return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
     }
     VALUE r = korb_ary_new_capa(c, c->sp_top, 1);
-    korb_ary_push(r, v);
+    korb_ary_push(c, c->sp_top, r, v);
     return RESULT_OK(r);
 }
 
@@ -1135,7 +1135,9 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
      * frame at index 0; slice it per start/length args.  Default start
      * is 1, so out-of-the-box `caller` skips the immediate frame and
      * matches CRuby. */
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    /* Result list parked at sp[0] so it survives the korb_str_new_cstr GC
+     * points in the build loop; staging starts at sp+1. */
+    sp[0] = korb_ary_new(c, sp + 1);
     const char *cf0 = caller_current_file(c);
     const char *default_file = cf0 ? cf0 : "(unknown)";
     struct korb_frame *f = c->current_frame;
@@ -1156,7 +1158,7 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+        korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, buf));
     }
     while (f) {
         /* Inserted block-in-<enclosing> for THIS frame's caller block,
@@ -1169,7 +1171,7 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
             file = f->method->u.ast.body->head.source_file;
         }
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, next_line, name);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+        korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, buf));
         next_line = f->caller_node ? f->caller_node->head.line : 0;
         if (f->caller_running_block) {
             struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
@@ -1185,16 +1187,16 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
             }
             snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
             snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-            korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+            korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, buf));
         }
         f = f->prev;
     }
     /* Append a <main> entry so the chain always ends in main. */
     snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, next_line);
-    korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+    korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, buf));
 
     /* Slice per CRuby: caller(start=1, length=nil) or caller(range). */
-    long total = ((struct korb_array *)arr)->len;
+    long total = ((struct korb_array *)sp[0])->len;
     long start = 1, len = -1;  /* -1 = "all from start" */
     if (argc >= 1) {
         if (BUILTIN_TYPE(argv[0]) == T_RANGE) {
@@ -1218,11 +1220,11 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
     long end_exclusive = (len < 0) ? total : start + len;
     if (end_exclusive > total) end_exclusive = total;
     if (end_exclusive < start) end_exclusive = start;
-    VALUE out = korb_ary_new_capa(c, c->sp_top, end_exclusive - start);
+    sp[1] = korb_ary_new_capa(c, sp + 2, end_exclusive - start);
     for (long i = start; i < end_exclusive; i++) {
-        korb_ary_push(out, korb_ary_aref(arr, i));
+        korb_ary_push(c, sp + 2, sp[1], korb_ary_aref(sp[0], i));
     }
-    return RESULT_OK(out);
+    return RESULT_OK(sp[1]);
 }
 static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -1266,11 +1268,11 @@ static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
     extern ID *koruby_gvars_keys(void);
     uint32_t n = koruby_gvars_size();
     ID *keys = koruby_gvars_keys();
-    VALUE arr = korb_ary_new_capa(c, c->sp_top, n);
+    sp[0] = korb_ary_new_capa(c, sp + 1, n);
     for (uint32_t i = 0; i < n; i++) {
-        korb_ary_push(arr, korb_id2sym(keys[i]));
+        korb_ary_push(c, sp + 1, sp[0], korb_id2sym(keys[i]));
     }
-    return RESULT_OK(arr);
+    return RESULT_OK(sp[0]);
 }
 
 /* Returns a Hash of {name_sym => current value} for the lvars in
@@ -1294,8 +1296,9 @@ static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp_top);
-    /* Inside Binding#eval body — report the binding's view, not the
+    sp[0] = korb_ary_new(c, sp + 1);
+    /* Result parked at sp[0]; korb_ary_push growth is the GC point.
+     * Inside Binding#eval body — report the binding's view, not the
      * caller frame's. */
     if (c->current_eval_binding) {
         struct korb_binding *b = (struct korb_binding *)c->current_eval_binding;
@@ -1304,12 +1307,12 @@ static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
             if (!cname) continue;
             if (cname[0] == '_' && cname[1] == 0) continue;
             if (cname[0] == '_' && cname[1] == '_') continue;
-            korb_ary_push(arr, korb_id2sym(b->names[i]));
+            korb_ary_push(c, sp + 1, sp[0], korb_id2sym(b->names[i]));
         }
-        return RESULT_OK(arr);
+        return RESULT_OK(sp[0]);
     }
     struct korb_frame *f = c->current_frame;
-    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return RESULT_OK(arr);
+    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return RESULT_OK(sp[0]);
     /* Filter out the test harness frames so user-level local_variables
      * doesn't see them.  `it`, `before`, `after`, `describe`, `context`,
      * `specify` are the most common in mspec-style suites. */
@@ -1320,19 +1323,19 @@ static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
         const char *mn = korb_id_name(f->method->name);
         if (mn) {
             for (int i = 0; harness_methods[i]; i++) {
-                if (strcmp(mn, harness_methods[i]) == 0) return RESULT_OK(arr);
+                if (strcmp(mn, harness_methods[i]) == 0) return RESULT_OK(sp[0]);
             }
         }
     }
     ID *names = f->method->u.ast.local_names;
-    if (!names) return RESULT_OK(arr);
+    if (!names) return RESULT_OK(sp[0]);
     for (uint32_t i = 0; names[i] != 0; i++) {
         const char *cname = korb_id_name(names[i]);
         if (!cname) continue;
         if (cname[0] == '_' && cname[1] == 0) continue;
-        korb_ary_push(arr, korb_id2sym(names[i]));
+        korb_ary_push(c, sp + 1, sp[0], korb_id2sym(names[i]));
     }
-    return RESULT_OK(arr);
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {

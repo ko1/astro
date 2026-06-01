@@ -131,22 +131,24 @@ static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
     FILE *fp = korb_io_fp(self);
     if (!fp) return RESULT_OK(self);
     bool has_block = korb_block_given(c);
-    VALUE collected = has_block ? Qnil : korb_ary_new(c, c->sp_top);
+    /* Result list parked at sp[0]; staging starts at sp+1 so it survives
+     * the korb_str_new / korb_yield GC points in the loop. */
+    sp[0] = has_block ? Qnil : korb_ary_new(c, sp + 1);
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
     while ((n = getline(&line, &cap, fp)) > 0) {
-        VALUE l = korb_str_new(c, c->sp_top, line, n);
+        VALUE l = korb_str_new(c, sp + 1, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
             RESULT _yr = korb_yield(c, 1, &l);
             if (_yr.state != KORB_NORMAL) { free(line); return _yr; }
         } else {
-            korb_ary_push(collected, l);
+            korb_ary_push(c, sp + 1, sp[0], l);
         }
     }
     free(line);
-    return RESULT_OK(has_block ? self : collected);
+    return RESULT_OK(has_block ? self : sp[0]);
 }
 
 static RESULT io_puts(CTX *c, int argc, VALUE *sp) {
@@ -246,8 +248,8 @@ RESULT io_class_pipe(CTX *c, int argc, VALUE *sp) {
     VALUE rio = korb_io_new(c, (struct korb_class *)self, r);
     VALUE wio = korb_io_new(c, (struct korb_class *)self, w);
     VALUE arr = korb_ary_new_capa(c, sp, 2);
-    korb_ary_push(arr, rio);
-    korb_ary_push(arr, wio);
+    korb_ary_push(c, c->sp_top, arr, rio);
+    korb_ary_push(c, c->sp_top, arr, wio);
     return RESULT_OK(arr);
 }
 
@@ -257,7 +259,7 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
     if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return;
     struct korb_array *a = (struct korb_array *)arr;
     for (long i = 0; i < a->len; i++) {
-        FILE *fp = korb_io_fp(a->ptr[i]);
+        FILE *fp = korb_io_fp(korb_ary_items(a)[i]);
         if (!fp) continue;
         int fd = fileno(fp);
         if (fd < 0) continue;
@@ -267,17 +269,22 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
 }
 
 static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
-    VALUE out = korb_ary_new(c, c->sp_top);
-    if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return out;
-    struct korb_array *a = (struct korb_array *)arr;
-    for (long i = 0; i < a->len; i++) {
-        FILE *fp = korb_io_fp(a->ptr[i]);
+    /* out parked at vsp[0], source at vsp[1]; push stages at vsp+2 and the
+     * source is re-read each iteration via korb_ary_aref. */
+    VALUE *const vsp = c->sp_top;
+    vsp[0] = korb_ary_new(c, vsp + 2);
+    if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return vsp[0];
+    vsp[1] = arr;
+    long n = ((struct korb_array *)arr)->len;
+    for (long i = 0; i < n; i++) {
+        VALUE el = korb_ary_aref(vsp[1], i);
+        FILE *fp = korb_io_fp(el);
         if (!fp) continue;
         int fd = fileno(fp);
         if (fd < 0) continue;
-        if (FD_ISSET(fd, set)) korb_ary_push(out, a->ptr[i]);
+        if (FD_ISSET(fd, set)) korb_ary_push(c, vsp + 2, vsp[0], korb_ary_aref(vsp[1], i));
     }
-    return out;
+    return vsp[0];
 }
 
 /* IO.popen(cmd[, mode]) [{|io| ...}]
@@ -438,11 +445,14 @@ RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "IO.select failed: %s", strerror(errno));
     }
     if (n == 0) return RESULT_OK(Qnil);
-    VALUE ret = korb_ary_new_capa(c, sp, 3);
-    korb_ary_push(ret, korb_select_collect_ready(c, rs, &rset));
-    korb_ary_push(ret, korb_select_collect_ready(c, ws, &wset));
-    korb_ary_push(ret, korb_select_collect_ready(c, es, &eset));
-    return RESULT_OK(ret);
+    /* ret parked at sp[0]; korb_ary_new_capa publishes c->sp_top = sp+1 so
+     * the korb_select_collect_ready calls (which scratch from c->sp_top) and
+     * the pushes stage above the parked result. */
+    sp[0] = korb_ary_new_capa(c, sp + 1, 3);
+    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, rs, &rset));
+    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, ws, &wset));
+    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, es, &eset));
+    return RESULT_OK(sp[0]);
 }
 
 /* File.open(path[, mode]) [{ |f| ... }]
@@ -760,13 +770,13 @@ static RESULT dir_entries(CTX *c, int argc, VALUE *sp) {
     if (!d) {
         return korb_raise(c, NULL, "no such directory -- %s", path);
     }
-    VALUE out = korb_ary_new(c, sp);
+    sp[0] = korb_ary_new(c, sp + 1);
     struct dirent *de;
     while ((de = readdir(d))) {
-        korb_ary_push(out, korb_str_new_cstr(c, sp, de->d_name));
+        korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, de->d_name));
     }
     closedir(d);
-    return RESULT_OK(out);
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT dir_chdir(CTX *c, int argc, VALUE *sp) {
@@ -826,7 +836,12 @@ static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, 
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
         if (korb_glob_simple_match(pat, de->d_name)) {
-            korb_ary_push(out, korb_str_new_cstr(c, c->sp_top, path));
+            /* Park out at vsp[0] across the korb_str_new_cstr GC point so a
+             * moving collection can't strand the result handle. */
+            VALUE *const vsp = c->sp_top;
+            vsp[0] = out;
+            korb_ary_push(c, vsp + 1, vsp[0], korb_str_new_cstr(c, vsp + 1, path));
+            out = vsp[0];
         }
         if (recursive) {
             struct stat st;

@@ -512,14 +512,17 @@ void korb_init_builtins(CTX *c) {
                     sp[1] = argv[0];
                     VALUE w = UNWRAP(module_attr_writer(c, 1, sp + 2));
                     /* CRuby returns [reader_sym, writer_sym] in this form. */
-                    VALUE arr = korb_ary_new_capa(c, c->sp_top, 2);
-                    if (BUILTIN_TYPE(r) == T_ARRAY && ((struct korb_array *)r)->len > 0) {
-                        korb_ary_push(arr, ((struct korb_array *)r)->ptr[0]);
+                    /* Park r, w, and the result array across the pushes
+                     * (push can grow/move the result handle). */
+                    sp[0] = r; sp[1] = w;
+                    sp[2] = korb_ary_new_capa(c, sp + 3, 2);
+                    if (BUILTIN_TYPE(sp[0]) == T_ARRAY && ((struct korb_array *)sp[0])->len > 0) {
+                        korb_ary_push(c, sp + 3, sp[2], korb_ary_items((struct korb_array *)sp[0])[0]);
                     }
-                    if (BUILTIN_TYPE(w) == T_ARRAY && ((struct korb_array *)w)->len > 0) {
-                        korb_ary_push(arr, ((struct korb_array *)w)->ptr[0]);
+                    if (BUILTIN_TYPE(sp[1]) == T_ARRAY && ((struct korb_array *)sp[1])->len > 0) {
+                        korb_ary_push(c, sp + 3, sp[2], korb_ary_items((struct korb_array *)sp[1])[0]);
                     }
-                    return RESULT_OK(arr);
+                    return RESULT_OK(sp[2]);
                 }
                 return RESULT_OK(r);
             }
@@ -796,7 +799,7 @@ void korb_init_builtins(CTX *c) {
             if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) return RESULT_OK(Qnil);
             struct korb_array *a = (struct korb_array *)r;
             if (a->len == 0) return RESULT_OK(Qnil);
-            return RESULT_OK(a->ptr[0]);
+            return RESULT_OK(korb_ary_items(a)[0]);
         }
         DEF_R(KORB_VM(c)->string_class, "unpack1",  _str_unpack1, -1);
     }
@@ -1750,10 +1753,11 @@ void korb_init_builtins(CTX *c) {
                 if (FIXNUM_P(sp[-1])) d = (double)FIX2LONG(sp[-1]);
                 else d = korb_num2dbl(sp[-1]);
                 double v = lgamma_r(d, &sign);
-                VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-                korb_ary_push(pair, korb_float_new(c, c->sp_top, v));
-                korb_ary_push(pair, INT2FIX((long)sign));
-                return RESULT_OK(pair);
+                /* Park pair at sp[0] across float_new + push (handle moves). */
+                sp[0] = korb_ary_new_capa(c, sp, 2);
+                korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, v));
+                korb_ary_push(c, sp + 1, sp[0], INT2FIX((long)sign));
+                return RESULT_OK(sp[0]);
             }
             DEF_R(cMathMeta, "lgamma", _math_lgamma_pair, 1);
         }

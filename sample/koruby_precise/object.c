@@ -317,18 +317,21 @@ bool korb_cvar_defined(CTX *c, ID name) {
 }
 
 VALUE korb_cvar_names(CTX *c, struct korb_class *k) {
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    /* Park the result array at sp[0] across the pushes (which may grow/move
+     * the handle).  sym is an immediate (id2sym), so no parking needed. */
+    VALUE *const sp = c->sp_top;
+    sp[0] = korb_ary_new(c, sp);
     /* Collect from k and its supers, dedup by name. */
     for (struct korb_class *cur = k; cur; cur = cur->super) {
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
             VALUE sym = korb_id2sym(cur->cvars[i].name);
             bool seen = false;
-            struct korb_array *a = (struct korb_array *)arr;
-            for (long j = 0; j < a->len; j++) if (a->ptr[j] == sym) { seen = true; break; }
-            if (!seen) korb_ary_push(arr, sym);
+            struct korb_array *a = (struct korb_array *)sp[0];
+            for (long j = 0; j < a->len; j++) if (korb_ary_items(a)[j] == sym) { seen = true; break; }
+            if (!seen) korb_ary_push(c, sp + 1, sp[0], sym);
         }
     }
-    return arr;
+    return sp[0];
 }
 
 struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name) {
@@ -1617,70 +1620,111 @@ long korb_str_len(VALUE s) { return ((struct korb_string *)s)->len; }
  * referent moves.  Defined in koruby_runtime.c. */
 extern void koruby_register_libc_obj(struct RBasic *obj);
 
-/* ---- array ---- */
-/* korb_ary_new* take (c, sp) for API uniformity (runtime.md §12.3).
- * Body is libc-malloc so doesn't fire GC itself; the args are unused
- * but kept consistent with str/float helpers. */
+/* ---- array (payload-as-VALUE; docs/array_payload_value.md) ----
+ *
+ * sp discipline (project rule): NO caller writes c->sp_top.  Only the
+ * alloc helpers do, and only immediately before the GC-triggering
+ * aro_gc_alloc, set to the `sp` staging base the caller passed in.  Every
+ * helper that can fire GC takes an explicit `sp` (= a free value-stack top
+ * with enough scratch slots above it); the helper parks its live VALUEs in
+ * sp[0..] before allocating so the root scan forwards them. */
+
+/* Allocate a T_ARY_BACKING payload object holding `capa` VALUE slots.
+ * `sp` is the staging base (no live slots needed above it for this alloc).
+ * aro_gc_alloc zero-fills items[] (scan-safe; 0 = unused tail slot). */
+static VALUE korb_ary_backing_new(CTX *c, VALUE *sp, long capa) {
+    if (capa < 4) capa = 4;
+    size_t bytes = offsetof(struct korb_ary_backing, items) + (size_t)capa * sizeof(VALUE);
+    c->sp_top = sp;                 /* publish staging top just before GC point */
+    VALUE bv = aro_gc_alloc(c, bytes);
+    struct korb_ary_backing *b = (struct korb_ary_backing *)bv;
+    b->basic.head.flags = T_ARY_BACKING;
+    b->basic.klass = 0;
+    return bv;
+}
+
 VALUE korb_ary_new_capa(CTX *c, VALUE *sp, long capa) {
-    (void)c; (void)sp;
-    struct korb_array *a = korb_xmalloc(sizeof(*a));
-    a->basic.head.flags = T_ARRAY;
-    a->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->array_class : 0;
-    koruby_register_libc_obj(&a->basic);
-    a->len = 0;
-    a->capa = capa < 4 ? 4 : capa;
-    a->ptr = korb_xmalloc(a->capa * sizeof(VALUE));
-    for (long i = 0; i < a->capa; i++) a->ptr[i] = Qnil;
-    return (VALUE)a;
+    /* Two-stage alloc: handle (struct korb_array) + backing payload, BOTH
+     * moving objects.  Park the handle at sp[0] across the backing alloc;
+     * the backing alloc stages above it at sp+1. */
+    sp[0] = 0;
+    c->sp_top = sp;                 /* publish before the handle alloc */
+    sp[0] = aro_gc_alloc(c, sizeof(struct korb_array));
+    {
+        struct korb_array *a = (struct korb_array *)sp[0];
+        a->basic.head.flags = T_ARRAY;
+        a->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->array_class : 0;
+        a->backing = 0;
+        a->len = 0;
+    }
+    VALUE bv = korb_ary_backing_new(c, sp + 1, capa);  /* handle parked at sp[0] */
+    struct korb_array *a = (struct korb_array *)sp[0];  /* re-derive: may have moved */
+    a->backing = bv;
+    return sp[0];
 }
 VALUE korb_ary_new(CTX *c, VALUE *sp) { return korb_ary_new_capa(c, sp, 0); }
 
 VALUE korb_ary_new_from_values(CTX *c, VALUE *sp, long n, const VALUE *vals) {
-    VALUE a = korb_ary_new_capa(c, sp, n);
-    for (long i = 0; i < n; i++) korb_ary_push(a, vals[i]);
-    return a;
+    /* sp[0] holds the array; push stages above it at sp+1. */
+    sp[0] = korb_ary_new_capa(c, sp, n);
+    for (long i = 0; i < n; i++) korb_ary_push(c, sp + 1, sp[0], vals[i]);
+    return sp[0];
 }
 
-void korb_ary_push(VALUE av, VALUE v) {
-    struct korb_array *a = (struct korb_array *)av;
-    if (a->len >= a->capa) {
-        long nc = a->capa == 0 ? 4 : a->capa * 2;
-        a->ptr = korb_xrealloc(a->ptr, nc * sizeof(VALUE));
-        for (long i = a->capa; i < nc; i++) a->ptr[i] = Qnil;
-        a->capa = nc;
+/* Grow `a`'s backing to >= need slots (doubling).  `sp` staging base: this
+ * helper parks the handle at sp[0] and old backing at sp[1] across the new
+ * backing alloc (which stages at sp+2).  On return a->backing is the new
+ * (larger) object; the handle is read back from sp[0] (it may have moved). */
+static void korb_ary_grow(CTX *c, VALUE *sp, struct korb_array *a, long need) {
+    long oldcapa = korb_ary_capa(a);
+    long nc = oldcapa < 4 ? 4 : oldcapa;
+    while (nc < need) nc *= 2;
+    sp[0] = (VALUE)a;
+    sp[1] = a->backing;
+    VALUE nb = korb_ary_backing_new(c, sp + 2, nc);    /* may GC; reads no slot above sp+2 */
+    a = (struct korb_array *)sp[0];                     /* re-derive after GC */
+    struct korb_ary_backing *oldb = (struct korb_ary_backing *)sp[1];
+    struct korb_ary_backing *newb = (struct korb_ary_backing *)nb;
+    long n = a->len;
+    for (long i = 0; i < n; i++) newb->items[i] = oldb->items[i];
+    a->backing = nb;
+}
+
+/* push implementation: ary at sp[-2], v at sp[-1] (parked by the wrapper).
+ * Reads them back after any grow so a moving GC can't leave them stale. */
+void korb_ary_push_sp(CTX *c, VALUE *sp) {
+    struct korb_array *a = (struct korb_array *)sp[-2];
+    if (a->len >= korb_ary_capa(a)) {
+        korb_ary_grow(c, sp, a, a->len + 1);   /* stages at sp+; ary/v safe below at sp[-2..-1] */
+        a = (struct korb_array *)sp[-2];        /* re-derive after grow */
     }
-    a->ptr[a->len++] = v;
+    korb_ary_items(a)[a->len++] = sp[-1];       /* sp[-1] (v) forwarded if it moved */
 }
 
 VALUE korb_ary_pop(VALUE av) {
     struct korb_array *a = (struct korb_array *)av;
     if (a->len == 0) return Qnil;
-    return a->ptr[--a->len];
+    return korb_ary_items(a)[--a->len];
 }
 
-void korb_ary_aset(VALUE av, long i, VALUE v) {
-    struct korb_array *a = (struct korb_array *)av;
+/* aset implementation: ary at sp[-2], v at sp[-1] (parked by the wrapper),
+ * index passed by value. */
+void korb_ary_aset_sp(CTX *c, VALUE *sp, long i) {
+    struct korb_array *a = (struct korb_array *)sp[-2];
     if (i < 0) i += a->len;
     if (i < 0) return;
-    /* Reject indices that would resize the array to gigabytes — caller
-     * (e.g. test_aset_error's `[0][LONGP] = 2`) should have raised
-     * IndexError but if we got here, just no-op rather than OOM-killing
-     * the process trying to allocate 2^63 slots. */
+    /* Reject gigabyte-resize indices (test_aset_error `[0][LONGP] = 2`). */
     if (i >= (long)(LONG_MAX / sizeof(VALUE))) return;
-    while (a->len <= i) {
-        if (a->len >= a->capa) {
-            long nc = a->capa == 0 ? 4 : a->capa * 2;
-            while (nc <= i) nc *= 2;
-            a->ptr = korb_xrealloc(a->ptr, nc * sizeof(VALUE));
-            for (long k = a->capa; k < nc; k++) a->ptr[k] = Qnil;
-            a->capa = nc;
-        }
-        a->ptr[a->len++] = Qnil;
+    if (i >= korb_ary_capa(a)) {
+        korb_ary_grow(c, sp, a, i + 1);
+        a = (struct korb_array *)sp[-2];        /* re-derive after grow */
     }
-    a->ptr[i] = v;
+    VALUE *items = korb_ary_items(a);
+    while (a->len <= i) items[a->len++] = Qnil;
+    items[i] = sp[-1];
 }
 
-/* korb_ary_len, korb_ary_aref: now static inline in object.h. */
+/* korb_ary_len, korb_ary_aref, korb_ary_push, korb_ary_aset: inline in object.h. */
 
 /* ---- hash ---- */
 /* Tiny in-progress set used to break self-referential array/hash hashing
@@ -1715,7 +1759,7 @@ uint64_t korb_hash_value(CTX *c, VALUE v) {
             korb_hash_recurse_stk[korb_hash_recurse_top++] = v;
         }
         for (long i = 0; i < a->len; i++) {
-            uint64_t eh = korb_hash_value(c, a->ptr[i]);
+            uint64_t eh = korb_hash_value(c, korb_ary_items(a)[i]);
             h ^= eh;
             h *= 0x100000001b3ULL;
         }
@@ -1757,7 +1801,7 @@ bool korb_eql(CTX *c, VALUE a, VALUE b) {
         struct korb_array *y = (struct korb_array *)b;
         if (x->len != y->len) return false;
         for (long i = 0; i < x->len; i++) {
-            if (!korb_eql(c, x->ptr[i], y->ptr[i])) return false;
+            if (!korb_eql(c, korb_ary_items(x)[i], korb_ary_items(y)[i])) return false;
         }
         return true;
     }
@@ -2401,12 +2445,12 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
             uint32_t taken_left = 0;
             for (uint32_t i = 0; i < req_cnt; i++) {
                 fp[blk->param_base + i] = (taken_left < arr_len)
-                    ? a->ptr[taken_left++] : Qnil;
+                    ? korb_ary_items(a)[taken_left++] : Qnil;
             }
             uint32_t opt_taken = 0;
             for (uint32_t i = 0; i < opt_cnt; i++) {
                 if (taken_left < arr_len && arr_len - taken_left > post_cnt) {
-                    fp[blk->param_base + req_cnt + i] = a->ptr[taken_left++];
+                    fp[blk->param_base + req_cnt + i] = korb_ary_items(a)[taken_left++];
                     opt_taken++;
                 } else {
                     fp[blk->param_base + req_cnt + i] = Qundef;
@@ -2419,7 +2463,7 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
                                        ? arr_len - taken_left - post_cnt : 0;
                 VALUE rest = korb_ary_new_capa(c, c->sp_top, (long)rest_room);
                 for (uint32_t i = 0; i < rest_room; i++) {
-                    korb_ary_push(rest, a->ptr[taken_left + i]);
+                    korb_ary_push(c, c->sp_top, rest, korb_ary_items(a)[taken_left + i]);
                 }
                 fp[blk->rest_slot] = rest;
                 taken_left += rest_room;
@@ -2430,7 +2474,7 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
             uint32_t remaining = arr_len - taken_left;
             uint32_t post_filled = (remaining < post_cnt) ? remaining : post_cnt;
             for (uint32_t i = 0; i < post_filled; i++) {
-                fp[post_base + i] = a->ptr[taken_left + i];
+                fp[post_base + i] = korb_ary_items(a)[taken_left + i];
             }
             for (uint32_t i = post_filled; i < post_cnt; i++) {
                 fp[post_base + i] = Qnil;
@@ -2463,7 +2507,7 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
                 fp[blk->rest_slot] = korb_ary_new(c, c->sp_top);
             } else {
                 VALUE rest = korb_ary_new_capa(c, c->sp_top, (long)(argc - start));
-                for (uint32_t i = start; i < argc; i++) korb_ary_push(rest, args_buf[i]);
+                for (uint32_t i = start; i < argc; i++) korb_ary_push(c, c->sp_top, rest, args_buf[i]);
                 fp[blk->rest_slot] = rest;
             }
         }
@@ -2567,7 +2611,11 @@ VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
  * non-zero, falling back to caller_node's line.  Subsequent entries
  * use each frame's caller_node->head.line. */
 VALUE korb_build_backtrace(CTX *c, int raise_line) {
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    /* Park the result array at bt_base[0] across the repeated str allocs +
+     * pushes below (each can move the array handle).  Inner allocs stage at
+     * bt_base+1; pushes read the array back from the parked slot. */
+    VALUE *const bt_base = c->sp_top;
+    bt_base[0] = korb_ary_new(c, bt_base);
     const char *default_file = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
     char buf[512];
     char nbuf[256];
@@ -2588,7 +2636,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+        { VALUE s = korb_str_new_cstr(c, bt_base + 1, buf); korb_ary_push(c, bt_base + 1, bt_base[0], s); }
     }
     /* Cap the walk depth and validate each frame before dereferencing.
      * The frame chain can dangle: f->prev sometimes points to a stack
@@ -2609,7 +2657,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
             file = f->method->u.ast.body->head.source_file;
         }
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, line, name);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+        { VALUE s = korb_str_new_cstr(c, bt_base + 1, buf); korb_ary_push(c, bt_base + 1, bt_base[0], s); }
         /* Next iteration's line = where IN the parent's body this call
          * was made.  That's recorded on f->caller_node. */
         line = f->caller_node ? f->caller_node->head.line : 0;
@@ -2636,7 +2684,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
                 }
                 snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
                 snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
-                korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
+                { VALUE s = korb_str_new_cstr(c, bt_base + 1, buf); korb_ary_push(c, bt_base + 1, bt_base[0], s); }
             }
         }
         f = f->prev;
@@ -2645,8 +2693,8 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
      * outermost-method's caller_node pointed at (i.e. the toplevel
      * call site), or raise_line when raising directly from main. */
     snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, line);
-    korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
-    return arr;
+    { VALUE s = korb_str_new_cstr(c, bt_base + 1, buf); korb_ary_push(c, bt_base + 1, bt_base[0], s); }
+    return bt_base[0];
 }
 
 void korb_exc_set_backtrace(CTX *c, VALUE *sp, VALUE exc, int raise_line) {
@@ -3053,7 +3101,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         sp[1] = korb_str_new_cstr(c, sp + 3, "[");
         for (long i = 0; i < ((struct korb_array *)sp[0])->len; i++) {
             if (i) sp[1] = korb_str_concat(c, sp + 3, sp[1], korb_str_new_cstr(c, sp + 3, ", "));
-            sp[2] = korb_inspect_inner(c, ((struct korb_array *)sp[0])->ptr[i], depth+1);
+            sp[2] = korb_inspect_inner(c, korb_ary_items((struct korb_array *)sp[0])[i], depth+1);
             sp[1] = korb_str_concat(c, sp + 3, sp[1], sp[2]);
         }
         sp[1] = korb_str_concat(c, sp + 3, sp[1], korb_str_new_cstr(c, sp + 3, "]"));
@@ -3285,7 +3333,7 @@ bool korb_eq(CTX *c, VALUE a, VALUE b) {
         if (eq_top < 64) { eq_stk_a[eq_top] = a; eq_stk_b[eq_top] = b; eq_top++; }
         bool result = true;
         for (long i = 0; i < ax->len; i++) {
-            if (!korb_eq(c, ax->ptr[i], bx->ptr[i])) { result = false; break; }
+            if (!korb_eq(c, korb_ary_items(ax)[i], korb_ary_items(bx)[i])) { result = false; break; }
         }
         if (eq_top > 0) eq_top--;
         return result;
@@ -3589,11 +3637,12 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         for (long i = 0; i < fixed_post; i++) {
             post_buf[i] = c->current_frame->fp[fixed_pre + opt_filled + extra + i];
         }
-        VALUE rest = korb_ary_new_capa(c, c->sp_top, extra);
+        VALUE *const rsp = c->sp_top;
+        rsp[0] = korb_ary_new_capa(c, rsp, extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest, c->current_frame->fp[fixed_pre + opt_filled + i]);
+            korb_ary_push(c, rsp + 1, rsp[0], c->current_frame->fp[fixed_pre + opt_filled + i]);
         }
-        c->current_frame->fp[mc->rest_slot] = rest;
+        c->current_frame->fp[mc->rest_slot] = rsp[0];
         /* Posts land at fp[total - post_cnt + i] in the param-position
          * layout — this is fp[rest_slot+1+i] iff rest_slot is at
          * required+opt position (named rest), but for *anonymous* rest
@@ -4016,20 +4065,29 @@ RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
                       (ch >= '0' && ch <= '9') || ch == '_')) { bareword = false; break; }
             }
+            /* Park recv across korb_raise (it allocates the exception = GC
+             * point; recv is a moving object so the C-local would go stale
+             * and @receiver would capture garbage).  klass->name is an ID
+             * (immediate), safe to read before. */
+            VALUE *const esp = c->sp_top;
+            esp[0] = recv;
+            c->sp_top = esp + 1;
+            const char *kname = korb_id_name(klass->name);
             RESULT exc;
             if (recv == c->current_frame->self && bareword) {
                 exc = korb_raise(c, (struct korb_class *)eNo,
                                  "undefined local variable or method '%s' for %s",
-                                 nm, korb_id_name(klass->name));
+                                 nm, kname);
             } else {
                 exc = korb_raise(c, (struct korb_class *)eNo,
                                  "undefined method '%s' for %s",
-                                 nm, korb_id_name(klass->name));
+                                 nm, kname);
             }
             if (exc.state == KORB_RAISE && exc.value && !SPECIAL_CONST_P(exc.value)) {
-                korb_ivar_set(exc.value, korb_intern("@receiver"), recv);
+                korb_ivar_set(exc.value, korb_intern("@receiver"), esp[0]);
                 korb_ivar_set(exc.value, korb_intern("@name"), korb_id2sym(name));
             }
+            c->sp_top = esp;
             return exc;
         }
         if (mc) {
@@ -4092,10 +4150,14 @@ korb_node_plus_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     }
     if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY &&
         ((struct RBasic *)l)->klass == (VALUE)KORB_VM(c)->array_class) {
-        VALUE a = korb_ary_new_capa(c, c->sp_top, korb_ary_len(l) + korb_ary_len(r));
-        for (long i = 0, n2 = korb_ary_len(l); i < n2; i++) korb_ary_push(a, korb_ary_aref(l, i));
-        for (long i = 0, n2 = korb_ary_len(r); i < n2; i++) korb_ary_push(a, korb_ary_aref(r, i));
-        return RESULT_OK(a);
+        /* Park l, r, and the result a: korb_ary_push can grow (here it won't,
+         * capacity is pre-sized) but the handles must survive regardless. */
+        VALUE *const sp = c->sp_top;
+        sp[0] = l; sp[1] = r;
+        sp[2] = korb_ary_new_capa(c, sp + 3, korb_ary_len(l) + korb_ary_len(r));
+        for (long i = 0, n2 = korb_ary_len(sp[0]); i < n2; i++) korb_ary_push(c, sp + 3, sp[2], korb_ary_aref(sp[0], i));
+        for (long i = 0, n2 = korb_ary_len(sp[1]); i < n2; i++) korb_ary_push(c, sp + 3, sp[2], korb_ary_aref(sp[1], i));
+        return RESULT_OK(sp[2]);
     }
     COLD_BINOP_DEFAULT(id_op_plus);
 }
@@ -4340,11 +4402,12 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     if (m->u.ast.rest_slot >= 0) {
         long extra = (long)argc - (long)(m->u.ast.total_params_cnt - 1);
         if (extra < 0) extra = 0;
-        VALUE rest = korb_ary_new_capa(c, c->sp_top, extra);
+        VALUE *const rsp = c->sp_top;
+        rsp[0] = korb_ary_new_capa(c, rsp, extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest, new_fp[m->u.ast.total_params_cnt - 1 + i]);
+            korb_ary_push(c, rsp + 1, rsp[0], new_fp[m->u.ast.total_params_cnt - 1 + i]);
         }
-        new_fp[m->u.ast.rest_slot] = rest;
+        new_fp[m->u.ast.rest_slot] = rsp[0];
     }
     /* Qundef for missing optionals */
     uint32_t opt_start = (unsigned)argc;
@@ -4825,8 +4888,10 @@ CTX *korb_runtime_init(void) {
      * sysconfdir/sitelibdir/etc; we don't have those here, so use a
      * placeholder that doesn't include "." (per spec). */
     {
-        VALUE lp = korb_ary_new(c, c->sp_top);
-        korb_ary_push(lp, korb_str_new_cstr(c, c->sp_top, "/usr/local/lib/ruby/site_ruby"));
+        VALUE *const sp = c->sp_top;
+        sp[0] = korb_ary_new(c, sp);
+        korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, "/usr/local/lib/ruby/site_ruby"));
+        VALUE lp = sp[0];
         korb_gvar_set(korb_intern("$:"), lp);
         korb_gvar_set(korb_intern("$LOAD_PATH"), lp);
         korb_gvar_set(korb_intern("$-I"), lp);

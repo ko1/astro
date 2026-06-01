@@ -676,11 +676,11 @@ NODE_DEF
 node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
     /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
-    VALUE ary = korb_ary_new_capa(c, c->sp_top, argc);
+    sp[0] = korb_ary_new_capa(c, sp + 1, argc);
     for (uint32_t i = 0; i < argc; i++) {
-        korb_ary_push(ary, c->current_frame->fp[arg_index + i]);
+        korb_ary_push(c, sp + 1, sp[0], c->current_frame->fp[arg_index + i]);
     }
-    return RESULT_OK(ary);
+    return RESULT_OK(sp[0]);
 }
 
 NODE_DEF
@@ -1180,7 +1180,7 @@ node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
         return korb_yield(c, 0, NULL);
     }
     struct korb_array *a = (struct korb_array *)arr;
-    return korb_yield(c, (uint32_t)a->len, a->ptr);
+    return korb_yield(c, (uint32_t)a->len, korb_ary_items(a));
 }
 
 // ---------------- arithmetic (generic + fixnum fast path) ----------------
@@ -1420,7 +1420,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
     if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_array_op_redefined)) {
         CHECK_FROZEN_R(c, l);
-        korb_ary_push(l, r);
+        korb_ary_push(c, c->sp_top, l, r);
         return RESULT_OK(l);
     }
     c->last_cfunc_callsite = n;
@@ -1700,7 +1700,7 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                 VALUE eIE = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
                 return korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii);
             }
-            korb_ary_aset(r, ii, v); return RESULT_OK(v);
+            korb_ary_aset(c, c->sp_top, r, ii, v); return RESULT_OK(v);
         }
         if (BUILTIN_TYPE(r) == T_HASH) {
             CHECK_FROZEN_R(c, r);
@@ -1729,12 +1729,12 @@ node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
         struct korb_array *aa = (struct korb_array *)arr;
         n_keys = aa->len;
         if (n_keys + 1 <= 17) {
-            for (long i = 0; i < n_keys; i++) inline_argv[i] = aa->ptr[i];
+            for (long i = 0; i < n_keys; i++) inline_argv[i] = korb_ary_items(aa)[i];
             inline_argv[n_keys] = v;
             argv = inline_argv;
         } else {
             heap_argv = korb_xmalloc(sizeof(VALUE) * (size_t)(n_keys + 1));
-            for (long i = 0; i < n_keys; i++) heap_argv[i] = aa->ptr[i];
+            for (long i = 0; i < n_keys; i++) heap_argv[i] = korb_ary_items(aa)[i];
             heap_argv[n_keys] = v;
             argv = heap_argv;
         }
@@ -1894,7 +1894,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
     if (BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     if (NIL_P(v)) {
         VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-        korb_ary_push(a, v);
+        korb_ary_push(c, c->sp_top, a, v);
         return RESULT_OK(a);
     }
     /* respond_to?(:to_ary)? */
@@ -1906,7 +1906,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         if (NIL_P(r)) {
             /* CRuby: to_ary returning nil wraps in [v]. */
             VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-            korb_ary_push(a, v);
+            korb_ary_push(c, c->sp_top, a, v);
             return RESULT_OK(a);
         }
         if (BUILTIN_TYPE(r) != T_ARRAY) {
@@ -1918,7 +1918,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
     }
     /* No to_ary: wrap. */
     VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-    korb_ary_push(a, v);
+    korb_ary_push(c, c->sp_top, a, v);
     return RESULT_OK(a);
 }
 
@@ -1936,9 +1936,9 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
             long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
             if (r->exclude_end) e--;
             if (e < b) return RESULT_OK(korb_ary_new(c, c->sp_top));
-            VALUE a = korb_ary_new_capa(c, c->sp_top, e - b + 1);
-            for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
-            return RESULT_OK(a);
+            sp[0] = korb_ary_new_capa(c, sp + 1, e - b + 1);
+            for (long i = b; i <= e; i++) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
+            return RESULT_OK(sp[0]);
         }
     }
     /* CRuby: if value responds to to_a, call it.  to_a must return Array.
@@ -1964,7 +1964,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
              * element array.  Other non-Array results are TypeError. */
             if (NIL_P(r)) {
                 VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-                korb_ary_push(a, v);
+                korb_ary_push(c, c->sp_top, a, v);
                 return RESULT_OK(a);
             }
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1973,7 +1973,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         }
     }
     VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-    korb_ary_push(a, v);
+    korb_ary_push(c, c->sp_top, a, v);
     return RESULT_OK(a);
 }
 
@@ -2028,9 +2028,10 @@ node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
     if (end_excl > len) end_excl = len;
     if (end_excl < start) end_excl = start;
     long n_take = end_excl - start;
-    VALUE r = korb_ary_new_capa(c, c->sp_top, n_take);
-    for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
-    return RESULT_OK(r);
+    sp[1] = a;
+    sp[0] = korb_ary_new_capa(c, sp + 2, n_take);
+    for (long i = 0; i < n_take; i++) korb_ary_push(c, sp + 2, sp[0], korb_ary_aref(sp[1], start + i));
+    return RESULT_OK(sp[0]);
 }
 
 NODE_DEF
@@ -2321,7 +2322,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             if (!SPECIAL_CONST_P(rest) && BUILTIN_TYPE(rest) == T_ARRAY) {
                 struct korb_array *a = (struct korb_array *)rest;
                 for (long i = 0; i < a->len && argc < 64; i++) {
-                    forward_buf[argc++] = a->ptr[i];
+                    forward_buf[argc++] = korb_ary_items(a)[i];
                 }
             } else if (!NIL_P(rest)) {
                 /* Reassigned rest with a non-Array scalar — CRuby wraps
@@ -2391,11 +2392,12 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         for (long i = 0; i < fixed_post; i++) {
             post_ptr[i] = forward_buf[argc - fixed_post + i];
         }
-        VALUE rest_arr = korb_ary_new_capa(c, c->sp_top, extra);
+        VALUE * restrict rest_sp = c->sp_top;
+        rest_sp[0] = korb_ary_new_capa(c, rest_sp + 1, extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest_arr, forward_buf[fixed_pre + opt_filled + i]);
+            korb_ary_push(c, rest_sp + 1, rest_sp[0], forward_buf[fixed_pre + opt_filled + i]);
         }
-        new_fp[sm->u.ast.rest_slot] = rest_arr;
+        new_fp[sm->u.ast.rest_slot] = rest_sp[0];
         /* Clear unfilled opt slots so the body's default_init runs. */
         for (long i = opt_filled; i < opt; i++) {
             new_fp[fixed_pre + i] = Qundef;
@@ -2791,15 +2793,42 @@ NODE_DEF
 node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    /* Park l across rhs's eval (building rhs — e.g. a nested `[..]` literal
+     * or splat — fires GC that moves the lhs array).  Use a synthetic
+     * frame's last_line slot (scanned via the frame chain) rather than an
+     * sp[] slot: rhs's own dispatch reuses this scope's sp[0..] as its
+     * result/staging area and would clobber a parked sp slot.  Same idiom
+     * as node_plus.  fr.self/fp inherit the caller's so rhs's lvar/ivar
+     * lookups resolve against the surrounding receiver. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
     VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     if (BUILTIN_TYPE(l) != T_ARRAY) return RESULT_OK(l);
     if (BUILTIN_TYPE(r) != T_ARRAY) return RESULT_OK(l);
-    struct korb_array *la = (struct korb_array *)l;
-    struct korb_array *ra = (struct korb_array *)r;
-    VALUE out = korb_ary_new_capa(c, c->sp_top, la->len + ra->len);
-    for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
-    for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
-    return RESULT_OK(out);
+    /* la/ra are struct handles held across korb_ary_new_capa + the push
+     * loop's GC points; park lhs/rhs/out in sp slots and re-read each
+     * iteration so moving GC can't stale the handles. */
+    sp[1] = l;
+    sp[2] = r;
+    long la_len = ((struct korb_array *)l)->len;
+    long ra_len = ((struct korb_array *)r)->len;
+    sp[0] = korb_ary_new_capa(c, sp + 3, la_len + ra_len);
+    for (long i = 0; i < la_len; i++)
+        korb_ary_push(c, sp + 3, sp[0], korb_ary_items((struct korb_array *)sp[1])[i]);
+    for (long i = 0; i < ra_len; i++)
+        korb_ary_push(c, sp + 3, sp[0], korb_ary_items((struct korb_array *)sp[2])[i]);
+    return RESULT_OK(sp[0]);
 }
 
 NODE_DEF
@@ -2818,7 +2847,7 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
         struct korb_array *aa = (struct korb_array *)sp[1];
         n_args = aa->len;
         for (long i = 0; i < n_args; i++) {
-            c->current_frame->fp[arg_index + i] = aa->ptr[i];
+            c->current_frame->fp[arg_index + i] = korb_ary_items(aa)[i];
         }
     }
     sp[2] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;

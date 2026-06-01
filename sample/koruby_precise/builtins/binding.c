@@ -520,8 +520,8 @@ static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp_top);
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(arr);
+    sp[0] = korb_ary_new(c, sp + 1);
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(sp[0]);
     struct korb_binding *b = (struct korb_binding *)self;
     VALUE extras = b->extra_vars;
     bool has_extras = (!NIL_P(extras) && BUILTIN_TYPE(extras) == T_HASH);
@@ -533,7 +533,7 @@ static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
             const char *cname = korb_id_name(korb_sym2id(e->key));
             if (cname && cname[0] == '_' && cname[1] == 0) continue;
             if (cname && cname[0] == '_' && cname[1] == '_') continue;
-            korb_ary_push(arr, e->key);
+            korb_ary_push(c, sp + 1, sp[0], e->key);
         }
     }
     /* 2. Primary names — first (names_cnt - outer_names_cnt) entries.
@@ -553,7 +553,7 @@ static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
             }
             if (seen) continue;
         }
-        korb_ary_push(arr, sym);
+        korb_ary_push(c, sp + 1, sp[0], sym);
     }
     /* 3. Outer (lexical-parent) names — last block of names[]. */
     for (uint32_t i = primary_n; i < b->names_cnt; i++) {
@@ -569,9 +569,9 @@ static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
             }
             if (seen) continue;
         }
-        korb_ary_push(arr, sym);
+        korb_ary_push(c, sp + 1, sp[0], sym);
     }
-    return RESULT_OK(arr);
+    return RESULT_OK(sp[0]);
 }
 
 /* Binding#eval implementation factored out so Kernel#eval can call
@@ -741,12 +741,12 @@ static RESULT binding_source_location(CTX *c, int argc, VALUE *sp) {
 
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_binding *b = (struct korb_binding *)self;
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    sp[0] = korb_ary_new(c, sp + 1);
     const char *file = b->source_file ? b->source_file : "(eval)";
     int line = b->source_line ? b->source_line : 0;
-    korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, file));
-    korb_ary_push(arr, INT2FIX(line));
-    return RESULT_OK(arr);
+    korb_ary_push(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, file));
+    korb_ary_push(c, sp + 1, sp[0], INT2FIX(line));
+    return RESULT_OK(sp[0]);
 }
 
 /* Snapshot the frame's locals into each registered binding's heap.

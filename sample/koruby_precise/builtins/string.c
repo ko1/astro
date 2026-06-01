@@ -422,7 +422,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         if (has_block) { \
             RESULT _ye = korb_yield(c, 1, &sp[3]); \
             if (_ye.state != KORB_NORMAL) return _ye; \
-        } else korb_ary_push(sp[2], sp[3]); \
+        } else korb_ary_push(c, sp + 4, sp[2], sp[3]); \
     } while (0)
     struct korb_string *s = (struct korb_string *)sp[0];
     if (argc == 0 || NIL_P(sp[1])) {
@@ -1071,7 +1071,7 @@ static RESULT str_chars(CTX *c, int argc, VALUE *sp) {
     sp[1] = korb_ary_new_capa(c, sp + 2, ((struct korb_string *)sp[0])->len);
     struct korb_string *s = (struct korb_string *)sp[0];
     for (long i = 0; i < s->len; i++) {
-        korb_ary_push(sp[1], korb_str_new(c, sp + 2, s->ptr + i, 1));
+        korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr + i, 1));
         s = (struct korb_string *)sp[0];  /* reload */
     }
     return RESULT_OK(sp[1]);
@@ -1092,12 +1092,12 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
         }
         return RESULT_OK(c->current_frame->self);
     }
-    VALUE r = korb_ary_new_capa(c, c->sp_top, ((struct korb_string *)c->current_frame->self)->len);
+    sp[0] = korb_ary_new_capa(c, sp + 1, ((struct korb_string *)c->current_frame->self)->len);
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
-        korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
+        korb_ary_push(c, sp + 1, sp[0], INT2FIX((unsigned char)s->ptr[i]));
     }
-    return RESULT_OK(r);
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
@@ -1111,12 +1111,12 @@ static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
      * inside the loop instead of the C-local self parameter, which
      * goes stale across allocations under STRESS+PURGE. */
     if (!korb_block_given(c)) {
-        VALUE r = korb_ary_new(c, c->sp_top);
+        sp[0] = korb_ary_new(c, sp + 1);
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr + i, 1));
+            korb_ary_push(c, sp + 1, sp[0], korb_str_new(c, sp + 1, s->ptr + i, 1));
         }
-        return RESULT_OK(r);
+        return RESULT_OK(sp[0]);
     }
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
@@ -1673,14 +1673,18 @@ static RESULT str_scan(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp_top));
-    const struct korb_string *s = (const struct korb_string *)self;
-    VALUE out = korb_ary_new(c, c->sp_top);
+    /* Park self (sp[0]) and result (sp[1]) across the per-match korb_str_new
+     * GC points; re-derive the C-local string from sp[0] each iteration. */
+    sp[0] = self;
+    sp[1] = korb_ary_new(c, sp + 2);
+    const struct korb_string *s = (const struct korb_string *)sp[0];
     long ms, ml, i = 0;
-    while (str_find_pat(argv[0], (struct korb_string *)s, i, &ms, &ml)) {
-        korb_ary_push(out, korb_str_new(c, c->sp_top, s->ptr + ms, ml));
+    while (str_find_pat(argv[0], (struct korb_string *)sp[0], i, &ms, &ml)) {
+        s = (const struct korb_string *)sp[0];
+        korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr + ms, ml));
         i = ms + (ml > 0 ? ml : 1);
     }
-    return RESULT_OK(out);
+    return RESULT_OK(sp[1]);
 }
 
 /* Expand a tr-spec ("a-zA-Z") into a 256-byte character table where
@@ -2251,10 +2255,14 @@ static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
         sep_len = septv->len;
     }
 
-    VALUE r = korb_ary_new(c, c->sp_top);
+    /* Park self (sp[0]) + result (sp[1]) across the per-line korb_str_new
+     * GC points; re-derive the C-local string from sp[0] each push. */
+    sp[0] = self;
+    sp[1] = korb_ary_new(c, sp + 2);
     if (sep_len == 0) {
-        korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, s->len));
-        return RESULT_OK(r);
+        s = (struct korb_string *)sp[0];
+        korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr, s->len));
+        return RESULT_OK(sp[1]);
     }
 
     long start = 0;
@@ -2271,7 +2279,8 @@ static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
             } else {
                 take_len = end - start;
             }
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr + start, take_len));
+            korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr + start, take_len));
+            s = (struct korb_string *)sp[0];
             start = end;
             i = end;
         } else {
@@ -2284,9 +2293,9 @@ static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
             take_len > 0 && s->ptr[start + take_len - 1] == '\r') {
             take_len--;
         }
-        korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr + start, take_len));
+        korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr + start, take_len));
     }
-    return RESULT_OK(r);
+    return RESULT_OK(sp[1]);
 }
 
 static RESULT str_partition(CTX *c, int argc, VALUE *sp) {
@@ -2295,27 +2304,34 @@ static RESULT str_partition(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(self);
-    struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *sep = (struct korb_string *)argv[0];
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 3);
+    /* Park self (sp[0]) + sep (sp[1]) + result (sp[2]) across the
+     * korb_str_new GC points; re-derive s/sep from the parked slots. */
+    sp[0] = self;
+    sp[1] = argv[0];
+    sp[2] = korb_ary_new_capa(c, sp + 3, 3);
+    struct korb_string *s = (struct korb_string *)sp[0];
+    struct korb_string *sep = (struct korb_string *)sp[1];
     if (sep->len == 0 || sep->len > s->len) {
-        korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, s->len));
-        korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-        korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-        return RESULT_OK(r);
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, s->len));
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+        return RESULT_OK(sp[2]);
     }
     for (long i = 0; i + sep->len <= s->len; i++) {
         if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, i));
-            korb_ary_push(r, korb_str_new(c, c->sp_top, sep->ptr, sep->len));
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr + i + sep->len, s->len - i - sep->len));
-            return RESULT_OK(r);
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, i));
+            s = (struct korb_string *)sp[0]; sep = (struct korb_string *)sp[1];
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, sep->ptr, sep->len));
+            s = (struct korb_string *)sp[0]; sep = (struct korb_string *)sp[1];
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr + i + sep->len, s->len - i - sep->len));
+            return RESULT_OK(sp[2]);
         }
     }
-    korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, s->len));
-    korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-    korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-    return RESULT_OK(r);
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, s->len));
+    s = (struct korb_string *)sp[0];
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+    return RESULT_OK(sp[2]);
 }
 
 static RESULT str_rpartition(CTX *c, int argc, VALUE *sp) {
@@ -2324,27 +2340,35 @@ static RESULT str_rpartition(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(self);
-    struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *sep = (struct korb_string *)argv[0];
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 3);
+    /* Park self (sp[0]) + sep (sp[1]) + result (sp[2]) across the
+     * korb_str_new GC points; re-derive s/sep from the parked slots. */
+    sp[0] = self;
+    sp[1] = argv[0];
+    sp[2] = korb_ary_new_capa(c, sp + 3, 3);
+    struct korb_string *s = (struct korb_string *)sp[0];
+    struct korb_string *sep = (struct korb_string *)sp[1];
     if (sep->len == 0 || sep->len > s->len) {
-        korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-        korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-        korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, s->len));
-        return RESULT_OK(r);
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+        s = (struct korb_string *)sp[0];
+        korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, s->len));
+        return RESULT_OK(sp[2]);
     }
     for (long i = s->len - sep->len; i >= 0; i--) {
         if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, i));
-            korb_ary_push(r, korb_str_new(c, c->sp_top, sep->ptr, sep->len));
-            korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr + i + sep->len, s->len - i - sep->len));
-            return RESULT_OK(r);
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, i));
+            s = (struct korb_string *)sp[0]; sep = (struct korb_string *)sp[1];
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, sep->ptr, sep->len));
+            s = (struct korb_string *)sp[0]; sep = (struct korb_string *)sp[1];
+            korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr + i + sep->len, s->len - i - sep->len));
+            return RESULT_OK(sp[2]);
         }
     }
-    korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-    korb_ary_push(r, korb_str_new(c, c->sp_top, "", 0));
-    korb_ary_push(r, korb_str_new(c, c->sp_top, s->ptr, s->len));
-    return RESULT_OK(r);
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, "", 0));
+    s = (struct korb_string *)sp[0];
+    korb_ary_push(c, sp + 3, sp[2], korb_str_new(c, sp + 3, s->ptr, s->len));
+    return RESULT_OK(sp[2]);
 }
 
 /* String#succ — alphabetic increment; ASCII-only, simplified rules. */
@@ -2575,7 +2599,7 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
          * argv[1..] = format args.  Stage [self, fmt, a[0..len-1]] on sp. */
         sp[0] = self;        /* kernel_format's self (format string) */
         sp[1] = self;        /* argv[0] = format string */
-        for (long i = 0; i < a->len; i++) sp[2 + i] = a->ptr[i];
+        for (long i = 0; i < a->len; i++) sp[2 + i] = korb_ary_items(a)[i];
         return kernel_format(c, 1 + (int)a->len, sp + 2 + (int)a->len);
     }
     /* single arg or multiple */
@@ -2950,30 +2974,34 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    const struct korb_string *s = (const struct korb_string *)self;
     bool has_block = korb_block_given(c);
-    VALUE collected = has_block ? Qnil : korb_ary_new(c, c->sp_top);
+    /* Park self (sp[0]) + result (sp[1]) across the korb_str_new / korb_yield
+     * GC points; re-derive the C-local string from sp[0]. */
+    sp[0] = self;
+    sp[1] = has_block ? Qnil : korb_ary_new(c, sp + 2);
+    const struct korb_string *s = (const struct korb_string *)sp[0];
     long start = 0;
     for (long i = 0; i < s->len; i++) {
         if (s->ptr[i] == '\n') {
-            VALUE line = korb_str_new(c, c->sp_top, s->ptr + start, i - start + 1);
+            VALUE line = korb_str_new(c, sp + 2, s->ptr + start, i - start + 1);
             if (has_block) {
                 CHECK(korb_yield(c, 1, &line));
             } else {
-                korb_ary_push(collected, line);
+                korb_ary_push(c, sp + 2, sp[1], line);
             }
+            s = (const struct korb_string *)sp[0];
             start = i + 1;
         }
     }
     if (start < s->len) {
-        VALUE line = korb_str_new(c, c->sp_top, s->ptr + start, s->len - start);
+        VALUE line = korb_str_new(c, sp + 2, s->ptr + start, s->len - start);
         if (has_block) {
             CHECK(korb_yield(c, 1, &line));
         } else {
-            korb_ary_push(collected, line);
+            korb_ary_push(c, sp + 2, sp[1], line);
         }
     }
-    return RESULT_OK(has_block ? self : collected);
+    return RESULT_OK(has_block ? sp[0] : sp[1]);
 }
 
 /* Encoding stubs (we don't track per-string encoding). */

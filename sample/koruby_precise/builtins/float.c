@@ -18,7 +18,7 @@ static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
     if (p->len != 2) return RESULT_OK(Qundef);
-    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
+    return korb_funcall(c, korb_ary_items(p)[0], op, 1, &korb_ary_items(p)[1]);
 }
 
 #define FLT_BINOP_COERCE_OR_RAISE(c, v, op_name)                          \
@@ -90,28 +90,28 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
     double limit = korb_num2dbl(argv[0]);
     double step  = (argc >= 2) ? korb_num2dbl(argv[1]) : 1.0;
     bool has_block = korb_block_given(c);
-    VALUE out = has_block ? Qnil : korb_ary_new(c, c->sp_top);
+    sp[0] = has_block ? Qnil : korb_ary_new(c, sp + 1);
     if (step == 0.0) return RESULT_OK(self);
     if (step > 0.0) {
         for (double v = start; v <= limit + 1e-12; v += step) {
-            VALUE fv = korb_float_new(c, c->sp_top, v);
+            VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
                 CHECK(korb_yield(c, 1, &fv));
             } else {
-                korb_ary_push(out, fv);
+                korb_ary_push(c, sp + 1, sp[0], fv);
             }
         }
     } else {
         for (double v = start; v >= limit - 1e-12; v += step) {
-            VALUE fv = korb_float_new(c, c->sp_top, v);
+            VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
                 CHECK(korb_yield(c, 1, &fv));
             } else {
-                korb_ary_push(out, fv);
+                korb_ary_push(c, sp + 1, sp[0], fv);
             }
         }
     }
-    return RESULT_OK(has_block ? self : out);
+    return RESULT_OK(has_block ? self : sp[0]);
 }
 
 static RESULT flt_nan_p(CTX *c, int argc, VALUE *sp) {
@@ -203,21 +203,21 @@ static RESULT flt_coerce(CTX *c, int argc, VALUE *sp) {
         return korb_raise_argument_error(c, "wrong number of arguments");
     }
     VALUE other = sp[-1];
-    VALUE pair = korb_ary_new_capa(c, sp, 2);
+    sp[0] = korb_ary_new_capa(c, sp + 1, 2);
     if (FIXNUM_P(other)) {
-        korb_ary_push(pair, korb_float_new(c, sp, (double)FIX2LONG(other)));
-        korb_ary_push(pair, self);
-        return RESULT_OK(pair);
+        korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, (double)FIX2LONG(other)));
+        korb_ary_push(c, sp + 1, sp[0], self);
+        return RESULT_OK(sp[0]);
     }
     if (KORB_IS_FLOAT(other)) {
-        korb_ary_push(pair, other);
-        korb_ary_push(pair, self);
-        return RESULT_OK(pair);
+        korb_ary_push(c, sp + 1, sp[0], other);
+        korb_ary_push(c, sp + 1, sp[0], self);
+        return RESULT_OK(sp[0]);
     }
     if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) {
-        korb_ary_push(pair, korb_float_new(c, sp, korb_num2dbl(other)));
-        korb_ary_push(pair, self);
-        return RESULT_OK(pair);
+        korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, korb_num2dbl(other)));
+        korb_ary_push(c, sp + 1, sp[0], self);
+        return RESULT_OK(sp[0]);
     }
     return korb_raise_type_error(c, "%s can't be coerced into Float",
                                  korb_id_name(korb_class_of_class(other)->name));
@@ -483,7 +483,7 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eT, "coerce must return [x, y]");
         }
         struct korb_array *p = (struct korb_array *)pair;
-        return korb_funcall(c, p->ptr[0], korb_intern("<=>"), 1, &p->ptr[1]);
+        return korb_funcall(c, korb_ary_items(p)[0], korb_intern("<=>"), 1, &korb_ary_items(p)[1]);
     }
     /* Self == ±Infinity, other == finite Integer/Bignum: ±Infinity wins. */
     if (isinf(a) && (FIXNUM_P(other) ||

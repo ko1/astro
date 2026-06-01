@@ -79,8 +79,12 @@ static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "attr_reader: not on a class/module");
     }
     CHECK(attr_check_frozen(c, self));
-    struct korb_class *klass = (struct korb_class *)self;
-    VALUE result = korb_ary_new(c, c->sp_top);
+    /* Park self (the class) at sp[0]; the result array goes at sp[1].  Both
+     * the array allocs and korb_class_add_method_ast fire GC now (arrays are
+     * arena objects), so the class handle must be re-derived from sp[0] after
+     * every GC point rather than held as a stale C-local. */
+    sp[0] = self;
+    sp[1] = korb_ary_new(c, sp + 2);
     for (int i = 0; i < argc; i++) {
         ID name;
         CHECK(attr_resolve_name(c, argv[i], &name, "attr_reader"));
@@ -90,10 +94,10 @@ static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
         NODE *body = ALLOC_node_ivar_get(iv_id);
-        korb_class_add_method_ast(c, klass, name, body, 0, 0);
-        korb_ary_push(result, korb_id2sym(name));
+        korb_class_add_method_ast(c, (struct korb_class *)sp[0], name, body, 0, 0);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(name));
     }
-    return RESULT_OK(result);
+    return RESULT_OK(sp[1]);
 }
 
 static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
@@ -105,8 +109,10 @@ static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "attr_writer: not on a class/module");
     }
     CHECK(attr_check_frozen(c, self));
-    struct korb_class *klass = (struct korb_class *)self;
-    VALUE result = korb_ary_new(c, c->sp_top);
+    /* Park self (class) at sp[0], result array at sp[1].  Re-derive the class
+     * from sp[0] after each GC point (array allocs + add_method_ast). */
+    sp[0] = self;
+    sp[1] = korb_ary_new(c, sp + 2);
     for (int i = 0; i < argc; i++) {
         ID name;
         CHECK(attr_resolve_name(c, argv[i], &name, "attr_writer"));
@@ -119,10 +125,10 @@ static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
         NODE *body = ALLOC_node_ivar_set(iv_id, ALLOC_node_lvar_get(0));
-        korb_class_add_method_ast(c, klass, setter_id, body, 1, 1);
-        korb_ary_push(result, korb_id2sym(setter_id));
+        korb_class_add_method_ast(c, (struct korb_class *)sp[0], setter_id, body, 1, 1);
+        korb_ary_push(c, sp + 2, sp[1], korb_id2sym(setter_id));
     }
-    return RESULT_OK(result);
+    return RESULT_OK(sp[1]);
 }
 
 static RESULT module_attr_accessor(CTX *c, int argc, VALUE *sp) {
@@ -130,21 +136,28 @@ static RESULT module_attr_accessor(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE r1 = UNWRAP(module_attr_reader(c, argc, sp));
-    VALUE r2 = UNWRAP(module_attr_writer(c, argc, sp));
+    /* Park the reader's result array (sp[0]) across the writer call,
+     * which allocates and runs funcalls and can move the handle.  The
+     * writer is invoked with its self/argv re-staged above sp[0] so it
+     * doesn't clobber the parked reader result. */
+    sp[0] = UNWRAP(module_attr_reader(c, argc, sp));   /* reader staged below sp[0]; park r1 in sp[0] */
+    /* Re-derive self + argv from the GC-tracked arg slots: the reader call
+     * above fired GC and may have moved the class and the arg values; the
+     * C-locals `self`/`argv` would be stale. */
+    sp[1] = sp[-argc - 1];                              /* writer self (re-read) */
+    for (int i = 0; i < argc; i++) sp[2 + i] = (sp - argc)[i]; /* writer argv (re-read) */
+    sp[1] = UNWRAP(module_attr_writer(c, argc, sp + argc + 2));  /* park r2 in sp[1] */
     /* Interleave readers and writers like CRuby: [a, a=, b, b=]. */
-    VALUE result = korb_ary_new(c, c->sp_top);
-    if (BUILTIN_TYPE(r1) == T_ARRAY && BUILTIN_TYPE(r2) == T_ARRAY) {
-        struct korb_array *a1 = (struct korb_array *)r1;
-        struct korb_array *a2 = (struct korb_array *)r2;
-        long n = a1->len;
-        if (a2->len < n) n = a2->len;
+    sp[2] = korb_ary_new(c, sp + 3);                    /* park result in sp[2] */
+    if (BUILTIN_TYPE(sp[0]) == T_ARRAY && BUILTIN_TYPE(sp[1]) == T_ARRAY) {
+        long n = ((struct korb_array *)sp[0])->len;
+        if (((struct korb_array *)sp[1])->len < n) n = ((struct korb_array *)sp[1])->len;
         for (long i = 0; i < n; i++) {
-            korb_ary_push(result, a1->ptr[i]);
-            korb_ary_push(result, a2->ptr[i]);
+            korb_ary_push(c, sp + 3, sp[2], korb_ary_items((struct korb_array *)sp[0])[i]);
+            korb_ary_push(c, sp + 3, sp[2], korb_ary_items((struct korb_array *)sp[1])[i]);
         }
     }
-    return RESULT_OK(result);
+    return RESULT_OK(sp[2]);
 }
 
 static RESULT module_include(CTX *c, int argc, VALUE *sp) {
@@ -301,7 +314,7 @@ static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
     while (k) {
         for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
             for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
-                korb_ary_push(r, korb_id2sym(e->name));
+                korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
             }
         }
         if (!include_inherited) break;
@@ -328,12 +341,12 @@ static VALUE methods_with_visibility(CTX *c, VALUE self, int vis, bool include_i
                 }
                 bool dup = false;
                 for (long j = 0; j < ((struct korb_array *)r)->len; j++) {
-                    VALUE existing = ((struct korb_array *)r)->ptr[j];
+                    VALUE existing = korb_ary_items((struct korb_array *)r)[j];
                     if (SYMBOL_P(existing) && korb_sym2id(existing) == e->name) {
                         dup = true; break;
                     }
                 }
-                if (!dup) korb_ary_push(r, korb_id2sym(e->name));
+                if (!dup) korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
             }
         }
         if (!include_inherited) break;
@@ -397,7 +410,7 @@ static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
     for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
         for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
             if (e->include_depth == 0) {
-                korb_ary_push(r, korb_id2sym(e->name));
+                korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
             }
         }
     }
@@ -510,7 +523,7 @@ static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
                  * this class count — drop entries that came from an
                  * included module (include_depth > 0). */
                 if (!include_inherited && first && e->include_depth > 0) continue;
-                if (e->method && e->method->visibility == vis) korb_ary_push(r, korb_id2sym(e->name));
+                if (e->method && e->method->visibility == vis) korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
             }
         }
         first = false;
@@ -552,7 +565,7 @@ static RESULT module_constants(CTX *c, int argc, VALUE *sp) {
     }
     VALUE r = korb_ary_new(c, c->sp_top);
     for (struct korb_const_entry *e = ((struct korb_class *)self)->constants; e; e = e->next) {
-        korb_ary_push(r, korb_id2sym(e->name));
+        korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
     }
     return RESULT_OK(r);
 }
@@ -939,18 +952,18 @@ static RESULT class_name(CTX *c, int argc, VALUE *sp) {
 /* ---------- Class#ancestors / Module#prepend ---------- */
 
 /* Append `m` and its transitive included modules to `arr`, dedup'd. */
-static void ancestors_push_module(VALUE arr, struct korb_class *m) {
+static void ancestors_push_module(CTX *c, VALUE arr, struct korb_class *m) {
     if (!m) return;
     struct korb_array *a = (struct korb_array *)arr;
     for (long j = 0; j < a->len; j++) {
-        if (a->ptr[j] == (VALUE)m) return;
+        if (korb_ary_items(a)[j] == (VALUE)m) return;
     }
-    korb_ary_push(arr, (VALUE)m);
+    korb_ary_push(c, c->sp_top, arr, (VALUE)m);
     /* Recurse into m's own includes (latest-include first to match
      * CRuby's "module that is included later sits earlier in
      * ancestors"). */
     for (int32_t i = (int32_t)m->includes_cnt - 1; i >= 0; i--) {
-        ancestors_push_module(arr, m->includes[i]);
+        ancestors_push_module(c, arr, m->includes[i]);
     }
 }
 
@@ -964,11 +977,11 @@ static RESULT class_ancestors(CTX *c, int argc, VALUE *sp) {
     struct korb_class *k = (struct korb_class *)self;
     while (k) {
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(arr, k->prepends[i]);
+            ancestors_push_module(c, arr, k->prepends[i]);
         }
-        ancestors_push_module(arr, k);
+        ancestors_push_module(c, arr, k);
         for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(arr, k->includes[i]);
+            ancestors_push_module(c, arr, k->includes[i]);
         }
         k = k->super;
     }
@@ -1137,7 +1150,7 @@ static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
     /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];
-        argv = a->ptr;
+        argv = korb_ary_items(a);
         argc = (int)a->len;
     }
     for (int i = 0; i < argc; i++) {
@@ -1250,7 +1263,7 @@ static RESULT module_class_nesting(CTX *c, int argc, VALUE *sp) {
     VALUE arr = korb_ary_new(c, c->sp_top);
     for (struct korb_cref *cur = c->current_frame->cref; cur; cur = cur->prev) {
         if (cur->klass && cur->klass != KORB_VM(c)->object_class) {
-            korb_ary_push(arr, (VALUE)cur->klass);
+            korb_ary_push(c, c->sp_top, arr, (VALUE)cur->klass);
         }
     }
     return RESULT_OK(arr);

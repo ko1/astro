@@ -256,7 +256,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
             struct korb_array *a = (struct korb_array *)arr;
             argc = (int)a->len;
-            argv = a->ptr;
+            argv = korb_ary_items(a);
             /* fall through to regular binding */
         }
     }
@@ -308,7 +308,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         /* 4) *rest: gather whatever is left in "middle" (after opt). */
         if (p->rest_slot >= 0) {
             VALUE rest = korb_ary_new(c, c->sp_top);
-            for (uint32_t i = 0; i < middle; i++) korb_ary_push(rest, argv[arg_cur++]);
+            for (uint32_t i = 0; i < middle; i++) korb_ary_push(c, c->sp_top, rest, argv[arg_cur++]);
             new_fp[p->rest_slot] = rest;
         }
         /* 5) Posts: absolute slots = param_base + params_cnt + (rest?1:0). */
@@ -453,7 +453,7 @@ redo_proc:
         VALUE tag = Qnil;
         if (!SPECIAL_CONST_P(throw_val) && BUILTIN_TYPE(throw_val) == T_ARRAY) {
             struct korb_array *pair = (struct korb_array *)throw_val;
-            if (pair->len >= 1) tag = pair->ptr[0];
+            if (pair->len >= 1) tag = korb_ary_items(pair)[0];
         }
         VALUE tag_s = korb_inspect(c, c->sp_top, tag);
         char buf[256];

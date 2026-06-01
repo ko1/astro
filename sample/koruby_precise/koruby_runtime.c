@@ -326,12 +326,11 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
         int t = (int)(b->head.flags & T_MASK);
         switch (t) {
           case T_ARRAY: {
+              /* Arrays are now arena objects (payload-as-VALUE), not libc;
+               * they shouldn't appear in this libc registry.  Visit the
+               * backing reference defensively in case a stale entry remains. */
               struct korb_array *a = (struct korb_array *)b;
-              if (a->ptr && a->len > 0) {
-                  for (long j = 0; j < a->len; j++) {
-                      visit_value_slot(ctx, fn, &a->ptr[j]);
-                  }
-              }
+              visit_value_slot(ctx, fn, &a->backing);
               break;
           }
           case T_HASH: {
@@ -431,10 +430,24 @@ koruby_scan_edges(void *payload, size_t payload_size,
           /* string.ptr is libc-malloc'd byte buffer, not a GC heap obj. */
           break;
       case T_ARRAY: {
+          /* Handle: the only edge is the backing payload reference.  The
+           * elements themselves are walked when the framework visits the
+           * T_ARY_BACKING object directly (= reader co-located with data,
+           * see docs/array_payload_value.md). */
           struct korb_array *a = (struct korb_array *)payload;
-          /* a->ptr is libc-malloc'd VALUE[]; walk its contents directly. */
-          for (long i = 0; i < a->len; i++) {
-              visit_value_slot(ctx, fn, &a->ptr[i]);
+          visit_value_slot(ctx, fn, &a->backing);
+          break;
+      }
+      case T_ARY_BACKING: {
+          /* Backing payload for T_ARRAY.  Element count derived from the
+           * header gc_size (= offsetof(items) + N*sizeof(VALUE)).  Walk all
+           * N slots: the live prefix holds elements, the unused tail is 0
+           * (zero-filled by aro_gc_alloc) which visit_value_slot skips. */
+          struct korb_ary_backing *bk = (struct korb_ary_backing *)payload;
+          long n = (long)((b->head.gc_size - offsetof(struct korb_ary_backing, items))
+                          / sizeof(VALUE));
+          for (long i = 0; i < n; i++) {
+              visit_value_slot(ctx, fn, &bk->items[i]);
           }
           break;
       }
@@ -552,7 +565,7 @@ koruby_run_ast(CTX *c, NODE *ast)
         if (!SPECIAL_CONST_P(_br.value) &&
             BUILTIN_TYPE(_br.value) == T_ARRAY) {
             struct korb_array *pair = (struct korb_array *)_br.value;
-            if (pair->len >= 1) sp[1] = pair->ptr[0];
+            if (pair->len >= 1) sp[1] = korb_ary_items(pair)[0];
         }
         sp[2] = korb_inspect(c, sp + 3, sp[1]);
         char buf[256];

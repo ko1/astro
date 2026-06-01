@@ -37,9 +37,9 @@ static RESULT math_pow(CTX *c, int argc, VALUE *sp) {
 static RESULT math_frexp(CTX *c, int argc, VALUE *sp) {
     int exp;
     double sig = frexp(num_d(sp[-1]), &exp);
-    VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(pair, korb_float_new(c, c->sp_top, sig));
-    korb_ary_push(pair, INT2FIX((long)exp));
-    return RESULT_OK(pair);
+    sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+    korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, sig));
+    korb_ary_push(c, sp + 1, sp[0], INT2FIX((long)exp));
+    return RESULT_OK(sp[0]);
 }
 

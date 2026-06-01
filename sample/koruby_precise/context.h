@@ -126,6 +126,14 @@ enum korb_type {
     T_RANGE,
     T_NODE,
     T_DATA,
+    /* T_ARY_BACKING — payload buffer object for T_ARRAY.  Layout:
+     * AroObjectHeader head; VALUE items[N] inline.  N is derived from
+     * head.gc_size at scan time (= (gc_size - sizeof header)/sizeof VALUE),
+     * so koruby_scan_edges walks items[] via the backing's OWN header,
+     * keeping reader and data co-located across moving backends.  The owning
+     * struct korb_array holds a VALUE reference (`backing`) to it.  See
+     * docs/array_payload_value.md. */
+    T_ARY_BACKING,
     T_LAST
 };
 

@@ -91,11 +91,11 @@ static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
         bt = Qnil;
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
         bt = korb_ary_new_capa(c, sp, 1);
-        korb_ary_push(bt, arg);
+        korb_ary_push(c, c->sp_top, bt, arg);
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)arg;
         for (long i = 0; i < a->len; i++) {
-            VALUE e = a->ptr[i];
+            VALUE e = korb_ary_items(a)[i];
             if (SPECIAL_CONST_P(e) || BUILTIN_TYPE(e) != T_STRING) {
                 return korb_raise_type_error(c, "backtrace must be Array of String");
             }

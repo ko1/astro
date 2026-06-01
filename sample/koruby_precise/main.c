@@ -205,12 +205,15 @@ int main(int argc, char *argv[])
             break;
         }
     }
-    /* Build ARGV from args after the script path */
-    VALUE argv_array = korb_ary_new(c, c->sp_top);
+    /* Build ARGV from args after the script path.  Park the array at sp[0]
+     * across the str alloc + push (both can move the array handle). */
+    VALUE *sp = c->sp_top;
+    sp[0] = korb_ary_new(c, sp);
     for (int i = script_arg_start; i < argc; i++) {
-        korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp_top, argv[i]));
+        VALUE s = korb_str_new_cstr(c, sp + 1, argv[i]);   /* sp[0] parked */
+        korb_ary_push(c, sp + 1, sp[0], s);
     }
-    korb_const_set(korb_vm->object_class, korb_intern("ARGV"), argv_array);
+    korb_const_set(korb_vm->object_class, korb_intern("ARGV"), sp[0]);
     /* $0 / $PROGRAM_NAME — the script path. */
     {
         VALUE pn = korb_str_new_cstr(c, c->sp_top, file ? file : (e_code ? "-e" : argv[0]));

@@ -19,11 +19,22 @@ struct korb_string {
     long capa;
 };
 
+/* Array = handle (this struct, fixed-size, address-stable) + a separate
+ * backing payload object (T_ARY_BACKING) holding the VALUE elements.
+ * `backing` is an ordinary heap VALUE reference (GC forwards it like any
+ * edge).  `len` (logical length) lives on the handle; capacity is derived
+ * from the backing's header gc_size.  See docs/array_payload_value.md. */
 struct korb_array {
     struct RBasic basic;
-    VALUE *ptr;
-    long len;
-    long capa;
+    VALUE backing;   /* T_ARY_BACKING object: header + VALUE items[capa] */
+    long  len;       /* logical length (handle-owned; <= capa) */
+};
+
+/* Backing payload object: AroObjectHeader head + VALUE items[capa] inline.
+ * capa is derived from head.gc_size.  Not user-visible. */
+struct korb_ary_backing {
+    struct RBasic basic;   /* head + (unused for backing) klass slot */
+    VALUE items[];         /* flexible: capa = (gc_size - offsetof(items))/8 */
 };
 
 struct korb_hash_entry {
@@ -588,19 +599,60 @@ long  korb_str_len(VALUE s);
 VALUE korb_ary_new_capa(CTX *c, VALUE *sp, long capa);
 VALUE korb_ary_new(CTX *c, VALUE *sp);
 VALUE korb_ary_new_from_values(CTX *c, VALUE *sp, long n, const VALUE *vals);
-void  korb_ary_push(VALUE ary, VALUE v);
+/* push/aset implementations: ary at sp[-2], v at sp[-1].  The inline
+ * wrappers below park ary/v into the caller-provided sp staging slots and
+ * call the _sp body with sp+2 as the new staging base — so a grow's inner
+ * alloc forwards ary/v (they sit just below sp+2) without the caller ever
+ * touching c->sp_top.  See docs/array_payload_value.md. */
+void  korb_ary_push_sp(CTX *c, VALUE *sp);
+void  korb_ary_aset_sp(CTX *c, VALUE *sp, long i);
 VALUE korb_ary_pop(VALUE ary);
-void  korb_ary_aset(VALUE ary, long i, VALUE v);
+
+/* korb_ary_push(c, sp, ary, v): sp = free value-stack top with >=2 scratch
+ * slots.  Parks ary/v, then runs the body staging at sp+2. */
+static inline void
+korb_ary_push(CTX *c, VALUE *sp, VALUE ary, VALUE v) {
+    sp[0] = ary;
+    sp[1] = v;
+    korb_ary_push_sp(c, sp + 2);
+}
+static inline void
+korb_ary_aset(CTX *c, VALUE *sp, VALUE ary, long i, VALUE v) {
+    sp[0] = ary;
+    sp[1] = v;
+    korb_ary_aset_sp(c, sp + 2, i);
+}
+
+/* Array payload accessors (payload-as-VALUE design, docs/array_payload_value.md).
+ * The VALUE elements live in a separate T_ARY_BACKING object referenced by
+ * a->backing; the inline items[] starts right after that object's header.
+ *
+ * korb_ary_items(a) returns the writeable VALUE* base of the elements.  It
+ * is the single chokepoint replacing the old `a->ptr` field: any code that
+ * read `a->ptr[i]` now reads `korb_ary_items(a)[i]`.  The pointer is only
+ * valid until the next GC point (the backing may move) — callers that span
+ * a GC point must re-derive it (same discipline the libc-malloc ptr never
+ * needed, but moving payloads do). */
+static inline __attribute__((always_inline)) VALUE *
+korb_ary_items(const struct korb_array *a) {
+    return a->backing ? ((struct korb_ary_backing *)a->backing)->items : NULL;
+}
+/* Capacity is derived from the backing object's header gc_size. */
+static inline __attribute__((always_inline)) long
+korb_ary_capa(const struct korb_array *a) {
+    if (!a->backing) return 0;
+    uint32_t sz = ((struct RBasic *)a->backing)->head.gc_size;
+    return (long)((sz - offsetof(struct korb_ary_backing, items)) / sizeof(VALUE));
+}
 
 /* korb_ary_aref / korb_ary_len: inlined into SDs.  Hot in optcarrot
- * (`@output_color[pixel]`, `sprite[2]`, etc.).  Both are tiny and
- * struct korb_array is fully visible above. */
+ * (`@output_color[pixel]`, `sprite[2]`, etc.). */
 static inline __attribute__((always_inline)) VALUE
 korb_ary_aref(VALUE av, long i) {
     struct korb_array *a = (struct korb_array *)av;
     if (i < 0) i += a->len;
     if ((unsigned long)i >= (unsigned long)a->len) return Qnil;
-    return a->ptr[i];
+    return korb_ary_items(a)[i];
 }
 static inline __attribute__((always_inline)) long
 korb_ary_len(VALUE av) {
