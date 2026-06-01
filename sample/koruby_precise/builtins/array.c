@@ -2649,26 +2649,30 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
     }
     /* CRuby semantics: try #to_str first (treat as join sep).  Only if
      * the argument doesn't respond to :to_str do we fall back to #to_int. */
+    /* Re-read the recv from argv[0] (a GC-scanned slot) for each coerce
+     * funcall — `arg` as a C-local goes stale across the respond_to?/to_int
+     * GC.  `arg` only holds the final coerced result (a string from to_str,
+     * or a fixnum immediate). */
     VALUE arg = argv[0];
     if (!FIXNUM_P(arg) && BUILTIN_TYPE(arg) != T_STRING) {
-        VALUE rt_str = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+        VALUE rt_str = UNWRAP(korb_funcall(c, argv[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt_str)) {
-            VALUE s = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
+            VALUE s = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
                 arg = s;
             }
         } else {
-            VALUE rt_int = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+            VALUE rt_int = UNWRAP(korb_funcall(c, argv[0], korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (RTEST(rt_int)) {
-                VALUE iv = UNWRAP(korb_funcall(c, arg, korb_intern("to_int"), 0, NULL));
+                VALUE iv = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_int"), 0, NULL));
                 if (FIXNUM_P(iv)) arg = iv;
             } else {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into Integer",
-                           korb_id_name(korb_class_of_class(arg)->name));
+                           korb_id_name(korb_class_of_class(argv[0])->name));
             }
         }
     }
@@ -2679,6 +2683,8 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eA, "negative argument");
         }
         long total;
+        /* self moved across the coerce funcalls — re-read from its slot. */
+        self = sp[-argc - 1];
         long alen = korb_ary_len(self);
         if (__builtin_mul_overflow(alen, n, &total) ||
             total > (long)(LONG_MAX / sizeof(VALUE))) {
