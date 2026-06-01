@@ -3090,30 +3090,41 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* R5: park result at sp[0] across korb_to_int / korb_yield / push-grow GC;
-     * re-derive a from its slot each iteration. */
-    sp[0] = korb_ary_new(c, sp + 1);
+    /* Park result (fr.last_line) + source receiver (fr.last_match) in a
+     * synthetic frame across the per-index korb_yield: yield lowers sp_top
+     * below the cfunc's sp[] slots, so plain sp parking is collected.  Index
+     * args (argv[k]) are typically fixnums; re-derive the source from
+     * fr.last_match each iteration.  Restore c->current_frame on all exits. */
     bool block_p = korb_block_given(c);
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    fr.last_match = sp[-argc - 1];   /* source receiver (re-read post-alloc) */
     for (int k = 0; k < argc; k++) {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[k]));
-        if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
-        long i = FIX2LONG(iv);
-        struct korb_array *a = (struct korb_array *)sp[-argc - 1];
+        RESULT _ivr = korb_to_int_or_raise(c, argv[k]);
+        if (_ivr.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ivr; }
+        if (!FIXNUM_P(_ivr.value)) { c->current_frame = fr.prev; return RESULT_OK(Qnil); }
+        long i = FIX2LONG(_ivr.value);
+        struct korb_array *a = (struct korb_array *)fr.last_match;
         long norm = i < 0 ? i + a->len : i;
         if (norm >= 0 && norm < a->len) {
-            korb_ary_push(c, sp + 1, sp[0], korb_ary_items(a)[norm]);
+            korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_items(a)[norm]);
         } else if (block_p) {
             VALUE arg[1] = { argv[k] };
-            VALUE yv = UNWRAP(korb_yield(c, 1, arg));
-            korb_ary_push(c, sp + 1, sp[0], yv);
+            RESULT _yr = korb_yield(c, 1, arg);
+            if (_yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return _yr; }
+            korb_ary_push(c, c->sp_top, fr.last_line, _yr.value);
         } else {
+            a = (struct korb_array *)fr.last_match;
+            long alen = a->len;
             VALUE eI = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
+            c->current_frame = fr.prev;
             return korb_raise(c, (struct korb_class *)eI,
                        "index %ld outside of array bounds: %ld...%ld",
-                       i, -a->len, a->len);
+                       i, -alen, alen);
         }
     }
-    return RESULT_OK(sp[0]);
+    VALUE result = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
