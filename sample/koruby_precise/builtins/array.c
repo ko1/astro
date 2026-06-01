@@ -3981,13 +3981,14 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
      * Skip the to_ary coerce when arg is a String (CRuby's behavior). */
     VALUE first = argv[0];
     if (argc == 1 && !SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) == T_ARRAY) {
-        /* R5: push-grow moves src — re-derive from its argv slot each iter. */
+        /* R5: push-grow moves both src and self (the receiver) — re-derive
+         * each from its GC-scanned staging slot every iteration. */
         long srclen = korb_ary_len(argv[0]);
         for (long i = 0; i < srclen; i++) {
             struct korb_array *src = (struct korb_array *)argv[0];
-            korb_ary_push(c, c->sp_top, self, korb_ary_items(src)[i]);
+            korb_ary_push(c, c->sp_top, sp[-argc - 1], korb_ary_items(src)[i]);
         }
-        return RESULT_OK(self);
+        return RESULT_OK(sp[-argc - 1]);
     }
     /* Try to_ary coerce when the first arg isn't already an integer-like.
      * Use respond_to?(:to_ary, true) so private to_ary is also seen. */
@@ -4003,9 +4004,9 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
                     long srclen = korb_ary_len(sp[0]);
                     for (long i = 0; i < srclen; i++) {
                         struct korb_array *src = (struct korb_array *)sp[0];
-                        korb_ary_push(c, sp + 1, self, korb_ary_items(src)[i]);
+                        korb_ary_push(c, sp + 1, sp[-argc - 1], korb_ary_items(src)[i]);
                     }
-                    return RESULT_OK(self);
+                    return RESULT_OK(sp[-argc - 1]);
                 }
             }
         }
@@ -4053,18 +4054,28 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
          * and a warning is emitted.  Use the block. */
     }
     if (c->current_block) {
+        /* Park the receiver array across the per-element korb_yield: yield
+         * runs the block body at a lower sp_top, shrinking the GC scan range
+         * below sp[-argc-1], so even the staging slot goes stale.  The frame
+         * chain is always walked, so fr.last_line keeps self alive. */
+        KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);
         for (long i = 0; i < size; i++) {
             VALUE iv = INT2FIX(i);
-            VALUE v = UNWRAP(korb_yield(c, 1, &iv));
-            korb_ary_push(c, c->sp_top, self, v);
+            RESULT _y = korb_yield(c, 1, &iv);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+            korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
         }
+        VALUE result = fr.last_line;
+        c->current_frame = fr.prev;
+        return RESULT_OK(result);
     } else {
         /* R5: re-read the default from its argv slot each iter (push-grow GC
-         * can move it if it's a heap object); self is its own GC slot. */
+         * can move it if it's a heap object), and re-read self (the receiver)
+         * from its GC-scanned staging slot — the C-local goes stale too. */
         for (long i = 0; i < size; i++)
-            korb_ary_push(c, c->sp_top, self, argc >= 2 ? argv[1] : Qnil);
+            korb_ary_push(c, c->sp_top, sp[-argc - 1], argc >= 2 ? argv[1] : Qnil);
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
