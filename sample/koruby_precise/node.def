@@ -713,7 +713,19 @@ NODE_DEF
 node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *begin, NODE *end, uint32_t exclude_end)
 {
     VALUE b = EVAL_ARG_UNWRAP(c, begin);
-    VALUE e = EVAL_ARG_UNWRAP(c, end);
+    /* Park begin across end's eval: end's EVAL can fire GC and strand the
+     * bare C-local b (begin is evaluated first, so it's the one that goes
+     * stale — that was the string-range `r.begin → false` corruption).
+     * This node shares sp with its caller (EVAL_ARG), so use the GC root
+     * stack, not an sp slot. */
+    VALUE *const broot = AROH_ROOT_STACK_TOP(c);
+    broot[0] = b;
+    AROH_ROOT_STACK_SET_TOP(c, broot + 1);
+    RESULT _er = EVAL_ARG(c, end);
+    if (_er.state != KORB_NORMAL) { AROH_ROOT_STACK_SET_TOP(c, broot); return _er; }
+    VALUE e = _er.value;
+    b = broot[0];   /* forwarded across end's GC */
+    AROH_ROOT_STACK_SET_TOP(c, broot);
     return RESULT_OK(korb_range_new(c, c->sp_top, b, e, exclude_end != 0));
 }
 

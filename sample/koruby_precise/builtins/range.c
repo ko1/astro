@@ -424,17 +424,28 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(sp[0]);
     }
     /* Non-numeric: walk via #succ.  Result array parked at sp[0], cursor at
-     * sp[1] so both survive the funcall GC points; staging starts at sp+2. */
+     * sp[1] so both survive the funcall GC points; staging starts at sp+2.
+     * The range is now arena (moving) — re-read it from sp[-argc-1] after each
+     * GC and copy ->end into a local (don't pass &r->end of a moving obj).
+     * Pre-intern IDs so no symbol-table GC strands the freshly-read end. */
+    const ID id_cmp = korb_intern("<=>");
+    const ID id_succ = korb_intern("succ");
     sp[0] = korb_ary_new(c, sp + 1);
-    if (NIL_P(r->begin) || NIL_P(r->end)) return RESULT_OK(sp[0]);
-    sp[1] = r->begin;
+    {
+        struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
+        if (NIL_P(r2->begin) || NIL_P(r2->end)) return RESULT_OK(sp[0]);
+        sp[1] = r2->begin;
+    }
     while (true) {
-        VALUE cmp = UNWRAP(korb_funcall(c, sp[1], korb_intern("<=>"), 1, &r->end));
+        struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
+        VALUE end_v = r2->end;
+        bool excl = r2->exclude_end;
+        VALUE cmp = UNWRAP(korb_funcall(c, sp[1], id_cmp, 1, &end_v));
         if (!FIXNUM_P(cmp)) break;
         long cv = FIX2LONG(cmp);
-        if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
+        if (excl ? (cv >= 0) : (cv > 0)) break;
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
-        sp[1] = UNWRAP(korb_funcall(c, sp[1], korb_intern("succ"), 0, NULL));
+        sp[1] = UNWRAP(korb_funcall(c, sp[1], id_succ, 0, NULL));
     }
     return RESULT_OK(sp[0]);
 }

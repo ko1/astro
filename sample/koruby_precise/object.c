@@ -1929,17 +1929,20 @@ long korb_hash_size(VALUE hv) { return ((struct korb_hash *)hv)->size; }
 
 /* ---- range ---- */
 VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl) {
-    /* sp not used by libc malloc, but accepted for API uniformity per
-     * runtime.md §12.3 — visit_roots scans c->sp_top range. */
-    (void)c; (void)sp;
-    struct korb_range *r = korb_xmalloc(sizeof(*r));
+    /* Moving (arena) allocation: park begin/end at sp[0..1] across the
+     * aro_gc_alloc GC, then re-read the forwarded values.  scan_edges'
+     * T_RANGE case walks begin/end on copy, so no libc registry needed. */
+    sp[0] = b;
+    sp[1] = e;
+    c->sp_top = sp + 2;                 /* publish before the alloc */
+    VALUE rv = aro_gc_alloc(c, sizeof(struct korb_range));
+    struct korb_range *r = (struct korb_range *)rv;
     r->basic.head.flags = T_RANGE;
     r->basic.klass = (VALUE)KORB_VM(c)->range_class;
-    r->begin = b;
-    r->end = e;
+    r->begin = sp[0];                  /* forwarded across the alloc GC */
+    r->end = sp[1];
     r->exclude_end = excl;
-    koruby_register_libc_obj(&r->basic);
-    return (VALUE)r;
+    return rv;
 }
 
 /* ---- float ---- */
