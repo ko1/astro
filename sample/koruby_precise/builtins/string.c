@@ -1212,6 +1212,9 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
                            : korb_id_name(korb_class_of_class(argv[0])->name));
         }
     }
+    /* self may have moved across the to_str coerce funcall — re-read from
+     * its GC-scanned staging slot. */
+    self = sp[-argc - 1];
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)other;
     if (p->len == 0) return RESULT_OK(Qtrue);
@@ -1659,6 +1662,9 @@ static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
+    /* self moved across str_sub — re-read from the parked slot sp[0]. */
+    self = sp[0];
+    s = (struct korb_string *)self;
     s->ptr = buf;
     s->len = r->len;
     return RESULT_OK(self);
