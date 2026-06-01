@@ -2425,13 +2425,32 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
         VALUE arg = korb_id2sym(korb_intern("each_byte"));
         return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
     }
-    /* Read self from c->current_frame->self (auto-tracked). */
-    for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
-        struct korb_string *s = (struct korb_string *)c->current_frame->self;
-        VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-        CHECK(korb_yield(c, 1, &b));
+    /* Park self in a synthetic frame's last_match across the per-byte
+     * korb_yield: yield lowers sp_top below sp[-argc-1] AND restores a stale
+     * prev_self into the cfunc frame, so neither sp[-argc-1] nor
+     * c->current_frame->self survive.  The byte buffer s->ptr is libc
+     * (non-moving) so snapshot ptr/len; the handle (for the return) stays
+     * forwarded via the frame chain.  Restore c->current_frame on all exits. */
+    struct korb_frame fr = {
+        .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .block = c->current_frame->block,
+        .last_line = Qnil, .last_match = self,
+    };
+    c->current_frame = &fr;
+    const struct korb_string *s = (const struct korb_string *)fr.last_match;
+    const char *const ptr = s->ptr;
+    const long len = s->len;
+    for (long i = 0; i < len; i++) {
+        VALUE b = INT2FIX((unsigned char)ptr[i]);
+        RESULT _y = korb_yield(c, 1, &b);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
-    return RESULT_OK(c->current_frame->self);
+    VALUE result = fr.last_match;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 /* String#ord */
@@ -2909,6 +2928,7 @@ static RESULT str_delete_prefix(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp_top, ((struct korb_string *)self)->ptr,
                                        ((struct korb_string *)self)->len));
     VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
+    self = sp[-argc - 1];   /* re-read after str_coerce_arg GC */
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0 &&
@@ -2925,6 +2945,7 @@ static RESULT str_delete_suffix(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp_top, ((struct korb_string *)self)->ptr,
                                        ((struct korb_string *)self)->len));
     VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
+    self = sp[-argc - 1];   /* re-read after str_coerce_arg GC */
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     long cut = s->len - p->len;
@@ -2943,6 +2964,7 @@ static RESULT str_delete_prefix_bang(CTX *c, int argc, VALUE *sp) {
     CHECK_FROZEN_R(c, self);
     if (argc < 1) return RESULT_OK(Qnil);
     VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
+    self = sp[-argc - 1];   /* re-read after str_coerce_arg GC */
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     if (p->len == 0 || p->len > s->len ||
@@ -2966,6 +2988,7 @@ static RESULT str_delete_suffix_bang(CTX *c, int argc, VALUE *sp) {
     CHECK_FROZEN_R(c, self);
     if (argc < 1) return RESULT_OK(Qnil);
     VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
+    self = sp[-argc - 1];   /* re-read after str_coerce_arg GC */
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     long cut = s->len - p->len;
@@ -2986,33 +3009,50 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     bool has_block = korb_block_given(c);
-    /* Park self (sp[0]) + result (sp[1]) across the korb_str_new / korb_yield
-     * GC points; re-derive the C-local string from sp[0]. */
-    sp[0] = self;
-    sp[1] = has_block ? Qnil : korb_ary_new(c, sp + 2);
-    const struct korb_string *s = (const struct korb_string *)sp[0];
+    /* Park self (fr.last_match) + result array (fr.last_line) in a synthetic
+     * frame across the per-line korb_str_new / korb_yield: yield lowers
+     * sp_top below sp[], so plain sp parking is collected (the frame chain is
+     * always walked).  The byte buffer s->ptr is libc (non-moving) so snapshot
+     * ptr/len once.  Restore c->current_frame on every exit. */
+    struct korb_frame fr = {
+        .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .block = c->current_frame->block,
+        .last_line = Qnil, .last_match = self,
+    };
+    fr.last_line = has_block ? Qnil : korb_ary_new(c, c->sp_top);
+    fr.last_match = sp[-argc - 1];   /* re-read after the korb_ary_new GC */
+    c->current_frame = &fr;
+    const struct korb_string *s0 = (const struct korb_string *)fr.last_match;
+    const char *const ptr = s0->ptr;
+    const long len = s0->len;
     long start = 0;
-    for (long i = 0; i < s->len; i++) {
-        if (s->ptr[i] == '\n') {
-            VALUE line = korb_str_new(c, sp + 2, s->ptr + start, i - start + 1);
+    for (long i = 0; i < len; i++) {
+        if (ptr[i] == '\n') {
+            VALUE line = korb_str_new(c, c->sp_top, ptr + start, i - start + 1);
             if (has_block) {
-                CHECK(korb_yield(c, 1, &line));
+                RESULT _y = korb_yield(c, 1, &line);
+                if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             } else {
-                korb_ary_push(c, sp + 2, sp[1], line);
+                korb_ary_push(c, c->sp_top, fr.last_line, line);
             }
-            s = (const struct korb_string *)sp[0];
             start = i + 1;
         }
     }
-    if (start < s->len) {
-        VALUE line = korb_str_new(c, sp + 2, s->ptr + start, s->len - start);
+    if (start < len) {
+        VALUE line = korb_str_new(c, c->sp_top, ptr + start, len - start);
         if (has_block) {
-            CHECK(korb_yield(c, 1, &line));
+            RESULT _y = korb_yield(c, 1, &line);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
-            korb_ary_push(c, sp + 2, sp[1], line);
+            korb_ary_push(c, c->sp_top, fr.last_line, line);
         }
     }
-    return RESULT_OK(has_block ? sp[0] : sp[1]);
+    VALUE result = has_block ? fr.last_match : fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 /* Encoding stubs (we don't track per-string encoding). */

@@ -212,6 +212,11 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
             visit_ptr_slot(ctx, fn, (void **)&cr->klass);
         }
     }
+    /* korb_yield self-save chain — keep each suspended yield's enclosing self
+     * forwarded across the (nested) block body GC.  See CTX.yield_self_chain. */
+    for (struct korb_yield_self_save *ys = c->yield_self_chain; ys; ys = ys->prev) {
+        visit_value_slot(ctx, fn, &ys->self);
+    }
     {
         struct korb_cref *cr = &c->top_cref;
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);

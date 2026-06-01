@@ -991,7 +991,13 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
                blk->rest_slot < 0 && blk->kwh_save_slot < 0)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->current_frame->fp;
-        VALUE prev_self = c->current_frame->self;
+        /* Save the enclosing self in a GC-walked chain (not a bare C-local):
+         * the body's GC can move the enclosing-self object, and it's reachable
+         * only via the frame slot we're about to overwrite, so a C-local would
+         * go stale and we'd restore a dangling pointer. */
+        struct korb_yield_self_save _ys = { .self = c->current_frame->self,
+                                            .prev = c->yield_self_chain };
+        c->yield_self_chain = &_ys;
         struct korb_cref *prev_cref = c->current_frame->cref;
         struct korb_proc *prev_block = c->current_block;
         VALUE *bfp = blk->env;
@@ -1016,7 +1022,8 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
             goto redo_yield;
         }
         c->current_frame->fp = prev_fp;
-        c->current_frame->self = prev_self;
+        c->current_frame->self = _ys.self;   /* forwarded across the body GC */
+        c->yield_self_chain = _ys.prev;
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
         c->running_block = prev_running;

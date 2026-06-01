@@ -426,6 +426,14 @@ struct korb_frame {
     struct korb_frame *eval_prev;
 };
 
+/* korb_yield self-save node — C-stack-allocated per yield, linked into
+ * c->yield_self_chain so visit_roots can keep the saved enclosing self
+ * forwarded across the block body's GC.  See CTX.yield_self_chain. */
+struct korb_yield_self_save {
+    VALUE self;
+    struct korb_yield_self_save *prev;
+};
+
 /* execution context */
 typedef struct CTX_struct {
     /* precise GC instance — see runtime/precise_gc/gc.h.  The framework
@@ -455,6 +463,14 @@ typedef struct CTX_struct {
      * korb_frame.eval_prev).  Walked by visit_roots so suspended eval
      * frames' self/cref stay forwarded across nested-eval GCs. */
     struct korb_frame *eval_frame_chain;
+    /* Head of the korb_yield self-save stack.  korb_yield overwrites
+     * c->current_frame->self with the block's self for the body and must
+     * restore the enclosing self afterwards — but a bare C-local would go
+     * stale across the body's GC (the enclosing self is reachable only via
+     * the overwritten frame slot / a no-longer-scanned sp slot).  Each yield
+     * registers a C-stack save here; visit_roots walks the chain so the saved
+     * self stays forwarded.  Nested yields chain via the per-call `prev`. */
+    struct korb_yield_self_save *yield_self_chain;
 
     /* Per-CTX pointer to the interpreter's machine state.  Naming follows
      * abruby's `c->abm` / `struct abruby_machine` convention (rather than

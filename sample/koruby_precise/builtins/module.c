@@ -394,27 +394,37 @@ static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE r = korb_ary_new(c, c->sp_top);
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(r);
-    struct korb_class *k = NULL;
-    if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
+    /* Park self (msp[0]), result (msp[1]) and the target class (msp[2])
+     * across korb_ary_new / korb_singleton_class_of / per-method push GC —
+     * self and classes are arena (moving).  Method-table buckets are libc
+     * (non-moving) so entry pointers stay valid; re-read the class from
+     * msp[2] each use. */
+    VALUE *const msp = c->sp_top;
+    msp[0] = self;                       /* park self BEFORE korb_ary_new */
+    msp[1] = korb_ary_new(c, msp + 2);   /* result */
+    msp[2] = 0;
+    if (SPECIAL_CONST_P(msp[0])) return RESULT_OK(msp[1]);
+    if (BUILTIN_TYPE(msp[0]) == T_CLASS || BUILTIN_TYPE(msp[0]) == T_MODULE) {
         /* For a class, singleton_methods returns the metaclass methods. */
-        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
-        k = meta;
-    } else if (BUILTIN_TYPE(self) == T_OBJECT) {
-        struct korb_object *o = (struct korb_object *)self;
+        msp[2] = (VALUE)korb_singleton_class_of(c, c->sp_top, (struct korb_class *)msp[0]);
+    } else if (BUILTIN_TYPE(msp[0]) == T_OBJECT) {
+        struct korb_object *o = (struct korb_object *)msp[0];
         struct korb_class *cur = (struct korb_class *)o->basic.klass;
-        if (cur && cur->name == korb_intern("(singleton)")) k = cur;
+        if (cur && cur->name == korb_intern("(singleton)")) msp[2] = (VALUE)cur;
     }
-    if (!k) return RESULT_OK(r);
-    for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
-        for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+    if (!msp[2]) return RESULT_OK(msp[1]);
+    uint32_t bcnt = ((struct korb_class *)msp[2])->methods.bucket_cnt;
+    for (uint32_t b = 0; b < bcnt; b++) {
+        struct korb_method_table_entry *e =
+            ((struct korb_class *)msp[2])->methods.buckets[b];
+        for (; e; e = e->next) {
             if (e->include_depth == 0) {
-                korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
+                VALUE sym = korb_id2sym(e->name);
+                korb_ary_push(c, msp + 3, msp[1], sym);
             }
         }
     }
-    return RESULT_OK(r);
+    return RESULT_OK(msp[1]);
 }
 
 /* Module#method_defined?(name [, inherit=true]) — true for public/
