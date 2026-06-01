@@ -1228,44 +1228,55 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* Result parked at sp[0]; korb_ary_push growth is the GC point. */
-    sp[0] = korb_ary_new(c, sp + 1);
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(sp[0]);
+    /* Park self (sp[0]) + result (sp[1]) across korb_ary_new / per-ivar push:
+     * self (a class/object) is arena (moving), and the derived k/o pointers
+     * go stale across the push GC.  Re-derive k/o from sp[0] each iteration;
+     * the bound is re-read too. */
+    sp[0] = self;
+    sp[1] = korb_ary_new(c, sp + 2);
+    if (SPECIAL_CONST_P(sp[0])) return RESULT_OK(sp[1]);
     /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
      * C.instance_variables == [:@x]).  Stored on the class itself in
      * class_ivars[]. */
-    if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
-        struct korb_class *k = (struct korb_class *)self;
-        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
-            const char *base = korb_id_name(k->class_ivars[i].name);
+    if (BUILTIN_TYPE(sp[0]) == T_CLASS || BUILTIN_TYPE(sp[0]) == T_MODULE) {
+        for (uint32_t i = 0; i < ((struct korb_class *)sp[0])->class_ivar_cnt; i++) {
+            struct korb_class *k = (struct korb_class *)sp[0];
+            ID nm = k->class_ivars[i].name;
+            const char *base = korb_id_name(nm);
+            VALUE sym;
             if (base && base[0] == '@') {
-                korb_ary_push(c, sp + 1, sp[0], korb_id2sym(k->class_ivars[i].name));
+                sym = korb_id2sym(nm);
             } else {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "@%s", base ? base : "");
-                korb_ary_push(c, sp + 1, sp[0], korb_id2sym(korb_intern(buf)));
+                sym = korb_id2sym(korb_intern(buf));
             }
+            korb_ary_push(c, sp + 2, sp[1], sym);
         }
-        return RESULT_OK(sp[0]);
+        return RESULT_OK(sp[1]);
     }
-    if (BUILTIN_TYPE(self) != T_OBJECT) return RESULT_OK(sp[0]);
-    struct korb_object *o = (struct korb_object *)self;
-    struct korb_class *k = (struct korb_class *)o->basic.klass;
+    if (BUILTIN_TYPE(sp[0]) != T_OBJECT) return RESULT_OK(sp[1]);
     /* Only report ivars that have been set (i.e. slot has a non-Qundef
      * value).  ivar_names[i] is the name; o->ivars[i] is the value. */
-    for (uint32_t i = 0; i < k->ivar_count && i < o->ivar_cnt; i++) {
+    for (uint32_t i = 0; ; i++) {
+        struct korb_object *o = (struct korb_object *)sp[0];
+        struct korb_class *k = (struct korb_class *)o->basic.klass;
+        if (i >= k->ivar_count || i >= o->ivar_cnt) break;
         if (UNDEF_P(o->ivars[i])) continue;
-        const char *base = korb_id_name(k->ivar_names[i]);
+        ID nm = k->ivar_names[i];
+        const char *base = korb_id_name(nm);
+        VALUE sym;
         /* The stored ID may already include the leading `@`; if not, prefix. */
         if (base && base[0] == '@') {
-            korb_ary_push(c, sp + 1, sp[0], korb_id2sym(k->ivar_names[i]));
+            sym = korb_id2sym(nm);
         } else {
             char buf[64];
             snprintf(buf, sizeof(buf), "@%s", base ? base : "");
-            korb_ary_push(c, sp + 1, sp[0], korb_id2sym(korb_intern(buf)));
+            sym = korb_id2sym(korb_intern(buf));
         }
+        korb_ary_push(c, sp + 2, sp[1], sym);
     }
-    return RESULT_OK(sp[0]);
+    return RESULT_OK(sp[1]);
 }
 
 /* Kernel#remove_instance_variable — un-set the named ivar and return
