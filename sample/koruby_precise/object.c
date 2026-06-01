@@ -3535,6 +3535,18 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_proc *prev_block = c->current_block;
     struct korb_cref *prev_cref = c->current_frame->cref;
     c->current_block = block;
+    /* Park recv in the CTX dispatch-recv root for the duration of argument
+     * processing.  Between here and `frame.self = recv`, the *rest gather
+     * (korb_ary_new_capa/korb_ary_push) and kwargs peel (korb_hash_new) are GC
+     * points; recv is a moving object held only as a bare C-local parameter, so
+     * without rooting it goes stale and frame.self captures a dead address.
+     * Every method with *rest/&blk/kwargs (incl. the default method_missing)
+     * routes through here.  The CTX slot (not the value stack) is used because
+     * the prologue resets c->sp_top from fp, which would reclaim a vstack park.
+     * Save/restore the previous value so nested dispatch nests correctly. */
+    VALUE prev_dispatch_recv = c->dispatch_recv_root;
+    c->dispatch_recv_root = recv;
+#define recv (c->dispatch_recv_root)
     /* Shift fp to the args base.  Caller staged argv at outer_fp[arg_index..
      * arg_index+argc); body expects to read params from fp[0..argc) and
      * locals from fp[argc..locals_cnt).  Same convention as
@@ -3548,6 +3560,7 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
         c->current_block = prev_block;
+        c->dispatch_recv_root = prev_dispatch_recv;   /* unpark recv */
         return korb_raise(c, NULL, "stack overflow");
     }
     /* Zero-fill the new frame's locals (= slots beyond argc) to Qnil so
@@ -3612,6 +3625,7 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         c->current_frame->fp = prev_fp;
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
+        c->dispatch_recv_root = prev_dispatch_recv;   /* unpark recv */
         return korb_raise(c, (struct korb_class *)eArg,
                           "wrong number of arguments (given %u, expected %u)",
                           argc, mc->total_params_cnt);
@@ -3627,6 +3641,7 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             c->current_frame->fp = prev_fp;
             c->current_frame->cref = prev_cref;
             c->current_block = prev_block;
+            c->dispatch_recv_root = prev_dispatch_recv;   /* unpark recv */
             if (mc->rest_slot >= 0) {
                 return korb_raise(c, (struct korb_class *)eArg,
                                   "wrong number of arguments (given %u, expected %u+)",
@@ -3805,7 +3820,11 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
-    frame.self = recv;
+    frame.self = recv;            /* reads c->dispatch_recv_root (fresh) */
+#undef recv
+    /* recv is now in frame.self (scanned via the frame chain once installed
+     * below); release the CTX dispatch-recv park. */
+    c->dispatch_recv_root = prev_dispatch_recv;
     frame.block = block;
     frame.caller_node = callsite;
     frame.fp = c->current_frame->fp;

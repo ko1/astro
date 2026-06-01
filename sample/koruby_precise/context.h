@@ -487,6 +487,15 @@ typedef struct CTX_struct {
      * record the line of the call into a backtrace. */
     struct Node *last_cfunc_callsite;
 
+    /* Moving-GC root for the receiver during a method prologue's argument
+     * processing.  The receiver arrives as a bare C-local `recv` and is held
+     * across GC points (rest-array build, kwargs hash_new) before being stored
+     * into the new frame's self.  visit_roots scans this slot so recv survives
+     * those GCs.  Each prologue saves the previous value on the C stack and
+     * restores it on exit, so nested dispatch works.  0 when no prologue is
+     * mid-argument-processing. */
+    VALUE dispatch_recv_root;
+
     /* Block currently in scope for yield.  Distinct from
      * current_frame->block (which is the block PASSED to the current
      * method): when a proc body executes, current_block is swapped to

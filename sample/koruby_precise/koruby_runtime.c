@@ -141,6 +141,10 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     }
     /* (b) CTX-held VALUEs. */
     visit_value_slot(ctx, fn, &c->current_frame->self);
+    /* Receiver parked by a method prologue mid-argument-processing (held as a
+     * bare C-local across the rest-array / kwargs GC points before reaching
+     * frame.self). */
+    visit_value_slot(ctx, fn, &c->dispatch_recv_root);
     /* c->state / c->state_value field 削除済 (Phase 8d-R5).  THROW/RAISE
      * values now propagate via RESULT.value through the call chain so
      * there's nothing here to visit. */
