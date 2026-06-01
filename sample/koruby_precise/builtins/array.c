@@ -2762,12 +2762,20 @@ static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
 static RESULT ary_try_to_int(CTX *c, VALUE v) {
     if (FIXNUM_P(v)) return RESULT_OK(v);
     if (SPECIAL_CONST_P(v)) return RESULT_OK(Qundef);
-    VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-    if (!RTEST(rt)) return RESULT_OK(Qundef);
-    VALUE iv = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
-    if (!FIXNUM_P(iv)) return RESULT_OK(Qundef);
-    return RESULT_OK(iv);
+    /* v is by-value; it goes stale across the respond_to?/to_int funcalls.
+     * Park it in the GC root stack (no sp slot available in this helper). */
+    VALUE *const vroot = AROH_ROOT_STACK_TOP(c);
+    vroot[0] = v;
+    AROH_ROOT_STACK_SET_TOP(c, vroot + 1);
+    VALUE to_int_sym = korb_id2sym(korb_intern("to_int"));
+    RESULT _rt = korb_funcall(c, vroot[0], korb_intern("respond_to?"), 1, &to_int_sym);
+    if (_rt.state != KORB_NORMAL) { AROH_ROOT_STACK_SET_TOP(c, vroot); return _rt; }
+    if (!RTEST(_rt.value)) { AROH_ROOT_STACK_SET_TOP(c, vroot); return RESULT_OK(Qundef); }
+    RESULT _iv = korb_funcall(c, vroot[0], korb_intern("to_int"), 0, NULL);
+    AROH_ROOT_STACK_SET_TOP(c, vroot);
+    if (_iv.state != KORB_NORMAL) return _iv;
+    if (!FIXNUM_P(_iv.value)) return RESULT_OK(Qundef);
+    return RESULT_OK(_iv.value);
 }
 
 /* Common helper: remove a[start, len] in place and return the removed

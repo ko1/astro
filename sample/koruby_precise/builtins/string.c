@@ -1252,6 +1252,8 @@ static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
                               korb_id_name(korb_class_of_class(argv[0])->name));
         }
     }
+    /* self moved across the to_str coerce funcall — re-read from its slot. */
+    self = sp[-argc - 1];
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *o = (struct korb_string *)other;
     s->ptr = korb_xmalloc_atomic(o->len + 1);
