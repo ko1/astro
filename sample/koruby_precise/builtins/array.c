@@ -3182,6 +3182,9 @@ static RESULT ary_delete_at(CTX *c, int argc, VALUE *sp) {
         if (!FIXNUM_P(idx)) return RESULT_OK(Qnil);
     }
     if (!FIXNUM_P(idx)) return RESULT_OK(Qnil);
+    /* self may have moved across the to_int funcall — re-read from the
+     * GC-scanned staging slot, not the stale C-local. */
+    self = sp[-argc - 1];
     struct korb_array *a = (struct korb_array *)self;
     long i = FIX2LONG(idx);
     if (i < 0) i += a->len;
@@ -3934,19 +3937,23 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
 /* Array[] — class method, equivalent to an array literal of the args. */
 RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
-    VALUE *argv = sp - argc;
+    VALUE *const argv = sp - argc;   /* args stay rooted in their scanned slots */
 
-    VALUE r = korb_ary_new_capa(c, c->sp_top, (long)argc);
+    /* The new array's handle is parked at sp[0] by korb_ary_new_capa and
+     * kept rooted there across the push loop (korb_ary_push raises sp_top
+     * above sp[0] before each grow).  Read self/argv fresh from their
+     * scanned slots — the C-locals would go stale across the moving GC. */
+    sp[0] = korb_ary_new_capa(c, sp, (long)argc);
     /* Honor the receiver class — `MySubclass[1,2,3]` returns a
      * MySubclass instance (CRuby Array.[] semantics).  Default cases
      * (Array.[]) keep Array as the basic.klass. */
+    VALUE self = sp[-argc - 1];      /* re-read post-alloc (slot is scanned) */
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
         self != (VALUE)KORB_VM(c)->array_class) {
-        ((struct RBasic *)r)->klass = self;
+        ((struct RBasic *)sp[0])->klass = self;
     }
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, r, argv[i]);
-    return RESULT_OK(r);
+    for (int i = 0; i < argc; i++) korb_ary_push(c, sp, sp[0], argv[i]);
+    return RESULT_OK(sp[0]);
 }
 
 /* Array#initialize — populate an already-allocated Array in place.  Called
@@ -4315,7 +4322,9 @@ static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
     if (n < 0) {
         return korb_raise_argument_error(c, "negative array size");
     }
-    /* R5: a went stale across the to_int funcall — re-derive; pre-sized copy. */
+    /* R5: a/self went stale across the to_int funcall — re-derive from the
+     * GC-scanned staging slot (sp[-argc-1]), not the stale C-local. */
+    self = sp[-argc - 1];
     long alen = korb_ary_len(self);
     if (n > alen) n = alen;
     sp[0] = korb_ary_new_capa(c, sp + 1, n);
@@ -4372,7 +4381,9 @@ static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
     if (n < 0) {
         return korb_raise_argument_error(c, "negative array size");
     }
-    /* R5: a went stale across the to_int funcall — re-derive; pre-sized copy. */
+    /* R5: a/self went stale across the to_int funcall — re-derive from the
+     * GC-scanned staging slot (sp[-argc-1]), not the stale C-local. */
+    self = sp[-argc - 1];
     long alen = korb_ary_len(self);
     if (n > alen) n = alen;
     long start = alen - n;

@@ -4412,6 +4412,15 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp_top;
     VALUE prev_self = c->current_frame->self;
+    /* Root recv across the argument-processing window.  recv lives only in
+     * this C-local until c->current_frame->self = recv (below); but the
+     * rest-array korb_ary_new_capa / kwh korb_hash_new in between fire GC,
+     * which under a moving collector relocates recv out from under the
+     * C-local.  Park it in the CTX field scanned by visit_roots (same idiom
+     * as prologue_ast_general's dispatch_recv_root) and re-read it at the
+     * two frame-self store sites.  Save/restore prev for reentrancy. */
+    VALUE prev_dispatch_recv = c->dispatch_recv_root;
+    c->dispatch_recv_root = recv;
     /* push frame after all current locals; we don't know exactly the boundary,
      * so use sp as upper bound.  Restore sp at end so repeated send-style
      * dispatches don't leak high-water mark. */
@@ -4463,7 +4472,7 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     /* (Locals beyond total_params already initialized to Qnil by the
      * zero-fill above; nothing else needed here.) */
     c->current_frame->fp = new_fp;
-    c->current_frame->self = recv;
+    c->current_frame->self = c->dispatch_recv_root;  /* recv, possibly moved */
     /* &blk binding: when the method declares `&name`, copy the current
      * block into that slot so funcall_with_block delivers it to the
      * body.  Without this, `Foo.new { ... }`'s block doesn't reach
@@ -4490,7 +4499,7 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
         .prev = c->current_frame,
         .caller_node = NULL,
         .method = m,
-        .self = recv,
+        .self = c->dispatch_recv_root,  /* recv, possibly moved by kwh alloc */
         .fp = c->current_frame->fp,
         .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class,
@@ -4502,6 +4511,9 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
         .caller_running_block = c->running_block,
     };
     c->current_frame = &frame2;
+    /* recv is now rooted via frame2.self in the frame chain; release the
+     * CTX-field park so nested dispatch in the body can reuse it. */
+    c->dispatch_recv_root = prev_dispatch_recv;
     /* Reset c->running_block: this is a fresh method body, not lexically
      * inside the caller's block.  Without this, `super` inside the
      * callee resolves via the caller block's defining_method (e.g.
