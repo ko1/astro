@@ -368,8 +368,11 @@ static RESULT ary_push(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, self, argv[i]);
-    return RESULT_OK(self);
+    /* Moving GC: korb_ary_push can grow the backing → GC → move the array
+     * handle.  Re-read self from the GC-tracked receiver slot sp[-argc-1] each
+     * iteration; argv[i] sits in scanned arg slots so it stays valid. */
+    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, sp[-argc - 1], argv[i]);
+    return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT ary_pop(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;

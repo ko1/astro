@@ -2259,8 +2259,10 @@ static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
      * GC points; re-derive the C-local string from sp[0] each push. */
     sp[0] = self;
     sp[1] = korb_ary_new(c, sp + 2);
+    /* korb_ary_new just fired GC and moved self — re-derive s before any use
+     * (the loop condition below reads s->len/s->ptr). */
+    s = (struct korb_string *)sp[0];
     if (sep_len == 0) {
-        s = (struct korb_string *)sp[0];
         korb_ary_push(c, sp + 2, sp[1], korb_str_new(c, sp + 2, s->ptr, s->len));
         return RESULT_OK(sp[1]);
     }
