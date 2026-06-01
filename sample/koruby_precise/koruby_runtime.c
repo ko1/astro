@@ -197,6 +197,21 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
             visit_ptr_slot(ctx, fn, (void **)&cr->klass);
         }
     }
+    /* Active eval/require top_frames: each is pushed with prev=NULL (control-
+     * flow isolation), which disconnects it from c->current_frame's chain
+     * while a deeper nested eval is running.  Walk them via the CTX-resident
+     * eval_frame_chain so their self (= main_obj) / cref stay forwarded.
+     * Idempotent if a frame is also the current head (forwarding is). */
+    for (struct korb_frame *ef = c->eval_frame_chain; ef; ef = ef->eval_prev) {
+        visit_value_slot(ctx, fn, &ef->self);
+        visit_value_slot(ctx, fn, &ef->last_line);
+        visit_value_slot(ctx, fn, &ef->last_match);
+        visit_ptr_slot(ctx, fn, (void **)&ef->block);
+        visit_ptr_slot(ctx, fn, (void **)&ef->current_class);
+        for (struct korb_cref *cr = ef->cref; cr; cr = cr->prev) {
+            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+        }
+    }
     {
         struct korb_cref *cr = &c->top_cref;
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);

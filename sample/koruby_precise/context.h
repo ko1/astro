@@ -417,6 +417,13 @@ struct korb_frame {
      * `bind = binding; ...; b = 1; @ret = bind` returns a binding
      * that sees b's final value (CRuby heap-promote semantics). */
     void *bindings_head;
+    /* Only set on the synthetic top_frame korb_eval_string pushes (prev=NULL
+     * for control-flow isolation).  Links active eval/require top_frames into
+     * a CTX-resident stack (c->eval_frame_chain) so visit_roots can keep their
+     * `self` (= main_obj) and cref alive while a DEEPER nested eval is current
+     * — the prev=NULL cut would otherwise disconnect them from the head chain
+     * and let main_obj go stale across the inner eval's GCs. */
+    struct korb_frame *eval_prev;
 };
 
 /* execution context */
@@ -444,6 +451,10 @@ typedef struct CTX_struct {
      * mc->def_cref (= SEPARATE chain via korb_cref_dup). */
     struct korb_frame sentinel_frame;
     struct korb_cref  top_cref;
+    /* Head of the active eval/require top_frame stack (linked via
+     * korb_frame.eval_prev).  Walked by visit_roots so suspended eval
+     * frames' self/cref stay forwarded across nested-eval GCs. */
+    struct korb_frame *eval_frame_chain;
 
     /* Per-CTX pointer to the interpreter's machine state.  Naming follows
      * abruby's `c->abm` / `struct abruby_machine` convention (rather than

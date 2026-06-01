@@ -5098,6 +5098,12 @@ RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filenam
     };
     c->current_frame = &top_frame;
     c->running_block = NULL;
+    /* Register this top_frame on the eval-frame stack so visit_roots keeps
+     * its self (= main_obj) and cref alive while a DEEPER nested eval/require
+     * is current (top_frame.prev=NULL disconnects it from the head chain). */
+    struct korb_frame *prev_eval_chain = c->eval_frame_chain;
+    top_frame.eval_prev = prev_eval_chain;
+    c->eval_frame_chain = &top_frame;
 
     /* Reset cref to [Object] for top-level execution */
     struct korb_cref top_cref = { .klass = KORB_VM(c)->object_class, .prev = NULL };
@@ -5128,6 +5134,7 @@ RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filenam
     c->current_frame->current_file = prev_file;
     c->current_frame = prev_frame;
     c->running_block = prev_running_block;
+    c->eval_frame_chain = prev_eval_chain;
     return _br;
 }
 
