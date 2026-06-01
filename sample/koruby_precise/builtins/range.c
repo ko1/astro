@@ -198,6 +198,7 @@ static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
     RESULT _err = RESULT_OK(Qnil);
     long cmp = rng_cmp(c, r->begin, r->end, &_err);
     if (_err.state != KORB_NORMAL) return _err;
+    r = (struct korb_range *)sp[-argc - 1];   /* range moved across rng_cmp's funcall */
     if (cmp == LONG_MAX) return RESULT_OK(Qnil);
     if (cmp > 0) return RESULT_OK(Qnil);
     if (cmp == 0 && r->exclude_end) return RESULT_OK(Qnil);
@@ -239,6 +240,7 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
     RESULT _err2 = RESULT_OK(Qnil);
     long cmp = rng_cmp(c, r->begin, r->end, &_err2);
     if (_err2.state != KORB_NORMAL) return _err2;
+    r = (struct korb_range *)sp[-argc - 1];   /* range moved across rng_cmp's funcall */
     if (cmp == LONG_MAX) return RESULT_OK(Qnil);
     if (cmp > 0) return RESULT_OK(Qnil);
     if (cmp == 0 && r->exclude_end) return RESULT_OK(Qnil);
@@ -471,9 +473,10 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
         if (step == 0.0) return RESULT_OK(self);
         double b = korb_num2dbl(r->begin);
         double e = korb_num2dbl(r->end);
+        bool fexcl = r->exclude_end;   /* capture: r (moving) goes stale in the loop */
         bool has_block = korb_block_given(c);
         sp[0] = has_block ? Qnil : korb_ary_new(c, sp + 1);
-        for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
+        for (double v = b; fexcl ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
                 CHECK(korb_yield(c, 1, &fv));
@@ -481,7 +484,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
                 korb_ary_push(c, sp + 1, sp[0], fv);
             }
         }
-        return RESULT_OK(has_block ? self : sp[0]);
+        return RESULT_OK(has_block ? sp[-argc - 1] : sp[0]);
     }
     long step = argc >= 1 && FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 1;
     if (step == 0) return RESULT_OK(self);
@@ -510,7 +513,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
             CHECK(korb_yield(c, 1, &v));
         }
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);   /* self moved across the yields */
 }
 
 /* Range#zip — pair each element with the corresponding element of
@@ -540,22 +543,40 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
             VALUE pair[2] = { INT2FIX(i), INT2FIX(idx) };
             CHECK(korb_yield(c, 2, pair));
         }
-        return RESULT_OK(self);
+        return RESULT_OK(sp[-argc - 1]);   /* self moved across the yields */
     }
-    /* Non-numeric: walk via #succ */
-    if (NIL_P(r->begin) || NIL_P(r->end)) return RESULT_OK(self);
-    VALUE cur = r->begin;
+    /* Non-numeric: walk via #succ.  Park range (fr.last_match) + cursor
+     * (fr.last_line) across the per-step funcall/yield; the range is now
+     * arena (moving) so re-read it and copy ->end into a local. */
+    {
+        struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
+        if (NIL_P(r2->begin) || NIL_P(r2->end)) return RESULT_OK(sp[-argc - 1]);
+    }
+    const ID id_cmp = korb_intern("<=>");
+    const ID id_succ = korb_intern("succ");
+    KORB_RNG_YIELD_FRAME(c, fr, Qnil);
+    fr.last_match = sp[-argc - 1];
+    fr.last_line = ((struct korb_range *)fr.last_match)->begin;
     while (true) {
-        VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
-        if (!FIXNUM_P(cmp)) break;
-        long cv = FIX2LONG(cmp);
-        if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
-        VALUE pair[2] = { cur, INT2FIX(idx) };
-        CHECK(korb_yield(c, 2, pair));
-        cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
+        struct korb_range *r2 = (struct korb_range *)fr.last_match;
+        VALUE end_v = r2->end;
+        bool excl = r2->exclude_end;
+        RESULT _cm = korb_funcall(c, fr.last_line, id_cmp, 1, &end_v);
+        if (_cm.state != KORB_NORMAL) { c->current_frame = fr.prev; return _cm; }
+        if (!FIXNUM_P(_cm.value)) break;
+        long cv = FIX2LONG(_cm.value);
+        if (excl ? (cv >= 0) : (cv > 0)) break;
+        VALUE pair[2] = { fr.last_line, INT2FIX(idx) };
+        RESULT _y = korb_yield(c, 2, pair);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        RESULT _sx = korb_funcall(c, fr.last_line, id_succ, 0, NULL);
+        if (_sx.state != KORB_NORMAL) { c->current_frame = fr.prev; return _sx; }
+        fr.last_line = _sx.value;
         idx++;
     }
-    return RESULT_OK(self);
+    VALUE result = fr.last_match;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
@@ -644,17 +665,28 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
      * order-preserving but not a proper "discrete includes" relation
      * — but for the koruby subset (no full encoding awareness) the
      * comparison is sufficient. */
-    VALUE arg = argv[0];
-    VALUE end_copy = r->end;
-    if (!NIL_P(r->begin)) {
-        VALUE cmp = UNWRAP(korb_funcall(c, r->begin, korb_intern("<=>"), 1, &arg));
-        if (!FIXNUM_P(cmp) || FIX2LONG(cmp) > 0) return RESULT_OK(Qfalse);
+    /* Range is arena (moving): re-read it from sp[-argc-1] after each funcall
+     * and copy begin/end into locals (don't pass &r->field of a moving obj).
+     * argv[0] (the include? arg) is read fresh from its scanned slot. */
+    const ID id_cmp = korb_intern("<=>");
+    {
+        struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
+        if (!NIL_P(r2->begin)) {
+            VALUE begin_v = r2->begin;
+            VALUE cmp = UNWRAP(korb_funcall(c, begin_v, id_cmp, 1, &argv[0]));
+            if (!FIXNUM_P(cmp) || FIX2LONG(cmp) > 0) return RESULT_OK(Qfalse);
+        }
     }
-    if (!NIL_P(r->end)) {
-        VALUE cmp = UNWRAP(korb_funcall(c, arg, korb_intern("<=>"), 1, &end_copy));
-        if (!FIXNUM_P(cmp)) return RESULT_OK(Qfalse);
-        long cv = FIX2LONG(cmp);
-        if (r->exclude_end ? (cv >= 0) : (cv > 0)) return RESULT_OK(Qfalse);
+    {
+        struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
+        if (!NIL_P(r2->end)) {
+            VALUE end_v = r2->end;
+            bool excl = r2->exclude_end;
+            VALUE cmp = UNWRAP(korb_funcall(c, argv[0], id_cmp, 1, &end_v));
+            if (!FIXNUM_P(cmp)) return RESULT_OK(Qfalse);
+            long cv = FIX2LONG(cmp);
+            if (excl ? (cv >= 0) : (cv > 0)) return RESULT_OK(Qfalse);
+        }
     }
     return RESULT_OK(Qtrue);
 }
