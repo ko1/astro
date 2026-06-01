@@ -1014,16 +1014,23 @@ static RESULT kernel_xstring(CTX *c, int argc, VALUE *sp) {
     }
     close(pipefd[1]);
     char buf[4096];
-    VALUE r = korb_str_new_cstr(c, c->sp_top, "");
+    /* Park r (result) in sp[0] and the per-chunk string in sp[1] across the
+     * korb_str_new / make_process_status GC points: the string handle is a
+     * moving arena object, so an unrooted C-local r goes stale the moment a
+     * read() chunk (or the Process::Status object) allocates. */
+    sp[0] = 0;
+    sp[1] = 0;
+    sp[0] = korb_str_new_cstr(c, sp + 2, "");
     ssize_t n;
     while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-        korb_str_concat(c, c->sp_top, r, korb_str_new(c, c->sp_top, buf, n));
+        sp[1] = korb_str_new(c, sp + 2, buf, n);
+        korb_str_concat(c, sp + 2, sp[0], sp[1]);
     }
     close(pipefd[0]);
     int wstatus = 0;
     waitpid(pid, &wstatus, 0);
     korb_gvar_set(korb_intern("$?"), make_process_status(c, wstatus, pid));
-    return RESULT_OK(r);
+    return RESULT_OK(sp[0]);
 }
 
 /* Kernel#exec — replace the current process. */
