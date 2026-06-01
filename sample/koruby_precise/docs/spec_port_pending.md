@@ -21,14 +21,34 @@ rubyspec から port した test (test/test_spec_port.rb) で判明した、GC �
     非衝突に予約する必要があり、 regression リスク高。 dedicated に直す案件として pending。
   regression test: test/test_aset_literal.rb。
 
-- **stored-Proc captured-array mutation crashes under STRESS** (control-flow rooting):
+- **[FIXED 2026-06] stored-Proc captured-array mutation crashes under STRESS**:
   `f = ->(x){ acc << x }; (1..30).each{|x| f.call(x) }` で acc (closure capture の
-  moving array) が proc_call の epilogue で stale → SEGV。直接 `acc<<x` は OK。
-  flat_map / each_with_object (bootstrap.rb の Enumerable、 内部で stored block を
-  loop call) が依存。crash は proc_call (builtins/proc.c:377) の
-  korb_proc_snapshot_env_maybe(_br.value) で _br.value を BUILTIN_TYPE deref。
-  = method dispatch / proc_call / frame-transition で moving value を C-local 保持する
-  共通 subsystem の rooting gap (test_alias_redef = korb_class_of_class(recv),
-  test_fiber と同族)。 rubyspec STRESS の CRASH=143 の大半はこの共通経路由来 (個別
-  builtin 修正では CRASH 数が動かないことで確認済)。 dedicated な dispatch/proc-call
-  value-rooting の作り直しが要る = 次の本丸。
+  moving array) が stale → SEGV だった。真因は dispatch ではなく EVAL_node_lshift の
+  Array fast-path (`a << x`) が korb_ary_push で l を grow (GC で移動) させた後 stale な
+  C-local l を return していたこと。`a.push(x)` が動いて `a<<x` が落ちたのは push が
+  別 path だったため。park slot を返すよう node.def 修正で解決。test_spec_port2 の
+  closure-capture を un-pend 済 (normal/STRESS 両 green)。
+  当初疑った dispatch 経路の stale-recv も実在し別途修正済
+  (korb_dispatch_to_method の dispatch_recv_root park)。
+
+- **[FIXED 2026-06] method dispatch で frame->self が stale (rubyspec STRESS 最大 cluster)**:
+  DISPATCH_node_ivar_get / korb_class_of_class(recv) の SEGV。korb_eval_string が
+  top_frame を prev=NULL で push するため、nested require/load 中に外側 (suspended) の
+  eval top_frame が visit_roots の head chain から切れ、その間に main_obj が動くと
+  frame->self が stale 化していた。CTX に eval_frame_chain stack を追加し全 eval
+  top_frame を walk するよう修正。あわせて ary_first_n/last_n/delete_at/class_brackets/
+  initialize, ary_lshift の builtin stale-self も修正。
+  → rubyspec STRESS sweep: PASS 179→555 (CRASH 138→81 以降さらに低下)。
+
+- **[PENDING] string range の STRESS+PURGE crash (range→arena 未移行)**:
+  `("a".."e").each {...}` や単に `r=("a".."e"); GC; r.begin` が STRESS+PURGE で SEGV /
+  `r.begin` が `false` に化ける。begin と end が **両方 heap obj (string)** のときだけ
+  begin が壊れる (`5.."e"` や `"a"..nil` は OK)。rng_each 非依存の pre-existing GC bug。
+  原因: korb_range は **xmalloc (非 moving)** で、begin/end の moving string は libc-obj
+  registry (koruby_runtime.c phase f) 経由で forward される。registry walk の timing と
+  to/from swap の組合せで r->begin が「現サイクルで未使用な to-space 領域」を指す
+  stale ref になり、forward_payload (gc_copy.c:509) が NULL を返して begin=0(Qfalse) 化。
+  正しい修正は **range を array 同様 arena (aro_gc_alloc) に移行** すること
+  (gc_copy.c:503-506 のコメントが Phase 3 として明記)。range.c 全体の `struct korb_range *r`
+  C-local 保持を sp[-argc-1] 再読込に直す必要があり中規模。array 移行が一段落してから着手。
+  rng_each の numeric path は parked self を返すよう修正済 (string path のみ未解決)。
