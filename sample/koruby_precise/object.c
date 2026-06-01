@@ -1832,6 +1832,7 @@ VALUE korb_hash_new(CTX *c, VALUE *sp) {
     h->default_value = Qnil;
     h->default_proc  = Qnil;
     h->compare_by_identity = false;
+    h->identity_rehash_gen = 0;
     koruby_register_libc_obj(&h->basic);
     return (VALUE)h;
 }
@@ -1856,8 +1857,31 @@ static void korb_hash_resize(struct korb_hash *h, uint32_t nc) {
     h->bucket_cnt = nc;
 }
 
+/* Rehash an identity hash whose keys may have moved since the last GC.
+ * Recomputes each entry's cached hash from the (already GC-forwarded) key
+ * address and re-buckets in place.  No-op for non-identity hashes and when
+ * already current for this GC generation.  Allocation-free (reuses buckets). */
+extern uint64_t korb_g_gc_gen;
+void korb_hash_rehash_identity_if_stale(struct korb_hash *h) {
+    if (!h->compare_by_identity) return;
+    if (h->identity_rehash_gen == korb_g_gc_gen) return;
+    h->identity_rehash_gen = korb_g_gc_gen;
+    /* Clear bucket heads, then re-insert each entry by its key's current
+     * address.  e->key was forwarded by visit_roots' hash walk, so it holds
+     * the new address; e->hash (old address) is recomputed here. */
+    for (uint32_t i = 0; i < h->bucket_cnt; i++) h->buckets[i] = NULL;
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        uint64_t hh = (uint64_t)e->key;
+        uint32_t b = (uint32_t)(hh % h->bucket_cnt);
+        e->hash = hh;
+        e->bucket_next = h->buckets[b];
+        h->buckets[b] = e;
+    }
+}
+
 VALUE korb_hash_aset(CTX *c, VALUE hv, VALUE key, VALUE val) {
     struct korb_hash *h = (struct korb_hash *)hv;
+    korb_hash_rehash_identity_if_stale(h);
     uint64_t hh = korb_hash_key(c, h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
     /* search existing within this bucket only — proper chained hash */
@@ -1889,6 +1913,7 @@ VALUE korb_hash_aset(CTX *c, VALUE hv, VALUE key, VALUE val) {
  * cases the inline can't (T_STRING keys, compare_by_identity tables). */
 VALUE korb_hash_aref_slow(CTX *c, VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
+    korb_hash_rehash_identity_if_stale(h);
     uint64_t hh = korb_hash_key(c, h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
     for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {

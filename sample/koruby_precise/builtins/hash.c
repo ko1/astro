@@ -46,6 +46,7 @@ static RESULT hash_aref(CTX *c, int argc, VALUE *sp) {
      * subclass overrides (`class X < Hash; def default(k); ...; end`)
      * participate in the lookup. */
     struct korb_hash *h = (struct korb_hash *)self;
+    korb_hash_rehash_identity_if_stale(h);
     if (h->size > 0) {
         uint64_t hh = h->compare_by_identity ? (uint64_t)argv[0] : korb_hash_value(c, argv[0]);
         uint32_t b = (uint32_t)(hh % h->bucket_cnt);
@@ -157,6 +158,7 @@ static RESULT hash_compare_by_identity(CTX *c, int argc, VALUE *sp) {
         e->bucket_next = h->buckets[b];
         h->buckets[b] = e;
     }
+    { extern uint64_t korb_g_gc_gen; h->identity_rehash_gen = korb_g_gc_gen; }
     return RESULT_OK(self);
 }
 
@@ -559,6 +561,7 @@ static RESULT hash_delete(CTX *c, int argc, VALUE *sp) {
     CHECK_FROZEN_R(c, self);
     if (argc < 1) return RESULT_OK(Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
+    korb_hash_rehash_identity_if_stale(h);
     VALUE key = argv[0];
     uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(c, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
@@ -1238,6 +1241,7 @@ static RESULT hash_fetch_values(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
+    korb_hash_rehash_identity_if_stale(h);
     /* Result (moving Array) parked in fr.last_line so it survives the block
      * fallback's korb_yield; k staged at sp[0] for that yield (argv). */
     KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
@@ -1374,6 +1378,7 @@ static RESULT hash_slice(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
+    korb_hash_rehash_identity_if_stale(h);
     VALUE r = korb_hash_new(c, c->sp_top);
     struct korb_hash *rh = (struct korb_hash *)r;
     /* CRuby: slice retains the compare_by_identity flag. */

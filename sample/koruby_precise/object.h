@@ -55,6 +55,12 @@ struct korb_hash {
     VALUE default_value;
     VALUE default_proc;             /* Proc for Hash.new { |h, k| ... }; Qnil otherwise */
     bool compare_by_identity;       /* keys compared by object identity */
+    /* GC generation at which an identity hash was last rehashed.  Identity
+     * hashing keys on the raw (moving) address, so after a moving GC forwards
+     * the keys, each entry's cached hash + bucket placement go stale.  When
+     * korb_g_gc_gen advances past this, the next access rehashes from the
+     * forwarded keys.  Unused for non-identity hashes. */
+    uint64_t identity_rehash_gen;
 };
 
 struct korb_range {
@@ -662,6 +668,10 @@ korb_ary_len(VALUE av) {
 /* hash */
 VALUE korb_hash_new(CTX *c, VALUE *sp);
 VALUE korb_hash_aref_slow(CTX *c, VALUE h, VALUE key);
+/* Rehash an identity (compare_by_identity) hash if a moving GC has run since
+ * its last rehash — its keys are hashed by raw address, which the GC changes.
+ * Call before any bucket lookup/insert on a hash that may be identity-based. */
+void korb_hash_rehash_identity_if_stale(struct korb_hash *h);
 
 /* korb_hash_aref: inlined fast path for FIXNUM / SYMBOL keys (the
  * common case in optcarrot's @sp_map[@hclk]).  Strings and
