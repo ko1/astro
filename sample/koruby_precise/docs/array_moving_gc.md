@@ -27,10 +27,27 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 | campaign 開始時 | 179 | 138 |
 | dispatch recv + array builtins | 555 | 81 |
 | **eval_frame_chain** + lshift + rng_each | 1092 | 80 |
-| class_new/obj_dup/module/str_clone/const_path/str | **1964** | **53** |
+| class_new/obj_dup/module/str_clone/const_path/str | 1964 | 53 |
+| **yield self-chain** + str/module builtins | 2093 | 47 |
+| ary_mul / str_tr_bang / instance_variables / splat root-stack | 2107 | 46 |
+| **rest-gather staging** (|*xs| 修正) | **2246** | **38** |
 
-PASS が **11×**、CRASH が **−61%**。FAIL/ERR が増えたのは、crash していた file が完走して
+PASS が **12.5×** (179→2246)、CRASH が **−72%** (138→38)。FAIL/ERR が増えたのは、crash していた file が完走して
 feature-gap の assertion (未実装メソッド等) を露出するようになったため (= 前進)。
+
+### 第2弾で効いた追加 framework fix
+- **yield self-chain** (CTX.yield_self_chain): korb_yield fast path は block body 実行のため
+  frame->self を block の self に書換え、後で bare C-local prev_self を復元していた。enclosing
+  self は書換えた frame slot 経由でしか到達できず body の GC で stale 化 → 復元後に
+  c->current_frame->self を読む全箇所 (EVAL_node_func_call の implicit-self dispatch 等) が SEGV。
+  C-stack save の linked list を CTX に持ち visit_roots が walk (eval_frame_chain と同 idiom)。
+  slow path は既存 AROH_ROOT_STACK で対処済だった。
+- **rest-gather staging** (korb_yield_slow): `|*xs|` の rest gather が args_buf (unscanned C-stack
+  snapshot) の要素を korb_ary_new_capa の GC 後に push → moving した heap 要素を stale 格納。
+  alloc 前に rest 引数を value stack に stage して forward させる。hash.any?{|k,v|} や
+  blk.call(*xs) 経由の Enumerable 全般 (any/all/none/group_by 等) の crash を解消。
+- **splat root-stack** (node_splat_to_ary): `*expr` が splat 値 v を to_a funcall 跨ぎで stale 保持。
+  この node は EVAL_ARG 経由で caller と sp 共有のため sp park 不可 (recv 破壊)、AROH_ROOT_STACK に park。
 
 ### 効いた fix (大きい順)
 1. **eval_frame_chain** (最大、PASS 555→1092): `korb_eval_string` の top_frame は制御フロー隔離で
