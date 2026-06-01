@@ -77,57 +77,87 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     if (!korb_block_given(c)) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
-    struct korb_range *r = (struct korb_range *)self;
     /* Beginless range: TypeError (can't iterate starting from -Inf). */
-    if (NIL_P(r->begin)) {
+    if (NIL_P(((struct korb_range *)self)->begin)) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "can't iterate from beginless range");
     }
-    /* Integer begin (incl Bignum): step by 1 until past end. */
-    if (FIXNUM_P(r->begin) && (NIL_P(r->end) || FIXNUM_P(r->end))) {
-        long b = FIX2LONG(r->begin);
-        if (NIL_P(r->end)) {
-            /* Endless: yield forever (CRuby raises after LONG_MAX but
-             * effectively infinite — user must `break`). */
-            for (long i = b; ; i++) {
-                VALUE v = INT2FIX(i);
-                CHECK(korb_yield(c, 1, &v));
+    /* Park the range receiver (fr.last_match) and, for non-numeric ranges,
+     * the current element (fr.last_line) across the per-step korb_yield /
+     * korb_funcall.  Those lower sp_top below sp[-argc-1] / relocate the
+     * range, so the C-locals self/r/cur would go stale; the frame chain is
+     * always walked by visit_roots so the parked slots stay forwarded.
+     * Restore c->current_frame = fr.prev on every exit. */
+    KORB_RNG_YIELD_FRAME(c, fr, Qnil);
+    fr.last_match = sp[-argc - 1];   /* range receiver (re-read fresh) */
+    {
+        struct korb_range *r = (struct korb_range *)fr.last_match;
+        /* Integer begin (incl Bignum): step by 1 until past end. */
+        if (FIXNUM_P(r->begin) && (NIL_P(r->end) || FIXNUM_P(r->end))) {
+            long b = FIX2LONG(r->begin);
+            bool endless = NIL_P(r->end);
+            long stop_excl = 0;
+            if (!endless) {
+                long e = FIX2LONG(r->end);
+                stop_excl = r->exclude_end ? e : e + 1;
             }
-        } else {
-            long e = FIX2LONG(r->end);
-            long stop_excl = r->exclude_end ? e : e + 1;
-            for (long i = b; i < stop_excl; i++) {
+            for (long i = b; endless || i < stop_excl; i++) {
                 VALUE v = INT2FIX(i);
-                CHECK(korb_yield(c, 1, &v));
+                RESULT _y = korb_yield(c, 1, &v);
+                if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             }
+            VALUE result = fr.last_match;
+            c->current_frame = fr.prev;
+            return RESULT_OK(result);
         }
-        return RESULT_OK(self);
     }
     /* Non-numeric ranges: walk via #succ until > end.  Begin must respond
-     * to #succ; otherwise TypeError. */
-    VALUE rt = UNWRAP(korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("succ")) }));
-    if (!RTEST(rt)) {
-        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        return korb_raise(c, (struct korb_class *)eT, "can't iterate from %s",
-                   SPECIAL_CONST_P(r->begin) ? "(special)"
-                       : korb_id_name(korb_class_of_class(r->begin)->name));
-    }
-    VALUE cur = r->begin;
-    while (true) {
-        if (NIL_P(r->end)) {
-            CHECK(korb_yield(c, 1, &cur));
-        } else {
-            VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
-            if (!FIXNUM_P(cmp)) break;
-            long cv = FIX2LONG(cmp);
-            if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
-            CHECK(korb_yield(c, 1, &cur));
+     * to #succ; otherwise TypeError.  Pre-intern all IDs / symbols up front:
+     * korb_intern / korb_id2sym can fire GC (symbol-table growth), and if it
+     * runs while a range-field read sits in a funcall argument temporary,
+     * that temporary goes stale (C arg-eval order). */
+    const ID id_respond = korb_intern("respond_to?");
+    const ID id_succ    = korb_intern("succ");
+    const ID id_cmp     = korb_intern("<=>");
+    VALUE succ_sym      = korb_id2sym(id_succ);
+    {
+        struct korb_range *r = (struct korb_range *)fr.last_match;
+        RESULT _rt = korb_funcall(c, r->begin, id_respond, 1, &succ_sym);
+        if (_rt.state != KORB_NORMAL) { c->current_frame = fr.prev; return _rt; }
+        if (!RTEST(_rt.value)) {
+            r = (struct korb_range *)fr.last_match;   /* re-read after funcall */
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            const char *bn = SPECIAL_CONST_P(r->begin) ? "(special)"
+                               : korb_id_name(korb_class_of_class(r->begin)->name);
+            c->current_frame = fr.prev;
+            return korb_raise(c, (struct korb_class *)eT, "can't iterate from %s", bn);
         }
-        cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
     }
-    return RESULT_OK(self);
+    fr.last_line = ((struct korb_range *)fr.last_match)->begin;   /* cur */
+    while (true) {
+        struct korb_range *r = (struct korb_range *)fr.last_match;
+        if (NIL_P(r->end)) {
+            RESULT _y = korb_yield(c, 1, &fr.last_line);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        } else {
+            VALUE end = r->end;
+            RESULT _cm = korb_funcall(c, fr.last_line, id_cmp, 1, &end);
+            if (_cm.state != KORB_NORMAL) { c->current_frame = fr.prev; return _cm; }
+            if (!FIXNUM_P(_cm.value)) break;
+            long cv = FIX2LONG(_cm.value);
+            r = (struct korb_range *)fr.last_match;   /* re-read exclude_end */
+            if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
+            RESULT _y = korb_yield(c, 1, &fr.last_line);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
+        }
+        RESULT _sx = korb_funcall(c, fr.last_line, id_succ, 0, NULL);
+        if (_sx.state != KORB_NORMAL) { c->current_frame = fr.prev; return _sx; }
+        fr.last_line = _sx.value;
+    }
+    VALUE result = fr.last_match;
+    c->current_frame = fr.prev;
+    return RESULT_OK(result);
 }
 
 /* Compare two values using <=>.  Returns 0 if equal, negative if a<b,
