@@ -2546,7 +2546,19 @@ node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
         /* $! reflects in-flight exception during ensure body. */
         korb_gvar_set(korb_intern("$!"), _br.value);
     }
+    /* Root the body's result across the ensure clause: _br.value is a moving
+     * object held only in this C-local RESULT, and EVAL_ARG(ensure_body) runs
+     * arbitrary code that allocates (GC).  Under STRESS the value moved and
+     * the returned _br.value was left stale → the caller's prologue/proc-call
+     * epilogue deref'd a collected object (mspec `it` runs after_each hooks in
+     * its ensure, returning the block's MSpecExpectation: system_spec etc.).
+     * An sp slot is unusable (ensure_body reuses sp[0..] as scratch); park on
+     * yield_self_chain, which visit_roots forwards regardless of sp. */
+    struct korb_yield_self_save _br_save = { .self = _br.value, .prev = c->yield_self_chain };
+    c->yield_self_chain = &_br_save;
     RESULT _er = EVAL_ARG(c, ensure_body);
+    _br.value = _br_save.self;          /* forwarded across the ensure GC */
+    c->yield_self_chain = _br_save.prev;
     /* If the ensure body itself raised / broke / returned, it wins.
      * Otherwise propagate the body's RESULT (including its state). */
     if (_er.state != KORB_NORMAL) {
