@@ -2404,49 +2404,61 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
     }
     if (argc >= idx_arg_base + 1 && !SPECIAL_CONST_P(argv[idx_arg_base]) &&
         BUILTIN_TYPE(argv[idx_arg_base]) == T_RANGE) {
-        struct korb_range *r = (struct korb_range *)argv[idx_arg_base];
+        /* The range and its endpoints are moving handles, and the to_int
+         * coercions below are GC points; a cached `struct korb_range *r`
+         * goes stale across them.  Always re-read the range (and its
+         * begin/end) from argv[idx_arg_base] (scanned + forwarded by
+         * visit_roots) at each use. */
+        #define RNG ((struct korb_range *)argv[idx_arg_base])
         long b, e;
+        bool excl;
         /* Coerce begin via to_int. */
-        if (NIL_P(r->begin)) {
+        VALUE rbeg = RNG->begin;
+        if (NIL_P(rbeg)) {
             b = 0;
-        } else if (FIXNUM_P(r->begin)) {
-            b = FIX2LONG(r->begin);
-        } else if (!SPECIAL_CONST_P(r->begin)) {
-            VALUE rt = UNWRAP(korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
+        } else if (FIXNUM_P(rbeg)) {
+            b = FIX2LONG(rbeg);
+        } else if (!SPECIAL_CONST_P(rbeg)) {
+            VALUE rt = UNWRAP(korb_funcall(c, rbeg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion into Integer");
             }
-            VALUE iv = UNWRAP(korb_funcall(c, r->begin, korb_intern("to_int"), 0, NULL));
+            VALUE iv = UNWRAP(korb_funcall(c, RNG->begin, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             b = FIX2LONG(iv);
         } else {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
         }
-        if (NIL_P(r->end)) {
+        VALUE rend = RNG->end;
+        excl = RNG->exclude_end;
+        a = (struct korb_array *)sp[-argc - 1];  /* re-derive after begin coercion GC */
+        if (NIL_P(rend)) {
             e = a->len - 1;
-        } else if (FIXNUM_P(r->end)) {
-            e = FIX2LONG(r->end);
-            if (r->exclude_end) e -= 1;
-        } else if (!SPECIAL_CONST_P(r->end)) {
-            VALUE rt = UNWRAP(korb_funcall(c, r->end, korb_intern("respond_to?"), 1,
+        } else if (FIXNUM_P(rend)) {
+            e = FIX2LONG(rend);
+            if (excl) e -= 1;
+        } else if (!SPECIAL_CONST_P(rend)) {
+            VALUE rt = UNWRAP(korb_funcall(c, rend, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion into Integer");
             }
-            VALUE iv = UNWRAP(korb_funcall(c, r->end, korb_intern("to_int"), 0, NULL));
+            VALUE iv = UNWRAP(korb_funcall(c, RNG->end, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             e = FIX2LONG(iv);
-            if (r->exclude_end) e -= 1;
+            if (RNG->exclude_end) e -= 1;
         } else {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
         }
+        #undef RNG
+        a = (struct korb_array *)sp[-argc - 1];  /* re-derive after end coercion GC */
         long orig_b = b;
         if (b < 0) b += a->len;
         if (e < 0) e += a->len;
@@ -2463,9 +2475,11 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
                 VALUE eR = korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"));
                 return korb_raise(c, (struct korb_class *)eR, "range too large");
             }
-            /* R5: push grows self (GC) — re-derive a each iteration. */
+            /* R5: push grows self (GC) — re-derive a each iteration, and
+             * push to the re-read handle (the `self` C-local is stale once
+             * a prior push moved the array). */
             while ((a = (struct korb_array *)sp[-argc - 1])->len <= e)
-                korb_ary_push(c, c->sp_top, self, Qnil);
+                korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
         }
         start = b;
         len = e - b + 1;
@@ -2491,14 +2505,20 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
                 VALUE eR = korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"));
                 return korb_raise(c, (struct korb_class *)eR, "length too large");
             }
-            /* R5: push grows self (GC) — re-derive a each iteration. */
+            /* R5: push grows self (GC) — re-derive a each iteration, and
+             * push to the re-read handle (the `self` C-local is stale once
+             * a prior push moved the array). */
             while ((a = (struct korb_array *)sp[-argc - 1])->len < start + len)
-                korb_ary_push(c, c->sp_top, self, Qnil);
+                korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
         }
     }
     /* R5: re-derive a after any growth above. */
     a = (struct korb_array *)sp[-argc - 1];
-    if (start >= a->len) return RESULT_OK(self);
+    /* Re-read self too: the growth push loops / block yields above are GC
+     * points, so the original `self` C-local is a stale (moved) handle.
+     * Returning it would hand a dead pointer to the caller's next dispatch
+     * (korb_class_of_class SEGV under STRESS+PURGE, e.g. fill(...).should). */
+    if (start >= a->len) return RESULT_OK(sp[-argc - 1]);
     long end = start + len;
     if (end > a->len) end = a->len;
     if (has_block) {
@@ -2512,7 +2532,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
     } else {
         for (long i = start; i < end; i++) korb_ary_items(a)[i] = argv[0];
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 static RESULT ary_sample(CTX *c, int argc, VALUE *sp) {
