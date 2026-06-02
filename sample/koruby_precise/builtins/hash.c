@@ -802,7 +802,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
 
     if (argc == 0) {
         VALUE r = korb_hash_new(c, c->sp_top);
-        hash_apply_self_class(c, r, self);
+        hash_apply_self_class(c, r, sp[-argc - 1]);  /* re-read self: korb_hash_new moved it */
         return RESULT_OK(r);
     }
     if (argc == 1) {
@@ -812,6 +812,9 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
             BUILTIN_TYPE(arg) != T_ARRAY) {
             VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
+            /* respond_to? is a GC point — re-read arg (still the original
+             * argument) before dispatching the coercion on it. */
+            arg = argv[0];
             if (RTEST(rt)) {
                 VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_HASH) {
@@ -820,6 +823,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
             } else {
                 VALUE rt2 = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                          (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
+                arg = argv[0];
                 if (RTEST(rt2)) {
                     VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
                     if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
@@ -830,7 +834,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
             VALUE r = korb_hash_new(c, c->sp_top);
-            hash_apply_self_class(c, r, self);
+            hash_apply_self_class(c, r, sp[-argc - 1]);  /* re-read self: korb_hash_new moved it */
             struct korb_hash *src = (struct korb_hash *)arg;
             for (struct korb_hash_entry *e = src->first; e; e = e->next) {
                 korb_hash_aset(c, r, e->key, e->value);
@@ -840,7 +844,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
             /* Hash[ [[k,v], [k,v]] ] form. */
             VALUE r = korb_hash_new(c, c->sp_top);
-            hash_apply_self_class(c, r, self);
+            hash_apply_self_class(c, r, sp[-argc - 1]);  /* re-read self: korb_hash_new moved it */
             struct korb_array *a = (struct korb_array *)arg;
             for (long i = 0; i < a->len; i++) {
                 VALUE pair = korb_ary_items(a)[i];
@@ -873,7 +877,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
                    "odd number of arguments for Hash");
     }
     VALUE r = korb_hash_new(c, c->sp_top);
-    hash_apply_self_class(c, r, self);
+    hash_apply_self_class(c, r, sp[-argc - 1]);  /* re-read self: korb_hash_new moved it */
     for (int i = 0; i + 1 < argc; i += 2) {
         korb_hash_aset(c, r, argv[i], argv[i+1]);
     }
