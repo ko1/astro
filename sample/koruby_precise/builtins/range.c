@@ -3,6 +3,23 @@
 /* ---------- Range ---------- */
 extern VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl);
 
+/* CRuby String#upto overshoot guard for succ-based Range iteration: stop once
+ * the cursor's string length exceeds the end's.  Without it, ('A'..'z') /
+ * (:A..:z) loop forever — String#succ carries 'Z'->'AA', which stays < 'z' by
+ * <=> so the cmp test never terminates and the accumulator grows until it
+ * SEGVs.  Returns the comparison length for String/Symbol, or -1 (no guard). */
+static long range_succ_len(VALUE v) {
+    if (SPECIAL_CONST_P(v)) {
+        if (SYMBOL_P(v)) {
+            const char *n = korb_id_name(korb_sym2id(v));
+            return n ? (long)strlen(n) : -1;
+        }
+        return -1;
+    }
+    if (BUILTIN_TYPE(v) == T_STRING) return ((struct korb_string *)v)->len;
+    return -1;
+}
+
 /* KORB_RNG_YIELD_FRAME — park a cross-yield root (an accumulator array or a
  * moving accumulator value) in a synthetic frame's last_line slot, made
  * current for the duration of a yield loop.  Structurally identical to
@@ -148,6 +165,8 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
             long cv = FIX2LONG(_cm.value);
             r = (struct korb_range *)fr.last_match;   /* re-read exclude_end */
             if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
+            { long cl = range_succ_len(fr.last_line), el = range_succ_len(end);
+              if (cl >= 0 && el >= 0 && cl > el) break; }
             RESULT _y = korb_yield(c, 1, &fr.last_line);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         }
@@ -446,6 +465,8 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
         if (!FIXNUM_P(cmp)) break;
         long cv = FIX2LONG(cmp);
         if (excl ? (cv >= 0) : (cv > 0)) break;
+        { long cl = range_succ_len(sp[1]), el = range_succ_len(end_v);
+          if (cl >= 0 && el >= 0 && cl > el) break; }
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
         sp[1] = UNWRAP(korb_funcall(c, sp[1], id_succ, 0, NULL));
     }
