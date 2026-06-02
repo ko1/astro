@@ -657,8 +657,9 @@ static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
         }
     }
     /* Pin self / sep / result / per-iter element in sp[0..3].
-     * Inner alloc helpers publish c->sp_top = sp+4 themselves. */
-    sp[0] = self;
+     * Inner alloc helpers publish c->sp_top = sp+4 themselves.  Re-read self:
+     * the separator to_str coercion above is a GC point. */
+    sp[0] = sp[-argc - 1];
     sp[1] = sep;
     sp[2] = 0;
     sp[3] = Qnil;
@@ -3576,6 +3577,8 @@ static RESULT ary_cmp(CTX *c, int argc, VALUE *sp) {
         VALUE coerced = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_ary"), 0, NULL));
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_ARRAY) return RESULT_OK(Qnil);
         argv[0] = coerced;
+        /* The to_ary coercion is a GC point — re-read self. */
+        self = sp[-argc - 1];
     }
     /* Recursion guard: re-entering on same (self, other) returns 0. */
     for (int j = 0; j < ary_cmp_top; j++) {
@@ -4089,6 +4092,9 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
             }
         }
     }
+    /* The to_ary coercion above is a GC point — re-read first from its arg
+     * slot before the type checks / size coercion below dereference it. */
+    first = argv[0];
     /* size/default form: coerce size via #to_int when needed. */
     long size = 0;
     if (FIXNUM_P(first)) {
@@ -4100,6 +4106,9 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
     } else if (!SPECIAL_CONST_P(first)) {
         VALUE iv = UNWRAP(korb_funcall(c, first, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
+        /* respond_to? is a GC point — re-read first from its arg slot before
+         * dispatching to_int (and for the error message below). */
+        first = argv[0];
         if (RTEST(iv)) {
             VALUE n = UNWRAP(korb_funcall(c, first, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(n)) {
