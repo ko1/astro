@@ -1905,61 +1905,39 @@ static RESULT ary_concat(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    /* Snapshot all source arrays' contents BEFORE any push — this handles
-     * `ary.concat(ary)` (self-concat) and `ary.concat(ary, ary)` correctly,
-     * even when args alias self.  We also coerce non-Array args via #to_ary
-     * (CRuby semantics). */
-    long total = 0;
-    /* TODO payload-gc: bufs[] snapshots source ELEMENT VALUEs into libc
-     * buffers held across the korb_funcall(to_ary) and the push-grow GC points
-     * below; those VALUEs are scanned outside the GC and go stale (moving-GC
-     * shadow-buf hazard).  Needs sp parking — not fixable by simple re-read. */
-    VALUE *bufs[16];                 /* per-arg snapshot ptr (or argv[i] if T_ARRAY without self-aliasing concern) */
-    long  lens[16];                  /* per-arg snapshot len */
-    if (argc > 16) {
-        /* Fallback for ridiculously many args — process sequentially with
-         * per-iter src_len snapshot.  Doesn't handle full self-alias case
-         * but argc>16 is not a real workload. */
-        for (int i = 0; i < argc; i++) {
-            VALUE arg = argv[i];
-            if (BUILTIN_TYPE(arg) != T_ARRAY) {
-                if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) {
-                    arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
-                    if (BUILTIN_TYPE(arg) != T_ARRAY) continue;
-                }
-            }
-            struct korb_array *o = (struct korb_array *)arg;
-            long src_len = o->len;
-            /* TODO payload-gc: o (and the to_ary-coerced arg) held across the
-             * push-grow GC point; goes stale.  argc>16 fallback, not a real
-             * workload — needs sp parking. */
-            for (long j = 0; j < src_len; j++) korb_ary_push(c, c->sp_top, self, korb_ary_items(o)[j]);
-        }
-        return RESULT_OK(self);
-    }
+    if (argc == 0) return RESULT_OK(self);
+    /* Coerce each arg to an Array (CRuby #to_ary semantics) and park the
+     * coerced sources on the value stack at sp[0..argc).  Parking (rather
+     * than libc shadow buffers) keeps the source handles scanned + forwarded
+     * across both the #to_ary GC points and the push-grow GC points below —
+     * including the `ary.concat(ary)` self-alias case, where sp[i] holds the
+     * receiver and is forwarded right alongside sp[-argc-1].  Per-arg source
+     * lengths are snapshot before any push so a self-alias only copies the
+     * original elements (CRuby behaviour). */
+    long lens[argc];
+    for (int i = 0; i < argc; i++) sp[i] = Qnil;   /* zero-fill before publishing */
+    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE arg = argv[i];
         if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) {
-            arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
-            if (BUILTIN_TYPE(arg) != T_ARRAY) { bufs[i] = NULL; lens[i] = 0; continue; }
+            RESULT tr = korb_funcall_r(c, arg, korb_intern("to_ary"), 0, NULL);
+            if (tr.state != KORB_NORMAL) { c->sp_top = sp; return tr; }
+            arg = tr.value;
+            if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) { lens[i] = 0; continue; }
         }
-        struct korb_array *o = (struct korb_array *)arg;
-        lens[i] = o->len;
-        /* Copy snapshot into a temp libc buffer so self-aliased pushes
-         * later don't corrupt our source view. */
-        if (lens[i] > 0) {
-            bufs[i] = korb_xmalloc(lens[i] * sizeof(VALUE));
-            for (long j = 0; j < lens[i]; j++) bufs[i][j] = korb_ary_items(o)[j];
-        } else {
-            bufs[i] = NULL;
-        }
-        total += lens[i];
+        sp[i] = arg;
+        lens[i] = korb_ary_len(arg);
     }
+    /* Push to the re-read receiver, re-deriving each source from its parked
+     * slot every iteration (the push-grow GC moves both). */
     for (int i = 0; i < argc; i++) {
-        for (long j = 0; j < lens[i]; j++) korb_ary_push(c, c->sp_top, self, bufs[i][j]);
+        for (long j = 0; j < lens[i]; j++) {
+            const struct korb_array *o = (const struct korb_array *)sp[i];
+            korb_ary_push(c, c->sp_top, sp[-argc - 1], korb_ary_items(o)[j]);
+        }
     }
-    (void)total;
-    return RESULT_OK(self);
+    c->sp_top = sp;
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 /* Array#+ — non-destructive concat (CRuby semantics).  Coerces the
@@ -1992,9 +1970,11 @@ RESULT ary_plus(CTX *c, int argc, VALUE *sp) {
         }
     }
     /* R5: result pre-sized (push won't grow); park it at sp[1] and the coerced
-     * `other` at sp[0], then re-derive l/r after the korb_ary_new_capa GC. */
+     * `other` at sp[0], then re-derive l/r after the korb_ary_new_capa GC.
+     * Re-read self for its length: the #to_ary coercion above is a GC point
+     * that leaves the `self` C-local stale. */
     sp[0] = other;
-    long llen = korb_ary_len(self), rlen = korb_ary_len(other);
+    long llen = korb_ary_len(sp[-argc - 1]), rlen = korb_ary_len(other);
     sp[1] = korb_ary_new_capa(c, sp + 2, llen + rlen);
     {
         struct korb_array *l = (struct korb_array *)sp[-argc - 1];
@@ -2197,11 +2177,13 @@ static RESULT ary_unshift(CTX *c, int argc, VALUE *sp) {
     /* shift right argc times.  R5: the nil-padding pushes can grow self (GC),
      * so re-derive a from its slot afterwards before the in-place shuffle. */
     long oldlen = korb_ary_len(self);
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, self, Qnil);
+    /* Push to the re-read handle: the `self` C-local goes stale once a
+     * prior push grows the array (moving GC). */
+    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
     struct korb_array *a = (struct korb_array *)sp[-argc - 1];
     for (long i = oldlen - 1; i >= 0; i--) korb_ary_items(a)[i + argc] = korb_ary_items(a)[i];
     for (int i = 0; i < argc; i++) korb_ary_items(a)[i] = argv[i];
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 static RESULT ary_shift(CTX *c, int argc, VALUE *sp) {
@@ -3462,20 +3444,23 @@ static RESULT ary_replace(CTX *c, int argc, VALUE *sp) {
                               korb_id_name(korb_class_of_class(argv[0])->name));
         }
     }
+    /* The #to_ary coercion above is a GC point — re-read self. */
+    self = sp[-argc - 1];
     /* Self-replace is a no-op (CRuby semantics). */
     if (self == other) return RESULT_OK(self);
     /* R5: park the (possibly coerced) source at sp[0]; the push-grows below
-     * move it, so re-derive b each iteration.  self is its own GC slot. */
+     * move it, so re-derive b each iteration, and push to the re-read self
+     * handle (the C-local goes stale once a push grows the array). */
     sp[0] = other;
-    ((struct korb_array *)self)->len = 0;
+    ((struct korb_array *)sp[-argc - 1])->len = 0;
     {
         long blen = korb_ary_len(sp[0]);
         for (long i = 0; i < blen; i++) {
             struct korb_array *b = (struct korb_array *)sp[0];
-            korb_ary_push(c, sp + 1, self, korb_ary_items(b)[i]);
+            korb_ary_push(c, sp + 1, sp[-argc - 1], korb_ary_items(b)[i]);
         }
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 /* Array#each_index { |i| ... } — yields successive indices. */
