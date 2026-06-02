@@ -771,11 +771,13 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 1..2)", argc);
     }
-    VALUE tag = argv[0];
-    VALUE val = argc >= 2 ? argv[1] : Qnil;
+    /* korb_ary_new_capa is a GC point; the tag / val (moving objects) must be
+     * re-read from the forwarded argv slots AFTER it — caching them in
+     * C-locals before the alloc left the throw pair holding a stale tag, which
+     * the catcher's korb_eq then deref'd (SEGV, catch_spec under STRESS). */
     VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(c, c->sp_top, pair, tag);
-    korb_ary_push(c, c->sp_top, pair, val);
+    korb_ary_push(c, c->sp_top, pair, argv[0]);
+    korb_ary_push(c, c->sp_top, pair, argc >= 2 ? argv[1] : Qnil);
     return (RESULT){ pair, KORB_THROW };
 }
 
