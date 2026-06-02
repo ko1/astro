@@ -289,6 +289,9 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(val) && BUILTIN_TYPE(val) != T_ARRAY) {
             VALUE rt = UNWRAP(korb_funcall(c, val, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
+            /* respond_to? is a GC point — re-read val from its scanned arg
+             * slot before dispatching to_ary on it. */
+            val = argv[2];
             if (RTEST(rt)) {
                 VALUE coerced = UNWRAP(korb_funcall(c, val, korb_intern("to_ary"), 0, NULL));
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
@@ -325,7 +328,9 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
              *  - Resize via shift if src_array.len != len.
              */
             if (start > a->len) {
-                while (a->len < start) korb_ary_push(c, sp + 1, sp[-argc - 1], Qnil);
+                /* Re-derive `a` in the condition too: each push grows (and
+                 * moves) the array, leaving the C-local stale. */
+                while (((struct korb_array *)sp[-argc - 1])->len < start) korb_ary_push(c, sp + 1, sp[-argc - 1], Qnil);
                 a = (struct korb_array *)sp[-argc - 1];
             }
             long avail_len = a->len - start;
@@ -357,7 +362,9 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
             sp[0] = val;
             c->sp_top = sp + 1;
             if (start > a->len) {
-                while (a->len < start) korb_ary_push(c, sp + 1, sp[-argc - 1], Qnil);
+                /* Re-derive `a` in the condition too: each push grows (and
+                 * moves) the array, leaving the C-local stale. */
+                while (((struct korb_array *)sp[-argc - 1])->len < start) korb_ary_push(c, sp + 1, sp[-argc - 1], Qnil);
                 a = (struct korb_array *)sp[-argc - 1];
             }
             long avail_len = a->len - start;
