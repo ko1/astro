@@ -5447,13 +5447,21 @@ RESULT korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     /* $! and $@ are fiber-local — stash resumer's, swap in fiber's. */
     fib->resumer_bang = korb_gvar_get(korb_intern("$!"));
     korb_gvar_set(korb_intern("$!"), fib->fiber_bang);
-    c->current_frame->fp = fib->fiber_fp;
     c->sp_top = fib->fiber_sp;
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
+    /* Switch to the fiber's saved frame FIRST, THEN write its fp/cref/class.
+     * Writing them before the switch (on a 2nd+ resume) lands them on the
+     * RESUMER's frame, and on fiber END the swapback restores into the dead
+     * fiber_root instead of the resumer frame — leaving the resumer frame's
+     * cref = the fiber's (dangling) cref → SEGV in later const lookups
+     * (lazy/range StopIteration end paths).  On first resume
+     * (fiber_current_frame == NULL) the fiber runs in the resumer frame, so
+     * these correctly target it. */
+    if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
+    c->current_frame->fp = fib->fiber_fp;
     if (fib->fiber_cref) c->current_frame->cref = fib->fiber_cref;
     if (fib->fiber_current_class) c->current_frame->current_class = fib->fiber_current_class;
-    if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
     fib->state = KF_RUNNING;
 
     /* Boehm walks the current thread's C stack during GC.  Inside a
