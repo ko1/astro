@@ -2498,10 +2498,20 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
             if (blk->rest_slot >= 0) {
                 uint32_t rest_room = (arr_len > taken_left + post_cnt)
                                        ? arr_len - taken_left - post_cnt : 0;
+                /* korb_ary_new_capa is a GC point that moves the source array
+                 * `a` (held only via a C-local here — its caller-frame park is
+                 * not visible from korb_yield_slow).  Park it on the value
+                 * stack and re-read it before the element copy.  The pre-sized
+                 * pushes themselves don't alloc, so `rest`/`a` then stay put. */
+                VALUE *const a_root = c->sp_top;
+                a_root[0] = (VALUE)a;
+                c->sp_top = a_root + 1;
                 VALUE rest = korb_ary_new_capa(c, c->sp_top, (long)rest_room);
+                a = (struct korb_array *)a_root[0];
                 for (uint32_t i = 0; i < rest_room; i++) {
                     korb_ary_push(c, c->sp_top, rest, korb_ary_items(a)[taken_left + i]);
                 }
+                c->sp_top = a_root;
                 fp[blk->rest_slot] = rest;
                 taken_left += rest_room;
             }
