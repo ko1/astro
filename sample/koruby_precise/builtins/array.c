@@ -77,22 +77,39 @@ static RESULT korb_to_int_or_raise(CTX *c, VALUE v) {
     bool is_real = !SPECIAL_CONST_P(v);
     bool is_float = FLONUM_P(v) || (is_real && BUILTIN_TYPE(v) == T_FLOAT);
     if (is_real || is_float) {
-        VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-        if (RTEST(rt)) {
-            VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
+        /* respond_to? and to_int are GC points, and `v` is a bare param
+         * VALUE with no caller slot to re-read.  Park it on the value stack
+         * so the moving GC forwards it; otherwise the second funcall (and
+         * the error-message class lookups) dispatch on a dead pointer. */
+        VALUE *const vroot = c->sp_top;
+        vroot[0] = v;
+        c->sp_top = vroot + 1;
+        RESULT _rt = korb_funcall(c, vroot[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+        if (_rt.state != KORB_NORMAL) { c->sp_top = vroot; return _rt; }
+        if (RTEST(_rt.value)) {
+            RESULT _ri = korb_funcall(c, vroot[0], korb_intern("to_int"), 0, NULL);
+            if (_ri.state != KORB_NORMAL) { c->sp_top = vroot; return _ri; }
+            VALUE r = _ri.value;
             if (FIXNUM_P(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM)) {
+                c->sp_top = vroot;
                 return RESULT_OK(r);
             }
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             const char *src_n = is_float ? "Float"
-                                : korb_id_name(korb_class_of_class(v)->name);
-            return korb_raise(c, (struct korb_class *)eT,
+                                : korb_id_name(korb_class_of_class(vroot[0])->name);
+            RESULT _e = korb_raise(c, (struct korb_class *)eT,
                        "can't convert %s to Integer (%s#to_int gives %s)",
                        src_n, src_n,
                        SPECIAL_CONST_P(r) ? "(special)"
                            : korb_id_name(korb_class_of_class(r)->name));
+            c->sp_top = vroot;
+            return _e;
         }
+        /* respond_to? was false: re-read the forwarded v for the tail's
+         * error message, then pop the park. */
+        v = vroot[0];
+        c->sp_top = vroot;
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     const char *cn;
@@ -393,6 +410,8 @@ static RESULT ary_pop(CTX *c, int argc, VALUE *sp) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg, "negative array size");
         }
+        /* korb_to_int_or_raise is a GC point — re-read self. */
+        self = sp[-argc - 1];
         long alen = korb_ary_len(self);
         long take = n > alen ? alen : n;
         long start = alen - take;
@@ -2082,7 +2101,10 @@ static RESULT ary_rotate_bang(CTX *c, int argc, VALUE *sp) {
     } else {
         n = 1;
     }
-    /* R5: re-derive a after the korb_to_int_or_raise GC point. */
+    /* R5: re-derive self/a after the korb_to_int_or_raise GC point (the
+     * `return RESULT_OK(self)` sites below would otherwise hand back a
+     * stale handle). */
+    self = sp[-argc - 1];
     struct korb_array *a = (struct korb_array *)sp[-argc - 1];
     long len = a->len;
     n = n % len;
@@ -2123,7 +2145,9 @@ static RESULT ary_rotate(CTX *c, int argc, VALUE *sp) {
     } else {
         n = 1;
     }
-    /* R5: re-derive a after korb_to_int_or_raise; result is pre-sized. */
+    /* R5: re-derive self/a after korb_to_int_or_raise (a GC point); result
+     * is pre-sized. */
+    self = sp[-argc - 1];
     long alen = korb_ary_len(self);
     if (alen == 0) return RESULT_OK(korb_ary_new(c, c->sp_top));
     n = n % alen;
@@ -2200,8 +2224,9 @@ static RESULT ary_shift(CTX *c, int argc, VALUE *sp) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg, "negative array size");
         }
-        /* R5: re-derive a after korb_to_int_or_raise; result pre-sized so the
-         * copy-out pushes won't grow. */
+        /* R5: re-derive self/a after korb_to_int_or_raise (a GC point);
+         * result pre-sized so the copy-out pushes won't grow. */
+        self = sp[-argc - 1];
         long alen = korb_ary_len(self);
         long take = n > alen ? alen : n;
         sp[0] = korb_ary_new_capa(c, sp + 1, take);
@@ -2324,6 +2349,8 @@ static RESULT ary_drop(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(self);
     VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    /* korb_to_int_or_raise is a GC point — re-read self. */
+    self = sp[-argc - 1];
     if (!FIXNUM_P(iv)) return RESULT_OK(self);
     long n = FIX2LONG(iv);
     if (n < 0) {
@@ -3090,7 +3117,9 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
     VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
     if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
     long i = FIX2LONG(iv);
-    struct korb_array *a = (struct korb_array *)self;
+    /* korb_to_int_or_raise is a GC point — re-read self (the C-local is a
+     * stale, possibly moved handle). */
+    struct korb_array *a = (struct korb_array *)sp[-argc - 1];
     long norm = i < 0 ? i + a->len : i;
     if (norm >= 0 && norm < a->len) return RESULT_OK(korb_ary_items(a)[norm]);
     if (korb_block_given(c)) {
