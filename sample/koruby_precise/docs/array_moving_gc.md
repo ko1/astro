@@ -37,10 +37,10 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 
 PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 
-### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→6)
+### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→5)
 
 `tools/sp_segv_scan.sh` (182-file を SEGV / NOTR / OK に分類) の **実 SEGV** を crash site
-ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 6**。各 fix は 1 commit + gate (28/28・27/28) 確認。
+ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 5**。各 fix は 1 commit + gate (28/28・27/28) 確認。
 
 | fix | 解消した spec | 種別 |
 |---|---|---|
@@ -56,7 +56,7 @@ PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 | **Binding を GC scan** (self/lvars/extras/cref) + eval self/result root | kernel/__dir__ | framework gap |
 | **node_ensure の body 結果を ensure 節跨ぎで root** | kernel/system | framework (return-value) |
 
-SEGV ファイル数は最終的に **16 → 6**。
+SEGV ファイル数は最終的に **16 → 5**。
 
 #### ★ node_ensure begin/ensure return-value rooting (dominant return-value cluster)
 `begin body ensure cl end` の `node_ensure` は body の RESULT (`_br.value`、moving) を C-local で
@@ -81,7 +81,7 @@ C-local も args_node の GC で stale 化する (この二重苦が「SEGV clus
 `fp+arg_index==sp` を仮定するので sub-eval を sp+N にずらす手は不可** (inner array の element
 staging が壊れる) — この罠で 1 周回した。
 
-#### 残 SEGV (6, 深い framework / 個別 tier)
+#### 残 SEGV (5, 深い framework / 個別 tier)
 - **[FIXED] proc/method return-value rooting**: node_ensure (system 解消) +
   repeated_combination/permutation の r==0 path (下記)。
   - **[FIXED] repeated_combination/repeated_permutation**: 真因は Fiber でも closure でもなく、
@@ -102,19 +102,24 @@ staging が壊れる) — この罠で 1 周回した。
   ため、**eval body 自身の alloc が park する sp slot が value-stack 範囲外で scan されない**
   (korb_class_new の super が GC 後 stale)。eval body を scannable stack で走らせるか heap-fp を
   scan 領域化する architectural fix が要る。eval-with-binding の根の制約。
-- **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): 深く調査し
-  **真因 = class-identity 重複**と判明 (use-after-return ではなかった)。bisect で
-  `Rational(1,3) == 1` (harness 内) に絞った。`Rational#==` dispatch が **AST method**
-  (Ruby 定義 0x..5790; live Comparable#== は CFUNC 0x..a940 で別物・無関係) を引き、その
-  `def_cref->klass` が **purged plane の old class** を指す。`Rational->super = 0x7ff427800000` だが
-  `Object::Numeric = 0x7ff4278000a8` で **Numeric class object が 2 個併存** (reopen/moving-GC で
-  duplicate 化)。Rational は old/dup Numeric を継承し、その == の def_cref->klass が GC scan で
-  forward されず、const_lookup が `cr->klass->constants` で stale を deref → SEGV。
-  **fix は class-reopen identity の構造修正が要り high-risk。** forward_edge は to-space idempotent
-  なので visit_method_table の include_depth>0 skip 自体は安全性に不要だが、orphan の klass は
-  purged plane なので単純に un-skip すると forward_payload が dead ptr を読んで GC crash する。未修正。
+- **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): 深く調査済。
+  bisect で `Rational(1,3) == 1` (harness 内) に絞った。`Rational#==` (bootstrap.rb:1546、AST、
+  `case other when Rational ...`) の method object の `def_cref->klass`/`defining_class` が
+  **完全に purged された plane の old Rational address (0x7ff133804438)** を指し、live Rational
+  (0x7ff427804630) に forward されていない。const_lookup が `case when Rational` の const 解決で
+  その stale cref->klass の `->constants` を deref → SEGV。
+  - **誤診だった点 (記録)**: 当初 "Numeric class が 2 個" "Comparable#== orphan" と推測したが
+    どちらも誤り。`Rational.superclass == Object` (Numeric は継承しない)、live Comparable#== は
+    無関係な CFUNC。手元 gdb の bucket 計算は method_table の hash と不一致で誤った
+    (`name % bucket_cnt` ではない別 hash)。
+  - **真の gap (未特定)**: defcls は def 時に当時の Rational addr に設定され、各 GC で
+    visit_method_table が forward して追従するはず。だが ある cycle で forward が漏れて 1 世代
+    遅れ、その addr が round-robin で purge され、以後 forward_edge が「GC object 範囲外」として
+    skip → 恒久 stale。なぜ 1 cycle 漏れるかは未特定 (Rational は常に reachable のはず)。
+    fix は method-table/GC scan の構造変更が要り high-risk。未修正。
 - **kernel/clone**: koruby_scan_edges 内 (GC 中) で別 crash (singleton/frozen edge、既知)。
-- **kernel/catch UTE path**: throw が lambda を脱出した時の @__throw_tag__ ivar が stale。
+- **kernel/catch [FIXED]**: kernel_throw が tag/val を korb_ary_new_capa の GC 後に stale C-local
+  で push していた → argv slot 再読込で解決。
 
 ### Fiber/Enumerator の stack GC scan (each_byte.to_a 等の crash 解消)
 Enumerator は内部で Fiber を使う (`_start` が `Fiber.new`)。visit_roots は現在実行中の
