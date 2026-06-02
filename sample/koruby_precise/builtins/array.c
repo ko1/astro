@@ -3829,7 +3829,10 @@ static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp_top);
         CHECK(korb_yield(c, 1, &empty));
-        return RESULT_OK(self);
+        /* Re-read self: korb_yield moved the receiver array; the C-local
+         * `self` is stale and returning it left the enumerator generator
+         * block's send-result dangling (SEGV via .to_a under STRESS). */
+        return RESULT_OK(sp[-argc - 1]);
     }
     if (a->len == 0) return RESULT_OK(self);
     /* Park source (fr.last_match) + working tuple buf (fr.last_line). */
@@ -3883,7 +3886,10 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp_top);
         CHECK(korb_yield(c, 1, &empty));
-        return RESULT_OK(self);
+        /* Re-read self: korb_yield moved the receiver array; the C-local
+         * `self` is stale and returning it left the enumerator generator
+         * block's send-result dangling (SEGV via .to_a under STRESS). */
+        return RESULT_OK(sp[-argc - 1]);
     }
     if (a->len == 0) return RESULT_OK(self);
     /* Park source (fr.last_match) + working tuple buf (fr.last_line). */
