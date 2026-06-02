@@ -245,11 +245,18 @@ RESULT io_class_pipe(CTX *c, int argc, VALUE *sp) {
      * waiting for a newline. */
     setvbuf(w, NULL, _IONBF, 0);
     setvbuf(r, NULL, _IONBF, 0);
-    VALUE rio = korb_io_new(c, (struct korb_class *)self, r);
-    VALUE wio = korb_io_new(c, (struct korb_class *)self, w);
-    VALUE arr = korb_ary_new_capa(c, sp, 2);
-    korb_ary_push(c, c->sp_top, arr, rio);
-    korb_ary_push(c, c->sp_top, arr, wio);
+    /* korb_io_new (korb_object_new + korb_ivar_set) and korb_ary_new_capa are
+     * GC points; the IO class (self) and the io handles move.  Re-read the
+     * class from sp[-argc-1] before each korb_io_new (korb_object_new deref's
+     * the passed klass on entry), and park rio/wio in sp[0..1] across the
+     * later allocs. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[0] = korb_io_new(c, (struct korb_class *)sp[-argc - 1], r);
+    sp[1] = korb_io_new(c, (struct korb_class *)sp[-argc - 1], w);
+    VALUE arr = korb_ary_new_capa(c, sp + 2, 2);
+    korb_ary_push(c, sp + 2, arr, sp[0]);
+    korb_ary_push(c, sp + 2, arr, sp[1]);
     return RESULT_OK(arr);
 }
 
