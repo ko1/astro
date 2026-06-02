@@ -34,6 +34,7 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(init)) {
             VALUE rt = UNWRAP(korb_funcall(c, init, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+            init = argv[0];   /* re-read across the respond_to? GC */
             if (RTEST(rt)) {
                 init = UNWRAP(korb_funcall(c, init, korb_intern("to_str"), 0, NULL));
             }
@@ -47,7 +48,9 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
         }
     }
     struct korb_string *src = (struct korb_string *)init;
-    struct korb_string *dst = (struct korb_string *)self;
+    /* Re-read self: the to_str coercion above is a GC point that moves the
+     * String handle. */
+    struct korb_string *dst = (struct korb_string *)sp[-argc - 1];
     /* Replace contents in-place (copy buffer so source can be mutated
      * later without affecting us). */
     char *buf = korb_xmalloc_atomic(src->len + 1);
@@ -56,7 +59,7 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
     dst->ptr = buf;
     dst->len = src->len;
     dst->capa = src->len;
-    return RESULT_OK(self);
+    return RESULT_OK((VALUE)dst);
 }
 
 RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
@@ -160,22 +163,27 @@ static RESULT str_concat(CTX *c, int argc, VALUE *sp) {
     /* String#concat accepts variadic args, appending each in order.
      * Snapshot any String args that alias self up front, so an arg that
      * happens to be self sees its pre-concat byte content for every
-     * append (CRuby semantics: `b.concat(b, b)` triples, not doubles). */
-    VALUE local[8];
-    VALUE *args = (argc <= 8) ? local : (VALUE *)korb_xmalloc(sizeof(VALUE) * argc);
+     * append (CRuby semantics: `b.concat(b, b)` triples, not doubles).
+     * Stage the (snapshot or original) args on the value stack at
+     * sp[0..argc) — scanned + forwarded across the per-append GC points —
+     * rather than a libc shadow buffer whose moving-String handles would
+     * go stale.  str_concat_one runs above them at sp+argc. */
+    for (int i = 0; i < argc; i++) sp[i] = Qnil;
+    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE a = argv[i];
-        if (a == self && !SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_STRING) {
-            struct korb_string *s = (struct korb_string *)a;
-            args[i] = korb_str_new(c, c->sp_top, s->ptr, s->len);
+        if (a == sp[-argc - 1] && !SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_STRING) {
+            struct korb_string *as = (struct korb_string *)a;
+            sp[i] = korb_str_new(c, c->sp_top, as->ptr, as->len);
         } else {
-            args[i] = a;
+            sp[i] = a;
         }
     }
     for (int i = 0; i < argc; i++) {
-        CHECK(str_concat_one(c, sp, self, args[i]));
+        CHECK(str_concat_one(c, sp + argc, sp[-argc - 1], sp[i]));
     }
-    return RESULT_OK(self);
+    c->sp_top = sp;
+    return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg) {
     /* Pin self / arg / tmp across korb_str_new + korb_str_concat —
@@ -291,6 +299,7 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(other)) {
             VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+            other = argv[0];  /* re-read across the respond_to? GC */
             if (RTEST(rt)) {
                 VALUE r = UNWRAP(korb_funcall(c, other, korb_intern("to_str"), 0, NULL));
                 if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
@@ -299,10 +308,12 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
                 }
             }
             if (str_cmp_inverse_depth > 0) return RESULT_OK(Qnil);
+            other = argv[0];  /* re-read across the to_str GC above */
             rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                               (VALUE[]){ korb_id2sym(korb_intern("<=>")) }));
             if (RTEST(rt)) {
                 str_cmp_inverse_depth++;
+                other = argv[0]; self = sp[-argc - 1];  /* re-read across respond_to? GC */
                 RESULT _cr = korb_funcall(c, other, korb_intern("<=>"), 1, &self);
                 str_cmp_inverse_depth--;
                 if (_cr.state != KORB_NORMAL) return RESULT_OK(Qnil);
@@ -316,7 +327,9 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(Qnil);
     }
 compare_strings:;
-    struct korb_string *a = (struct korb_string *)self;
+    /* Re-read self: the coercion funcalls above are GC points (other is the
+     * already-coerced result / an original String, fresh). */
+    struct korb_string *a = (struct korb_string *)sp[-argc - 1];
     struct korb_string *b = (struct korb_string *)other;
     long n = a->len < b->len ? a->len : b->len;
     int r = memcmp(a->ptr, b->ptr, n);
@@ -417,12 +430,36 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
     sp[2] = 0;
     sp[3] = 0;
     sp[2] = korb_ary_new(c, sp + 4);
+    /* Always push pieces into the result array (sp[2]).  For the block
+     * form, yielding inside the loop would lower sp_top below sp[0..3]
+     * (korb_yield runs the block body at the block's env), leaving self /
+     * result unscanned and stale.  So we build the full array first (no
+     * yield → sp[0..3] stay in scan range), then yield each element from a
+     * synthetic frame whose chain is always walked. */
     #define EMIT(v) do { \
         sp[3] = (v); \
-        if (has_block) { \
-            RESULT _ye = korb_yield(c, 1, &sp[3]); \
-            if (_ye.state != KORB_NORMAL) return _ye; \
-        } else korb_ary_push(c, sp + 4, sp[2], sp[3]); \
+        korb_ary_push(c, sp + 4, sp[2], sp[3]); \
+    } while (0)
+    /* FINISH: block form yields each result element (self + result parked in
+     * a frame), then returns self; non-block returns the result array. */
+    #define FINISH() do { \
+        if (!has_block) return RESULT_OK(sp[2]); \
+        struct korb_frame _fr = { .prev = c->current_frame, \
+            .self = c->current_frame->self, .fp = c->current_frame->fp, \
+            .cref = c->current_frame->cref, \
+            .current_class = c->current_frame->current_class, \
+            .current_file = c->current_frame->current_file, \
+            .last_match = sp[0] /*self*/, .last_line = sp[2] /*result*/ }; \
+        c->current_frame = &_fr; \
+        long _rl = ((struct korb_array *)_fr.last_line)->len; \
+        for (long _i = 0; _i < _rl; _i++) { \
+            VALUE _el = korb_ary_aref(_fr.last_line, _i); \
+            RESULT _y = korb_yield(c, 1, &_el); \
+            if (_y.state != KORB_NORMAL) { c->current_frame = _fr.prev; return _y; } \
+        } \
+        VALUE _selfr = _fr.last_match; \
+        c->current_frame = _fr.prev; \
+        return RESULT_OK(_selfr); \
     } while (0)
     struct korb_string *s = (struct korb_string *)sp[0];
     if (argc == 0 || NIL_P(sp[1])) {
@@ -435,10 +472,10 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
             EMIT(korb_str_new(c, sp + 4, s->ptr + start, i - start));
             s = (struct korb_string *)sp[0];
         }
-        return RESULT_OK(has_block ? sp[0] : sp[2]);
+        FINISH();
     }
     if (BUILTIN_TYPE(sp[1]) != T_STRING) {
-        return RESULT_OK(has_block ? sp[0] : sp[2]);
+        FINISH();
     }
     struct korb_string *sep = (struct korb_string *)sp[1];
     if (sep->len == 0) {
@@ -447,7 +484,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
             s = (struct korb_string *)sp[0];
             sep = (struct korb_string *)sp[1];
         }
-        return RESULT_OK(has_block ? sp[0] : sp[2]);
+        FINISH();
     }
     long start = 0;
     for (long i = 0; i + sep->len <= s->len; ) {
@@ -460,8 +497,9 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         } else i++;
     }
     EMIT(korb_str_new(c, sp + 4, s->ptr + start, s->len - start));
+    FINISH();
     #undef EMIT
-    return RESULT_OK(has_block ? sp[0] : sp[2]);
+    #undef FINISH
 }
 
 /* Compute the chomp length given an optional argument.
@@ -494,6 +532,7 @@ static RESULT str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv, long 
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
         VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+        arg = argv[0];  /* re-read across the respond_to? GC */
         if (RTEST(rt)) {
             VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
@@ -508,6 +547,9 @@ static RESULT str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv, long 
                        : korb_id_name(korb_class_of_class(arg)->name));
     }
 have_str:;
+    /* Re-read self (s): the to_str coercion above is a GC point.  argv[-1]
+     * is the receiver slot (= sp[-argc-1]), scanned + forwarded. */
+    s = (struct korb_string *)argv[-1];
     struct korb_string *p = (struct korb_string *)arg;
     /* Special: chomp("\n") behaves like the no-argument form — strip any
      * trailing "\r\n", "\n", or "\r". */
@@ -541,7 +583,8 @@ static RESULT str_chomp(CTX *c, int argc, VALUE *sp) {
 
     long n = 0;
     CHECK(str_chomp_compute(c, self, argc, argv, &n));
-    return RESULT_OK(korb_str_new(c, c->sp_top, ((struct korb_string *)self)->ptr, n));
+    /* str_chomp_compute may coerce its arg (GC) — re-read self. */
+    return RESULT_OK(korb_str_new(c, c->sp_top, ((struct korb_string *)sp[-argc - 1])->ptr, n));
 }
 
 static RESULT str_chomp_bang(CTX *c, int argc, VALUE *sp) {
@@ -550,13 +593,14 @@ static RESULT str_chomp_bang(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    struct korb_string *s = (struct korb_string *)self;
     long n = 0;
     CHECK(str_chomp_compute(c, self, argc, argv, &n));
+    /* str_chomp_compute may coerce its arg (GC) — re-read self. */
+    struct korb_string *s = (struct korb_string *)sp[-argc - 1];
     if (n == s->len) return RESULT_OK(Qnil);
     s->len = n;
     if (s->capa > s->len) s->ptr[s->len] = 0;
-    return RESULT_OK(self);
+    return RESULT_OK((VALUE)s);
 }
 
 /* CRuby's String#strip / #lstrip / #rstrip whitespace set: ASCII space,
@@ -751,12 +795,13 @@ static RESULT str_append_as_bytes(CTX *c, int argc, VALUE *sp) {
         if (FIXNUM_P(argv[i])) {
             char ch = (char)(FIX2LONG(argv[i]) & 0xff);
             VALUE tmp = korb_str_new(c, c->sp_top, &ch, 1);
-            korb_str_concat(c, c->sp_top, self, tmp);
+            /* korb_str_new moved self — concat to the re-read handle. */
+            korb_str_concat(c, c->sp_top, sp[-argc - 1], tmp);
         } else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
-            korb_str_concat(c, c->sp_top, self, argv[i]);
+            korb_str_concat(c, c->sp_top, sp[-argc - 1], argv[i]);
         }
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT str_setbyte(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -940,6 +985,7 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
     if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
         VALUE rt = UNWRAP(korb_funcall(c, val, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+        val = argv[argc - 1];  /* re-read across the respond_to? GC */
         if (!RTEST(rt)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
@@ -955,6 +1001,8 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
         }
         val = coerced;
     }
+    /* Re-read self: the to_str coercion above is a GC point. */
+    s = (struct korb_string *)sp[-argc - 1];
     struct korb_string *vs = (struct korb_string *)val;
     long start = 0, len = 0;
     if (argc == 2 && FIXNUM_P(argv[0])) {
@@ -1046,7 +1094,8 @@ static RESULT str_rindex(CTX *c, int argc, VALUE *sp) {
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
         arg = UNWRAP(str_coerce_arg(c, arg));
     }
-    struct korb_string *s = (struct korb_string *)self;
+    /* str_coerce_arg is a GC point — re-read self. */
+    struct korb_string *s = (struct korb_string *)sp[-argc - 1];
     struct korb_string *needle = (struct korb_string *)arg;
     long start = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : s->len;
     if (start < 0) start += s->len;
@@ -1471,7 +1520,6 @@ static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     /* Simple checksum: sum of bytes mod (1<<bits), default bits=16. */
-    struct korb_string *s = (struct korb_string *)self;
     long bits = 16;
     if (argc >= 1) {
         if (FIXNUM_P(argv[0])) {
@@ -1482,6 +1530,8 @@ static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
             bits = FIX2LONG(iv);
         }
     }
+    /* Re-read self after the (possible) to_int GC point. */
+    struct korb_string *s = (struct korb_string *)sp[-argc - 1];
     unsigned long sum = 0;
     for (long i = 0; i < s->len; i++) sum += (unsigned char)s->ptr[i];
     if (bits > 0 && bits < 64) sum &= ((1UL << bits) - 1);
@@ -1645,9 +1695,11 @@ static RESULT str_gsub_bang(CTX *c, int argc, VALUE *sp) {
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
+    /* str_gsub is a GC point — re-read self. */
+    s = (struct korb_string *)sp[-argc - 1];
     s->ptr = buf;
     s->len = r->len;
-    return RESULT_OK(self);
+    return RESULT_OK((VALUE)s);
 }
 
 static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
@@ -2536,11 +2588,20 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
-        struct korb_string *fmt = (struct korb_string *)self;
-        struct korb_hash *h = (struct korb_hash *)argv[0];
-        VALUE out = korb_str_new(c, c->sp_top, "", 0);
+        struct korb_hash *h = (struct korb_hash *)argv[0];  /* libc hash: non-moving */
+        /* Park the format string (self) and the output at sp[0]/sp[1] across
+         * the per-substitution to_s / str_concat GC points (both are moving
+         * String handles); re-derive fmt from sp[0] each iteration and use
+         * sp[1] for the accumulator. */
+        sp[0] = self;
+        sp[1] = 0;
+        c->sp_top = sp + 2;
+        sp[1] = korb_str_new(c, c->sp_top, "", 0);
+        #define out (sp[1])
         long i = 0;
-        while (i < fmt->len) {
+        while (1) {
+            struct korb_string *fmt = (struct korb_string *)sp[0];
+            if (i >= fmt->len) break;
             if (i + 1 < fmt->len && fmt->ptr[i] == '%' && fmt->ptr[i+1] == '{') {
                 long j = i + 2;
                 while (j < fmt->len && fmt->ptr[j] != '}') j++;
@@ -2632,7 +2693,8 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
             korb_str_concat(c, c->sp_top, out, korb_str_new(c, c->sp_top, fmt->ptr + i, 1));
             i++;
         }
-        return RESULT_OK(out);
+        #undef out
+        return RESULT_OK(sp[1]);
     }
     if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];
@@ -2754,42 +2816,47 @@ static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    struct korb_string *s = (struct korb_string *)self;
     /* Coerce each arg via #to_str if not String; raise TypeError on
-     * failure (CRuby semantics). */
-    VALUE local[8];
-    VALUE *args = (argc <= 8) ? local : (VALUE *)korb_xmalloc(sizeof(VALUE) * argc);
+     * failure (CRuby semantics).  Stage the coerced args on the value
+     * stack at sp[0..argc) — scanned + forwarded across the per-arg
+     * coercion GC points — rather than a libc shadow buffer whose moving
+     * String handles would go stale. */
+    for (int i = 0; i < argc; i++) sp[i] = Qnil;
+    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE a = argv[i];
         if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
             if (!SPECIAL_CONST_P(a)) {
                 VALUE rt = UNWRAP(korb_funcall(c, a, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+                a = argv[i];  /* re-read across the respond_to? GC */
                 if (RTEST(rt)) {
                     a = UNWRAP(korb_funcall(c, a, korb_intern("to_str"), 0, NULL));
                 }
             }
             if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+                c->sp_top = sp;
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[i]) ? "(special)"
                                : korb_id_name(korb_class_of_class(argv[i])->name));
             }
         }
-        args[i] = a;
+        sp[i] = a;
     }
-    argv = args;
+    /* No more GC below (korb_xmalloc_atomic is libc) — re-read self once. */
+    struct korb_string *s = (struct korb_string *)sp[-argc - 1];
     /* Concatenate args into a single buffer first to keep the math simple. */
     long extra = 0;
     for (int i = 0; i < argc; i++) {
-        extra += ((struct korb_string *)argv[i])->len;
+        extra += ((struct korb_string *)sp[i])->len;
     }
     long total = extra + s->len;
     char *np = korb_xmalloc_atomic(total + 1);
     long w = 0;
     for (int i = 0; i < argc; i++) {
-        struct korb_string *p = (struct korb_string *)argv[i];
+        struct korb_string *p = (struct korb_string *)sp[i];
         memcpy(np + w, p->ptr, p->len); w += p->len;
     }
     memcpy(np + w, s->ptr, s->len);
@@ -2797,7 +2864,8 @@ static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
     s->ptr = np;
     s->len = total;
     s->capa = total;
-    return RESULT_OK(self);
+    c->sp_top = sp;
+    return RESULT_OK((VALUE)s);
 }
 
 /* ---------- String#insert(pos, str) ----------
@@ -2878,7 +2946,9 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         other = UNWRAP(str_coerce_arg(c, other));
     }
-    struct korb_string *s = (struct korb_string *)self;
+    /* Re-read self: korb_to_int_or_raise / str_coerce_arg above are GC
+     * points that move the String handle. */
+    struct korb_string *s = (struct korb_string *)sp[-argc - 1];
     struct korb_string *p = (struct korb_string *)other;
     long orig_pos = pos;
     long bpos = str_char_to_byte_index(s->ptr, s->len, pos);
@@ -2896,7 +2966,7 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
     s->ptr = np;
     s->len = total;
     s->capa = total;
-    return RESULT_OK(self);
+    return RESULT_OK((VALUE)s);  /* s is the re-read (forwarded) handle */
 }
 
 /* ---------- String#delete_prefix / delete_suffix ----------
@@ -2907,12 +2977,28 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
 static RESULT str_coerce_arg(CTX *c, VALUE arg) {
     if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return RESULT_OK(arg);
     if (!SPECIAL_CONST_P(arg)) {
-        VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (RTEST(rt)) {
-            VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return RESULT_OK(r);
+        /* respond_to? and to_str are GC points, and `arg` is a bare param
+         * VALUE (a moving String/object handle) with no caller slot to
+         * re-read.  Park it on the value stack so visit_roots forwards it;
+         * explicit RESULT checks pop the park on every exit (UNWRAP would
+         * leak it on a raise). */
+        VALUE *const aroot = c->sp_top;
+        aroot[0] = arg;
+        c->sp_top = aroot + 1;
+        RESULT _rt = korb_funcall(c, aroot[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (_rt.state != KORB_NORMAL) { c->sp_top = aroot; return _rt; }
+        if (RTEST(_rt.value)) {
+            RESULT _r = korb_funcall(c, aroot[0], korb_intern("to_str"), 0, NULL);
+            if (_r.state != KORB_NORMAL) { c->sp_top = aroot; return _r; }
+            VALUE r = _r.value;
+            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
+                c->sp_top = aroot;
+                return RESULT_OK(r);
+            }
         }
+        arg = aroot[0];   /* re-read forwarded arg for the error message */
+        c->sp_top = aroot;
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     return korb_raise(c, (struct korb_class *)eT,

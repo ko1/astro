@@ -1350,18 +1350,41 @@ NODE_DEF
 node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
-    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
-        long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (UNLIKELY(b == 0)) {
-            c->last_cfunc_callsite = n;
-            VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
-            return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+    /* Fixnum fast path: l is immediate (no GC risk), eval rhs unprotected. */
+    if (LIKELY(FIXNUM_P(l))) {
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+            long a = FIX2LONG(l), b = FIX2LONG(r);
+            if (UNLIKELY(b == 0)) {
+                c->last_cfunc_callsite = n;
+                VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
+                return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            }
+            long m = a % b;
+            if (m != 0 && ((a ^ b) < 0)) m += b;
+            return RESULT_OK(INT2FIX(m));
         }
-        long m = a % b;
-        if (m != 0 && ((a ^ b) < 0)) m += b;
-        return RESULT_OK(INT2FIX(m));
+        c->last_cfunc_callsite = n;
+        return korb_node_mod_slow(c, l, r, arg_index);
     }
+    /* l is a heap object (`"fmt" % args` String#%, Float, etc.).  Park it
+     * in a synthetic frame's last_line so visit_roots scans it across rhs's
+     * GC fires (the rhs `[args]` literal allocates).  fr.self inherits the
+     * caller's self (NOT l) so ivar lookups inside rhs resolve correctly. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_mod_slow(c, l, r, arg_index);
 }
