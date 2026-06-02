@@ -58,6 +58,34 @@ static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth)
     return RESULT_OK(Qnil);
 }
 
+/* Resolve a method-name argument (method_defined? / *_method_defined? etc.):
+ * accept Symbol/String, fall back to #to_str.  Raise TypeError for a
+ * non-convertible arg or a #to_str that returns a non-String.  Unlike
+ * attr_resolve_name this does NOT reject operator / [] names.  Writes *out_id
+ * on success; returns the raise RESULT otherwise.  (The old inline pattern
+ * blindly cast a non-Symbol arg to korb_string and crashed in korb_intern_n
+ * on a fixnum/special — method_defined_spec's TypeError cases.) */
+static RESULT name_arg_to_id(CTX *c, VALUE arg, ID *out_id) {
+    VALUE v = arg;
+    if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
+        if (!SPECIAL_CONST_P(v)) {
+            VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+            if (RTEST(rt)) v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
+        }
+    }
+    if (SYMBOL_P(v)) { *out_id = korb_sym2id(v); return RESULT_OK(Qnil); }
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_STRING) {
+        *out_id = korb_intern_n(((struct korb_string *)v)->ptr,
+                                ((struct korb_string *)v)->len);
+        return RESULT_OK(Qnil);
+    }
+    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+    return korb_raise(c, (struct korb_class *)eT, "%s is not a symbol nor a string",
+               SPECIAL_CONST_P(arg) ? "(special)"
+                   : korb_id_name(korb_class_of_class(arg)->name));
+}
+
 /* Frozen check: receiver class/module must not be frozen. */
 static RESULT attr_check_frozen(CTX *c, VALUE self) {
     if (korb_obj_frozen_p(self)) {
@@ -437,9 +465,7 @@ static RESULT module_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
-              korb_intern_n(((struct korb_string *)argv[0])->ptr,
-                             ((struct korb_string *)argv[0])->len);
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = NULL;
     if (inherit) {
@@ -480,8 +506,7 @@ static RESULT module_public_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
-              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PUBLIC));
@@ -494,8 +519,7 @@ static RESULT module_private_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
-              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PRIVATE));
@@ -508,8 +532,7 @@ static RESULT module_protected_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
-              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PROTECTED));
