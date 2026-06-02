@@ -90,6 +90,8 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
         b->basic.head.flags = T_DATA;
         b->basic.klass = KORB_VM(c) ? (VALUE)KORB_VM(c)->binding_class : 0;
+        extern void koruby_register_libc_obj(struct RBasic *);
+        koruby_register_libc_obj(&b->basic);
         b->self = src->self;
         b->cref = src->cref;
         b->method_name = src->method_name;
@@ -675,9 +677,21 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     }
 
     /* Switch to the binding's fp / self / cref for the duration of
-     * the eval body.  At return, restore. */
+     * the eval body.  At return, restore.  prev_fp / prev_cref / prev_file
+     * are stable (value-stack ptr / libc-or-stack cref / const char*), but
+     * the caller's self is a MOVING object reachable only via the frame slot
+     * we are about to overwrite — a bare C-local would go stale across the
+     * eval body's GC and the restore would write a dangling self into the
+     * caller frame (SEGV on the next implicit-self dispatch, eval/__dir__
+     * under STRESS).  Register it on c->yield_self_chain (the same mechanism
+     * korb_yield uses for the identical overwrite/restore), which visit_roots
+     * forwards; read the forwarded value back from the node at restore. */
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE prev_self = c->current_frame->self;
+    struct korb_yield_self_save self_save = {
+        .self = c->current_frame->self,
+        .prev = c->yield_self_chain,
+    };
+    c->yield_self_chain = &self_save;
     struct korb_cref *prev_cref = c->current_frame->cref;
     const char *prev_file = c->current_frame->current_file;
     void *prev_eval_binding = c->current_eval_binding;
@@ -694,8 +708,22 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     c->current_eval_binding = prev_eval_binding;
     c->current_frame->current_file = prev_file;
     c->current_frame->cref = prev_cref;
-    c->current_frame->self = prev_self;
+    c->current_frame->self = self_save.self;   /* forwarded across eval GC */
     c->current_frame->fp = prev_fp;
+    c->yield_self_chain = self_save.prev;       /* pop */
+
+    /* The eval result is moving and the extras write-back below
+     * (korb_hash_new / korb_hash_aset) fires GC; park _br.value so the
+     * returned value isn't left stale (eval("self", binding) etc. under
+     * STRESS).  An sp slot is NOT usable here — the eval body relocated
+     * c->sp_top into the binding's fp region, so it is outside the scanned
+     * value-stack range.  Use yield_self_chain, which visit_roots forwards
+     * regardless of sp (same mechanism as the self restore above). */
+    struct korb_yield_self_save ret_save = {
+        .self = _br.value,
+        .prev = c->yield_self_chain,
+    };
+    c->yield_self_chain = &ret_save;
 
     /* Write-through eval body's slot updates to the live frame, but
      * only for slots the eval body actually MODIFIED (heap value
@@ -729,6 +757,8 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
             korb_hash_aset(c, b->extra_vars, korb_id2sym(b->names[i]), v);
         }
     }
+    _br.value = ret_save.self;   /* forwarded across the extras write-back GC */
+    c->yield_self_chain = ret_save.prev;
     return _br;
 }
 

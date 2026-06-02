@@ -428,6 +428,30 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
                   /* Fiber: scan its suspended stack/frames (or, while it runs,
                    * its suspended resumer's) — see korb_scan_fiber_roots. */
                   korb_scan_fiber_roots((VALUE)b, ctx, fn);
+              } else if (korb_vm->binding_class &&
+                         b->klass == (VALUE)korb_vm->binding_class) {
+                  /* Binding: its self / captured lvars / extras are moving
+                   * arena objects held only by this libc-allocated binding,
+                   * so they must be forwarded here or `binding.eval`/
+                   * local_variable_get read a stale self/value under STRESS. */
+                  struct korb_binding *bnd = (struct korb_binding *)b;
+                  visit_value_slot(ctx, fn, &bnd->self);
+                  visit_value_slot(ctx, fn, &bnd->extra_vars);
+                  visit_value_slot(ctx, fn, &bnd->outer_vars);
+                  /* fp slots: only when fp is the binding's own heap snapshot.
+                   * When fp aliases the live value stack (fp == live_fp) those
+                   * slots are already covered by the value-stack scan; visiting
+                   * again would double-forward. */
+                  if (bnd->fp && bnd->fp != bnd->live_fp) {
+                      for (uint32_t i = 0; i < bnd->names_cnt; i++) {
+                          visit_value_slot(ctx, fn, &bnd->fp[bnd->base + i]);
+                      }
+                  }
+                  int cref_depth = 0;
+                  for (struct korb_cref *cr = bnd->cref; cr && cref_depth < 64;
+                       cr = cr->prev, cref_depth++) {
+                      visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+                  }
               }
               break;
           }
