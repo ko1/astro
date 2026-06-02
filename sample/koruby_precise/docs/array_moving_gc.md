@@ -54,8 +54,18 @@ PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 | kernel_eval forward[] を korb_str_new_cstr 後に詰める | (eval 入口 stale; 深部は残) | arg-order |
 | IO.pipe で IO class 再読込 + io handle park | kernel/select | IDIOM C |
 | **Binding を GC scan** (self/lvars/extras/cref) + eval self/result root | kernel/__dir__ | framework gap |
+| **node_ensure の body 結果を ensure 節跨ぎで root** | kernel/system | framework (return-value) |
 
-SEGV ファイル数は最終的に **16 → 8**。
+SEGV ファイル数は最終的に **16 → 7**。
+
+#### ★ node_ensure begin/ensure return-value rooting (dominant return-value cluster)
+`begin body ensure cl end` の `node_ensure` は body の RESULT (`_br.value`、moving) を C-local で
+保持したまま `EVAL_ARG(ensure_body)` を実行していた。ensure 節は任意の alloc を伴うコードを走らせる
+ため STRESS で body 結果が move → 返した `_br.value` が stale → caller の prologue / proc_call
+epilogue (korb_proc_snapshot_env_maybe) が collected object を deref。**mspec `it` がまさにこの形**
+(ensure で after_each hook を回し、その後 block の MSpecExpectation を返す) なので return-value
+cluster の支配項だった。`_br.value` を yield_self_chain に park (sp slot 不可: ensure_body が
+sp[0..] を scratch に使う) して解決。system_spec 完走。
 
 #### ★ node_apply_call splat-receiver correctness バグ (GC 以前の本物のバグ)
 `recv.meth(*args)` / `send(:m, *args)` を担う node_apply_call は recv を sp[0] に park してから
@@ -72,9 +82,12 @@ C-local も args_node の GC で stale 化する (この二重苦が「SEGV clus
 staging が壊れる) — この罠で 1 周回した。
 
 #### 残 SEGV (9, 深い framework / 個別 tier)
-- **proc/method の return-value rooting** (repeated_combination / system / enumerable-first):
-  proc_call / prologue_ast_general の epilogue で body の戻り値 (`_br.value`) が collected。
-  mspec harness の deep dispatch でのみ発生、standalone 再現せず。真の leaf 未特定。
+- **[FIXED system] proc/method return-value rooting**: 支配項は node_ensure (上記、system 解消)。
+  - **[残] repeated_combination**: crash する proc は **Enumerator generator block**
+    (`{|y| me.send(method,*args){...}}`, bootstrap.rb:4958)。body の node_apply_call が返す send
+    結果 (= self の array) が stale。block は **Fiber 内で実行**され closure-captured `me` が
+    fiber/yield 跨ぎ GC で stale 化する疑い。Fiber+Enumerator generator+closure の深い相互作用、未解決。
+  - enumerable/first は別系統 (gc_bump 中の korb_inspect → bad edge、GC-internal)。
 - **[FIXED] eval-with-binding frame self** (__dir__): **真因は Binding が GC で全く scan されて
   いなかったこと** (libc-registry の T_DATA case は Method/Fiber のみ、Binding 無し) → b->self /
   捕捉 lvars / extras が move で stale。Binding case を追加 (self/extra_vars/outer_vars/heap-fp
