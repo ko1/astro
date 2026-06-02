@@ -81,6 +81,39 @@ C-local も args_node の GC で stale 化する (この二重苦が「SEGV clus
 `fp+arg_index==sp` を仮定するので sub-eval を sp+N にずらす手は不可** (inner array の element
 staging が壊れる) — この罠で 1 周回した。
 
+### 第4弾 (2026-06-02): full-core array/ spec の STRESS rooting (18→1)
+
+`rubyspec/core/array/*` を STRESS+PURGE で全走させ、NORMAL 完走するが STRESS で SEGV する
+ファイルを 1 つずつ潰した。**array/ STRESS SEGV ファイル数 18 → 1**。各 fix は gate (28/28・27/28)
+確認 + commit。発見した root は 2 種:
+
+1. **generic dispatch の caller-self が bare C-local** (`korb_dispatch_to_method`): cfunc
+   `korb_funcall` 経路が呼び出し側 frame の self を bare C-local (`prev_self`) に退避し body EVAL
+   後に書き戻していた。body の alloc が enclosing self を move → caller frame slot は visit_roots
+   が forward するが C-local は stale → 書き戻しで死んだ addr を frame.self に上書き → 次の
+   dispatch が dead ptr を walk して SEGV。korb_yield_slow / proc_call と同じ idiom で root stack
+   (= value stack) に park して解消。**mspec の各 it で `ScratchPad << e` 等の nested Ruby method
+   call を挟む each block が ivar を読む形 (array/each_spec) が代表**。これは全 Ruby method call に
+   効く high-value fix。
+
+2. **builtin が GC point 跨ぎで self/arg/recv の bare C-local を再読込していない** (IDIOM A の
+   抜け): `korb_to_int_or_raise` / `respond_to?`+`to_ary`/`to_str`/`to_int` の二段 funcall の後、
+   あるいは push-grow ループの中で `self`/`a`/`first`/`val`/`r`(range) を再読込せず使用・push・
+   return していた。`sp[-argc-1]` / `argv[i]` (どちらも scan 範囲) からの再読込で解消。
+   - `korb_to_int_or_raise`: arg `v` に caller slot が無いので value stack に park (UNWRAP では
+     raise 時に park が leak するので明示 RESULT check で pop)。fetch/pop/drop/shift/rotate に波及。
+   - `ary_fill`/`ary_insert`/`ary_aset`/`ary_rotate_bang`/`ary_unshift`/`ary_replace`/`ary_plus`/
+     `ary_cmp`/`ary_join`/`ary_initialize`: coercion・push-grow 後の self/first 再読込。
+   - `ary_concat`: libc shadow-buf (`bufs[]`) に source ELEMENT VALUE を退避していた
+     ([[feedback_moving_gc_shadow_buf]] のハザード) を、coerced source を value stack に park して
+     各 push で再 derive する方式に書き換え (concat(self) self-alias も sp[i] forward で対応)。
+
+**残: array/uniq_spec のみ** — `.should` の recv が stale だが builtin の return-self ではなく、
+`basic = Class.new(BasicObject) do …(eql?/hash)… end` + 7要素 `[basic.new(i),…]` literal の文脈で
+**recv の lvar_get node が index = -27 (0xFFFFFFE5) という負の値**を持つ (corrupt/負 index)。
+return-self stale とは別系統の深いバグ (env-size 算定 or nested-block の node corruption、
+[[project_koruby_precise_curry_bug]] の env_size 系と同種の可能性)。要追加調査。
+
 #### 残 SEGV (4, 深い framework / 個別 tier)
 - **[FIXED] proc/method return-value rooting**: node_ensure (system 解消) +
   repeated_combination/permutation の r==0 path (下記)。
