@@ -37,6 +37,51 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 
 PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 
+### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→9)
+
+`tools/sp_segv_scan.sh` (182-file を SEGV / NOTR / OK に分類) の **実 SEGV** を crash site
+ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 9**。各 fix は 1 commit + gate (28/28・27/28) 確認。
+
+| fix | 解消した spec | 種別 |
+|---|---|---|
+| **node_apply_call splat receiver** | pp / warn / proc-clone (ruby_exe 経由) | **correctness バグ** (下記) |
+| Kernel#` の result string を sp park | (同上 ruby_exe backtick の leaf) | IDIOM D |
+| str_start_with / str_end_with の self 再読込 | symbol/start_with | IDIOM A |
+| ary_min / ary_max を synthetic frame 化 | range/max | IDIOM B |
+| korb_inspect_inner T_RANGE を sp park | kernel/rand | IDIOM A |
+| kernel_catch tag を synthetic frame park | (catch THROW path; UTE path は残) | IDIOM B |
+| obj_extend で self/cur を korb_class_new 後再 derive | kernel/singleton_method | IDIOM C |
+| kernel_eval forward[] を korb_str_new_cstr 後に詰める | (eval 入口 stale; 深部は残) | arg-order |
+| IO.pipe で IO class 再読込 + io handle park | kernel/select | IDIOM C |
+
+#### ★ node_apply_call splat-receiver correctness バグ (GC 以前の本物のバグ)
+`recv.meth(*args)` / `send(:m, *args)` を担う node_apply_call は recv を sp[0] に park してから
+args_node を評価していたが、args_node は配列ビルダで **node_ary_new が結果ハンドルを sp[0] に書く**。
+→ recv が args 配列で上書きされ、**cfunc dispatch が間違った receiver で走っていた**:
+`[1,2,3].first(*[2])`→[2]、`"hello".center(*[11])`→NoMethodError、そして
+**combination/permutation/repeated_combination の `.to_a` (= `send(method,*args)` で replay)
+が全部間違った配列を combine** していた (STRESS 無しでも再現する silent な誤動作)。
+非moving の sibling koruby は recv を C-local で持っていたため無傷。precise は moving GC のため
+C-local も args_node の GC で stale 化する (この二重苦が「SEGV cluster」の正体だった)。
+→ recv を synthetic frame の last_match に park (frame chain は sp 無関係に必ず scan、fp/self/cref
+を copy するので lvar/arg staging は不変)、dispatch 前に pop。**baked arg_index は
+`fp+arg_index==sp` を仮定するので sub-eval を sp+N にずらす手は不可** (inner array の element
+staging が壊れる) — この罠で 1 周回した。
+
+#### 残 SEGV (9, 深い framework / 個別 tier)
+- **proc/method の return-value rooting** (repeated_combination / system / enumerable-first):
+  proc_call / prologue_ast_general の epilogue で body の戻り値 (`_br.value`) が collected。
+  mspec harness の deep dispatch でのみ発生、standalone 再現せず。真の leaf 未特定。
+- **eval-with-binding の frame self 復元** (eval / __dir__): binding_eval_via が eval body の
+  GC を跨いで C-local `prev_self` を保持 → 復元時に caller frame->self が stale。eval が
+  c->sp_top を b->fp 領域に移すため sp park も効かず、要 frame-chain park (eval machinery が
+  fragile、未着手)。入口の forward[] stale は解消済。
+- **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): cref chain・class
+  edges (super/includes/prepends) は GC 上 forward 済 → おそらく **stack-allocated cref の
+  use-after-return** (STRESS timing で露出)。
+- **kernel/clone**: koruby_scan_edges 内 (GC 中) で別 crash (singleton/frozen edge、既知)。
+- **kernel/catch UTE path**: throw が lambda を脱出した時の @__throw_tag__ ivar が stale。
+
 ### Fiber/Enumerator の stack GC scan (each_byte.to_a 等の crash 解消)
 Enumerator は内部で Fiber を使う (`_start` が `Fiber.new`)。visit_roots は現在実行中の
 context (`c->stack_base..sp_top` + `c->current_frame`) しか scan しないため、**fiber 実行中は
