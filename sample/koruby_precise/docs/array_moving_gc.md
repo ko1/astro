@@ -53,6 +53,9 @@ PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 | obj_extend で self/cur を korb_class_new 後再 derive | kernel/singleton_method | IDIOM C |
 | kernel_eval forward[] を korb_str_new_cstr 後に詰める | (eval 入口 stale; 深部は残) | arg-order |
 | IO.pipe で IO class 再読込 + io handle park | kernel/select | IDIOM C |
+| **Binding を GC scan** (self/lvars/extras/cref) + eval self/result root | kernel/__dir__ | framework gap |
+
+SEGV ファイル数は最終的に **16 → 8**。
 
 #### ★ node_apply_call splat-receiver correctness バグ (GC 以前の本物のバグ)
 `recv.meth(*args)` / `send(:m, *args)` を担う node_apply_call は recv を sp[0] に park してから
@@ -72,10 +75,17 @@ staging が壊れる) — この罠で 1 周回した。
 - **proc/method の return-value rooting** (repeated_combination / system / enumerable-first):
   proc_call / prologue_ast_general の epilogue で body の戻り値 (`_br.value`) が collected。
   mspec harness の deep dispatch でのみ発生、standalone 再現せず。真の leaf 未特定。
-- **eval-with-binding の frame self 復元** (eval / __dir__): binding_eval_via が eval body の
-  GC を跨いで C-local `prev_self` を保持 → 復元時に caller frame->self が stale。eval が
-  c->sp_top を b->fp 領域に移すため sp park も効かず、要 frame-chain park (eval machinery が
-  fragile、未着手)。入口の forward[] stale は解消済。
+- **[FIXED] eval-with-binding frame self** (__dir__): **真因は Binding が GC で全く scan されて
+  いなかったこと** (libc-registry の T_DATA case は Method/Fiber のみ、Binding 無し) → b->self /
+  捕捉 lvars / extras が move で stale。Binding case を追加 (self/extra_vars/outer_vars/heap-fp
+  slots/cref klass を forward、live-stack alias は skip)。加えて binding_eval_via で caller self
+  と eval 結果を yield_self_chain に park (eval が c->sp_top を b->fp に移すため sp park 不可)。
+  eval-clone path の register 漏れも修正。eval("self",binding) 等が完走。
+- **[残] eval_spec — eval body 内の class reopen** (`eval("class X; ...; end", b)`): eval body は
+  c->current_frame->fp = b->fp+base (binding の heap snapshot, names_cnt+16 slots) で実行される
+  ため、**eval body 自身の alloc が park する sp slot が value-stack 範囲外で scan されない**
+  (korb_class_new の super が GC 後 stale)。eval body を scannable stack で走らせるか heap-fp を
+  scan 領域化する architectural fix が要る。eval-with-binding の根の制約。
 - **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): cref chain・class
   edges (super/includes/prepends) は GC 上 forward 済 → おそらく **stack-allocated cref の
   use-after-return** (STRESS timing で露出)。
