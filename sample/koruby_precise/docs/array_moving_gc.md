@@ -37,10 +37,10 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 
 PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 
-### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→9)
+### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→6)
 
 `tools/sp_segv_scan.sh` (182-file を SEGV / NOTR / OK に分類) の **実 SEGV** を crash site
-ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 9**。各 fix は 1 commit + gate (28/28・27/28) 確認。
+ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 6**。各 fix は 1 commit + gate (28/28・27/28) 確認。
 
 | fix | 解消した spec | 種別 |
 |---|---|---|
@@ -56,7 +56,7 @@ PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 | **Binding を GC scan** (self/lvars/extras/cref) + eval self/result root | kernel/__dir__ | framework gap |
 | **node_ensure の body 結果を ensure 節跨ぎで root** | kernel/system | framework (return-value) |
 
-SEGV ファイル数は最終的に **16 → 7**。
+SEGV ファイル数は最終的に **16 → 6**。
 
 #### ★ node_ensure begin/ensure return-value rooting (dominant return-value cluster)
 `begin body ensure cl end` の `node_ensure` は body の RESULT (`_br.value`、moving) を C-local で
@@ -81,12 +81,15 @@ C-local も args_node の GC で stale 化する (この二重苦が「SEGV clus
 `fp+arg_index==sp` を仮定するので sub-eval を sp+N にずらす手は不可** (inner array の element
 staging が壊れる) — この罠で 1 周回した。
 
-#### 残 SEGV (9, 深い framework / 個別 tier)
-- **[FIXED system] proc/method return-value rooting**: 支配項は node_ensure (上記、system 解消)。
-  - **[残] repeated_combination**: crash する proc は **Enumerator generator block**
-    (`{|y| me.send(method,*args){...}}`, bootstrap.rb:4958)。body の node_apply_call が返す send
-    結果 (= self の array) が stale。block は **Fiber 内で実行**され closure-captured `me` が
-    fiber/yield 跨ぎ GC で stale 化する疑い。Fiber+Enumerator generator+closure の深い相互作用、未解決。
+#### 残 SEGV (6, 深い framework / 個別 tier)
+- **[FIXED] proc/method return-value rooting**: node_ensure (system 解消) +
+  repeated_combination/permutation の r==0 path (下記)。
+  - **[FIXED] repeated_combination/repeated_permutation**: 真因は Fiber でも closure でもなく、
+    **builtin の r==0 early-return が korb_yield (empty tuple yield = GC point) 後に stale C-local
+    `self` を返していた**だけ。no-block Enumerator path で generator block (`me.send(...,0){...}`,
+    bootstrap.rb:4958) の send 結果が dangling 化 → `.to_a` 実行時 proc_call epilogue で SEGV。
+    `sp[-argc-1]` 再読込で解決 (main path は元から re-read 済、early-return だけ漏れていた)。
+    bisect で `@array.repeated_combination(0).to_a` (harness 内) に絞り込んで特定。
   - enumerable/first は別系統 (gc_bump 中の korb_inspect → bad edge、GC-internal)。
 - **[FIXED] eval-with-binding frame self** (__dir__): **真因は Binding が GC で全く scan されて
   いなかったこと** (libc-registry の T_DATA case は Method/Fiber のみ、Binding 無し) → b->self /
