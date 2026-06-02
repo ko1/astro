@@ -37,10 +37,10 @@ curated 28-suite は通っても、rubyspec を **STRESS+PURGE で広く流す**
 
 PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 
-### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→5)
+### 第3弾 (2026-06-02): 実 SEGV cluster 潰し (tools/sp_segv_scan.sh で 16→4)
 
 `tools/sp_segv_scan.sh` (182-file を SEGV / NOTR / OK に分類) の **実 SEGV** を crash site
-ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 5**。各 fix は 1 commit + gate (28/28・27/28) 確認。
+ごとに gdb で特定して潰した。SEGV ファイル数 **16 → 4**。各 fix は 1 commit + gate (28/28・27/28) 確認。
 
 | fix | 解消した spec | 種別 |
 |---|---|---|
@@ -56,7 +56,7 @@ PASS が **15.7×** (179→2802)、CRASH が **−85%** (138→21)。
 | **Binding を GC scan** (self/lvars/extras/cref) + eval self/result root | kernel/__dir__ | framework gap |
 | **node_ensure の body 結果を ensure 節跨ぎで root** | kernel/system | framework (return-value) |
 
-SEGV ファイル数は最終的に **16 → 5**。
+SEGV ファイル数は最終的に **16 → 4**。
 
 #### ★ node_ensure begin/ensure return-value rooting (dominant return-value cluster)
 `begin body ensure cl end` の `node_ensure` は body の RESULT (`_br.value`、moving) を C-local で
@@ -81,7 +81,7 @@ C-local も args_node の GC で stale 化する (この二重苦が「SEGV clus
 `fp+arg_index==sp` を仮定するので sub-eval を sp+N にずらす手は不可** (inner array の element
 staging が壊れる) — この罠で 1 周回した。
 
-#### 残 SEGV (5, 深い framework / 個別 tier)
+#### 残 SEGV (4, 深い framework / 個別 tier)
 - **[FIXED] proc/method return-value rooting**: node_ensure (system 解消) +
   repeated_combination/permutation の r==0 path (下記)。
   - **[FIXED] repeated_combination/repeated_permutation**: 真因は Fiber でも closure でもなく、
@@ -90,7 +90,12 @@ staging が壊れる) — この罠で 1 周回した。
     bootstrap.rb:4958) の send 結果が dangling 化 → `.to_a` 実行時 proc_call epilogue で SEGV。
     `sp[-argc-1]` 再読込で解決 (main path は元から re-read 済、early-return だけ漏れていた)。
     bisect で `@array.repeated_combination(0).to_a` (harness 内) に絞り込んで特定。
-  - enumerable/first は別系統 (gc_bump 中の korb_inspect → bad edge、GC-internal)。
+  - **[残] enumerable/first**: `Class.new` instance alloc 中の gc_bump:302 (`h->gc_flags=0`) で
+    active_top (plane 内だが unmapped) に write → SEGV。単一 it block も volume (3000×) も単独では
+    再現せず、full spec の累積状態でのみ発生 → **PURGE 1024-plane round-robin の wrap edge** 疑い
+    (shared `runtime/precise_gc/gc_copy.c`)。region_bytes==PURGE_PLANE_BYTES で plane 算術は一見整合、
+    gc_size corruption 診断も出ない。**shared runtime のため baruby_precise/ascheme_precise + 16-backend
+    audit に影響、高リスク。未修正。**
 - **[FIXED] eval-with-binding frame self** (__dir__): **真因は Binding が GC で全く scan されて
   いなかったこと** (libc-registry の T_DATA case は Method/Fiber のみ、Binding 無し) → b->self /
   捕捉 lvars / extras が move で stale。Binding case を追加 (self/extra_vars/outer_vars/heap-fp
@@ -117,7 +122,11 @@ staging が壊れる) — この罠で 1 周回した。
     遅れ、その addr が round-robin で purge され、以後 forward_edge が「GC object 範囲外」として
     skip → 恒久 stale。なぜ 1 cycle 漏れるかは未特定 (Rational は常に reachable のはず)。
     fix は method-table/GC scan の構造変更が要り high-risk。未修正。
-- **kernel/clone**: koruby_scan_edges 内 (GC 中) で別 crash (singleton/frozen edge、既知)。
+- **kernel/clone [FIXED]**: obj_dup/clone が `no->ivar_cnt = o->ivar_cnt` を設定するのに ivar copy は
+  `min(o->ivar_cnt, no->ivar_capa)` だけ。singleton class clone (preserve) では korb_object_new が
+  ivar_capa を singleton 自身の shape (0) から取るため、copy 0 件なのに cnt だけ bump →
+  GC が no->ivars[0..cnt) を NULL/短 buffer 越しに scan して SEGV。copy 前に no->ivars を
+  o->ivar_cnt に grow (Qnil-fill) して解決。
 - **kernel/catch [FIXED]**: kernel_throw が tag/val を korb_ary_new_capa の GC 後に stale C-local
   で push していた → argv slot 再読込で解決。
 
