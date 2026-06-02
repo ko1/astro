@@ -500,8 +500,12 @@ struct korb_cref *korb_cref_dup(struct korb_cref *src);
  * SEGV when forward_payload NULL'd the top cref's klass field. */
 static inline __attribute__((always_inline)) struct korb_class *
 korb_host_class(CTX * restrict c) {
-    for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-        if (cr->klass) return cr->klass;
+    /* Skip NULL / special-const (Qnil = 0x8 from a clobbered cref) klass and
+     * stop at a special-const prev: a corrupted cref chain otherwise returns
+     * 0x8 as a "class", which the caller deref's (k->super) and SEGVs. */
+    for (struct korb_cref *cr = c->current_frame->cref;
+         cr && !SPECIAL_CONST_P((VALUE)cr); cr = cr->prev) {
+        if (cr->klass && !SPECIAL_CONST_P((VALUE)cr->klass)) return cr->klass;
     }
     if (c->current_frame->current_class) return c->current_frame->current_class;
     return korb_vm->object_class;

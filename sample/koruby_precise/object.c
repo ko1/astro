@@ -356,7 +356,11 @@ struct korb_cref *korb_cref_dup(struct korb_cref *src) {
     /* Deep-copy a cref chain into the heap so it survives stack unwind. */
     if (!src) return NULL;
     struct korb_cref *head = NULL, *tail = NULL;
-    for (; src; src = src->prev) {
+    /* Stop at a NULL or special-const (e.g. Qnil = 0x8) prev: a corrupted /
+     * partially-overwritten cref chain can leave prev = Qnil instead of NULL
+     * (a dangling stack cref clobbered by later Qnil writes), and dereffing
+     * 0x8 SEGVs (main/define_method).  Such a link is never a real scope. */
+    for (; src && !SPECIAL_CONST_P((VALUE)src); src = src->prev) {
         struct korb_cref *e = korb_xmalloc(sizeof(*e));
         e->klass = src->klass;
         e->prev = NULL;
@@ -1182,6 +1186,11 @@ RESULT korb_const_lookup(CTX *c, ID name) {
          * each cycle (visit_libc_obj registry vs frame chain vs
          * method def_cref). */
         if (cr->klass == NULL) continue;
+        /* Skip a corrupted lexical scope whose klass is a special const
+         * (e.g. Qnil = 0x8 from a clobbered cref): dereffing it as a class
+         * SEGVs.  The inheritance + Object-namespace walk below still finds
+         * the const if it exists. */
+        if (SPECIAL_CONST_P((VALUE)cr->klass)) continue;
         if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return RESULT_OK(v);
