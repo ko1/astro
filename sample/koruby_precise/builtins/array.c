@@ -3378,6 +3378,9 @@ static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
     }
     if (argc == 1) return RESULT_OK(self);  /* `arr.insert(i)` with no values is no-op */
     VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    /* korb_to_int_or_raise is a GC point; re-read self (the `self` C-local
+     * is now a stale, possibly moved handle). */
+    self = sp[-argc - 1];
     if (!FIXNUM_P(iv)) return RESULT_OK(self);
     struct korb_array *a = (struct korb_array *)self;
     long i = FIX2LONG(iv);
@@ -3393,13 +3396,14 @@ static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
     long ins = argc - 1;
     if (ins == 0) return RESULT_OK(self);
     /* R5: the padding/space pushes grow self (GC) — re-derive a each iteration
-     * and again before the in-place shuffle. */
-    while ((a = (struct korb_array *)sp[-argc - 1])->len < i) korb_ary_push(c, c->sp_top, self, Qnil);
-    for (long k = 0; k < ins; k++) korb_ary_push(c, c->sp_top, self, Qnil);
+     * and push to the re-read handle (the `self` C-local goes stale once a
+     * prior push moves the array), then re-derive again before the shuffle. */
+    while ((a = (struct korb_array *)sp[-argc - 1])->len < i) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
+    for (long k = 0; k < ins; k++) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
     a = (struct korb_array *)sp[-argc - 1];
     for (long k = a->len - 1; k >= i + ins; k--) korb_ary_items(a)[k] = korb_ary_items(a)[k - ins];
     for (long k = 0; k < ins; k++) korb_ary_items(a)[i + k] = argv[1 + k];
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 /* Array#replace(other) — destructive replace. */
