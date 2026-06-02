@@ -831,12 +831,17 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
     c->current_frame = &fr;
     VALUE *fp_lo = fr.fp;
     VALUE *fp_hi = c->sp_top;
-    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Pop the synthetic frame on EVERY exit incl. a body raise: fr is
+     * stack-allocated, so a skipped c->current_frame = fr.prev leaves the
+     * frame-chain head dangling (its cref/self/fp all garbage after return)
+     * → later const lookups / dispatch SEGV.  EVAL_ARG (not _UNWRAP). */
+    RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
     c->current_frame = fr.prev;
     /* Use fr.self (frame-chain tracked) — body eval may have pulled
      * c->sp_top below the staging slots. */
     korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
-    return RESULT_OK(r);
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 /* `class X` with no `< Super` clause — reopen if exists (any super is
@@ -899,9 +904,13 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         c->current_frame = &fr;
         VALUE *fp_lo = fr.fp;
         VALUE *fp_hi = c->sp_top;
-        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+        /* Pop the synthetic frame on EVERY exit incl. a body raise (fr is
+         * stack-allocated; a skipped pop dangles the frame-chain head). */
+        RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
         c->current_frame = fr.prev;
         korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
+        if (_br.state != KORB_NORMAL) return _br;
+        r = _br.value;
     }
     return RESULT_OK(r);
 }
@@ -952,7 +961,9 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         c->current_frame = &fr;
         VALUE *fp_lo = fr.fp;
         VALUE *fp_hi = c->sp_top;
-        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+        /* Pop the synthetic frame on EVERY exit incl. a body raise (fr is
+         * stack-allocated; a skipped pop dangles the frame-chain head). */
+        RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
         c->current_frame = fr.prev;
         /* Read klass from fr.self (= frame-chain-tracked) instead of
          * sp[0]: the body eval may have pulled c->sp_top below sp[0],
@@ -960,6 +971,8 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
          * fresh because visit_roots walks the frame chain while &fr
          * is current_frame. */
         korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
+        if (_br.state != KORB_NORMAL) return _br;
+        r = _br.value;
     }
     return RESULT_OK(r);
 }
@@ -2722,11 +2735,17 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
     c->current_frame->self = (VALUE)meta;
     c->current_frame->current_class = meta;
     c->current_frame->cref = &new_cref;
-    VALUE r = EVAL_ARG_UNWRAP(c, body);
+    /* Restore self/class/cref on EVERY exit, including a raise from the body:
+     * new_cref is stack-allocated, so leaving c->current_frame->cref pointing
+     * at it after this frame returns leaves a dangling cref that later const
+     * lookups deref (garbage cref->klass → SEGV).  Do NOT use EVAL_ARG_UNWRAP
+     * here (it early-returns on raise, skipping the restore). */
+    RESULT _br = EVAL_ARG(c, body);
     c->current_frame->self = prev_self;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
-    return RESULT_OK(r);
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 NODE_DEF
@@ -3037,7 +3056,11 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
     c->current_frame->self = (VALUE)klass;
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Restore self/class/cref on EVERY exit incl. a body raise: new_cref is
+     * stack-allocated, so a skipped restore leaves a dangling cref that later
+     * const lookups deref → SEGV.  EVAL_ARG (not _UNWRAP) so the raise path
+     * still runs the restore below. */
+    RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
     /* Read forwarded klass from frame->self BEFORE restoring it —
      * visit_roots tracks current_frame->self through body's GCs. */
     VALUE klass_tracked = c->current_frame->self;
@@ -3045,7 +3068,8 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
-    return RESULT_OK(r);
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 NODE_DEF @noinline
@@ -3110,14 +3134,17 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     c->current_frame->self = (VALUE)klass;
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Restore on EVERY exit incl. a body raise (new_cref is stack-allocated;
+     * a skipped restore leaves a dangling cref → later const-lookup SEGV). */
+    RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
     /* Read forwarded klass from frame->self BEFORE restoring it. */
     VALUE klass_tracked = c->current_frame->self;
     c->current_frame->current_class = prev_class;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
-    return RESULT_OK(r);
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 NODE_DEF @noinline
@@ -3176,7 +3203,9 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     c->current_frame->self = sp[1];
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Restore on EVERY exit incl. a body raise (new_cref is stack-allocated;
+     * a skipped restore leaves a dangling cref → later const-lookup SEGV). */
+    RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
     /* Read forwarded value from frame->self BEFORE restoring it. */
     VALUE singleton_tracked = c->current_frame->self;
     c->current_frame->current_class = prev_class;
@@ -3184,7 +3213,8 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     c->current_frame->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame(singleton_tracked, fp_lo, fp_hi + 1024);
     c->sp_top = sp;
-    return RESULT_OK(r);
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(_br.value);
 }
 
 NODE_DEF
