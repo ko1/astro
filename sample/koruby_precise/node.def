@@ -2893,28 +2893,58 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF
 node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
 {
-    /* Reserve 3 slots: sp[0] = recv, sp[1] = args, sp[2] = block.
-     * Zero-fill before bumping c->sp_top so visit_roots doesn't see
-     * stale heap-ptr leftover.  Each EA can fire many GCs under
-     * STRESS+PURGE — slots pin the values across the cascade. */
-    sp[0] = 0; sp[1] = 0; sp[2] = 0;
-    c->sp_top = sp + 3;
-    sp[0] = is_method ? EVAL_ARG_UNWRAP(c, recv) : c->current_frame->self;
-    sp[1] = EVAL_ARG_UNWRAP(c, args_node);
+    /* Evaluate the receiver first, then park it in a synthetic frame for the
+     * duration of the args_node + block evaluations.  recv CANNOT be parked
+     * in an sp[] slot: args_node is an array-builder whose node_ary_new writes
+     * its result handle to sp[0], overwriting recv with the args array so
+     * dispatch would run on the wrong receiver.  It also can't stay a plain
+     * C-local: args_node fires GC (STRESS: every alloc) and the moving GC
+     * would leave the C-local stale.  The non-moving koruby held recv in a
+     * C-local and was immune on both counts.  The frame chain is always
+     * scanned by visit_roots regardless of sp, so last_match keeps recv live;
+     * the synthetic frame copies fp/self/cref so lvar + arg staging access is
+     * unchanged.  Pop the frame before dispatch (it installs its own). */
+    VALUE r0;
+    if (is_method) {
+        RESULT _rr = EVAL(c, recv, sp);
+        if (_rr.state != KORB_NORMAL) return _rr;
+        r0 = _rr.value;
+    } else {
+        r0 = c->current_frame->self;
+    }
+    struct korb_frame fr = {
+        .prev          = c->current_frame,
+        .self          = c->current_frame->self,
+        .fp            = c->current_frame->fp,
+        .cref          = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file  = c->current_frame->current_file,
+        .block         = c->current_frame->block,
+        .last_line     = Qnil,
+        .last_match    = r0,        /* recv parked here (no GC since its eval) */
+    };
+    c->current_frame = &fr;
+
+    RESULT _ra = EVAL(c, args_node, sp);
+    if (_ra.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ra; }
     long n_args = 0;
-    if (BUILTIN_TYPE(sp[1]) == T_ARRAY) {
-        struct korb_array *aa = (struct korb_array *)sp[1];
+    if (BUILTIN_TYPE(_ra.value) == T_ARRAY) {
+        struct korb_array *aa = (struct korb_array *)_ra.value;
         n_args = aa->len;
         for (long i = 0; i < n_args; i++) {
             c->current_frame->fp[arg_index + i] = korb_ary_items(aa)[i];
         }
     }
-    sp[2] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
-    VALUE r = sp[0];
-    struct korb_proc *block = (BUILTIN_TYPE(sp[2]) == T_PROC) ? (struct korb_proc *)sp[2] : NULL;
-    RESULT _ret = korb_dispatch_call(c, n, r, name, (uint32_t)n_args, arg_index, block, mc);
-    c->sp_top = sp;
-    return _ret;
+    VALUE block_v = Qnil;
+    if (blk) {
+        RESULT _rb = EVAL(c, blk, sp);
+        if (_rb.state != KORB_NORMAL) { c->current_frame = fr.prev; return _rb; }
+        block_v = _rb.value;
+    }
+    VALUE r = fr.last_match;          /* re-read: GC during args/blk may have moved recv */
+    c->current_frame = fr.prev;
+    struct korb_proc *block = (BUILTIN_TYPE(block_v) == T_PROC) ? (struct korb_proc *)block_v : NULL;
+    return korb_dispatch_call(c, n, r, name, (uint32_t)n_args, arg_index, block, mc);
 }
 
 NODE_DEF @noinline
