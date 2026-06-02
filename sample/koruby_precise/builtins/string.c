@@ -1152,6 +1152,9 @@ static RESULT str_start_with(CTX *c, int argc, VALUE *sp) {
             }
         }
         struct korb_string *p = (struct korb_string *)p_v;
+        /* Re-read self: the to_str coercion above is a GC point and the
+         * moving string handle cached in `s` would be stale. */
+        s = (struct korb_string *)sp[-argc - 1];
         if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -1184,6 +1187,9 @@ static RESULT str_end_with(CTX *c, int argc, VALUE *sp) {
             }
         }
         struct korb_string *p = (struct korb_string *)p_v;
+        /* Re-read self: the to_str coercion above is a GC point and the
+         * moving string handle cached in `s` would be stale. */
+        s = (struct korb_string *)sp[-argc - 1];
         if (p->len <= s->len && memcmp(s->ptr + s->len - p->len, p->ptr, p->len) == 0) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
