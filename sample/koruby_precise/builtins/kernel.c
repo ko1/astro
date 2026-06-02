@@ -1427,12 +1427,16 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
                        "wrong argument type %s (expected Binding)",
                        korb_id_name(korb_class_of_class(argv[1])->name));
         }
-        struct korb_binding *b = (struct korb_binding *)argv[1];
-        /* Forward [string, file, line] to binding's eval implementation. */
+        /* Forward [string, file, line] to binding's eval implementation.
+         * korb_str_new_cstr below is a GC point; the moving eval string and
+         * binding must be snapshotted into the C-stack forward[] (which is
+         * NOT GC-scanned) AFTER it, re-read from the forwarded value-stack
+         * slots — otherwise binding_eval_via deref's a stale argv[0]. */
         VALUE forward[3];
-        forward[0] = argv[0];
         forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp_top, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
+        forward[0] = argv[0];
+        struct korb_binding *b = (struct korb_binding *)argv[1];
         return binding_eval_via(c, b, forward, 3);
     }
     struct korb_string *s = (struct korb_string *)argv[0];
