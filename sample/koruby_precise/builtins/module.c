@@ -1041,6 +1041,11 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
             meta = cur;
         } else {
             meta = korb_class_new(c, c->sp_top, korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
+            /* korb_class_new is a GC point: self/o and the old class cur are
+             * moving and the C-locals are now stale.  Re-derive both from the
+             * forwarded receiver slot before touching cur->ivar_* / o->klass. */
+            o = (struct korb_object *)sp[-argc - 1];
+            cur = (struct korb_class *)o->basic.klass;
             /* Copy ivar shape so @ivars set before extend remain
              * accessible: korb_ivar_get / korb_ivar_set look up slots
              * by name on the object's class, which is now meta. */
@@ -1077,11 +1082,13 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
         if (BUILTIN_TYPE(argv[i]) != T_MODULE && BUILTIN_TYPE(argv[i]) != T_CLASS) continue;
         struct korb_class *meta = korb_class_of_class(argv[i]);
         if (meta && korb_class_find_method(meta, korb_intern("extended"))) {
-            VALUE obj_v = self;
+            /* Re-read self from its slot: a prior korb_class_new / extended
+             * hook funcall (GC points) may have moved the receiver. */
+            VALUE obj_v = sp[-argc - 1];
             CHECK(korb_funcall(c, argv[i], korb_intern("extended"), 1, &obj_v));
         }
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 
 static RESULT module_prepend(CTX *c, int argc, VALUE *sp) {
