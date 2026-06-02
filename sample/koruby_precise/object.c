@@ -3186,15 +3186,27 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         return ret;
     }
     if (t == T_RANGE) {
-        struct korb_range *r = (struct korb_range *)v;
+        /* Park the range (sp[0]) + accumulator (sp[1]) across
+         * korb_inspect_inner / korb_str_new_cstr (GC points): the range and
+         * the result string are moving, so a C-local would go stale (SEGV in
+         * rand_spec inspecting a Range).  Re-derive r from sp[0] after each. */
+        VALUE *sp = c->sp_top;
+        sp[0] = v;
+        sp[1] = 0;
+        c->sp_top = sp + 2;
+        struct korb_range *r = (struct korb_range *)sp[0];
         bool both_nil = NIL_P(r->begin) && NIL_P(r->end);
-        VALUE s = (NIL_P(r->begin) && !both_nil)
-                      ? korb_str_new_cstr(c, c->sp_top, "")
-                      : korb_inspect_inner(c, r->begin, depth+1);
-        korb_str_concat(c, c->sp_top, s, korb_str_new_cstr(c, c->sp_top, r->exclude_end ? "..." : ".."));
+        sp[1] = (NIL_P(r->begin) && !both_nil)
+                    ? korb_str_new_cstr(c, sp + 2, "")
+                    : korb_inspect_inner(c, r->begin, depth+1);
+        r = (struct korb_range *)sp[0];
+        sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, r->exclude_end ? "..." : ".."));
+        r = (struct korb_range *)sp[0];
         if (!NIL_P(r->end) || both_nil)
-            korb_str_concat(c, c->sp_top, s, korb_inspect_inner(c, r->end, depth+1));
-        return s;
+            sp[1] = korb_str_concat(c, sp + 2, sp[1], korb_inspect_inner(c, r->end, depth+1));
+        VALUE ret = sp[1];
+        c->sp_top = sp;
+        return ret;
     }
     if (t == T_FLOAT) {
         char b[64]; korb_double_to_str(((struct korb_float *)v)->value, b, sizeof(b));

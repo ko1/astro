@@ -787,15 +787,34 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
     /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
      * or no tag (`catch {}` — the block param is the implicit tag).
      * For the no-tag form we synthesize a fresh Object as the tag. */
-    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp_top, KORB_VM(c)->object_class);
-    VALUE block_arg[1] = { tag };
+    VALUE tag0 = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp_top, KORB_VM(c)->object_class);
+    /* Park the tag in a synthetic frame across korb_yield: the block body
+     * runs at a lower sp_top, so the moving tag (especially the synthesized
+     * no-tag Object) would not be forwarded if held only as a C-local /
+     * argv slot, and the post-yield korb_eq would compare a stale pointer.
+     * The frame chain is always scanned regardless of sp. */
+    struct korb_frame fr = {
+        .prev          = c->current_frame,
+        .self          = c->current_frame->self,
+        .fp            = c->current_frame->fp,
+        .cref          = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file  = c->current_frame->current_file,
+        .block         = c->current_frame->block,
+        .last_line     = Qnil,
+        .last_match    = tag0,
+    };
+    c->current_frame = &fr;
+    VALUE block_arg[1] = { fr.last_match };
     RESULT _br = korb_yield(c, 1, block_arg);
     /* state == THROW: tag/value live on _br.value as a 2-element ary. */
     if (_br.state == KORB_THROW && !SPECIAL_CONST_P(_br.value) &&
         BUILTIN_TYPE(_br.value) == T_ARRAY) {
         struct korb_array *pair = (struct korb_array *)_br.value;
-        if (pair->len == 2 && korb_eq(c, korb_ary_items(pair)[0], tag)) {
-            return RESULT_OK(korb_ary_items(pair)[1]);
+        if (pair->len == 2 && korb_eq(c, korb_ary_items(pair)[0], fr.last_match)) {
+            VALUE r = korb_ary_items(pair)[1];
+            c->current_frame = fr.prev;
+            return RESULT_OK(r);
         }
     }
     /* state == RAISE with UncaughtThrowError: proc_call already converted
@@ -810,13 +829,15 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
         }
         if (is_ute) {
             VALUE thrown_tag = korb_ivar_get(_br.value, korb_intern("@__throw_tag__"));
-            if (!UNDEF_P(thrown_tag) && korb_eq(c, thrown_tag, tag)) {
+            if (!UNDEF_P(thrown_tag) && korb_eq(c, thrown_tag, fr.last_match)) {
                 VALUE v = korb_ivar_get(_br.value, korb_intern("@__throw_value__"));
                 if (UNDEF_P(v)) v = Qnil;
+                c->current_frame = fr.prev;
                 return RESULT_OK(v);
             }
         }
     }
+    c->current_frame = fr.prev;
     return _br;
 }
 
