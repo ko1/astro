@@ -317,8 +317,13 @@ RESULT io_class_popen(CTX *c, int argc, VALUE *sp) {
     VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
     VALUE r = UNWRAP(korb_yield_r(c, 1, &io));
-    pclose(fp);
-    korb_ivar_set(io, korb_io_fp_id_(), Qnil);
+    /* Only close if the block didn't already close io: io.close fclose's the
+     * FILE* and nils @fp, so an unconditional pclose(fp) here double-frees it
+     * (io/popen_spec abort).  Re-read @fp to detect that. */
+    if (korb_io_fp(io) == fp) {
+        pclose(fp);
+        korb_ivar_set(io, korb_io_fp_id_(), Qnil);
+    }
     return RESULT_OK(r);
 }
 
