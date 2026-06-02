@@ -1393,23 +1393,23 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
      * returns < 0 the probe is smaller than the running min (so swap).
      * This is the opposite of sort's convention, which is also why the
      * cmp variable here is interpreted with the probe as the LHS. */
-    /* Park running min + probe in sp[0..1] across ary_sort_compare GC.
-     * R5: re-derive a from its slot (held across the compare). */
-    {
-        struct korb_array *a = (struct korb_array *)sp[-argc - 1];
-        sp[0] = korb_ary_items(a)[0];
-    }
-    sp[1] = 0;
-    c->sp_top = sp + 2;
+    /* Park self (fr.last_match) + running min (fr.last_line) in a synthetic
+     * frame: with a block, ary_sort_compare yields and korb_yield lowers
+     * c->sp_top below the receiver/accumulator sp slots, so a moving GC would
+     * not forward them (sp[]-only parking went stale → SEGV in range/max).
+     * The frame chain is always scanned regardless of sp. */
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_items((struct korb_array *)sp[-argc - 1])[0]);
+    fr.last_match = sp[-argc - 1];
     RESULT _ret = RESULT_OK(Qnil);
     for (long i = 1; i < alen; i++) {
-        struct korb_array *a = (struct korb_array *)sp[-argc - 1];
-        sp[1] = korb_ary_items(a)[i];
-        long cmp = ary_sort_compare(c, sp[1], sp[0], has_block, &_ret);
-        if (_ret.state != KORB_NORMAL) return _ret;
-        if (cmp < 0) sp[0] = sp[1];
+        VALUE probe = korb_ary_items((struct korb_array *)fr.last_match)[i];
+        long cmp = ary_sort_compare(c, probe, fr.last_line, has_block, &_ret);
+        if (_ret.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ret; }
+        if (cmp < 0) fr.last_line = korb_ary_items((struct korb_array *)fr.last_match)[i];
     }
-    return RESULT_OK(sp[0]);
+    VALUE r = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(r);
 }
 
 static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
@@ -1420,23 +1420,23 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
     long alen = korb_ary_len(self);
     if (alen == 0) return RESULT_OK(Qnil);
     bool has_block = korb_block_given(c);
-    /* Park running max + probe in sp[0..1] across ary_sort_compare GC.
-     * R5: re-derive a from its slot (held across the compare). */
-    {
-        struct korb_array *a = (struct korb_array *)sp[-argc - 1];
-        sp[0] = korb_ary_items(a)[0];
-    }
-    sp[1] = 0;
-    c->sp_top = sp + 2;
+    /* Park self (fr.last_match) + running max (fr.last_line) in a synthetic
+     * frame: with a block, ary_sort_compare yields and korb_yield lowers
+     * c->sp_top below the receiver/accumulator sp slots, so a moving GC would
+     * not forward them (sp[]-only parking went stale → SEGV in range/max).
+     * The frame chain is always scanned regardless of sp. */
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_items((struct korb_array *)sp[-argc - 1])[0]);
+    fr.last_match = sp[-argc - 1];
     RESULT _ret = RESULT_OK(Qnil);
     for (long i = 1; i < alen; i++) {
-        struct korb_array *a = (struct korb_array *)sp[-argc - 1];
-        sp[1] = korb_ary_items(a)[i];
-        long cmp = ary_sort_compare(c, sp[1], sp[0], has_block, &_ret);
-        if (_ret.state != KORB_NORMAL) return _ret;
-        if (cmp > 0) sp[0] = sp[1];
+        VALUE probe = korb_ary_items((struct korb_array *)fr.last_match)[i];
+        long cmp = ary_sort_compare(c, probe, fr.last_line, has_block, &_ret);
+        if (_ret.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ret; }
+        if (cmp > 0) fr.last_line = korb_ary_items((struct korb_array *)fr.last_match)[i];
     }
-    return RESULT_OK(sp[0]);
+    VALUE r = fr.last_line;
+    c->current_frame = fr.prev;
+    return RESULT_OK(r);
 }
 
 static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
