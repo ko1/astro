@@ -1092,7 +1092,18 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         t_obj_dup_slots = dsp;      /* survives to the initialize_copy hook */
         o = (struct korb_object *)dsp[0];
         struct korb_object *no = (struct korb_object *)r;
-        for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
+        /* Grow the new object's ivar buffer to hold the source's ivars BEFORE
+         * setting ivar_cnt.  When cloning an object with a singleton class
+         * (preserve), korb_object_new sizes ivar_capa from the singleton's own
+         * shape (= 0 ivars), so without this the loop copied nothing yet
+         * ivar_cnt was bumped to the source count — the GC then scanned
+         * no->ivars[0..cnt) past the (NULL/short) buffer (SEGV, clone_spec). */
+        if (o->ivar_cnt > no->ivar_capa) {
+            no->ivars = korb_xrealloc(no->ivars, o->ivar_cnt * sizeof(VALUE));
+            for (uint32_t i = no->ivar_capa; i < o->ivar_cnt; i++) no->ivars[i] = Qnil;
+            no->ivar_capa = o->ivar_cnt;
+        }
+        for (uint32_t i = 0; i < o->ivar_cnt; i++) {
             no->ivars[i] = o->ivars[i];
         }
         if (no->ivar_cnt < o->ivar_cnt) no->ivar_cnt = o->ivar_cnt;
