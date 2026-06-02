@@ -102,9 +102,17 @@ staging が壊れる) — この罠で 1 周回した。
   ため、**eval body 自身の alloc が park する sp slot が value-stack 範囲外で scan されない**
   (korb_class_new の super が GC 後 stale)。eval body を scannable stack で走らせるか heap-fp を
   scan 領域化する architectural fix が要る。eval-with-binding の根の制約。
-- **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): cref chain・class
-  edges (super/includes/prepends) は GC 上 forward 済 → おそらく **stack-allocated cref の
-  use-after-return** (STRESS timing で露出)。
+- **const_lookup の stale cref/klass** (float/rationalize / range/reverse_each): 深く調査し
+  **真因 = class-identity 重複**と判明 (use-after-return ではなかった)。bisect で
+  `Rational(1,3) == 1` (harness 内) に絞った。`Rational#==` dispatch が **AST method**
+  (Ruby 定義 0x..5790; live Comparable#== は CFUNC 0x..a940 で別物・無関係) を引き、その
+  `def_cref->klass` が **purged plane の old class** を指す。`Rational->super = 0x7ff427800000` だが
+  `Object::Numeric = 0x7ff4278000a8` で **Numeric class object が 2 個併存** (reopen/moving-GC で
+  duplicate 化)。Rational は old/dup Numeric を継承し、その == の def_cref->klass が GC scan で
+  forward されず、const_lookup が `cr->klass->constants` で stale を deref → SEGV。
+  **fix は class-reopen identity の構造修正が要り high-risk。** forward_edge は to-space idempotent
+  なので visit_method_table の include_depth>0 skip 自体は安全性に不要だが、orphan の klass は
+  purged plane なので単純に un-skip すると forward_payload が dead ptr を読んで GC crash する。未修正。
 - **kernel/clone**: koruby_scan_edges 内 (GC 中) で別 crash (singleton/frozen edge、既知)。
 - **kernel/catch UTE path**: throw が lambda を脱出した時の @__throw_tag__ ivar が stale。
 
