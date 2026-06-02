@@ -4444,7 +4444,17 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp_top;
-    VALUE prev_self = c->current_frame->self;
+    /* Park the CALLER frame's self in the GC root stack across the body
+     * EVAL.  A bare C-local goes stale under a moving GC: the body's
+     * allocations relocate the enclosing self, and the restore below would
+     * then write a pre-GC (now PROT_NONE) address back into the caller
+     * frame's self — the next dispatch walks the dead pointer and SEGVs.
+     * Same root cause / idiom as korb_yield_slow + proc_call.  Reproducer:
+     * array/each_spec (block reads an ivar around a nested Ruby method
+     * call, e.g. `ScratchPad << e`) under STRESS+PURGE. */
+    VALUE *const self_root = AROH_ROOT_STACK_TOP(c);
+    self_root[0] = c->current_frame->self;
+    AROH_ROOT_STACK_SET_TOP(c, self_root + 1);
     /* Root recv across the argument-processing window.  recv lives only in
      * this C-local until c->current_frame->self = recv (below); but the
      * rest-array korb_ary_new_capa / kwh korb_hash_new in between fire GC,
@@ -4459,6 +4469,7 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * dispatches don't leak high-water mark. */
     VALUE *new_fp = c->sp_top + 1;
     if (new_fp + m->u.ast.locals_cnt >= c->stack_end) {
+        AROH_ROOT_STACK_SET_TOP(c, prev_sp);  /* pop the self park */
         return korb_raise(c, NULL, "stack overflow");
     }
     /* Snapshot argv into a local buffer BEFORE the zero-fill — when argv
@@ -4558,14 +4569,18 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     c->running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->current_frame->fp = prev_fp;
+    /* Read the parked (GC-forwarded) caller self before the zero-fill
+     * below reclaims its slot.  No alloc since the body ended, so it's
+     * still the live value. */
+    const VALUE restored_self = self_root[0];
     /* Zero-fill the popped slot range so a sibling/later frame push
      * doesn't re-expose stale heap ptrs left over from this frame's
      * locals.  Without this, visit_roots scans those addresses once
      * the next sp-grow brings them back below c->sp_top and treats stale
      * (moved long ago) ptrs as live → wild forwarding under STRESS. */
     for (VALUE *p = prev_sp; p < c->sp_top; p++) *p = Qnil;
-    c->sp_top = prev_sp;
-    c->current_frame->self = prev_self;
+    c->sp_top = prev_sp;  /* also pops the self park */
+    c->current_frame->self = restored_self;
     c->current_frame->cref = prev_cref2;
     /* Consume KORB_RETURN at the method boundary. */
     if (_br.state == KORB_RETURN) {
