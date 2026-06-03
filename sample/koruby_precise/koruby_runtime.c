@@ -57,19 +57,25 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
      * indicates a stale class struct (= 8-byte head misinterpreted as
      * class) being scanned — bail rather than dereference garbage. */
     if (mt->bucket_cnt == 0 || mt->bucket_cnt > (1u << 20)) return;
+    extern uint64_t korb_g_gc_gen;
     for (uint32_t i = 0; i < mt->bucket_cnt; i++) {
         for (struct korb_method_table_entry *e = mt->buckets[i]; e; e = e->next) {
             struct korb_method *m = e->method;
             if (!m) continue;
-            /* korb_module_include flattens module methods into klass's
-             * table by storing the same `m` pointer in both tables
-             * (entry->include_depth > 0 marks the imported copy).  Per-method
-             * heap edges (= defining_class, def_cref, u.proc.proc) must be
-             * visited exactly once per GC cycle — otherwise the second visit
-             * passes the already-rewritten to-space addr to forward, which
-             * memcpy's a phantom obj into to_top → runaway scan.  Restrict
-             * the walk to depth-0 entries (= the owning class). */
-            if (e->include_depth != 0) continue;
+            /* korb_module_include flattens module methods into klass's table
+             * by storing the same `m` pointer in both tables (the importing
+             * class's entry has include_depth > 0).  Per-method heap edges
+             * (= defining_class, def_cref, u.proc.proc) must be forwarded
+             * exactly ONCE per GC cycle — a second forward of the same slot
+             * passes an already-to-space addr to forward, which memcpy's a
+             * phantom obj into to_top → runaway scan.  Dedup per-method via a
+             * visit-generation stamp (NOT by "depth-0 entries only": a method
+             * defined directly on a class reachable only via an including
+             * class's flattened table appears solely at depth>=1, and the old
+             * rule then never forwarded its def_cref->klass → stale class →
+             * SEGV in const_lookup, e.g. Hash#to_h's `instance_of?(Hash)`). */
+            if (m->gc_visit_gen == korb_g_gc_gen) continue;
+            m->gc_visit_gen = korb_g_gc_gen;
             visit_ptr_slot(ctx, fn, (void **)&m->defining_class);
             for (struct korb_cref *cr = m->def_cref; cr; cr = cr->prev) {
                 visit_ptr_slot(ctx, fn, (void **)&cr->klass);

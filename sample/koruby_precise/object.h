@@ -96,6 +96,16 @@ struct korb_method {
     ID name;
     struct korb_class *defining_class;
     struct korb_cref *def_cref;   /* lexical cref captured at def-time */
+    /* GC visit generation: visit_method_table forwards each method's heap
+     * edges (defining_class / def_cref->klass / proc) exactly once per GC
+     * cycle by stamping this with korb_g_gc_gen.  Replaces the older
+     * "depth-0 entries only" dedup, which silently skipped a method whose
+     * only table appearances are at include_depth>=1 (e.g. a method defined
+     * directly on a class that is reached only via an including class's
+     * flattened table) — its def_cref->klass then never got forwarded and
+     * went stale (Hash#to_h `instance_of?(Hash)` SEGV under STRESS+PURGE).
+     * calloc-zeroed at allocation; korb_g_gc_gen is >=1 by first use. */
+    uint64_t gc_visit_gen;
     bool is_simple_frame;         /* AST methods only: body has no yield/super/block_given/const/blocked-call */
     enum korb_visibility visibility;
     union {
