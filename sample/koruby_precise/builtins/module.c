@@ -1384,6 +1384,11 @@ static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;
+        /* korb_yield ran the module-body block (may have fired GC and moved
+         * the arena module).  `m` is stale; blk_new_cref.klass was forwarded
+         * by visit_roots while it sat in the block's cref across the body —
+         * same fix as class_new (see docs/rooting_guide.md IDIOM C). */
+        m = (struct korb_class *)blk_new_cref.klass;
         /* BREAK from module body silently consumed; other non-NORMAL
          * propagates. */
         if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) return _yr;
