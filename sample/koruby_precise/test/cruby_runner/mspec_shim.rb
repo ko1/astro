@@ -166,6 +166,19 @@ class MSpecExpectation
       raise MSpecError, "expected #{expected.inspect}, got #{@actual.inspect}"
     end
   end
+  # eql? / equal? must be defined explicitly: koruby's default Object#eql?
+  # delegates to ==, so without these `x.should.eql?(y)` would silently use
+  # == semantics (wrong for type-strict cases like 4.eql?(4.0) == false).
+  def eql?(expected)
+    if @actual.eql?(expected) then $ms_pass += 1
+    else raise MSpecError, "expected #{@actual.inspect} to eql? #{expected.inspect}"
+    end
+  end
+  def equal?(expected)
+    if @actual.equal?(expected) then $ms_pass += 1
+    else raise MSpecError, "expected #{@actual.inspect} to be equal? (same object as) #{expected.inspect}"
+    end
+  end
   def !=(expected)
     if @actual != expected then $ms_pass += 1
     else
@@ -579,6 +592,17 @@ class MSpecNegatedExpectation < MSpecExpectation
   def ==(expected)
     if @actual != expected then $ms_pass += 1
     else raise MSpecError, "expected != #{expected.inspect}"
+    end
+  end
+  # Negated eql? / equal? (see the positive class for why these are explicit).
+  def eql?(expected)
+    if !@actual.eql?(expected) then $ms_pass += 1
+    else raise MSpecError, "expected #{@actual.inspect} not to eql? #{expected.inspect}"
+    end
+  end
+  def equal?(expected)
+    if !@actual.equal?(expected) then $ms_pass += 1
+    else raise MSpecError, "expected #{@actual.inspect} not to be equal? (same object as) #{expected.inspect}"
     end
   end
   def be_nil
