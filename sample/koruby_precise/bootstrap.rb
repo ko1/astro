@@ -2589,6 +2589,7 @@ class Array
 
   def map!(&blk)
     return enum_for(:map!) unless blk
+    raise FrozenError, "can't modify frozen Array: #{inspect}" if frozen?
     i = 0
     # Re-read size each step so the block may grow the array (CRuby
     # "tolerates increasing size during iteration").
@@ -2754,6 +2755,7 @@ class Array
 
   def select!(&blk)
     return enum_for(:select!) unless blk
+    raise FrozenError, "can't modify frozen Array: #{inspect}" if frozen?
     rm = []
     each_with_index { |v, i| rm << i unless blk.call(v) }
     return nil if rm.empty?
