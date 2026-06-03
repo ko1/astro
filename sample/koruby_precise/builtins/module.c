@@ -953,6 +953,14 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             /* BREAK from class body silently consumed; other non-NORMAL
              * propagates. */
             if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) return _yr;
+            /* korb_yield ran the class-body block, which may have fired GC
+             * (e.g. attr_reader → korb_class_add_method_ast) and moved the
+             * arena class.  `nk` / `sp[1]` C-locals are stale; the block body
+             * runs with frame->cref = blk_new_cref (korb_yield installs the
+             * block's cref), so blk_new_cref.klass is the slot visit_roots
+             * forwarded across the body and is the live handle.  (new_cref is
+             * NOT walked during the body — korb_yield replaced it.) */
+            return RESULT_OK((VALUE)blk_new_cref.klass);
         }
         return RESULT_OK((VALUE)nk);
     }
