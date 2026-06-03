@@ -69,9 +69,24 @@ static RESULT name_arg_to_id(CTX *c, VALUE arg, ID *out_id) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
-            VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (RTEST(rt)) v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
+            /* v is a by-value moving handle with no slot to re-read, and we
+             * funcall on it TWICE (respond_to? then to_str) — the first call
+             * can move it, so the second would deref a stale handle (IDIOM B:
+             * park on the value stack, re-read between/after calls; explicit
+             * RESULT checks, pop on every exit). */
+            VALUE *const vsp = c->sp_top;
+            vsp[0] = v;
+            c->sp_top = vsp + 1;
+            RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+            if (RTEST(rtr.value)) {
+                RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+                vsp[0] = tsr.value;
+            }
+            v = vsp[0];          /* re-read forwarded handle */
+            c->sp_top = vsp;     /* pop */
         }
     }
     if (SYMBOL_P(v)) { *out_id = korb_sym2id(v); return RESULT_OK(Qnil); }
@@ -82,8 +97,8 @@ static RESULT name_arg_to_id(CTX *c, VALUE arg, ID *out_id) {
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     return korb_raise(c, (struct korb_class *)eT, "%s is not a symbol nor a string",
-               SPECIAL_CONST_P(arg) ? "(special)"
-                   : korb_id_name(korb_class_of_class(arg)->name));
+               SPECIAL_CONST_P(v) ? "(special)"
+                   : korb_id_name(korb_class_of_class(v)->name));
 }
 
 /* Frozen check: receiver class/module must not be frozen. */
@@ -335,19 +350,24 @@ static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(korb_ary_new(c, c->sp_top));
     }
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    struct korb_class *root = (struct korb_class *)self;
-    VALUE r = korb_ary_new(c, c->sp_top);
-    /* Walk from root through includes / super if requested. */
-    struct korb_class *k = root;
-    while (k) {
-        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
-            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
-                korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
+    /* Park result (sp[0]) + walk cursor (sp[1]); the class moves across
+     * korb_ary_push, method-table entries are libc-stable (IDIOM D). */
+    VALUE *const vsp = c->sp_top;
+    vsp[1] = self;                       /* walk cursor */
+    c->sp_top = vsp + 2;
+    vsp[0] = korb_ary_new(c, vsp + 2);   /* result */
+    while (vsp[1] != 0 && !SPECIAL_CONST_P(vsp[1])) {
+        uint32_t bcnt = ((struct korb_class *)vsp[1])->methods.bucket_cnt;
+        for (uint32_t b = 0; b < bcnt; b++) {
+            for (struct korb_method_table_entry *e = ((struct korb_class *)vsp[1])->methods.buckets[b]; e; e = e->next) {
+                korb_ary_push(c, vsp + 2, vsp[0], korb_id2sym(e->name));
             }
         }
         if (!include_inherited) break;
-        k = k->super;
+        vsp[1] = (VALUE)((struct korb_class *)vsp[1])->super;
     }
+    VALUE r = vsp[0];
+    c->sp_top = vsp;
     return RESULT_OK(r);
 }
 
@@ -357,30 +377,42 @@ static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
  * chain.  vis = -1 means "all public + protected" (default for #methods).
  * vis = KORB_VIS_PUBLIC / PRIVATE / PROTECTED selects exactly that set. */
 static VALUE methods_with_visibility(CTX *c, VALUE self, int vis, bool include_inherited) {
-    struct korb_class *k = korb_class_of_class(self);
-    VALUE r = korb_ary_new(c, c->sp_top);
-    while (k) {
-        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
-            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+    /* The class chain (k) is a moving handle and the result array (r) grows
+     * across korb_ary_push — both must survive every GC point.  Park r at
+     * sp[0] and the walk cursor at sp[1] (IDIOM D); re-derive the class from
+     * sp[1] each use, advance via the re-read super.  Method-table entries
+     * (e) are libc-stable, so following e->next across korb_ary_push is safe;
+     * only reads through k (buckets / super) need a fresh class. */
+    VALUE *const sp = c->sp_top;
+    sp[1] = (VALUE)korb_class_of_class(self);   /* walk cursor */
+    c->sp_top = sp + 2;
+    sp[0] = korb_ary_new(c, sp + 2);            /* result */
+    while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
+        uint32_t bcnt = ((struct korb_class *)sp[1])->methods.bucket_cnt;
+        for (uint32_t b = 0; b < bcnt; b++) {
+            for (struct korb_method_table_entry *e = ((struct korb_class *)sp[1])->methods.buckets[b]; e; e = e->next) {
                 if (vis < 0) {
                     if (e->method->visibility == KORB_VIS_PRIVATE) continue;
                 } else {
                     if ((int)e->method->visibility != vis) continue;
                 }
                 bool dup = false;
-                for (long j = 0; j < ((struct korb_array *)r)->len; j++) {
-                    VALUE existing = korb_ary_items((struct korb_array *)r)[j];
+                struct korb_array *ra = (struct korb_array *)sp[0];
+                for (long j = 0; j < ra->len; j++) {
+                    VALUE existing = korb_ary_items(ra)[j];
                     if (SYMBOL_P(existing) && korb_sym2id(existing) == e->name) {
                         dup = true; break;
                     }
                 }
-                if (!dup) korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
+                if (!dup) korb_ary_push(c, sp + 2, sp[0], korb_id2sym(e->name));
             }
         }
         if (!include_inherited) break;
-        k = k->super;
+        sp[1] = (VALUE)((struct korb_class *)sp[1])->super;   /* advance via re-read */
     }
-    return r;
+    VALUE result = sp[0];
+    c->sp_top = sp;
+    return result;
 }
 static RESULT obj_methods(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -465,7 +497,8 @@ static RESULT module_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = NULL;
     if (inherit) {
@@ -506,7 +539,8 @@ static RESULT module_public_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PUBLIC));
@@ -519,7 +553,8 @@ static RESULT module_private_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PRIVATE));
@@ -532,7 +567,8 @@ static RESULT module_protected_method_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));
+    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
     return RESULT_OK(KORB_BOOL(m && m->visibility == KORB_VIS_PROTECTED));

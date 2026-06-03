@@ -216,11 +216,21 @@ static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE v, ID *out_id) {
     if (!SYMBOL_P(v) &&
         (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) &&
         !SPECIAL_CONST_P(v)) {
-        VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (RTEST(rt)) {
-            v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
+        /* Two funcalls on the same by-value moving handle — park it across
+         * both so the second (to_str) doesn't deref a moved v (IDIOM B). */
+        VALUE *const vsp = c->sp_top;
+        vsp[0] = v;
+        c->sp_top = vsp + 1;
+        RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+        if (RTEST(rtr.value)) {
+            RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+            if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+            vsp[0] = tsr.value;
         }
+        v = vsp[0];
+        c->sp_top = vsp;
     }
     const char *p; long n;
     if (SYMBOL_P(v)) {

@@ -1299,11 +1299,22 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
     if (!SYMBOL_P(name_arg) &&
         (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
         if (!SPECIAL_CONST_P(name_arg)) {
-            VALUE rt = UNWRAP(korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-                if (RTEST(rt)) {
-                name_arg = UNWRAP(korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL));
-                    }
+            /* Two funcalls on the same by-value moving handle — park name_arg
+             * across both so the second (to_str) doesn't deref a moved handle
+             * (IDIOM B). */
+            VALUE *const nsp = c->sp_top;
+            nsp[0] = name_arg;
+            c->sp_top = nsp + 1;
+            RESULT rtr = korb_funcall(c, nsp[0], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (rtr.state != KORB_NORMAL) { c->sp_top = nsp; return rtr; }
+            if (RTEST(rtr.value)) {
+                RESULT tsr = korb_funcall(c, nsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { c->sp_top = nsp; return tsr; }
+                nsp[0] = tsr.value;
+            }
+            name_arg = nsp[0];
+            c->sp_top = nsp;
         }
     }
     const char *namep = NULL;
