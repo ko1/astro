@@ -5115,6 +5115,7 @@ class Set
   alias to_s inspect
 
   def subset?(other)
+    raise ArgumentError, "value must be a set" unless other.is_a?(Set)
     @h.each_key { |e| return false unless other.include?(e) }
     true
   end

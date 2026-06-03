@@ -746,8 +746,11 @@ static RESULT str_to_f(CTX *c, int argc, VALUE *sp) {
         p++;
         if (p < e && *p == '_' && p + 1 < e && p[1] >= '0' && p[1] <= '9') p++;
     }
-    /* Fractional part. */
-    if (p < e && *p == '.' && p + 1 < e && p[1] >= '0' && p[1] <= '9') {
+    /* Fractional part.  Consume the '.' when it is preceded by an integer
+     * digit (so "1.", "1.e-2" parse) or followed by one (".5"); Ruby treats
+     * a bare-trailing or exponent-following dot as part of the float. */
+    if (p < e && *p == '.' &&
+        (saw_digit || (p + 1 < e && p[1] >= '0' && p[1] <= '9'))) {
         if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
         p++;
         while (p < e && *p >= '0' && *p <= '9') {
