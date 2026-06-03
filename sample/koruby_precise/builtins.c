@@ -508,8 +508,11 @@ void korb_init_builtins(CTX *c) {
                 sp[1] = argv[0];
                 VALUE r = UNWRAP(module_attr_reader(c, 1, sp + 2));
                 if (writable) {
-                    sp[0] = self;
-                    sp[1] = argv[0];
+                    /* module_attr_reader is a GC point; the self / argv[0]
+                     * C-locals are stale.  Re-read from the (scanned) receiver
+                     * and arg slots before re-staging (IDIOM A). */
+                    sp[0] = sp[-argc - 1];
+                    sp[1] = (sp - argc)[0];
                     VALUE w = UNWRAP(module_attr_writer(c, 1, sp + 2));
                     /* CRuby returns [reader_sym, writer_sym] in this form. */
                     /* Park r, w, and the result array across the pushes

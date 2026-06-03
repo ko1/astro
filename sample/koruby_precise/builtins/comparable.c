@@ -1244,17 +1244,26 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
                              ((struct korb_string *)arg)->len);
     } else if (!SPECIAL_CONST_P(arg)) {
         /* Coerce via #to_str (CRuby semantics: const_get accepts a
-         * String-convertible name). */
-        VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-        if (RTEST(rt)) {
-            VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-                if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
+         * String-convertible name).  Park arg across the two funcalls so the
+         * second (to_str) doesn't deref a handle moved by the first (IDIOM B). */
+        VALUE *const asp = c->sp_top;
+        asp[0] = arg;
+        c->sp_top = asp + 1;
+        RESULT rtr = korb_funcall(c, asp[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (rtr.state != KORB_NORMAL) { c->sp_top = asp; return rtr; }
+        if (RTEST(rtr.value)) {
+            RESULT tsr = korb_funcall(c, asp[0], korb_intern("to_str"), 0, NULL);
+            if (tsr.state != KORB_NORMAL) { c->sp_top = asp; return tsr; }
+            VALUE r = tsr.value;
+            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 name = korb_intern_n(((struct korb_string *)r)->ptr,
                                      ((struct korb_string *)r)->len);
+                c->sp_top = asp;
                 goto have_name;
             }
         }
+        c->sp_top = asp;
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
@@ -1265,6 +1274,10 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
                    "no implicit conversion of (special) into String");
     }
 have_name:;
+    /* Name derivation above hits GC points (korb_intern_n / respond_to? +
+     * to_str funcalls); re-read self from the receiver slot (IDIOM A). */
+    self = sp[-argc - 1];
+    argv = sp - argc;
     bool inherit = true;
     if (argc >= 2) inherit = RTEST(argv[1]);
     extern VALUE korb_const_get_inherited(struct korb_class *klass, ID name);
