@@ -10,22 +10,32 @@
  * comparators like Comparable#> work for non-canonical <=> returns
  * (e.g. user code that returns 0.1 to mean "greater"). */
 static long korb_cmp_call(CTX *c, VALUE self, VALUE other, RESULT *err) {
-    RESULT _r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
-    if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+    /* self/other are by-value moving handles used in the error path AFTER the
+     * <=> funcall (and korb_inspect) GC points.  Park them; the happy path
+     * below doesn't need them, so pop once <=> succeeded with non-nil. */
+    VALUE *const _csp = c->sp_top;
+    _csp[0] = self; _csp[1] = other;
+    c->sp_top = _csp + 2;
+    RESULT _r = korb_funcall(c, _csp[0], korb_intern("<=>"), 1, &_csp[1]);
+    if (_r.state != KORB_NORMAL) { c->sp_top = _csp; *err = _r; return 0; }
     VALUE r = _r.value;
     if (NIL_P(r)) {
-        VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         /* CRuby's "comparison of X with Y failed" uses the class name on
          * the LHS but inspect-style for non-builtin RHS values
          * (`"comparison of String with 7 failed"`). */
-        VALUE oi = korb_inspect(c, c->sp_top, other);
+        VALUE oi = korb_inspect(c, c->sp_top, _csp[1]);
         const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                                 ? korb_str_cstr(oi)
-                                : korb_id_name(korb_class_of_class(other)->name);
+                                : korb_id_name(korb_class_of_class(_csp[1])->name);
+        /* Fetch ArgumentError AFTER korb_inspect's GC — a C-local fetched
+         * before would be stale by the korb_raise below. */
+        VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         *err = korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
-                   korb_id_name(korb_class_of_class(self)->name), o_str);
+                   korb_id_name(korb_class_of_class(_csp[0])->name), o_str);
+        c->sp_top = _csp;
         return 0;
     }
+    c->sp_top = _csp;   /* pop: self/other no longer needed past here */
     if (FIXNUM_P(r)) {
         long v = FIX2LONG(r);
         return v < 0 ? -1 : (v > 0 ? 1 : 0);
