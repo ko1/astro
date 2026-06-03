@@ -160,6 +160,7 @@ static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
     RESULT err = RESULT_OK(Qnil);
     ID name = coerce_ivar_name(c, argv[0], &err);
     if (name == 0) return err;
+    self = sp[-argc - 1];   /* coerce_ivar_name may intern (GC); re-read self */
     return RESULT_OK(korb_ivar_get(self, name));
 }
 
@@ -175,6 +176,10 @@ static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
     RESULT err = RESULT_OK(Qnil);
     ID name = coerce_ivar_name(c, argv[0], &err);
     if (name == 0) return err;
+    /* coerce_ivar_name may intern (GC point): re-read self/argv from their
+     * scanned slots before the deref / store (IDIOM A). */
+    self = sp[-argc - 1];
+    argv = sp - argc;
     /* Immediate values (true/false/nil/Integer/Symbol/Float) can't have
      * ivars; CRuby raises FrozenError ("can't modify frozen X").  Match
      * that semantic via a RuntimeError-class FrozenError. */

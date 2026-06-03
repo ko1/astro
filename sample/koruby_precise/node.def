@@ -1867,12 +1867,27 @@ retry:;
          * the original (currently-rescued) exception in as #cause —
          * Exception#cause returns it.  Skip when re-raising the same
          * one (`raise` with no args). */
-        if (_rr.state == KORB_RAISE && _rr.value &&
-            !SPECIAL_CONST_P(_rr.value) && _rr.value != exc) {
-            VALUE cur_cause = korb_ivar_get(_rr.value, korb_intern("@cause"));
-            if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
-                korb_ivar_set(_rr.value, korb_intern("@cause"), exc);
+        /* Both the new exception (_rr.value) and the original exc are moving
+         * handles held across the korb_intern / ivar_get / ivar_set GC points
+         * here (and exc also across the whole rescue body's GCs).  Park both on
+         * the value stack — exc re-read from the scanned lvar slot — then
+         * re-read _rr.value so the RAISE propagation below returns a live
+         * handle (IDIOM B). */
+        if (_rr.state == KORB_RAISE && _rr.value && !SPECIAL_CONST_P(_rr.value)) {
+            VALUE *const _rsp = c->sp_top;
+            _rsp[0] = _rr.value;                                     /* park BEFORE any GC */
+            _rsp[1] = c->current_frame->fp[exception_lvar_index];
+            c->sp_top = _rsp + 2;
+            ID _cause_id = korb_intern("@cause");   /* may GC; both parked above */
+            if (_rsp[0] != _rsp[1]) {
+                VALUE cur_cause = korb_ivar_get(_rsp[0], _cause_id);
+                if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
+                    korb_ivar_set(_rsp[0], _cause_id, _rsp[1]);
+                }
             }
+            _rr.value = _rsp[0];
+            v = _rsp[0];
+            c->sp_top = _rsp;
         }
         /* `retry` inside the rescue body re-evaluates the begin body. */
         if (_rr.state == KORB_RETRY) {
@@ -1920,12 +1935,27 @@ retry_re:;
         RESULT _rr = EVAL_ARG(c, rescue_body);
         v = _rr.value;
         cur_state = _rr.state;
-        if (_rr.state == KORB_RAISE && _rr.value &&
-            !SPECIAL_CONST_P(_rr.value) && _rr.value != exc) {
-            VALUE cur_cause = korb_ivar_get(_rr.value, korb_intern("@cause"));
-            if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
-                korb_ivar_set(_rr.value, korb_intern("@cause"), exc);
+        /* Both the new exception (_rr.value) and the original exc are moving
+         * handles held across the korb_intern / ivar_get / ivar_set GC points
+         * here (and exc also across the whole rescue body's GCs).  Park both on
+         * the value stack — exc re-read from the scanned lvar slot — then
+         * re-read _rr.value so the RAISE propagation below returns a live
+         * handle (IDIOM B). */
+        if (_rr.state == KORB_RAISE && _rr.value && !SPECIAL_CONST_P(_rr.value)) {
+            VALUE *const _rsp = c->sp_top;
+            _rsp[0] = _rr.value;                                     /* park BEFORE any GC */
+            _rsp[1] = c->current_frame->fp[exception_lvar_index];
+            c->sp_top = _rsp + 2;
+            ID _cause_id = korb_intern("@cause");   /* may GC; both parked above */
+            if (_rsp[0] != _rsp[1]) {
+                VALUE cur_cause = korb_ivar_get(_rsp[0], _cause_id);
+                if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
+                    korb_ivar_set(_rsp[0], _cause_id, _rsp[1]);
+                }
             }
+            _rr.value = _rsp[0];
+            v = _rsp[0];
+            c->sp_top = _rsp;
         }
         if (_rr.state == KORB_RETRY) {
             korb_gvar_set(korb_intern("$!"), prev_bang);

@@ -956,8 +956,13 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
     }
     VALUE e = korb_exc_new(c, c->sp_top, exc_class, "exit");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-        korb_ivar_set(e, korb_intern("@status"), INT2FIX(code));
-        korb_ivar_set(e, korb_intern("@success"), KORB_BOOL(success));
+        /* Park e across the two korb_ivar_set (may grow the ivar table / GC)
+         * and the korb_intern between them (IDIOM B). */
+        VALUE *const esp = c->sp_top;
+        esp[0] = e; c->sp_top = esp + 1;
+        korb_ivar_set(esp[0], korb_intern("@status"), INT2FIX(code));
+        korb_ivar_set(esp[0], korb_intern("@success"), KORB_BOOL(success));
+        e = esp[0]; c->sp_top = esp;
     }
     return (RESULT){ e, KORB_RAISE };
 }
@@ -985,8 +990,11 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
                                        ? (struct korb_class *)eSE : NULL;
     VALUE e = korb_exc_new(c, c->sp_top, exc_class, "abort");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-        korb_ivar_set(e, korb_intern("@status"), INT2FIX(1));
-        korb_ivar_set(e, korb_intern("@success"), Qfalse);
+        VALUE *const esp = c->sp_top;
+        esp[0] = e; c->sp_top = esp + 1;
+        korb_ivar_set(esp[0], korb_intern("@status"), INT2FIX(1));
+        korb_ivar_set(esp[0], korb_intern("@success"), Qfalse);
+        e = esp[0]; c->sp_top = esp;
     }
     return (RESULT){ e, KORB_RAISE };
 }
