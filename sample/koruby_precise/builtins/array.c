@@ -1286,10 +1286,12 @@ static RESULT ary_uniq(CTX *c, int argc, VALUE *sp) {
      * and uses the user-defined #hash + #eql? when present. */
     for (long i = 0; i < len; i++) {
         bool dup = false;
-        struct korb_array *ra = (struct korb_array *)sp[0];
-        for (long j = 0; j < ra->len; j++) {
+        /* Re-derive ra in the condition too: korb_eql below dispatches a user
+         * #eql?/#hash (GC point) that moves the result array, so a cached
+         * `ra` goes stale before the next `j < ra->len` check. */
+        for (long j = 0; j < ((struct korb_array *)sp[0])->len; j++) {
             struct korb_array *a = (struct korb_array *)sp[-argc - 1];
-            ra = (struct korb_array *)sp[0];
+            struct korb_array *ra = (struct korb_array *)sp[0];
             if (korb_ary_items(ra)[j] == korb_ary_items(a)[i]) { dup = true; break; }
             if (korb_eql(c, korb_ary_items(ra)[j], korb_ary_items(a)[i])) { dup = true; break; }
         }
