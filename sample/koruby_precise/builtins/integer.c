@@ -941,6 +941,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
             RESULT fr = korb_funcall(c, other, korb_intern("to_f"), 0, NULL);
             if (fr.state != KORB_NORMAL) { c->sp_top = sp; return fr; }
             sp[1] = fr.value;   /* f */
+            self = sp[-argc - 1];  /* re-read after the to_f funcall GC */
             if (FLONUM_P(sp[1]) || (!SPECIAL_CONST_P(sp[1]) && BUILTIN_TYPE(sp[1]) == T_FLOAT)) {
                 korb_ary_push(c, sp + 2, sp[0], sp[1]);
                 korb_ary_push(c, sp + 2, sp[0], korb_float_new(c, sp + 2, korb_num2dbl(self)));
@@ -950,8 +951,10 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     }
     c->sp_top = sp;
     VALUE eTyp = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+    /* other went stale across the respond_to?/to_f funcalls — re-read the
+     * forwarded arg slot for the error's class name. */
     return korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Integer",
-             korb_id_name(korb_class_of_class(other)->name));
+             korb_id_name(korb_class_of_class(argv[0])->name));
 }
 
 /* Numeric#abs2 — |self|**2 (== self*self for real Numerics). */
@@ -1035,27 +1038,47 @@ static RESULT int_arg_to_int(CTX *c, VALUE arg, long *out) {
         }
         return RESULT_OK(Qnil);
     }
-    /* Try to_int — must return Integer. */
+    /* Try to_int — must return Integer.  Park arg (asp[0]) + conv (asp[1])
+     * across the respond_to?/to_int funcalls: a bare C-local would be moved
+     * by the GC and the second funcall + error-message class lookups would
+     * deref a retired-plane handle (STRESS+PURGE SEGV). */
     if (!SPECIAL_CONST_P(arg)) {
-        VALUE rt = UNWRAP(korb_funcall_r(c, arg, korb_intern("respond_to?"), 1,
-                                          (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-        if (RTEST(rt)) {
-            VALUE conv = UNWRAP(korb_funcall_r(c, arg, korb_intern("to_int"), 0, NULL));
-            if (FIXNUM_P(conv)) {
-                *out = FIX2LONG(conv);
+        VALUE *const asp = c->sp_top;
+        asp[0] = arg; asp[1] = 0;
+        c->sp_top = asp + 2;
+        RESULT rtr = korb_funcall_r(c, asp[0], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+        if (rtr.state != KORB_NORMAL) { c->sp_top = asp; return rtr; }
+        if (RTEST(rtr.value)) {
+            RESULT cr = korb_funcall_r(c, asp[0], korb_intern("to_int"), 0, NULL);
+            if (cr.state != KORB_NORMAL) { c->sp_top = asp; return cr; }
+            asp[1] = cr.value;
+            if (FIXNUM_P(asp[1])) {
+                *out = FIX2LONG(asp[1]);
+                c->sp_top = asp;
                 return RESULT_OK(Qnil);
             }
-            if (!SPECIAL_CONST_P(conv) && BUILTIN_TYPE(conv) == T_BIGNUM) {
+            if (!SPECIAL_CONST_P(asp[1]) && BUILTIN_TYPE(asp[1]) == T_BIGNUM) {
+                VALUE conv = asp[1];
+                c->sp_top = asp;
                 return int_arg_to_int(c, conv, out);
             }
             /* to_int returned non-Integer */
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-            return korb_raise(c, (struct korb_class *)eT,
+            const char *acls = korb_id_name(korb_class_of_class(asp[0])->name);
+            const char *ccls = korb_id_name(korb_class_of_class(asp[1])->name);
+            RESULT rr = korb_raise(c, (struct korb_class *)eT,
                               "can't convert %s to Integer (%s#to_int gives %s)",
-                              korb_id_name(korb_class_of_class(arg)->name),
-                              korb_id_name(korb_class_of_class(arg)->name),
-                              korb_id_name(korb_class_of_class(conv)->name));
+                              acls, acls, ccls);
+            c->sp_top = asp;
+            return rr;
         }
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+        const char *acls = korb_id_name(korb_class_of_class(asp[0])->name);
+        RESULT rr = korb_raise(c, (struct korb_class *)eT,
+                          "no implicit conversion of %s into Integer", acls);
+        c->sp_top = asp;
+        return rr;
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     return korb_raise(c, (struct korb_class *)eT,

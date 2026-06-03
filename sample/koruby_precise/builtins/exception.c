@@ -104,7 +104,11 @@ static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
     } else {
         return korb_raise_type_error(c, "backtrace must be Array of String");
     }
-    korb_ivar_set(self, korb_intern("@__backtrace__"), bt);
+    /* self went stale across the korb_ary_new_capa/push above; re-read the
+     * forwarded staging slot.  Hoist the intern so the C arg-eval order
+     * can't restage a moved self either. */
+    const ID bt_id = korb_intern("@__backtrace__");
+    korb_ivar_set(sp[-argc - 1], bt_id, bt);
     return RESULT_OK(arg);
 }
 
@@ -146,6 +150,9 @@ static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
             VALUE s = UNWRAP(korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
+            /* self went stale across the to_s funcall's GC — re-read the
+             * forwarded staging slot before storing through it. */
+            self = sp[-argc - 1];
         }
         if (!NIL_P(msg) || eff_argc >= 1) {
             korb_ivar_set(self, korb_intern("@message"), msg);

@@ -541,10 +541,12 @@ static RESULT str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv, long 
             }
         }
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+        /* arg went stale across the to_str funcall / const_get GC — re-read
+         * the forwarded arg slot for the error's class name. */
         return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
-                   SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name));
+                   SPECIAL_CONST_P(argv[0]) ? "(special)"
+                       : korb_id_name(korb_class_of_class(argv[0])->name));
     }
 have_str:;
     /* Re-read self (s): the to_str coercion above is a GC point.  argv[-1]
