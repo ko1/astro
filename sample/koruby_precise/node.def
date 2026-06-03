@@ -1326,22 +1326,43 @@ NODE_DEF
 node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
-    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
-        long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (UNLIKELY(b == 0)) {
-            c->last_cfunc_callsite = n;
-            VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
-            return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+    if (LIKELY(SPECIAL_CONST_P(l))) {
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+            long a = FIX2LONG(l), b = FIX2LONG(r);
+            if (UNLIKELY(b == 0)) {
+                c->last_cfunc_callsite = n;
+                VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
+                return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            }
+            long q = a / b;
+            if ((a % b) != 0 && ((a ^ b) < 0)) q--;
+            if (FIXABLE(q)) return RESULT_OK(INT2FIX(q));
+            return RESULT_OK(korb_int_div(l, r));
         }
-        long q = a / b;
-        if ((a % b) != 0 && ((a ^ b) < 0)) q--;
-        if (FIXABLE(q)) return RESULT_OK(INT2FIX(q));
-        return RESULT_OK(korb_int_div(l, r));
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
+            return RESULT_OK(korb_float_new(c, c->sp_top, korb_flonum_to_double(l) / korb_flonum_to_double(r)));
+        }
+        c->last_cfunc_callsite = n;
+        return korb_node_div_slow(c, l, r, arg_index);
     }
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_flonum_to_double(l) / korb_flonum_to_double(r)));
-    }
+    /* l is a heap obj (Bignum / Rational / user #/): pin it across rhs eval
+     * via the synthetic frame's last_line slot (visit_roots forwards it) so
+     * a moving GC during rhs doesn't strand the C-local before dispatch.
+     * Same pattern as node_plus / node_lshift. */
+    struct korb_frame fr = {
+        .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil,
+    };
+    c->current_frame = &fr;
+    RESULT _rr = EVAL_ARG(c, rhs);
+    c->current_frame = fr.prev;
+    if (_rr.state != KORB_NORMAL) return _rr;
+    VALUE r = _rr.value;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_div_slow(c, l, r, arg_index);
 }
@@ -1469,8 +1490,26 @@ NODE_DEF
 node_bit_xor(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
-    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK((l ^ r) | FIXNUM_FLAG);
+    if (LIKELY(SPECIAL_CONST_P(l))) {
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK((l ^ r) | FIXNUM_FLAG);
+        c->last_cfunc_callsite = n;
+        return korb_node_bxor_slow(c, l, r, arg_index);
+    }
+    /* heap l (Bignum / Set / user #^): pin across rhs eval (see node_div). */
+    struct korb_frame fr = {
+        .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil,
+    };
+    c->current_frame = &fr;
+    RESULT _rr = EVAL_ARG(c, rhs);
+    c->current_frame = fr.prev;
+    if (_rr.state != KORB_NORMAL) return _rr;
+    VALUE r = _rr.value;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_bxor_slow(c, l, r, arg_index);
 }
