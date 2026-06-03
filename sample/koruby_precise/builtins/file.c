@@ -490,12 +490,21 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
     /* `self` here is the File class object — use it as the IO's class. */
     VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
-    VALUE r = UNWRAP(korb_yield_r(c, 1, &io));
-    /* Always close on block exit, even on raise (UNWRAP already propagates
-     * raise, leaving fp leaked — TODO: ensure/rescue equivalent). */
+    /* Park io across the block yield (which fires GC): io is a bare C-local
+     * and a moving collector relocates it, so the close-time ivar_set below
+     * would otherwise write through a retired-plane handle (STRESS+PURGE
+     * SEGV in every io/file open-with-block spec).  Close the fp on raise
+     * too (ensure semantics) rather than leaking it. */
+    const ID fp_id = korb_io_fp_id_();
+    VALUE *const iosp = c->sp_top;
+    iosp[0] = io;
+    c->sp_top = iosp + 1;
+    RESULT _yr = korb_yield_r(c, 1, &iosp[0]);
     fclose(fp);
-    korb_ivar_set(io, korb_io_fp_id_(), Qnil);
-    return RESULT_OK(r);
+    korb_ivar_set(iosp[0], fp_id, Qnil);
+    c->sp_top = iosp;
+    if (_yr.state != KORB_NORMAL) return _yr;
+    return RESULT_OK(_yr.value);
 }
 
 /* File.write(path, str[, mode]) — write str to path, return bytes written. */
