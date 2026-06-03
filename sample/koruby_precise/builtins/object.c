@@ -1012,15 +1012,19 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    
+
     if (c->current_block) {
         VALUE av[1] = { self };
         RESULT _yr = korb_yield(c, 1, av);
         if (_yr.state == KORB_RAISE) return _yr;
         /* BREAK/NEXT/RETURN from a tap block: silently consumed (tap
          * always returns self). */
+    } else {
+        /* CRuby: Kernel#tap without a block raises LocalJumpError. */
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("LocalJumpError")),
+                          "no block given (yield)");
     }
-    return RESULT_OK(self);
+    return RESULT_OK(sp[-argc - 1]);
 }
 RESULT obj_then(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;

@@ -2293,6 +2293,7 @@ class Object
   end
 
   def then
+    return enum_for(:then) { 1 } unless block_given?
     yield self
   end
   alias yield_self then
