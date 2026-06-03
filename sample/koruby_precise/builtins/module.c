@@ -646,10 +646,17 @@ static RESULT module_constants(CTX *c, int argc, VALUE *sp) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
         return RESULT_OK(korb_ary_new(c, c->sp_top));
     }
-    VALUE r = korb_ary_new(c, c->sp_top);
-    for (struct korb_const_entry *e = ((struct korb_class *)self)->constants; e; e = e->next) {
-        korb_ary_push(c, c->sp_top, r, korb_id2sym(e->name));
+    /* Park the result across korb_ary_new + the per-const korb_ary_push GC
+     * points; re-read self from the receiver slot for the loop init (const
+     * entries are libc-stable, so following e->next is safe). */
+    VALUE *const vsp = c->sp_top;
+    vsp[0] = korb_ary_new(c, vsp);
+    c->sp_top = vsp + 1;
+    for (struct korb_const_entry *e = ((struct korb_class *)sp[-argc - 1])->constants; e; e = e->next) {
+        korb_ary_push(c, vsp + 1, vsp[0], korb_id2sym(e->name));
     }
+    VALUE r = vsp[0];
+    c->sp_top = vsp;
     return RESULT_OK(r);
 }
 
@@ -1054,20 +1061,28 @@ static RESULT class_name(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Class#ancestors / Module#prepend ---------- */
 
-/* Append `m` and its transitive included modules to `arr`, dedup'd. */
-static void ancestors_push_module(CTX *c, VALUE arr, struct korb_class *m) {
+/* Append `m` and its transitive included modules to the array held in
+ * *arr_slot, dedup'd.  Both the array and m are moving handles held across
+ * korb_ary_push and the recursion, so we take the array by its (scanned)
+ * parked slot — re-read *arr_slot after each GC — and park m on the value
+ * stack and re-read it after the push (IDIOM B/D). */
+static void ancestors_push_module(CTX *c, VALUE *arr_slot, struct korb_class *m) {
     if (!m) return;
-    struct korb_array *a = (struct korb_array *)arr;
+    VALUE *const msp = c->sp_top;
+    msp[0] = (VALUE)m;            /* park m */
+    c->sp_top = msp + 1;
+    struct korb_array *a = (struct korb_array *)*arr_slot;
     for (long j = 0; j < a->len; j++) {
-        if (korb_ary_items(a)[j] == (VALUE)m) return;
+        if (korb_ary_items(a)[j] == msp[0]) { c->sp_top = msp; return; }
     }
-    korb_ary_push(c, c->sp_top, arr, (VALUE)m);
+    korb_ary_push(c, c->sp_top, *arr_slot, msp[0]);   /* GC: *arr_slot/msp[0] survive */
     /* Recurse into m's own includes (latest-include first to match
      * CRuby's "module that is included later sits earlier in
-     * ancestors"). */
-    for (int32_t i = (int32_t)m->includes_cnt - 1; i >= 0; i--) {
-        ancestors_push_module(c, arr, m->includes[i]);
+     * ancestors").  Re-read m from msp[0] each iteration. */
+    for (int32_t i = (int32_t)((struct korb_class *)msp[0])->includes_cnt - 1; i >= 0; i--) {
+        ancestors_push_module(c, arr_slot, ((struct korb_class *)msp[0])->includes[i]);
     }
+    c->sp_top = msp;
 }
 
 static RESULT class_ancestors(CTX *c, int argc, VALUE *sp) {
@@ -1080,18 +1095,17 @@ static RESULT class_ancestors(CTX *c, int argc, VALUE *sp) {
      * moving arena handles, and each ancestors_push_module is a korb_ary_push
      * (GC point).  Park the array (sp[0]) and the walk cursor (sp[1]) and
      * re-derive the class from sp[1] before each push. */
-    sp[0] = korb_ary_new(c, sp + 1);
-    sp[1] = self;
+    sp[1] = self;                      /* park cursor BEFORE the alloc GC */
     c->sp_top = sp + 2;
+    sp[0] = korb_ary_new(c, sp + 2);   /* stage above both parks */
     while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
         struct korb_class *k = (struct korb_class *)sp[1];
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, sp[0], ((struct korb_class *)sp[1])->prepends[i]);
+            ancestors_push_module(c, &sp[0], ((struct korb_class *)sp[1])->prepends[i]);
         }
-        ancestors_push_module(c, sp[0], (struct korb_class *)sp[1]);
-        k = (struct korb_class *)sp[1];
-        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, sp[0], ((struct korb_class *)sp[1])->includes[i]);
+        ancestors_push_module(c, &sp[0], (struct korb_class *)sp[1]);
+        for (int32_t i = (int32_t)((struct korb_class *)sp[1])->includes_cnt - 1; i >= 0; i--) {
+            ancestors_push_module(c, &sp[0], ((struct korb_class *)sp[1])->includes[i]);
         }
         sp[1] = (VALUE)((struct korb_class *)sp[1])->super;
     }
