@@ -476,19 +476,27 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(Qnil);
     }
     VALUE prev_blk_self = blk->self;
-    blk->self = self;
     /* instance_eval semantics: defs land on the receiver's singleton class.
-     * Push that class at the head of the block's lexical cref chain. */
+     * Push that class at the head of the block's lexical cref chain.
+     * korb_singleton_class_of_value is a GC point — re-read self from the
+     * receiver slot afterwards before setting blk->self / building av0
+     * (IDIOM A), else the block runs with a stale self (yield crash). */
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     struct korb_class *sing = korb_singleton_class_of_value(c, sp, self);
+    self = sp[-argc - 1];
+    blk->self = self;
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
     VALUE av0[1] = { self };
-    VALUE r = UNWRAP(korb_yield(c, 1, av0));
+    /* Explicit restore (not UNWRAP): a raise from the block body must still
+     * reset blk->cref off the C-stack blk_new_cref — else the registered proc
+     * keeps a dangling cref and the next GC walks garbage. */
+    RESULT yr = korb_yield(c, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
-    return RESULT_OK(r);
+    if (yr.state != KORB_NORMAL) return yr;
+    return RESULT_OK(yr.value);
 }
 
 /* Object#instance_exec(*args) { |args| ... } — like instance_eval but
@@ -520,16 +528,20 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(Qnil);
     }
     VALUE prev_blk_self = blk->self;
-    blk->self = self;
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     struct korb_class *sing = korb_singleton_class_of_value(c, sp, self);
+    self = sp[-argc - 1];   /* GC point above — re-read self (IDIOM A) */
+    blk->self = self;
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
-    VALUE r = UNWRAP(korb_yield(c, (uint32_t)argc, argv));
+    /* Explicit restore (see instance_eval): reset blk->cref off the C-stack
+     * blk_new_cref even on a block-body raise. */
+    RESULT yr = korb_yield(c, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
-    return RESULT_OK(r);
+    if (yr.state != KORB_NORMAL) return yr;
+    return RESULT_OK(yr.value);
 }
 
 /* Module#instance_method(name) — returns an UnboundMethod, represented
