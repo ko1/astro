@@ -71,6 +71,11 @@ static RESULT flt_mod(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* CRuby: Float % <integer 0> raises ZeroDivisionError (Float % 0.0 = NaN). */
+    if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
+                          "divided by 0");
+    }
     FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "%");
     return RESULT_OK(korb_float_new(c, c->sp_top,
                      korb_float_floored_mod(korb_num2dbl(self), korb_num2dbl(argv[0]))));
@@ -80,6 +85,10 @@ static RESULT flt_divmod(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
+                          "divided by 0");
+    }
     FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "divmod");
     double a = korb_num2dbl(self), b = korb_num2dbl(argv[0]);
     double q = floor(a / b);
