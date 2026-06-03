@@ -202,21 +202,24 @@ static RESULT flt_coerce(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) {
         return korb_raise_argument_error(c, "wrong number of arguments");
     }
-    VALUE other = sp[-1];
     sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+    /* korb_ary_new_capa / korb_float_new fire GC and the receiver Float (and
+     * a boxed `other`) are moving handles — re-read other from its arg slot
+     * and push the re-read self (sp[-argc-1]). */
+    VALUE other = sp[-1];
     if (FIXNUM_P(other)) {
         korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, (double)FIX2LONG(other)));
-        korb_ary_push(c, sp + 1, sp[0], self);
+        korb_ary_push(c, sp + 1, sp[0], sp[-argc - 1]);
         return RESULT_OK(sp[0]);
     }
     if (KORB_IS_FLOAT(other)) {
-        korb_ary_push(c, sp + 1, sp[0], other);
-        korb_ary_push(c, sp + 1, sp[0], self);
+        korb_ary_push(c, sp + 1, sp[0], sp[-1]);
+        korb_ary_push(c, sp + 1, sp[0], sp[-argc - 1]);
         return RESULT_OK(sp[0]);
     }
     if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) {
-        korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, korb_num2dbl(other)));
-        korb_ary_push(c, sp + 1, sp[0], self);
+        korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, korb_num2dbl(sp[-1])));
+        korb_ary_push(c, sp + 1, sp[0], sp[-argc - 1]);
         return RESULT_OK(sp[0]);
     }
     return korb_raise_type_error(c, "%s can't be coerced into Float",

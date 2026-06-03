@@ -804,6 +804,7 @@ static RESULT int_fdiv(CTX *c, int argc, VALUE *sp) {
          * #to_f → TypeError. */
         VALUE rt = UNWRAP(korb_funcall_r(c, other, korb_intern("respond_to?"), 1,
                                           (VALUE[]){ korb_id2sym(korb_intern("to_f")) }));
+        other = argv[0];  /* re-read across the respond_to? GC */
         if (!RTEST(rt)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
@@ -811,6 +812,7 @@ static RESULT int_fdiv(CTX *c, int argc, VALUE *sp) {
                               korb_id_name(korb_class_of_class(other)->name));
         }
         VALUE r = UNWRAP(korb_funcall_r(c, other, korb_intern("to_f"), 0, NULL));
+        other = argv[0];  /* re-read across the to_f GC */
         if (FLONUM_P(r)) b = korb_flonum_to_double(r);
         else if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) b = korb_num2dbl(r);
         else {
@@ -901,6 +903,10 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     sp[0] = 0; sp[1] = 0;
     c->sp_top = sp + 2;
     sp[0] = korb_ary_new_capa(c, sp + 2, 2);   /* pair */
+    /* korb_ary_new_capa is a GC point — re-read self (boxed receiver) and
+     * other (a moving Bignum) from their scanned slots. */
+    other = argv[0];
+    self = sp[-argc - 1];
     if (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM)) {
         korb_ary_push(c, sp + 2, sp[0], other);
         korb_ary_push(c, sp + 2, sp[0], self);
@@ -919,6 +925,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
         RESULT fr = korb_funcall(c, klass, korb_intern("Float"), 1, &other);
         if (fr.state != KORB_NORMAL) { c->sp_top = sp; return fr; }
         sp[1] = fr.value;   /* f */
+        self = sp[-argc - 1];  /* re-read after the Float() funcall GC */
         if (FLONUM_P(sp[1]) || (!SPECIAL_CONST_P(sp[1]) && BUILTIN_TYPE(sp[1]) == T_FLOAT)) {
             korb_ary_push(c, sp + 2, sp[0], sp[1]);
             korb_ary_push(c, sp + 2, sp[0], korb_float_new(c, sp + 2, korb_num2dbl(self)));
