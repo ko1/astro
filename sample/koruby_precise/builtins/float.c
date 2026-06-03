@@ -12,9 +12,23 @@ static bool flt_op_native(VALUE v) {
  * value is the coerced op result (or Qundef when no #coerce or invalid
  * pair). */
 static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
-    struct korb_class *ok = korb_class_of_class(other);
-    if (!korb_class_find_method(ok, korb_intern("coerce"))) return RESULT_OK(Qundef);
-    VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
+    if (SPECIAL_CONST_P(other)) return RESULT_OK(Qundef);
+    /* Call #coerce unconditionally (covers method_missing / mock coerce, which
+     * korb_class_find_method doesn't see); a missing coerce surfaces as
+     * NoMethodError -> not coercible (Qundef -> caller's TypeError). */
+    RESULT cr = korb_funcall_r(c, other, korb_intern("coerce"), 1, &self);
+    if (cr.state == KORB_RAISE) {
+        VALUE bang = cr.value;
+        VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
+        if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) && BUILTIN_TYPE(eNo) == T_CLASS) {
+            struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+            for (struct korb_class *kk = bk; kk; kk = kk->super)
+                if (kk == (struct korb_class *)eNo) return RESULT_OK(Qundef);
+        }
+        return cr;
+    }
+    if (cr.state != KORB_NORMAL) return cr;
+    VALUE pair = cr.value;
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
     if (p->len != 2) return RESULT_OK(Qundef);
@@ -71,12 +85,12 @@ static RESULT flt_mod(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* CRuby: Float % <integer 0> raises ZeroDivisionError (Float % 0.0 = NaN). */
-    if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "%");
+    /* CRuby: Float#% by zero (0 or 0.0) raises ZeroDivisionError. */
+    if (korb_num2dbl(argv[0]) == 0.0) {
         return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
                           "divided by 0");
     }
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "%");
     return RESULT_OK(korb_float_new(c, c->sp_top,
                      korb_float_floored_mod(korb_num2dbl(self), korb_num2dbl(argv[0]))));
 }
@@ -85,11 +99,11 @@ static RESULT flt_divmod(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "divmod");
+    if (korb_num2dbl(argv[0]) == 0.0) {
         return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
                           "divided by 0");
     }
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "divmod");
     double a = korb_num2dbl(self), b = korb_num2dbl(argv[0]);
     double q = floor(a / b);
     double r = korb_float_floored_mod(a, b);
