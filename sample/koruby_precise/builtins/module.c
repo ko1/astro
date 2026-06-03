@@ -1039,20 +1039,29 @@ static RESULT class_ancestors(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp_top);
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(arr);
-    struct korb_class *k = (struct korb_class *)self;
-    while (k) {
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    /* The result array and every class on the super/include/prepend walk are
+     * moving arena handles, and each ancestors_push_module is a korb_ary_push
+     * (GC point).  Park the array (sp[0]) and the walk cursor (sp[1]) and
+     * re-derive the class from sp[1] before each push. */
+    sp[0] = korb_ary_new(c, sp + 1);
+    sp[1] = self;
+    c->sp_top = sp + 2;
+    while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
+        struct korb_class *k = (struct korb_class *)sp[1];
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, arr, k->prepends[i]);
+            ancestors_push_module(c, sp[0], ((struct korb_class *)sp[1])->prepends[i]);
         }
-        ancestors_push_module(c, arr, k);
+        ancestors_push_module(c, sp[0], (struct korb_class *)sp[1]);
+        k = (struct korb_class *)sp[1];
         for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, arr, k->includes[i]);
+            ancestors_push_module(c, sp[0], ((struct korb_class *)sp[1])->includes[i]);
         }
-        k = k->super;
+        sp[1] = (VALUE)((struct korb_class *)sp[1])->super;
     }
-    return RESULT_OK(arr);
+    VALUE result = sp[0];
+    c->sp_top = sp;
+    return RESULT_OK(result);
 }
 static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
