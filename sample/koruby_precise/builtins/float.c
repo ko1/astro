@@ -65,6 +65,12 @@ static RESULT flt_div(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* fdiv / quo / `/` take exactly one argument (CRuby raises ArgumentError
+     * for `1.0.fdiv(1, 2)`). */
+    if (argc != 1) {
+        return korb_raise_argument_error(c,
+                   "wrong number of arguments (given %d, expected 1)", argc);
+    }
     FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "/");
     return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) / korb_num2dbl(argv[0])));
 }

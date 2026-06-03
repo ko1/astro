@@ -759,6 +759,10 @@ end
 class Numeric
   include Comparable
 
+  # Numeric defaults (Integer/Float override as needed).
+  def integer?; false; end unless method_defined?(:integer?)
+  def to_int; to_i; end unless method_defined?(:to_int)
+
   # Numeric#<=> — default falls back to identity (CRuby returns 0 when
   # self.equal?(other), nil otherwise).  Subclasses (Integer/Float)
   # override; this is the shared root.  Adding this to Numeric used to
@@ -929,6 +933,9 @@ class Numeric
 end
 
 class Integer
+  # Override Numeric#integer? (=> false).  No method_defined? guard: it would
+  # see the inherited Numeric#integer? and skip this override.
+  def integer?; true; end
   # Bit-set predicates: x.allbits?(mask) ⇔ (x & mask) == mask;
   # x.anybits?(mask) ⇔ (x & mask) != 0; x.nobits? ⇔ (x & mask) == 0.
   # The mask is coerced via #to_int (CRuby semantics).

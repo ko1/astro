@@ -1132,6 +1132,11 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         r = vsp[1];
     } else if (t == T_STRING) {
         r = korb_str_new(c, c->sp_top, korb_str_cstr(self), korb_str_len(self));
+    } else if (t == T_RANGE) {
+        /* Range#dup / #clone — a fresh, distinct Range with the same bounds
+         * (begin/end are read before korb_range_new's GC point). */
+        struct korb_range *rng = (struct korb_range *)self;
+        r = korb_range_new(c, c->sp_top, rng->begin, rng->end, rng->exclude_end);
     } else if (t == T_HASH) {
         r = korb_hash_new(c, c->sp_top);
         struct korb_hash *h = (struct korb_hash *)self;
