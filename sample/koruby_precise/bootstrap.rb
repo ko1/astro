@@ -1392,7 +1392,7 @@ end
 
 # Rational — exact rational arithmetic.  Stored as (num, den) with
 # den > 0 and gcd(num, den) == 1.
-class Rational
+class Rational < Numeric
   include Comparable
   def kind_of?(klass); klass == Numeric || klass == Rational || super; end
   alias is_a? kind_of?
@@ -4991,6 +4991,7 @@ end
 
 # NilClass extras — to_c / to_r / rationalize.
 class NilClass
+  def =~(_other); nil; end unless method_defined?(:=~)
   def to_c
     Complex(0, 0)
   end unless method_defined?(:to_c)
