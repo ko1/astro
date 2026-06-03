@@ -482,19 +482,29 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp_top));
-    struct korb_array *members = (struct korb_array *)members_v;
-    VALUE r = korb_ary_new_capa(c, c->sp_top, members->len);
-    for (long i = 0; i < members->len; i++) {
-        ID name = SYMBOL_P(korb_ary_items(members)[i]) ? korb_sym2id(korb_ary_items(members)[i]) :
-                  korb_intern(korb_str_cstr(korb_ary_items(members)[i]));
+    /* self, the __members__ array, and the result are moving handles, and
+     * korb_ary_new_capa / korb_intern / korb_ary_push below all fire GC.
+     * Park them at sp[0..2] (scanned) and re-derive each iteration. */
+    sp[0] = self;
+    sp[1] = members_v;
+    sp[2] = 0;
+    c->sp_top = sp + 3;
+    sp[2] = korb_ary_new_capa(c, sp + 3, ((struct korb_array *)sp[1])->len);
+    long mlen = ((struct korb_array *)sp[1])->len;
+    for (long i = 0; i < mlen; i++) {
+        VALUE mi = korb_ary_items((struct korb_array *)sp[1])[i];
+        ID name = SYMBOL_P(mi) ? korb_sym2id(mi) :
+                  korb_intern(korb_str_cstr(mi));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
-        korb_ary_push(c, c->sp_top, r, korb_ivar_get(self, iv_id));
+        korb_ary_push(c, sp + 3, sp[2], korb_ivar_get(sp[0], iv_id));
     }
-    return RESULT_OK(r);
+    VALUE result = sp[2];
+    c->sp_top = sp;
+    return RESULT_OK(result);
 }
 
 /* Struct#[] — read by index or symbol. */
@@ -614,16 +624,29 @@ static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
 /* Struct#each — yield each value. */
 static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
-    VALUE *argv = sp - argc;
 
-    sp[0] = self;
-    sp[0] = UNWRAP(struct_to_a(c, 0, sp + 1));  /* park result array in sp[0] across yields */
-    for (long i = 0; i < ((struct korb_array *)sp[0])->len; i++) {
-        sp[1] = korb_ary_items((struct korb_array *)sp[0])[i];
-        UNWRAP(korb_yield_r(c, 1, &sp[1]));
+    sp[0] = sp[-argc - 1];                       /* feed self to struct_to_a */
+    VALUE arr = UNWRAP(struct_to_a(c, 0, sp + 1));
+    /* Park the result array (last_line) + self (last_match) in a synthetic
+     * frame: korb_yield lowers sp_top below value-stack slots, so the frame
+     * chain (always walked) is the only durable parking across the yields. */
+    struct korb_frame fr = {
+        .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = arr, .last_match = sp[-argc - 1],
+    };
+    c->current_frame = &fr;
+    long n = ((struct korb_array *)fr.last_line)->len;
+    for (long i = 0; i < n; i++) {
+        VALUE el = korb_ary_items((struct korb_array *)fr.last_line)[i];
+        RESULT _y = korb_yield_r(c, 1, &el);
+        if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
-    return RESULT_OK(self);
+    VALUE selfr = fr.last_match;
+    c->current_frame = fr.prev;
+    return RESULT_OK(selfr);
 }
 
 /* Struct#== — same struct class + equal members. */
@@ -670,19 +693,26 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp_top));
-    struct korb_array *members = (struct korb_array *)members_v;
-    VALUE h = korb_hash_new(c, c->sp_top);
-    sp[0] = h; /* keep alive across yields */
+    sp[0] = korb_hash_new(c, c->sp_top); /* libc hash (non-moving); keep at sp[0] */
     bool has_block = (c->current_block != NULL);
-    for (long i = 0; i < members->len; i++) {
-        ID name = SYMBOL_P(korb_ary_items(members)[i]) ? korb_sym2id(korb_ary_items(members)[i]) :
-                  korb_intern(korb_str_cstr(korb_ary_items(members)[i]));
+    /* self and __members__ are moving handles, and korb_intern / korb_yield /
+     * korb_funcall / korb_hash_aset below all fire GC.  Re-derive members
+     * (loop top) and self (sp[-argc-1]) each iteration; member names are
+     * Symbols (immediate) so a snapshot key stays valid. */
+    for (long i = 0; ; i++) {
+        VALUE self_i = sp[-argc - 1];
+        struct korb_class *kl_i = (struct korb_class *)((struct korb_object *)self_i)->basic.klass;
+        VALUE mv = korb_const_get_inherited(kl_i, korb_intern("__members__"));
+        if (UNDEF_P(mv) || BUILTIN_TYPE(mv) != T_ARRAY) break;
+        struct korb_array *members = (struct korb_array *)mv;
+        if (i >= members->len) break;
+        VALUE key = korb_ary_items(members)[i];
+        ID name = SYMBOL_P(key) ? korb_sym2id(key) : korb_intern(korb_str_cstr(key));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-        VALUE val = korb_ivar_get(self, korb_intern(iv));
-        VALUE key = korb_ary_items(members)[i];
+        VALUE val = korb_ivar_get(sp[-argc - 1], korb_intern(iv));
         if (has_block) {
             sp[1] = key;
             sp[2] = val;
@@ -713,9 +743,9 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
             key = korb_ary_items(pa)[0];
             val = korb_ary_items(pa)[1];
         }
-        korb_hash_aset(c, h, key, val);
+        korb_hash_aset(c, sp[0], key, val);
     }
-    return RESULT_OK(h);
+    return RESULT_OK(sp[0]);
 }
 
 /* Struct#size / length */
@@ -795,16 +825,23 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
             VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
             if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(self);
-            struct korb_array *members = (struct korb_array *)members_v;
-            for (long i = 0; i < members->len; i++) {
-                ID name = SYMBOL_P(korb_ary_items(members)[i]) ? korb_sym2id(korb_ary_items(members)[i]) :
-                          korb_intern(korb_str_cstr(korb_ary_items(members)[i]));
+            /* self + __members__ are moving handles and the loop yields / allocs
+             * (GC) — re-derive from sp[-argc-1] / const table each iteration. */
+            for (long i = 0; ; i++) {
+                VALUE self_i = sp[-argc - 1];
+                struct korb_class *kl_i = (struct korb_class *)((struct korb_object *)self_i)->basic.klass;
+                VALUE mv = korb_const_get_inherited(kl_i, korb_intern("__members__"));
+                if (UNDEF_P(mv) || BUILTIN_TYPE(mv) != T_ARRAY) break;
+                struct korb_array *members = (struct korb_array *)mv;
+                if (i >= members->len) break;
+                VALUE key = korb_ary_items(members)[i];
+                ID name = SYMBOL_P(key) ? korb_sym2id(key) : korb_intern(korb_str_cstr(key));
                 const char *base = korb_id_name(name);
                 long bl = strlen(base);
                 char *iv = korb_xmalloc_atomic(bl + 2);
                 iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-                VALUE val = korb_ivar_get(self, korb_intern(iv));
-                sp[0] = korb_ary_items(members)[i];
+                VALUE val = korb_ivar_get(sp[-argc - 1], korb_intern(iv));
+                sp[0] = key;
                 sp[1] = val;
                 /* yield [key, val] as a single array when block has 1 param,
                  * or as 2 args when 2 params; korb_yield_r handles arity. */
@@ -814,7 +851,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                 RESULT yr = korb_yield_r(c, 1, &sp[2]);
                 if (yr.state != KORB_NORMAL) return yr;
             }
-            return RESULT_OK(self);
+            return RESULT_OK(sp[-argc - 1]);
         }
         korb_class_add_method_cfunc_r(klass, korb_intern("each_pair"), _struct_each_pair, 0);
     }
@@ -1035,10 +1072,11 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             sp[0] = self;
             RESULT ra = struct_to_a(c, 0, sp + 1);
             if (ra.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return ra; }
-            VALUE arr = ra.value;
-            long h = (long)((struct RBasic *)self)->klass;
-            struct korb_array *a = (struct korb_array *)arr;
-            for (long i = 0; i < a->len; i++) {
+            sp[0] = ra.value;   /* park the values array across the per-elem hash funcall */
+            long h = (long)((struct RBasic *)sp[-argc - 1])->klass;   /* re-read self */
+            long alen = ((struct korb_array *)sp[0])->len;
+            for (long i = 0; i < alen; i++) {
+                struct korb_array *a = (struct korb_array *)sp[0];   /* re-derive after funcall GC */
                 RESULT rh = korb_funcall_r(c, korb_ary_items(a)[i], korb_intern("hash"), 0, NULL);
                 if (rh.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return rh; }
                 long eh = FIXNUM_P(rh.value) ? FIX2LONG(rh.value) : 0;
@@ -1060,9 +1098,10 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                 if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "#<struct ...>"));
             }
             if (ins_top < 64) { ins_stk[ins_top] = self; ins_top++; }
-            struct korb_class *kl = (struct korb_class *)((struct korb_object *)self)->basic.klass;
             VALUE result = korb_str_new_cstr(c, c->sp_top, "#<struct ");
             sp[0] = result;
+            /* re-derive the class after the alloc GC (self moves; kl with it) */
+            struct korb_class *kl = (struct korb_class *)((struct korb_object *)sp[-argc - 1])->basic.klass;
             /* Skip class name when class is anonymous or its name is a
              * tentative path through an anonymous ancestor (k->anon_parent
              * != NULL). CRuby Struct#inspect omits the class name in
@@ -1074,20 +1113,34 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             }
             /* __members__ lives on the original Struct.new class; walk the
              * super chain so subclasses (`class Foo < Struct.new(:a)`)
-             * still see it. */
+             * still see it.  Re-derive kl: the class-name concats above are
+             * GC points that moved self (and the class with it). */
+            kl = (struct korb_class *)((struct korb_object *)sp[-argc - 1])->basic.klass;
             VALUE members_v = korb_const_get_inherited(kl, korb_intern("__members__"));
             if (!UNDEF_P(members_v) && BUILTIN_TYPE(members_v) == T_ARRAY) {
-                struct korb_array *ms = (struct korb_array *)members_v;
-                for (long i = 0; i < ms->len; i++) {
+                /* self / class / __members__ are moving handles and the
+                 * per-member str_concat / inspect / intern below all fire GC.
+                 * Re-derive them from the (scanned) receiver slot + const
+                 * table each iteration; sp[0] (result) is re-read by name. */
+                for (long i = 0; ; i++) {
+                    VALUE self_i = sp[-argc - 1];
+                    struct korb_class *kl_i = (struct korb_class *)((struct korb_object *)self_i)->basic.klass;
+                    VALUE mv = korb_const_get_inherited(kl_i, korb_intern("__members__"));
+                    if (UNDEF_P(mv) || BUILTIN_TYPE(mv) != T_ARRAY) break;
+                    struct korb_array *ms = (struct korb_array *)mv;
+                    if (i >= ms->len) break;
+                    VALUE mi = korb_ary_items(ms)[i];
                     if (i > 0) sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, ", "));
-                    ID mid = SYMBOL_P(korb_ary_items(ms)[i]) ? korb_sym2id(korb_ary_items(ms)[i]) : korb_intern(korb_str_cstr(korb_ary_items(ms)[i]));
+                    ID mid = SYMBOL_P(mi) ? korb_sym2id(mi) : korb_intern(korb_str_cstr(mi));
                     const char *base = korb_id_name(mid);
                     long bl = strlen(base);
                     char *iv = korb_xmalloc_atomic(bl + 2);
                     iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-                    VALUE val = korb_ivar_get(self, korb_intern(iv));
                     sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, base));
                     sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, "="));
+                    /* Read the ivar value AFTER the concats above (GC points)
+                     * so it isn't a stale handle when inspected. */
+                    VALUE val = korb_ivar_get(sp[-argc - 1], korb_intern(iv));
                     VALUE ins = korb_inspect(c, c->sp_top + 1, val);
                     sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], ins);
                 }
