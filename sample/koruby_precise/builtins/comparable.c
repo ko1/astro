@@ -798,7 +798,13 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
         VALUE opts = argv[argc - 1];
         kw_init_val = korb_hash_aref(c, opts, korb_id2sym(korb_intern("keyword_init")));
+        /* Normalize to an immediate boolean immediately: #keyword_init?
+         * only reports true/false, and an immediate can't go stale across
+         * the many method-add / attr_accessor GCs before the const_set far
+         * below (a raw heap value held as a C-local there SEGVs under
+         * STRESS+PURGE). */
         if (UNDEF_P(kw_init_val)) kw_init_val = Qundef;
+        else kw_init_val = RTEST(kw_init_val) ? Qtrue : Qfalse;
         argc--;
     }
     /* Park the new class at sp[0] and members at sp[1].  klass is a moving
@@ -1280,9 +1286,11 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
         }
         c->sp_top = asp;
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+        /* arg went stale across the respond_to?/to_str funcalls — re-read the
+         * forwarded receiver-arg slot for the error's class name. */
         return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
-                   korb_id_name(korb_class_of_class(arg)->name));
+                   korb_id_name(korb_class_of_class(argv[0])->name));
     } else {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
