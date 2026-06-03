@@ -328,25 +328,40 @@ static RESULT hash_merge_bang(CTX *c, int argc, VALUE *sp) {
     bool has_block = (c->current_block != NULL);
     for (int i = 0; i < argc; i++) {
         VALUE arg = argv[i];
-        /* Try to_hash coercion if not already a Hash. */
+        /* Try to_hash coercion if not already a Hash.  Attempt the call
+         * unconditionally (covers method_missing / mock-based to_hash, which
+         * korb_class_find_method does NOT see); a missing to_hash surfaces as
+         * NoMethodError, which we convert to the CRuby TypeError. */
         if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_HASH) {
             if (SPECIAL_CONST_P(arg)) {
                 return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                                   "no implicit conversion of (special) into Hash");
             }
-            struct korb_class *k = korb_class_of_class(arg);
-            if (!korb_class_find_method(k, korb_intern("to_hash"))) {
-                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
-                                  "no implicit conversion of %s into Hash",
-                                  korb_id_name(k->name));
-            }
             RESULT tr = korb_funcall_r(c, arg, korb_intern("to_hash"), 0, NULL);
+            if (tr.state == KORB_RAISE) {
+                VALUE bang = tr.value;
+                VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
+                if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) && BUILTIN_TYPE(eNo) == T_CLASS) {
+                    struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                    for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                        if (kk == (struct korb_class *)eNo) {
+                            /* argv[i] (orig arg) is value-stack-scanned, so it's
+                             * forwarded after the funcall GC — safe to read. */
+                            return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                              "no implicit conversion of %s into Hash",
+                                              korb_id_name(korb_class_of_class(argv[i])->name));
+                        }
+                    }
+                }
+                return tr;
+            }
             if (tr.state != KORB_NORMAL) return tr;
             if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_HASH) {
                 return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                                   "can't convert to Hash (to_hash returned non-Hash)");
             }
             arg = tr.value;
+            self = sp[-argc - 1];   /* re-read self after the to_hash GC point */
         }
         struct korb_hash *o = (struct korb_hash *)arg;
         for (struct korb_hash_entry *e = o->first; e; e = e->next) {
