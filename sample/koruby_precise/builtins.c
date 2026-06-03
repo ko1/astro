@@ -303,6 +303,9 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->float_class, "+", flt_plus, 1);
     DEF_R(KORB_VM(c)->float_class, "-", flt_minus, 1);
     DEF_R(KORB_VM(c)->float_class, "*", flt_mul, 1);
+    DEF_R(KORB_VM(c)->float_class, "%", flt_mod, 1);
+    DEF_R(KORB_VM(c)->float_class, "modulo", flt_mod, 1);
+    DEF_R(KORB_VM(c)->float_class, "divmod", flt_divmod, 1);
     DEF_R(KORB_VM(c)->float_class, "/", flt_div, 1);
     /* Float#fdiv / quo — both behave like /. */
     DEF_R(KORB_VM(c)->float_class, "fdiv", flt_div, 1);

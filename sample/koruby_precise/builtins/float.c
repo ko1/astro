@@ -60,6 +60,44 @@ static RESULT flt_mul(CTX *c, int argc, VALUE *sp) {
     FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "*");
     return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) * korb_num2dbl(argv[0])));
 }
+/* Ruby uses floored modulo: the result takes the sign of the divisor. */
+static double korb_float_floored_mod(double a, double b) {
+    double r = fmod(a, b);
+    if (r != 0.0 && ((r < 0) != (b < 0))) r += b;
+    return r;
+}
+static RESULT flt_mod(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "%");
+    return RESULT_OK(korb_float_new(c, c->sp_top,
+                     korb_float_floored_mod(korb_num2dbl(self), korb_num2dbl(argv[0]))));
+}
+static RESULT flt_divmod(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "divmod");
+    double a = korb_num2dbl(self), b = korb_num2dbl(argv[0]);
+    double q = floor(a / b);
+    double r = korb_float_floored_mod(a, b);
+    /* a/b/q/r are C doubles (no rooting needed).  Park the two boxed results
+     * on the value stack across the array alloc/pushes. */
+    VALUE *const vsp = c->sp_top;
+    vsp[0] = korb_dbl2int(c, vsp, q);   /* quotient (Integer / Bignum) */
+    c->sp_top = vsp + 1;
+    vsp[1] = korb_float_new(c, vsp + 1, r);   /* remainder (Float) */
+    c->sp_top = vsp + 2;
+    vsp[2] = korb_ary_new_capa(c, vsp + 3, 2);
+    korb_ary_push(c, vsp + 3, vsp[2], vsp[0]);
+    korb_ary_push(c, vsp + 3, vsp[2], vsp[1]);
+    VALUE result = vsp[2];
+    c->sp_top = vsp;
+    return RESULT_OK(result);
+}
 static RESULT flt_div(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
     VALUE self = sp[-argc - 1];
