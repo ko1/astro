@@ -255,7 +255,8 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
     }
     if (argc < 1) return RESULT_OK(Qnil);
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     /* Walk the receiver's class chain via the existing helper.  We
      * reuse korb_cvar_get which uses cref/current_class — set those
      * temporarily so the lookup roots at `self`. */
@@ -285,7 +286,9 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
                    korb_id_name(korb_class_of_class(self)->name));
     }
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
+    argv = sp - argc;
     extern RESULT korb_cvar_set(CTX *c, ID name, VALUE val);
     struct korb_class *prev_class = c->current_frame->current_class;
     struct korb_cref *prev_cref = c->current_frame->cref;
@@ -305,7 +308,8 @@ RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(Qfalse);
     /* Walk super chain + transitive includes (CRuby semantics). */
     struct korb_class *root = (struct korb_class *)self;
@@ -1133,14 +1137,28 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
     } else if (t == T_CLASS || t == T_MODULE) {
         /* Module/Class#dup: shallow copy into a new anonymous
          * module/class.  Methods, constants, class_ivars, and class
-         * variables are independent from the source after dup. */
-        struct korb_class *src = (struct korb_class *)self;
+         * variables are independent from the source after dup.
+         *
+         * src (= self) and nk are BOTH moving handles, held across GC points
+         * (korb_class_new / korb_module_new below, korb_singleton_class_of in
+         * the clone branch).  Park both on the value stack and re-derive the
+         * locals after each GC point (IDIOM B).  The intervening copy loops
+         * use only libc allocs (korb_xrealloc / korb_class_alias_method /
+         * korb_const_set / korb_module_include), so re-deriving once after
+         * each real GC point suffices. */
+        VALUE *const vsp = c->sp_top;
+        vsp[0] = self;        /* park source */
+        vsp[1] = Qnil;        /* will hold nk */
+        c->sp_top = vsp + 2;
+        struct korb_class *src = (struct korb_class *)vsp[0];
         struct korb_class *nk;
         if (t == T_CLASS) {
             nk = korb_class_new(c, c->sp_top, 0, src->super, src->instance_type);
         } else {
             nk = korb_module_new(c, c->sp_top, 0);
         }
+        vsp[1] = (VALUE)nk;   /* park nk */
+        src = (struct korb_class *)vsp[0];   /* re-read after the alloc GC */
         /* Copy methods (shallow — share method body / ast nodes). */
         for (uint32_t b = 0; b < src->methods.bucket_cnt; b++) {
             for (struct korb_method_table_entry *e = src->methods.buckets[b]; e; e = e->next) {
@@ -1170,10 +1188,14 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
             nk->class_ivars[nk->class_ivar_cnt].value = src->class_ivars[i].value;
             nk->class_ivar_cnt++;
         }
-        /* Copy constants. */
+        /* Copy constants.  korb_const_set may intern a combined name (GC
+         * point), so re-read nk from its park each iteration; e is a
+         * libc-stable const entry and e->value is forwarded via src. */
         for (struct korb_const_entry *e = src->constants; e; e = e->next) {
-            korb_const_set(nk, e->name, e->value);
+            korb_const_set((struct korb_class *)vsp[1], e->name, e->value);
         }
+        src = (struct korb_class *)vsp[0];   /* re-read after the loop's GC points */
+        nk = (struct korb_class *)vsp[1];
         /* Copy includes (shallow — share Module instances). */
         for (uint32_t i = 0; i < src->includes_cnt; i++) {
             korb_module_include(nk, src->includes[i]);
@@ -1185,14 +1207,19 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
          * methods would also affect src — copy methods instead. */
         if (preserve_frozen && src->basic.klass) {
             struct korb_class *src_meta = (struct korb_class *)src->basic.klass;
-            struct korb_class *nk_meta = korb_singleton_class_of(c, c->sp_top, (VALUE)nk);
+            /* korb_singleton_class_of is a GC point: re-read nk from its park
+             * for the receiver, and re-read src/src_meta afterwards. */
+            struct korb_class *nk_meta = korb_singleton_class_of(c, c->sp_top, vsp[1]);
+            src = (struct korb_class *)vsp[0];
+            src_meta = (struct korb_class *)src->basic.klass;
             for (uint32_t b = 0; b < src_meta->methods.bucket_cnt; b++) {
                 for (struct korb_method_table_entry *e = src_meta->methods.buckets[b]; e; e = e->next) {
                     if (e->method) korb_class_alias_method(nk_meta, e->name, e->method);
                 }
             }
         }
-        r = (VALUE)nk;
+        r = vsp[1];           /* re-read nk (forwarded) */
+        c->sp_top = vsp;      /* pop parks */
     } else if (t == T_PROC) {
         /* Shallow copy: alloc a fresh struct, copy fields. */
         struct korb_proc *src = (struct korb_proc *)self;

@@ -317,21 +317,29 @@ bool korb_cvar_defined(CTX *c, ID name) {
 }
 
 VALUE korb_cvar_names(CTX *c, struct korb_class *k) {
-    /* Park the result array at sp[0] across the pushes (which may grow/move
-     * the handle).  sym is an immediate (id2sym), so no parking needed. */
+    /* k is a moving class held across korb_ary_new / korb_ary_push (GC points),
+     * and the cur = cur->super walk cursor moves too.  Park BOTH the result
+     * array (sp[0]) and the walk cursor (sp[1]) on the value stack; re-derive
+     * the class from sp[1] each use and advance via the re-read super (IDIOM
+     * D).  sym is immediate (id2sym), so no parking needed. */
     VALUE *const sp = c->sp_top;
-    sp[0] = korb_ary_new(c, sp);
-    /* Collect from k and its supers, dedup by name. */
-    for (struct korb_class *cur = k; cur; cur = cur->super) {
+    sp[1] = (VALUE)k;                 /* walk cursor */
+    c->sp_top = sp + 2;
+    sp[0] = korb_ary_new(c, sp + 2);  /* result (staged above the parks) */
+    while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
+        struct korb_class *cur = (struct korb_class *)sp[1];
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
-            VALUE sym = korb_id2sym(cur->cvars[i].name);
+            VALUE sym = korb_id2sym(((struct korb_class *)sp[1])->cvars[i].name);
             bool seen = false;
             struct korb_array *a = (struct korb_array *)sp[0];
             for (long j = 0; j < a->len; j++) if (korb_ary_items(a)[j] == sym) { seen = true; break; }
-            if (!seen) korb_ary_push(c, sp + 1, sp[0], sym);
+            if (!seen) korb_ary_push(c, sp + 2, sp[0], sym);   /* GC; sp[0]/sp[1] parked */
         }
+        sp[1] = (VALUE)((struct korb_class *)sp[1])->super;    /* advance via re-read */
     }
-    return sp[0];
+    VALUE result = sp[0];
+    c->sp_top = sp;
+    return result;
 }
 
 struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name) {

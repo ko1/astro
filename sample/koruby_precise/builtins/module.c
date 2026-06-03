@@ -1207,6 +1207,9 @@ static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
                korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len) : 0);
     if (!name) return RESULT_OK(Qnil);
+    /* korb_intern_n above (String name arg) is a GC point; re-read self
+     * from the (scanned) receiver slot before deref (IDIOM A). */
+    self = sp[-argc - 1];
     struct korb_class *k = (struct korb_class *)self;
     for (uint32_t i = 0; i < k->cvar_cnt; i++) {
         if (k->cvars[i].name == name) {
