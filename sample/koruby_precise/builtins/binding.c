@@ -687,6 +687,7 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
      * korb_yield uses for the identical overwrite/restore), which visit_roots
      * forwards; read the forwarded value back from the node at restore. */
     VALUE *prev_fp = c->current_frame->fp;
+    VALUE *prev_sp = c->sp_top;
     struct korb_yield_self_save self_save = {
         .self = c->current_frame->self,
         .prev = c->yield_self_chain,
@@ -695,7 +696,27 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     struct korb_cref *prev_cref = c->current_frame->cref;
     const char *prev_file = c->current_frame->current_file;
     void *prev_eval_binding = c->current_eval_binding;
-    if (b->fp) c->current_frame->fp = b->fp + b->base;
+    /* Run the eval body on the VALUE STACK — NOT the binding's heap env at
+     * b->fp.  EVAL sets c->sp_top relative to fp; a heap fp pushes c->sp_top
+     * outside [c->stack_base, c->stack_end), so visit_roots' linear scan
+     * [stack_base, sp_top) inverts to empty and every eval-body temporary
+     * goes stale under a moving GC (STRESS+PURGE SEGV in eval'd string
+     * interpolation — binding/{dup,clone,eval}, kernel/binding).  Copy the
+     * binding's named slots into a fresh value-stack frame, run there, then
+     * copy them back so the binding + live-frame write-through still see the
+     * eval body's assignments.  (Nested local_variable_set on b DURING the
+     * eval body that targets a pre-existing name is the one case this misses;
+     * names newly introduced during the body keep their slots intact.) */
+    enum { BIND_EVAL_SLACK = 512 };
+    VALUE *body_fp = NULL;
+    const uint32_t bind_n = b->names_cnt;
+    if (b->fp) {
+        body_fp = c->sp_top;
+        for (uint32_t i = 0; i < bind_n; i++) body_fp[i] = b->fp[b->base + i];
+        for (uint32_t i = bind_n; i < bind_n + BIND_EVAL_SLACK; i++) body_fp[i] = Qnil;
+        c->sp_top = body_fp + bind_n + BIND_EVAL_SLACK;
+        c->current_frame->fp = body_fp;
+    }
     c->current_frame->self = b->self;
     if (b->cref) c->current_frame->cref = b->cref;
     c->current_frame->current_file = filename;
@@ -704,6 +725,14 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
+
+    /* Copy the (possibly updated) named slots back to the binding's heap env
+     * before the write-through / extras sync below reads them, then restore
+     * c->sp_top onto the value stack. */
+    if (body_fp) {
+        for (uint32_t i = 0; i < bind_n; i++) b->fp[b->base + i] = body_fp[i];
+    }
+    c->sp_top = prev_sp;
 
     c->current_eval_binding = prev_eval_binding;
     c->current_frame->current_file = prev_file;
