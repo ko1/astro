@@ -496,7 +496,8 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
     }
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-argc - 1];
-    for (long i = 0; i < len; i++) {
+    /* Re-read length each step so the block may grow the array (CRuby). */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         /* receiver moves across korb_yield — re-read from the frame slot. */
         VALUE args[2] = { korb_ary_aref(fr.last_match, i), INT2FIX(i) };
         RESULT _y = korb_yield(c, 2, args);
@@ -527,7 +528,9 @@ static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
     /* Re-read the receiver from its GC slot — `self` is a stale C-local
      * after the korb_ary_new_capa above moved it. */
     fr.last_match = sp[-argc - 1]; /* park source receiver */
-    for (long i = 0; i < len; i++) {
+    /* Re-read length each step so the block may grow the array (CRuby
+     * "tolerates increasing size"); len is only the capa hint. */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -543,12 +546,12 @@ static RESULT ary_select(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) return RESULT_OK(self);
-    long len = korb_ary_len(self);
     /* Park result (fr.last_line) + source receiver (fr.last_match) across
-     * the per-element korb_yield via the frame chain (see ary_map). */
+     * the per-element korb_yield via the frame chain (see ary_map).  Re-read
+     * length each step so the block may grow the array (CRuby semantics). */
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     fr.last_match = sp[-argc - 1];
-    for (long i = 0; i < len; i++) {
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -694,7 +697,6 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
         return korb_raise_argument_error(c,
                    "wrong number of arguments (given %d, expected 0)", argc);
     }
-    long alen = korb_ary_len(sp[-1]);
     /* The Hash is libc-backed (non-moving), so `h` is a stable C-local.  The
      * source receiver (fr.last_match) and the moving per-element `pair`
      * (fr.last_line) are parked in a synthetic frame across the korb_yield /
@@ -703,7 +705,9 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
     bool has_block = korb_block_given(c);
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-1];
-    for (long i = 0; i < alen; i++) {
+    /* Re-read length each step so a block may grow the array (CRuby
+     * "tolerates increasing size during iteration"). */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         if (has_block) {
             VALUE v = korb_ary_aref(fr.last_match, i);
             RESULT _y = korb_yield_r(c, 1, &v);
@@ -965,7 +969,9 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
     long n = korb_ary_len(self);
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, n));
     fr.last_match = sp[-argc - 1];
-    for (long i = 0; i < n; i++) {
+    /* Re-read length each step so the block may grow the array (CRuby
+     * "tolerates increasing size during iteration"); n is only the capa hint. */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elem = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &elem);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -1365,11 +1371,11 @@ static RESULT ary_predicate_argc_check(CTX *c, int argc) {
  * matches, short-circuiting once `stop_at` is reached (or scanning all if
  * stop_at < 0). */
 static RESULT ary_predicate_count(CTX *c, int argc, VALUE *sp, long stop_at, long *out) {
-    long alen = korb_ary_len(sp[-argc - 1]);
     KORB_ARY_YIELD_FRAME(c, fr, argc >= 1 ? (sp - argc)[0] : Qnil);  /* pattern */
     fr.last_match = sp[-argc - 1];                                   /* receiver */
     long count = 0;
-    for (long i = 0; i < alen; i++) {
+    /* Re-read length each step so a block may grow the array (CRuby). */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elem = korb_ary_aref(fr.last_match, i);
         VALUE patv = fr.last_line;
         RESULT _m = ary_predicate_match(c, elem, argc, argc >= 1 ? &patv : NULL);
@@ -1480,7 +1486,6 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    long alen = korb_ary_len(self);
     /* Park the accumulator (fr.last_line; may be a Bignum/Float heap object)
      * and the source receiver (fr.last_match) across the korb_yield /
      * korb_funcall GC points (frame chain always scanned). */
@@ -1495,7 +1500,9 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
         kahan_active = true;
         kahan_sum = korb_num2dbl(fr.last_line);
     }
-    for (long i = 0; i < alen; i++) {
+    /* Re-read length each step: with a block, CRuby lets it grow the array
+     * (shared "tolerates increasing size" spec). */
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elt = korb_ary_aref(fr.last_match, i);
         if (has_block) {
             RESULT _y = korb_yield(c, 1, &elt);
@@ -2039,7 +2046,8 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
         /* Park the receiver (fr.last_match) across the per-element yield. */
         KORB_ARY_YIELD_FRAME(c, fr, Qnil);
         fr.last_match = sp[-argc - 1];
-        for (long i = 0; i < alen; i++) {
+        /* Re-read length each step (block may grow the array, CRuby). */
+        for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
             RESULT _y = korb_yield(c, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -2319,7 +2327,9 @@ static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
         long n = 0;
         KORB_ARY_YIELD_FRAME(c, fr, Qnil);
         fr.last_match = sp[-argc - 1];
-        for (long i = 0; i < alen; i++) {
+        /* CRuby re-reads the length each step so the block may grow the array
+         * (shared "tolerates increasing size during iteration" spec). */
+        for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
             RESULT _y = korb_yield(c, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -3285,12 +3295,14 @@ static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
     }
     CHECK_FROZEN_R(c, self);
     /* Park the receiver (fr.last_match) across the per-element korb_yield;
-     * re-read the element from the framed receiver (w<=r keeps a[r] intact). */
-    long alen = korb_ary_len(self);
+     * re-read the element from the framed receiver (w<=r keeps a[r] intact).
+     * Re-read the length each step so a block may grow the array during the
+     * scan (CRuby "tolerates increasing size"); compaction continues into the
+     * appended region. */
     long w = 0;
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-argc - 1];
-    for (long r = 0; r < alen; r++) {
+    for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
         RESULT _y = korb_yield(c, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -3319,12 +3331,12 @@ static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
     /* Park the receiver (fr.last_match) across the per-element korb_yield;
      * re-read the element from the framed receiver after the yield (the
      * compaction writes w<=r, so a[r] is still intact when read). */
-    long alen = korb_ary_len(self);
     long w = 0;
     bool changed = false;
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-argc - 1];
-    for (long r = 0; r < alen; r++) {
+    /* Re-read length each step so a block may grow the array (CRuby). */
+    for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
         RESULT _y = korb_yield(c, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -3375,11 +3387,11 @@ static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
      * delete_if, which does mutate and is FROZEN-checked). */
     if (!korb_block_given(c)) return RESULT_OK(self);
     /* Park result (fr.last_line) + receiver (fr.last_match) across the
-     * per-element korb_yield via the frame chain (see ary_map). */
-    long alen = korb_ary_len(self);
+     * per-element korb_yield via the frame chain (see ary_map).  Re-read
+     * length each step so the block may grow the array (CRuby semantics). */
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     fr.last_match = sp[-argc - 1];
-    for (long i = 0; i < alen; i++) {
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -4290,11 +4302,11 @@ static RESULT ary_take_while(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     /* Park result (fr.last_line) + receiver (fr.last_match) across the
-     * per-element korb_yield via the frame chain (see ary_map). */
-    long alen = korb_ary_len(self);
+     * per-element korb_yield via the frame chain (see ary_map).  Re-read the
+     * length each step so the block may grow the array (CRuby semantics). */
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     fr.last_match = sp[-argc - 1];
-    for (long i = 0; i < alen; i++) {
+    for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
@@ -4312,19 +4324,19 @@ static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     /* Park the receiver (fr.last_match) across the per-element korb_yield;
-     * the result is built afterward (no yield in that loop). */
-    long alen = korb_ary_len(self);
+     * the result is built afterward (no yield in that loop).  Re-read the
+     * length each step so the block may grow the array (CRuby semantics). */
     long i = 0;
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-argc - 1];
-    for (; i < alen; i++) {
+    for (; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
         RESULT _y = korb_yield(c, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (!RTEST(_y.value)) break;
     }
     fr.last_line = korb_ary_new(c, c->sp_top);
-    for (; i < alen; i++) {
+    for (; i < korb_ary_len(fr.last_match); i++) {
         korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
     }
     VALUE result = fr.last_line;

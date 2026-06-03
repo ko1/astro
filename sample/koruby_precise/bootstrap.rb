@@ -2590,8 +2590,9 @@ class Array
   def map!(&blk)
     return enum_for(:map!) unless blk
     i = 0
-    n = size
-    while i < n
+    # Re-read size each step so the block may grow the array (CRuby
+    # "tolerates increasing size during iteration").
+    while i < size
       self[i] = blk.call(self[i])
       i += 1
     end
