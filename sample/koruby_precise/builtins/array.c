@@ -3826,9 +3826,11 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
                 }
             } else {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+                /* nv went stale across the respond_to? funcall GC; re-read the
+                 * forwarded arg slot for the class-name in the error. */
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into Integer",
-                           korb_id_name(korb_class_of_class(nv)->name));
+                           korb_id_name(korb_class_of_class(argv[0])->name));
             }
         } else {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -4405,9 +4407,16 @@ static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg)) {
             RESULT _tr = korb_funcall(c, arg, korb_intern("to_int"), 0, NULL);
             if (_tr.state == KORB_RAISE) {
-                /* swallow NoMethodError, propagate other errors. */
-                VALUE bang = _tr.value;
-                VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
+                /* swallow NoMethodError, propagate other errors.  Hoist the
+                 * NoMethodError intern BEFORE reading object_class (its GC
+                 * would otherwise leave object_class stale via C arg-eval
+                 * order) and park the in-flight exception across that GC. */
+                ID nme_id = korb_intern("NoMethodError");
+                sp[0] = _tr.value;
+                c->sp_top = sp + 1;
+                VALUE eNo = korb_const_get(KORB_VM(c)->object_class, nme_id);
+                VALUE bang = sp[0];
+                c->sp_top = sp;
                 if (SPECIAL_CONST_P(bang) || SPECIAL_CONST_P(eNo) ||
                     BUILTIN_TYPE(eNo) != T_CLASS) return RESULT_OK(Qnil);
                 struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
@@ -4415,8 +4424,9 @@ static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
                 for (struct korb_class *kk = bk; kk; kk = kk->super) {
                     if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
                 }
-                if (!is_nm) return _tr;
-                /* swallowed; fall through with original arg */
+                if (!is_nm) { _tr.value = bang; return _tr; }
+                /* swallowed; fall through with the (possibly forwarded) arg */
+                arg = argv[0];
             } else if (_tr.state != KORB_NORMAL) {
                 return _tr;
             } else {
@@ -4473,8 +4483,15 @@ static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg)) {
             RESULT _tr = korb_funcall(c, arg, korb_intern("to_int"), 0, NULL);
             if (_tr.state == KORB_RAISE) {
-                VALUE bang = _tr.value;
-                VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
+                /* Same intern-hoist + exception-park as ary_first_n: the
+                 * NoMethodError intern's GC must not leave object_class /
+                 * bang stale. */
+                ID nme_id = korb_intern("NoMethodError");
+                sp[0] = _tr.value;
+                c->sp_top = sp + 1;
+                VALUE eNo = korb_const_get(KORB_VM(c)->object_class, nme_id);
+                VALUE bang = sp[0];
+                c->sp_top = sp;
                 if (SPECIAL_CONST_P(bang) || SPECIAL_CONST_P(eNo) ||
                     BUILTIN_TYPE(eNo) != T_CLASS) return RESULT_OK(Qnil);
                 struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
@@ -4482,8 +4499,9 @@ static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
                 for (struct korb_class *kk = bk; kk; kk = kk->super) {
                     if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
                 }
-                if (!is_nm) return _tr;
-                /* swallowed; fall through with original arg */
+                if (!is_nm) { _tr.value = bang; return _tr; }
+                /* swallowed; fall through with the (possibly forwarded) arg */
+                arg = argv[0];
             } else if (_tr.state != KORB_NORMAL) {
                 return _tr;
             } else {
