@@ -850,38 +850,45 @@ static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
  * On incomparable (`<=>` returns nil) or raised exception, sets *err
  * to the propagating RESULT and returns 0. */
 static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *err) {
+    /* Park x/y across the comparator (yield / <=> funcall = GC points) so the
+     * nil-result error path can build its message from live (forwarded)
+     * handles rather than stale C-locals. */
+    VALUE *const root = c->sp_top;
+    root[0] = x; root[1] = y;
+    c->sp_top = root + 2;
     VALUE r;
     if (has_block) {
-        VALUE pair[2] = { x, y };
+        VALUE pair[2] = { root[0], root[1] };
         RESULT _r = korb_yield(c, 2, pair);
-        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+        if (_r.state != KORB_NORMAL) { c->sp_top = root; *err = _r; return 0; }
         r = _r.value;
     } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
+        c->sp_top = root;
         return (intptr_t)x < (intptr_t)y ? -1 : (intptr_t)x > (intptr_t)y ? 1 : 0;
     } else {
-        RESULT _r = korb_funcall(c, x, korb_intern("<=>"), 1, &y);
-        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+        RESULT _r = korb_funcall(c, root[0], korb_intern("<=>"), 1, &root[1]);
+        if (_r.state != KORB_NORMAL) { c->sp_top = root; *err = _r; return 0; }
         r = _r.value;
     }
     /* CRuby: sort block return is used by sign — Fixnum sign extracted
      * directly; Bignum compared against 0 via korb_int_cmp; Float by
      * sign; nil → raise ArgumentError (CRuby semantics). */
-    if (FIXNUM_P(r)) return FIX2LONG(r);
-    if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM) {
-        return korb_int_cmp(r, INT2FIX(0));
-    }
-    if (KORB_IS_FLOAT(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT)) {
+    long ret = 0;
+    if (FIXNUM_P(r)) ret = FIX2LONG(r);
+    else if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM) {
+        ret = korb_int_cmp(r, INT2FIX(0));
+    } else if (KORB_IS_FLOAT(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT)) {
         double d = korb_num2dbl(r);
-        return d < 0 ? -1 : d > 0 ? 1 : 0;
-    }
-    if (NIL_P(r)) {
+        ret = d < 0 ? -1 : d > 0 ? 1 : 0;
+    } else if (NIL_P(r)) {
         VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         *err = korb_raise(c, (struct korb_class *)eArg,
                    "comparison of %s with %s failed",
-                   korb_id_name(korb_class_of_class(x)->name),
-                   korb_id_name(korb_class_of_class(y)->name));
+                   korb_id_name(korb_class_of_class(root[0])->name),
+                   korb_id_name(korb_class_of_class(root[1])->name));
     }
-    return 0;
+    c->sp_top = root;
+    return ret;
 }
 
 /* In-place insertion sort.  The array handle (fr.last_line) and the lifted
