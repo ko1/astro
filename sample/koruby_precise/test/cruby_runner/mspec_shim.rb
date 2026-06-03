@@ -554,6 +554,12 @@ class MSpecExpectation
   # Fallback proxy: `obj.should.foo?` / `obj.should.bar` delegates to
   # @actual.foo? / @actual.bar and asserts truthy.
   def method_missing(name, *args, &blk)
+    # `-> { ... }.should.raise(SomeError)` — the dominant rubyspec form in
+    # this checkout (used in 850+ core files).  A Proc doesn't respond_to
+    # :raise, so route it to the existing raise_error matcher.  Handled here
+    # (not as `def raise`) so it doesn't shadow Kernel#raise inside the
+    # other expectation methods.
+    return raise_error(*args) if name == :raise
     if @actual.respond_to?(name)
       result = @actual.send(name, *args, &blk)
       if result then $ms_pass += 1
@@ -584,6 +590,20 @@ class MSpecNegatedExpectation < MSpecExpectation
   # `obj.empty?` and asserts FALSY (the parent class asserts truthy
   # — which is wrong for the negated form).
   def method_missing(name, *args, &blk)
+    # `-> { ... }.should_not.raise(SomeError)` — block must NOT raise that
+    # class.  Run it; only an instance of the named class is a failure.
+    if name == :raise
+      klass = args[0] || StandardError
+      begin
+        @actual.call
+      rescue Exception => e
+        if e.is_a?(klass)
+          raise MSpecError, "expected not to raise #{klass}, but raised #{e.class}: #{e.message}"
+        end
+      end
+      $ms_pass += 1
+      return
+    end
     if @actual.respond_to?(name)
       result = @actual.send(name, *args, &blk)
       if !result then $ms_pass += 1
