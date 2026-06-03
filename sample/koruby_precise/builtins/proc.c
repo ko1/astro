@@ -453,7 +453,6 @@ redo_proc:
     if (_br.state == KORB_THROW) {
         /* Throw escaping a proc/lambda — convert to UncaughtThrowError raise. */
         VALUE throw_val = _br.value;
-        VALUE eUTE = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
         VALUE tag = Qnil;
         if (!SPECIAL_CONST_P(throw_val) && BUILTIN_TYPE(throw_val) == T_ARRAY) {
             struct korb_array *pair = (struct korb_array *)throw_val;
@@ -463,6 +462,9 @@ redo_proc:
         char buf[256];
         snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
         AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+        /* Fetch the class AFTER korb_inspect (a GC point) so the C-local isn't
+         * stale by the BUILTIN_TYPE deref below. */
+        VALUE eUTE = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
         if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
             return korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
         }
