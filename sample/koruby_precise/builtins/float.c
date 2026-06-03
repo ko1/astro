@@ -505,6 +505,11 @@ RESULT flt_to_i(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
+    /* CRuby: Float#to_i / #to_int raise FloatDomainError for NaN / Infinity. */
+    if (isnan(v) || isinf(v)) {
+        VALUE eD = korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError"));
+        return korb_raise(c, (struct korb_class *)eD, isnan(v) ? "NaN" : (v < 0 ? "-Infinity" : "Infinity"));
+    }
     return RESULT_OK(korb_dbl2int(c, c->sp_top, v >= 0 ? floor(v) : ceil(v)));
 }
 static RESULT flt_to_f(CTX *c, int argc, VALUE *sp) {
