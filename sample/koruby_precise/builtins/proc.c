@@ -244,13 +244,17 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
                     return RESULT_OK(Qnil);
                 }
                 VALUE coerced = _ta.value;
-                if (BUILTIN_TYPE(coerced) != T_ARRAY) {
+                if (NIL_P(coerced)) {
+                    /* to_ary returned nil: no destructuring — bind the single
+                     * argument as-is (arr stays Qnil). */
+                } else if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
+                } else {
+                    arr = coerced;
                 }
-                arr = coerced;
             }
         }
         if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
