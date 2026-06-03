@@ -108,22 +108,32 @@ static ID coerce_ivar_name(CTX *c, VALUE v, RESULT *err) {
         clen = ((struct korb_string *)v)->len;
     } else {
         /* Try #to_str via respond_to? (also picks up singleton methods,
-         * needed by mspec mocks). */
+         * needed by mspec mocks).  v is a by-value moving handle funcalled
+         * TWICE — park it so the second call / error path don't deref a
+         * handle the first moved (IDIOM B). */
         if (!SPECIAL_CONST_P(v)) {
+            VALUE *const _vsp = c->sp_top;
+            _vsp[0] = v;
+            c->sp_top = _vsp + 1;
             VALUE to_str_sym = korb_id2sym(korb_intern("to_str"));
-            RESULT rr = korb_funcall_r(c, v, korb_intern("respond_to?"), 1, &to_str_sym);
+            RESULT rr = korb_funcall_r(c, _vsp[0], korb_intern("respond_to?"), 1, &to_str_sym);
             if (rr.state == KORB_NORMAL && RTEST(rr.value)) {
-                RESULT tr = korb_funcall_r(c, v, korb_intern("to_str"), 0, NULL);
-                if (tr.state != KORB_NORMAL) { *err = tr; return 0; }
+                RESULT tr = korb_funcall_r(c, _vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) { c->sp_top = _vsp; *err = tr; return 0; }
                 if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_STRING) {
+                    c->sp_top = _vsp;
                     *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                                        "can't convert to String (to_str gave non-String)");
                     return 0;
                 }
+                /* ->ptr is a libc-stable buffer, valid after the park pops. */
                 cstr = ((struct korb_string *)tr.value)->ptr;
                 clen = ((struct korb_string *)tr.value)->len;
+                c->sp_top = _vsp;
                 goto check_name;
             }
+            v = _vsp[0];
+            c->sp_top = _vsp;
         }
         *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                           "%s is not a symbol nor a string",
@@ -1368,6 +1378,7 @@ static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
     RESULT err = RESULT_OK(Qnil);
     ID name = coerce_ivar_name(c, argv[0], &err);
     if (name == 0) return err;
+    self = sp[-argc - 1];   /* coerce_ivar_name may intern (GC); re-read self */
     CHECK_FROZEN_R(c, self);
     /* T_CLASS / T_MODULE: remove from class_ivars[]. */
     if (!SPECIAL_CONST_P(self) &&
