@@ -2751,22 +2751,29 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
         return korb_raise_type_error(c, "no class to make singleton class for %s",
                               korb_id_name(korb_class_of_class(recv)->name));
     }
-    VALUE prev_self = c->current_frame->self;
-    struct korb_class *prev_class = c->current_frame->current_class;
-    struct korb_cref *prev_cref = c->current_frame->cref;
+    /* Run the body under a PUSHED synthetic frame, NOT by mutating the caller
+     * frame in place.  In-place mutate-and-restore kept the caller's self /
+     * current_class in bare C-locals (prev_self/prev_class) across the body
+     * EVAL — a GC point (e.g. `Module.nesting`, `def name`) — so the restore
+     * wrote a stale handle back into the caller frame, and the enclosing
+     * class/module def's proc-snapshot then SEGV'd on it.  A synthetic frame
+     * keeps the caller frame visit_roots-forwarded.  See docs/rooting_guide.md
+     * IDIOM C.  new_cref is stack-allocated; it leaves the chain when we
+     * restore current_frame = fr.prev on every exit (incl. raise). */
     struct korb_cref new_cref = { .klass = meta, .prev = c->current_frame->cref };
-    c->current_frame->self = (VALUE)meta;
-    c->current_frame->current_class = meta;
-    c->current_frame->cref = &new_cref;
-    /* Restore self/class/cref on EVERY exit, including a raise from the body:
-     * new_cref is stack-allocated, so leaving c->current_frame->cref pointing
-     * at it after this frame returns leaves a dangling cref that later const
-     * lookups deref (garbage cref->klass → SEGV).  Do NOT use EVAL_ARG_UNWRAP
-     * here (it early-returns on raise, skipping the restore). */
+    struct korb_frame fr = {
+        .prev = c->current_frame,
+        .self = (VALUE)meta,
+        .fp = c->current_frame->fp,
+        .cref = &new_cref,
+        .current_class = meta,
+        .current_file = c->current_frame->current_file,
+        .last_line = Qnil,
+        .last_match = Qnil,
+    };
+    c->current_frame = &fr;
     RESULT _br = EVAL_ARG(c, body);
-    c->current_frame->self = prev_self;
-    c->current_frame->current_class = prev_class;
-    c->current_frame->cref = prev_cref;
+    c->current_frame = fr.prev;
     if (_br.state != KORB_NORMAL) return _br;
     return RESULT_OK(_br.value);
 }
@@ -3149,22 +3156,27 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         korb_const_set((struct korb_class *)sp[0], name, sp[2]);
     }
     struct korb_class *klass = (struct korb_class *)sp[2];
-    struct korb_class *prev_class = c->current_frame->current_class;
-    VALUE prev_self = c->current_frame->self;
+    /* PUSHED synthetic frame for the body (not in-place mutate-and-restore):
+     * the in-place form kept the caller's self/current_class in bare C-locals
+     * across the body EVAL (a GC point) and restored stale handles, which the
+     * enclosing def's proc-snapshot then dereffed → SEGV.  See
+     * docs/rooting_guide.md IDIOM C. */
     struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-    struct korb_cref *prev_cref = c->current_frame->cref;
-    c->current_frame->current_class = klass;
-    c->current_frame->self = (VALUE)klass;
-    c->current_frame->cref = &new_cref;
-    VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-    /* Restore on EVERY exit incl. a body raise (new_cref is stack-allocated;
-     * a skipped restore leaves a dangling cref → later const-lookup SEGV). */
+    struct korb_frame fr = {
+        .prev = c->current_frame,
+        .self = (VALUE)klass,
+        .fp = c->current_frame->fp,
+        .cref = &new_cref,
+        .current_class = klass,
+        .current_file = c->current_frame->current_file,
+        .last_line = Qnil,
+        .last_match = Qnil,
+    };
+    VALUE *fp_lo = fr.fp; VALUE *fp_hi = c->sp_top;
+    c->current_frame = &fr;
     RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
-    /* Read forwarded klass from frame->self BEFORE restoring it. */
-    VALUE klass_tracked = c->current_frame->self;
-    c->current_frame->current_class = prev_class;
-    c->current_frame->self = prev_self;
-    c->current_frame->cref = prev_cref;
+    VALUE klass_tracked = fr.self;   /* frame-tracked → forwarded */
+    c->current_frame = fr.prev;
     korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
     if (_br.state != KORB_NORMAL) return _br;
     return RESULT_OK(_br.value);
@@ -3218,22 +3230,30 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         ((struct korb_class *)sp[1])->name = 0;
         korb_const_set((struct korb_class *)sp[0], name, sp[1]);
     }
-    struct korb_class *prev_class = c->current_frame->current_class;
-    VALUE prev_self = c->current_frame->self;
+    /* Run the module body under a PUSHED synthetic frame (not by mutating
+     * the caller frame in place): mutating-and-restoring kept the caller's
+     * self/current_class in bare C-locals (prev_self/prev_class) across the
+     * body EVAL — a GC point — so the restore wrote a stale handle back into
+     * the caller frame and the enclosing module's proc-snapshot then SEGV'd
+     * on it.  A synthetic frame keeps the caller frame (and the enclosing
+     * module's fr.self) intact and visit_roots-forwarded.  See node_module_def
+     * + docs/rooting_guide.md IDIOM C. */
     struct korb_cref new_cref = { .klass = (struct korb_class *)sp[1], .prev = c->current_frame->cref };
-    struct korb_cref *prev_cref = c->current_frame->cref;
-    c->current_frame->current_class = (struct korb_class *)sp[1];
-    c->current_frame->self = sp[1];
-    c->current_frame->cref = &new_cref;
-    VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-    /* Restore on EVERY exit incl. a body raise (new_cref is stack-allocated;
-     * a skipped restore leaves a dangling cref → later const-lookup SEGV). */
+    struct korb_frame fr = {
+        .prev = c->current_frame,
+        .self = sp[1],
+        .fp = c->current_frame->fp,
+        .cref = &new_cref,
+        .current_class = (struct korb_class *)sp[1],
+        .current_file = c->current_frame->current_file,
+        .last_line = Qnil,
+        .last_match = Qnil,
+    };
+    VALUE *fp_lo = fr.fp; VALUE *fp_hi = c->sp_top;
+    c->current_frame = &fr;
     RESULT _br = body ? EVAL_ARG(c, body) : RESULT_OK(Qnil);
-    /* Read forwarded value from frame->self BEFORE restoring it. */
-    VALUE singleton_tracked = c->current_frame->self;
-    c->current_frame->current_class = prev_class;
-    c->current_frame->self = prev_self;
-    c->current_frame->cref = prev_cref;
+    VALUE singleton_tracked = fr.self;   /* frame-tracked → forwarded */
+    c->current_frame = fr.prev;
     korb_proc_snapshot_env_if_in_frame(singleton_tracked, fp_lo, fp_hi + 1024);
     c->sp_top = sp;
     if (_br.state != KORB_NORMAL) return _br;
