@@ -1199,6 +1199,12 @@ RESULT korb_const_lookup(CTX *c, ID name) {
          * SEGVs.  The inheritance + Object-namespace walk below still finds
          * the const if it exists. */
         if (SPECIAL_CONST_P((VALUE)cr->klass)) continue;
+        /* Skip a cref->klass that escaped root-forwarding and now points into
+         * a retired (mprotect'd) PURGE plane — dereferencing it would SEGV.
+         * Same safe recovery as the NULL case: fall through to the inheritance
+         * / Object-namespace walk.  (The forwarding gap itself is the
+         * class/module synthetic-cref orphan; tracked in memory.) */
+        if (aro_gc_addr_retired(c, cr->klass)) continue;
         if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return RESULT_OK(v);

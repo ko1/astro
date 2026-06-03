@@ -376,6 +376,12 @@ aro_gc_free_large_chain_malloc(void *head)
 void *aro_gc_alloc_raw(CTX *c, size_t payload_size);
 VALUE aro_gc_alloc(CTX *c, size_t payload_size);
 
+/* True iff p is in a retired (mprotect'd) PURGE plane — dereferencing would
+ * SEGV.  Sample code can skip such an escaped/stale pointer defensively.
+ * Only the copy backend (gc_copy.c) defines this; PURGE is a copy-GC feature. */
+#include <stdbool.h>
+bool aro_gc_addr_retired(CTX *c, const void *p);
+
 /* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
  * scanning, no zero-init).  Used for BaString.bytes / other char[]
  * payloads.  Caller fills the bytes after return (decoded via

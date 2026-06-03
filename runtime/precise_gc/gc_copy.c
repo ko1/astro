@@ -437,6 +437,23 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
 void *g_scan_owner = NULL;
 int g_in_root_scan = 0;
 
+/* True iff p points into a RETIRED (mprotect(PROT_NONE)'d) purge plane — a
+ * pointer from a past cycle whose object has moved, so dereferencing p would
+ * SEGV.  Lets sample code defensively skip a slot that escaped root-forwarding
+ * (e.g. an orphaned cref->klass) instead of crashing.  False when PURGE is off
+ * or p is current/from/to-space or a libc-immortal address. */
+bool aro_gc_addr_retired(CTX *c, const void *p)
+{
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
+    if (!gc || !gc->purge_arena_base) return false;
+    const char *cp = (const char *)p;
+    if (cp < gc->purge_arena_base || cp >= gc->purge_arena_end) return false;
+    /* Between collections every live object resides in the current active
+     * plane [active_base, active_end).  Anything else inside the purge
+     * super-arena is a retired (mprotect PROT_NONE) plane — a stale ref. */
+    return !(cp >= gc->active_base && cp < gc->active_end);
+}
+
 static void *
 forward_payload(ASTroGC *gc, void *old_payload)
 {
