@@ -562,10 +562,14 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(r);
     }
     if (argc >= 2) return RESULT_OK(argv[1]);
+    /* korb_inspect dispatches user #inspect (GC); park the result string and
+     * fetch the KeyError class AFTER it (a C-local fetched before would be
+     * stale).  ks->ptr stays valid via the parked, forwarded handle. */
+    sp[0] = korb_inspect(c, sp + 1, argv[0]);
+    c->sp_top = sp + 1;
     VALUE eKey = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
     if (UNDEF_P(eKey) || !eKey) eKey = (VALUE)NULL;
-    VALUE ks = korb_inspect(c, c->sp_top, argv[0]);
-    return korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(ks));
+    return korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(sp[0]));
 }
 
 static RESULT hash_delete(CTX *c, int argc, VALUE *sp) {
