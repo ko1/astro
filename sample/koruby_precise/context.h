@@ -424,6 +424,14 @@ struct korb_frame {
      * — the prev=NULL cut would otherwise disconnect them from the head chain
      * and let main_obj go stale across the inner eval's GCs. */
     struct korb_frame *eval_prev;
+    /* Also only set on the eval/require top_frame: the frame that was current
+     * (= the SUSPENDED caller context's deepest frame) when this eval began.
+     * visit_roots walks this frame's prev chain so the suspended context's
+     * body frames (e.g. an open `module M`/`class << self` whose body called
+     * require) keep their self / current_class / cref->klass forwarded — the
+     * prev=NULL cut + eval_prev only covered the top_frames, leaving those
+     * body frames orphaned and their cref->klass stale (const_get SEGV). */
+    struct korb_frame *eval_caller_frame;
 };
 
 /* korb_yield self-save node — C-stack-allocated per yield, linked into

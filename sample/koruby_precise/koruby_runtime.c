@@ -217,6 +217,26 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         for (struct korb_cref *cr = ef->cref; cr; cr = cr->prev) {
             visit_ptr_slot(ctx, fn, (void **)&cr->klass);
         }
+        /* The SUSPENDED caller context below this eval: eval_prev only links the
+         * top_frames, but an open class/module body whose body called require
+         * has body frames between its top_frame and the require site.  Those
+         * frames are unreachable from c->current_frame (the deeper eval cut the
+         * chain at prev=NULL) and not in eval_frame_chain — walk them via the
+         * saved eval_caller_frame so their self / current_class / cref->klass
+         * stay forwarded (otherwise const_get on the open module derefs a
+         * retired-plane class → SEGV under STRESS+PURGE). */
+        int fdepth = 0;
+        for (struct korb_frame *f = ef->eval_caller_frame; f && fdepth < 4096; f = f->prev, fdepth++) {
+            visit_value_slot(ctx, fn, &f->self);
+            visit_value_slot(ctx, fn, &f->last_line);
+            visit_value_slot(ctx, fn, &f->last_match);
+            visit_ptr_slot(ctx, fn, (void **)&f->block);
+            visit_ptr_slot(ctx, fn, (void **)&f->current_class);
+            int cdepth = 0;
+            for (struct korb_cref *cr = f->cref; cr && cdepth < 64; cr = cr->prev, cdepth++) {
+                visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+            }
+        }
     }
     /* korb_yield self-save chain — keep each suspended yield's enclosing self
      * forwarded across the (nested) block body GC.  See CTX.yield_self_chain. */

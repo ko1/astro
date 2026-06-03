@@ -5161,6 +5161,7 @@ RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filenam
      * is current (top_frame.prev=NULL disconnects it from the head chain). */
     struct korb_frame *prev_eval_chain = c->eval_frame_chain;
     top_frame.eval_prev = prev_eval_chain;
+    top_frame.eval_caller_frame = prev_frame;   /* suspended caller context */
     c->eval_frame_chain = &top_frame;
 
     /* Reset cref to [Object] for top-level execution */
