@@ -807,10 +807,13 @@ class Numeric
   def infinite?; nil; end unless method_defined?(:infinite?)
 
   # Numeric#ceil / floor / round / truncate — Float / Integer override.
-  def ceil(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:ceil)
-  def floor(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:floor)
-  def round(n = 0, **); n == 0 ? self.to_i : self; end unless method_defined?(:round)
-  def truncate(n = 0); n == 0 ? self.to_i : self; end unless method_defined?(:truncate)
+  # Numeric defaults convert self via #to_f then delegate (CRuby: a custom
+  # Numeric subclass with only #to_f gets floor/ceil/round/truncate).
+  # Integer/Float/Rational override these.
+  def ceil(n = 0); n == 0 ? to_f.ceil : to_f.ceil(n); end unless method_defined?(:ceil)
+  def floor(n = 0); n == 0 ? to_f.floor : to_f.floor(n); end unless method_defined?(:floor)
+  def round(n = 0, **); n == 0 ? to_f.round : to_f.round(n); end unless method_defined?(:round)
+  def truncate(n = 0); n == 0 ? to_f.truncate : to_f.truncate(n); end unless method_defined?(:truncate)
 
   # Numeric#integer? — true for Integer, false otherwise.
   def integer?; false; end unless method_defined?(:integer?)
