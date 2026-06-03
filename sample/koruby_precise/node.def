@@ -1407,8 +1407,29 @@ NODE_DEF
 node_bit_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    if (LIKELY(FIXNUM_P(l))) {
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l & r);
+        c->last_cfunc_callsite = n;
+        return korb_node_band_slow(c, l, r, arg_index);
+    }
+    /* l is a heap obj (e.g. Module#& / Array#& intersection) — pin it in a
+     * synthetic frame's last_line across rhs eval's GC so the C-local doesn't
+     * go stale (same idiom as node_bit_or / node_plus). */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
     VALUE r = EVAL_ARG_UNWRAP(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l & r);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_band_slow(c, l, r, arg_index);
 }
