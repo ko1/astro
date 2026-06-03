@@ -805,8 +805,11 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     ((struct korb_class *)sp[0])->name = 0;
     /* save members */
     sp[1] = korb_ary_new_from_values(c, sp + 2, argc, argv);
+    /* Intern FIRST (may GC), then read klass from sp[0]: as args to one call,
+     * korb_intern would otherwise move sp[0]'s class after klass was read. */
+    ID _members_id = korb_intern("__members__");
     struct korb_class *klass = (struct korb_class *)sp[0];  /* re-derive after GC */
-    korb_const_set(klass, korb_intern("__members__"), sp[1]);
+    korb_const_set(klass, _members_id, sp[1]);
     /* Install Struct's standard instance methods FIRST, then let
      * attr_accessor overwrite any collisions (e.g. Data.define(:length)
      * means user-given `length` accessor wins over Struct#length). */
@@ -1165,9 +1168,11 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     }
     /* attr_accessor / method-add above may have fired GC; re-derive klass. */
     klass = (struct korb_class *)sp[0];
-    /* Store keyword_init flag for #keyword_init? introspection. */
+    /* Store keyword_init flag for #keyword_init? introspection.  Intern first
+     * (may GC), then read klass from sp[0] (see __members__ above). */
     if (!UNDEF_P(kw_init_val)) {
-        korb_const_set(klass, korb_intern("__keyword_init__"), kw_init_val);
+        ID _kwi_id = korb_intern("__keyword_init__");
+        korb_const_set((struct korb_class *)sp[0], _kwi_id, kw_init_val);
     }
     /* class-level .members and .[] (synonym for .new) */
     {
