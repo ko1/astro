@@ -27,11 +27,21 @@ static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth)
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
-            VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (RTEST(rt)) {
-                v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
+            /* Two funcalls on the same by-value moving handle — park it so the
+             * second (to_str) doesn't deref a handle the first moved (IDIOM B). */
+            VALUE *const vsp = c->sp_top;
+            vsp[0] = v;
+            c->sp_top = vsp + 1;
+            RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+            if (RTEST(rtr.value)) {
+                RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+                vsp[0] = tsr.value;
             }
+            v = vsp[0];
+            c->sp_top = vsp;
         }
     }
     ID name;
@@ -43,8 +53,8 @@ static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth)
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
-                   SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name));
+                   SPECIAL_CONST_P(v) ? "(special)"
+                       : korb_id_name(korb_class_of_class(v)->name));
     }
     const char *base = korb_id_name(name);
     if (!base || (!((base[0] >= 'a' && base[0] <= 'z') ||
