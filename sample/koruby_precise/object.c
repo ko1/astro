@@ -3889,6 +3889,18 @@ static RESULT prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     
     frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
+    /* Restore the CALLER frame's cref NOW (immediately after the new frame
+     * inherited def_cref at line 3884), not after the body.  Line 3637 set
+     * caller->cref = def_cref only so (a) opt-arg defaults eval'd in the
+     * method's lexical scope and (b) this new frame could inherit it.  Both
+     * are done.  Leaving caller->cref = def_cref for the whole body ORPHANS
+     * the caller's real cref — which, for a node_module_def / node_class_def
+     * / node_class_reopen body frame, is a stack-local synthetic cref whose
+     * klass tracks the open module.  Orphaned, GC stops forwarding it, so it
+     * goes stale as the module moves; a const lookup (korb_host_class →
+     * korb_const_get) after the call then derefs a retired-plane class →
+     * SEGV under STRESS+PURGE (module/* specs at load time). */
+    frame.prev->cref = prev_cref;
     /* Reset c->running_block: a method body is no longer "inside" the
      * caller's block, so a `return` inside it should be method-local. */
     struct korb_proc *prev_running = c->running_block;

@@ -47,6 +47,21 @@ visit_ptr_slot(void *ctx, koruby_edge_fn fn, void **slot)
     fn(ctx, slot);
 }
 
+/* Forward every klass slot in a cref chain.  Nested frames / methods /
+ * bindings share cref suffixes, so the same slot can be visited from
+ * several chains in one cycle — that is safe: forward_edge (gc_copy.c) is
+ * idempotent (it skips a slot that already holds a to-space address), and a
+ * retired-plane (purged) pointer is forwarded to NULL.  Depth-capped at 4096
+ * to defend against a corrupted / looping .prev. */
+static inline void
+visit_cref_chain(void *ctx, koruby_edge_fn fn, struct korb_cref *cref) {
+    int depth = 0;
+    for (struct korb_cref *cr = cref;
+         cr && !SPECIAL_CONST_P((VALUE)cr) && depth < 4096; cr = cr->prev, depth++) {
+        visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+    }
+}
+
 static void
 visit_method_table(void *ctx, koruby_edge_fn fn,
                    struct korb_method_table *mt)
@@ -77,9 +92,7 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
             if (m->gc_visit_gen == korb_g_gc_gen) continue;
             m->gc_visit_gen = korb_g_gc_gen;
             visit_ptr_slot(ctx, fn, (void **)&m->defining_class);
-            for (struct korb_cref *cr = m->def_cref; cr; cr = cr->prev) {
-                visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-            }
+            visit_cref_chain(ctx, fn, m->def_cref);
             if (m->type == KORB_METHOD_PROC) {
                 visit_ptr_slot(ctx, fn, (void **)&m->u.proc.proc);
             }
@@ -187,10 +200,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &f->last_match);
         visit_ptr_slot(ctx, fn, (void **)&f->block);
         visit_ptr_slot(ctx, fn, (void **)&f->current_class);
-        int cref_depth = 0;
-        for (struct korb_cref *cr = f->cref; cr && cref_depth < 64; cr = cr->prev, cref_depth++) {
-            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-        }
+        visit_cref_chain(ctx, fn, f->cref);
     }
     {
         struct korb_frame *f = &c->sentinel_frame;
@@ -199,9 +209,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &f->last_match);
         visit_ptr_slot(ctx, fn, (void **)&f->block);
         visit_ptr_slot(ctx, fn, (void **)&f->current_class);
-        for (struct korb_cref *cr = f->cref; cr; cr = cr->prev) {
-            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-        }
+        visit_cref_chain(ctx, fn, f->cref);
     }
     /* Active eval/require top_frames: each is pushed with prev=NULL (control-
      * flow isolation), which disconnects it from c->current_frame's chain
@@ -214,9 +222,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &ef->last_match);
         visit_ptr_slot(ctx, fn, (void **)&ef->block);
         visit_ptr_slot(ctx, fn, (void **)&ef->current_class);
-        for (struct korb_cref *cr = ef->cref; cr; cr = cr->prev) {
-            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-        }
+        visit_cref_chain(ctx, fn, ef->cref);
         /* The SUSPENDED caller context below this eval: eval_prev only links the
          * top_frames, but an open class/module body whose body called require
          * has body frames between its top_frame and the require site.  Those
@@ -232,10 +238,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
             visit_value_slot(ctx, fn, &f->last_match);
             visit_ptr_slot(ctx, fn, (void **)&f->block);
             visit_ptr_slot(ctx, fn, (void **)&f->current_class);
-            int cdepth = 0;
-            for (struct korb_cref *cr = f->cref; cr && cdepth < 64; cr = cr->prev, cdepth++) {
-                visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-            }
+            visit_cref_chain(ctx, fn, f->cref);
         }
     }
     /* korb_yield self-save chain — keep each suspended yield's enclosing self
@@ -243,10 +246,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     for (struct korb_yield_self_save *ys = c->yield_self_chain; ys; ys = ys->prev) {
         visit_value_slot(ctx, fn, &ys->self);
     }
-    {
-        struct korb_cref *cr = &c->top_cref;
-        visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-    }
+    visit_cref_chain(ctx, fn, &c->top_cref);
     /* (d') c->current_block / c->running_block — held on CTX so future
      * Fiber / Thread support gets these per-ctx for free.  Procs are
      * libc-allocated (forward_payload returns them as-is), so we must
@@ -404,13 +404,7 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
               visit_value_slot(ctx, fn, &p->self);
               visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
               visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
-              /* Cap chain depth at 64 — sanity bound to detect
-               * corruption / loops in cref chains.  Normal Ruby code
-               * has cref nesting depth ~10 max. */
-              int chain_depth = 0;
-              for (struct korb_cref *cr = p->cref; cr && chain_depth < 64; cr = cr->prev, chain_depth++) {
-                  visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-              }
+              visit_cref_chain(ctx, fn, p->cref);
               /* p->env walking — only for ESCAPED procs (env is
                * libc-malloc'd by korb_proc_snapshot_env_*).  Skip when
                * env points into the value stack — those are walked by
@@ -473,11 +467,7 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
                           visit_value_slot(ctx, fn, &bnd->fp[bnd->base + i]);
                       }
                   }
-                  int cref_depth = 0;
-                  for (struct korb_cref *cr = bnd->cref; cr && cref_depth < 64;
-                       cr = cr->prev, cref_depth++) {
-                      visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-                  }
+                  visit_cref_chain(ctx, fn, bnd->cref);
               }
               break;
           }
@@ -567,9 +557,7 @@ koruby_scan_edges(void *payload, size_t payload_size,
           }
           visit_value_slot(ctx, fn, &p->self);
           visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
-          for (struct korb_cref *cr = p->cref; cr; cr = cr->prev) {
-              visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-          }
+          visit_cref_chain(ctx, fn, p->cref);
           visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
           break;
       }

@@ -1337,7 +1337,11 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eN,
                    "wrong constant name %.*s", namelen, namep);
     }
-    ID name = korb_intern_n(namep, namelen);
+    ID name = korb_intern_n(namep, namelen);   /* GC point: may grow symtab */
+    /* self / argv[1] are moving handles — re-read from the (scanned) receiver
+     * and arg slots after korb_intern_n, which can move them (IDIOM A). */
+    self = sp[-argc - 1];
+    argv = sp - argc;
     korb_const_set((struct korb_class *)self, name, argv[1]);
     return RESULT_OK(argv[1]);
 }
