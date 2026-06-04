@@ -288,7 +288,6 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
 /* Range#begin — returns the begin field directly (nil for beginless).
  * Unlike #first, never raises.  CRuby semantics. */
 static RESULT rng_begin(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     (void)argc; (void)sp;
     return RESULT_OK(((struct korb_range *)self)->begin);
@@ -297,14 +296,12 @@ static RESULT rng_begin(CTX *c, int argc, VALUE *sp) {
 /* Range#end / Range#last (no args) — returns the end field directly
  * (nil for endless).  #last with args raises for endless. */
 static RESULT rng_end(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     (void)argc; (void)sp;
     return RESULT_OK(((struct korb_range *)self)->end);
 }
 
 static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -333,10 +330,13 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
             double d = korb_num2dbl(nv);
             nv = INT2FIX((long)d);
         } else if (!SPECIAL_CONST_P(nv)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
+            sp[0] = nv;
+            sp[1] = korb_id2sym(korb_intern("to_int"));
+            VALUE rt = UNWRAP(korb_call(c, sp + 2, korb_intern("respond_to?"), 1));
+            nv = sp[0];   /* re-read forwarded nv (parked across the call) */
             if (RTEST(rt)) {
-                nv = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("to_int"), 0, NULL));
+                sp[0] = nv;
+                nv = UNWRAP(korb_call(c, sp + 1, korb_intern("to_int"), 0));
             }
         }
         if (!FIXNUM_P(nv)) {
@@ -347,9 +347,12 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
     }
     /* Non-numeric begin (`('a'..'e').first(2)`): delegate to to_a then take. */
     if (!FIXNUM_P(r->begin)) {
-        VALUE arr = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_a"), 0, NULL));
+        sp[0] = sp[-argc - 1];   /* self (re-read) */
+        VALUE arr = UNWRAP(korb_call(c, sp + 1, korb_intern("to_a"), 0));
         if (BUILTIN_TYPE(arr) != T_ARRAY) return RESULT_OK(Qnil);
-        return korb_funcall(c, c->sp_top, arr, korb_intern("first"), 1, &nv);
+        sp[0] = arr;
+        sp[1] = nv;
+        return korb_call(c, sp + 2, korb_intern("first"), 1);
     }
     long n = FIX2LONG(nv);
     if (n < 0) {
@@ -380,7 +383,6 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[0]);
 }
 static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -408,10 +410,13 @@ static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
         if (FLONUM_P(nv) || (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_FLOAT)) {
             nv = INT2FIX((long)korb_num2dbl(nv));
         } else if (!SPECIAL_CONST_P(nv)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
+            sp[0] = nv;
+            sp[1] = korb_id2sym(korb_intern("to_int"));
+            VALUE rt = UNWRAP(korb_call(c, sp + 2, korb_intern("respond_to?"), 1));
+            nv = sp[0];   /* re-read forwarded nv (parked across the call) */
             if (RTEST(rt)) {
-                nv = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("to_int"), 0, NULL));
+                sp[0] = nv;
+                nv = UNWRAP(korb_call(c, sp + 1, korb_intern("to_int"), 0));
             }
         }
         if (!FIXNUM_P(nv)) {
