@@ -52,6 +52,17 @@ void korb_result_audit_construct(VALUE v, const char *file, int line) {
         abort();
     }
 }
+void korb_audit_living(VALUE v, const char *what, const char *file, int line) {
+    if (SPECIAL_CONST_P(v) || v == 0) return;
+    if (aro_gc_addr_stale(&koruby_bootstrap_ctx, (const void *)v)) {
+        fprintf(stderr,
+            "\n*** RESULT-AUDIT(%s): storing/using a STALE value=%p at %s:%d\n"
+            "    (the object is no longer in the active space — a raw VALUE held across a GC)\n",
+            what, (void *)v, file, line);
+        fflush(stderr);
+        abort();
+    }
+}
 #endif
 
 /* ---------------------------------------------------------------------------

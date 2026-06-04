@@ -239,6 +239,11 @@ extern uint32_t korb_g_gc_clock;
 extern void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
                                    const char *file, int line);
 extern void korb_result_audit_construct(VALUE v, const char *file, int line);
+/* Generic living check: report if `v` is a moved-out (stale) heap handle being
+ * stored/used at this site.  Use to instrument store points (gvar/ivar/sp) so
+ * the FIRST place a stale raw VALUE is written gets pinpointed. */
+extern void korb_audit_living(VALUE v, const char *what, const char *file, int line);
+#define KORB_AUDIT_LIVING(v, what) korb_audit_living((v), (what), __FILE__, __LINE__)
 /* AROH contract hook: the shared GC runtime calls AROH_GC_SAFEPOINT() at every
  * alloc (= every point a moving GC could fire).  koruby implements it as the
  * RESULT-audit clock tick; the runtime knows nothing koruby-specific. */
@@ -272,6 +277,7 @@ extern void korb_result_audit_construct(VALUE v, const char *file, int line);
 #define RESULT_MK(v, st)      ((RESULT){(v), (st)})
 #define RESULT_VAL(r)         ((r).value)
 #define RESULT_AUDIT_CHECK(r) ((void)0)
+#define KORB_AUDIT_LIVING(v, what) ((void)0)
 #endif
 
 /* Mark RESULT-returning functions so the compiler enforces that callers

@@ -1268,6 +1268,7 @@ bool korb_gvar_defined(ID name) {
 }
 
 void korb_gvar_set(ID name, VALUE v) {
+    KORB_AUDIT_LIVING(v, "gvar_set");
     for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) { gvars.vals[i] = v; return; }
     if (gvars.size >= gvars.capa) {
         uint32_t nc = gvars.capa == 0 ? 8 : gvars.capa * 2;
@@ -1485,6 +1486,8 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
 }
 
 void korb_ivar_set(VALUE obj, ID name, VALUE val) {
+    KORB_AUDIT_LIVING(obj, "ivar_set:obj");
+    KORB_AUDIT_LIVING(val, "ivar_set:val");
     if (SPECIAL_CONST_P(obj)) return;
     /* Class-level @ivars (rare but legal — `class Foo; @count = 0`). */
     if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
