@@ -1112,6 +1112,12 @@ static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
 static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg) {
     if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     enum korb_type t = BUILTIN_TYPE(self);
+    /* Capture the source's frozen state NOW, while self is fresh.  The
+     * per-type copy below fires GC that relocates self, and the
+     * freeze-preservation check at the end reads it through a bare C-local for
+     * the non-T_OBJECT types (range/hash/string/...), which would deref a
+     * moved-out self (range/clone STRESS+PURGE SEGV). */
+    const bool src_frozen = korb_obj_frozen_p(self);
     VALUE r = self;
     /* For T_OBJECT, set to the parked [self, r] slot pair so the
      * initialize_copy/clone hook dispatch below can read the live (forwarded)
@@ -1281,8 +1287,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
             ((struct RBasic *)r)->head.flags |= FL_FROZEN;
         } else if (freeze_arg == 0) {
             ((struct RBasic *)r)->head.flags &= ~FL_FROZEN;
-        } else if (preserve_frozen &&
-                   korb_obj_frozen_p(t_obj_dup_slots ? t_obj_dup_slots[0] : self)) {
+        } else if (preserve_frozen && src_frozen) {
             ((struct RBasic *)r)->head.flags |= FL_FROZEN;
         }
     }
