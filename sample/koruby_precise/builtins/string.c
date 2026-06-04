@@ -342,11 +342,20 @@ compare_strings:;
 /* Raise CRuby's "comparison of String with X failed" ArgumentError when
  * <=> couldn't reach a result. */
 static RESULT str_cmp_raise(CTX *c, VALUE other) {
-    VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+    /* Capture other's class-name id up front: korb_inspect below allocates and
+     * (under GC stress) moves `other` — a bare C-local — so a later
+     * korb_class_of_class(other) would deref a retired page. */
+    const ID other_cls_name = korb_class_of_class(other)->name;
     VALUE oi = korb_inspect(c, c->sp_top, other);
-    const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
+    const char *const o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                             ? korb_str_cstr(oi)
-                            : korb_id_name(korb_class_of_class(other)->name);
+                            : korb_id_name(other_cls_name);
+    /* Fetch ArgumentError AFTER korb_inspect's GC: read before, the class
+     * pointer would be the pre-move (now-retired) address and korb_raise →
+     * korb_object_new would SEGV on the purged class page.  Nothing between
+     * here and korb_raise allocates (o_str extraction is alloc-free; korb_raise
+     * formats the message before allocating the exception). */
+    const VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     return korb_raise(c, (struct korb_class *)eArg,
                "comparison of String with %s failed", o_str);
 }
