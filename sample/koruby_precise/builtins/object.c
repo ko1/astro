@@ -392,7 +392,6 @@ RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
 /* Class#allocate — create an instance without invoking initialize.
  * Used for serializers, Marshal.load, etc. */
 RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -410,20 +409,18 @@ RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eT,
                    "can't create instance of singleton class");
     }
-    return RESULT_OK(korb_object_new(c, c->sp_top, (struct korb_class *)self));
+    return RESULT_OK(korb_object_new(c, sp, (struct korb_class *)self));
 }
 
 RESULT mod_class_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(korb_ary_new(c, sp));
     return RESULT_OK(korb_cvar_names(c, (struct korb_class *)self));
 }
 
 static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -461,7 +458,6 @@ static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
 extern RESULT korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                        const char *filename, VALUE recv);
 static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -477,13 +473,13 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
      * crashes inside korb_yield with a NULL body. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), 0, NULL);
+            return korb_funcall(c, sp, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, c->sp_top, self, mo->name, 0, NULL);
+            return korb_funcall(c, sp, self, mo->name, 0, NULL);
         }
         return RESULT_OK(Qnil);
     }
@@ -504,7 +500,7 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
     /* Explicit restore (not UNWRAP): a raise from the block body must still
      * reset blk->cref off the C-stack blk_new_cref — else the registered proc
      * keeps a dangling cref and the next GC walks garbage. */
-    RESULT yr = korb_yield(c, c->sp_top, 1, av0);
+    RESULT yr = korb_yield(c, sp, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     if (yr.state != KORB_NORMAL) return yr;
@@ -514,7 +510,6 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
 /* Object#instance_exec(*args) { |args| ... } — like instance_eval but
  * passes args to the block. */
 static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -529,13 +524,13 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
             ID name = korb_sym2id(blk->self);
-            return korb_funcall(c, c->sp_top, self, name, (uint32_t)argc, argv);
+            return korb_funcall(c, sp, self, name, (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, c->sp_top, self, mo->name, (uint32_t)argc, argv);
+            return korb_funcall(c, sp, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(Qnil);
     }
@@ -549,7 +544,7 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     if (sing) blk->cref = &blk_new_cref;
     /* Explicit restore (see instance_eval): reset blk->cref off the C-stack
      * blk_new_cref even on a block-body raise. */
-    RESULT yr = korb_yield(c, c->sp_top, (uint32_t)argc, argv);
+    RESULT yr = korb_yield(c, sp, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     if (yr.state != KORB_NORMAL) return yr;
