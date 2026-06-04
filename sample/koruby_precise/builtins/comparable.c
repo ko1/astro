@@ -658,7 +658,7 @@ static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
     long n = ((struct korb_array *)fr.last_line)->len;
     for (long i = 0; i < n; i++) {
         VALUE el = korb_ary_items((struct korb_array *)fr.last_line)[i];
-        RESULT _y = korb_yield_r(c, 1, &el);
+        RESULT _y = korb_yield_r(c, c->sp_top, 1, &el);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE selfr = fr.last_match;
@@ -742,7 +742,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
         if (has_block) {
             sp[1] = key;
             sp[2] = val;
-            RESULT yr = korb_yield_r(c, 2, &sp[1]);
+            RESULT yr = korb_yield_r(c, c->sp_top, 2, &sp[1]);
             if (yr.state != KORB_NORMAL) return yr;
             VALUE pair = yr.value;
             if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
@@ -883,7 +883,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                 sp[2] = korb_ary_new_capa(c, c->sp_top + 3, 2);  /* park pair in sp[2] */
                 korb_ary_push(c, sp + 3, sp[2], sp[0]);
                 korb_ary_push(c, sp + 3, sp[2], sp[1]);
-                RESULT yr = korb_yield_r(c, 1, &sp[2]);
+                RESULT yr = korb_yield_r(c, c->sp_top, 1, &sp[2]);
                 if (yr.state != KORB_NORMAL) return yr;
             }
             return RESULT_OK(sp[-argc - 1]);
@@ -1251,7 +1251,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         c->current_block->self = (VALUE)klass;
         c->current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
-        RESULT _yr = korb_yield(c, 1, av0);
+        RESULT _yr = korb_yield(c, c->sp_top, 1, av0);
         c->current_block->self = prev_blk_self;
         c->current_block->cref = prev_blk_cref;
         c->current_frame->self = prev_self;

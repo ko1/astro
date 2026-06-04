@@ -983,7 +983,8 @@ RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE *sp, VALUE recv, ID mid
  * builtins.c iterators (ary_each etc.) so the cross-.so dispatcher
  * call disappears. */
 static inline __attribute__((always_inline, warn_unused_result)) RESULT
-korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
+korb_yield(CTX *c, VALUE *sp, uint32_t argc, VALUE *argv) {
+    c->sp_top = sp;   /* publish caller's top (was the cfunc's entry write); see korb_funcall */
     struct korb_proc *blk = c->current_block;
     if (UNLIKELY(!blk)) {
         VALUE eLJE = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
@@ -1055,8 +1056,8 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
 /* Legacy alias for korb_yield — kept for callers not yet migrated to
  * use korb_yield directly.  korb_yield is now RESULT-returning natively. */
 static inline __attribute__((always_inline, warn_unused_result)) RESULT
-korb_yield_r(CTX *c, uint32_t argc, VALUE *argv) {
-    return korb_yield(c, argc, argv);
+korb_yield_r(CTX *c, VALUE *sp, uint32_t argc, VALUE *argv) {
+    return korb_yield(c, sp, argc, argv);
 }
 
 bool korb_block_given(CTX *c);

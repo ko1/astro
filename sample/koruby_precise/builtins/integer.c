@@ -480,7 +480,7 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i < n; i++) {
         VALUE arg = INT2FIX(i);
-        CHECK(korb_yield(c, 1, &arg));
+        CHECK(korb_yield(c, c->sp_top, 1, &arg));
     }
     return RESULT_OK(self);
 }
@@ -1313,12 +1313,12 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     if (step > 0) {
         for (long i = start; i <= stop; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, 1, &v));
+            CHECK(korb_yield(c, c->sp_top, 1, &v));
         }
     } else {
         for (long i = start; i >= stop; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, 1, &v));
+            CHECK(korb_yield(c, c->sp_top, 1, &v));
         }
     }
     return RESULT_OK(self);
@@ -1386,7 +1386,7 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = start; i <= stop; i++) {
         VALUE v = INT2FIX(i);
-        CHECK(korb_yield_r(c, 1, &v));
+        CHECK(korb_yield_r(c, c->sp_top, 1, &v));
     }
     return RESULT_OK(self);
 }
@@ -1414,7 +1414,7 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = start; i >= stop; i--) {
         VALUE v = INT2FIX(i);
-        CHECK(korb_yield_r(c, 1, &v));
+        CHECK(korb_yield_r(c, c->sp_top, 1, &v));
     }
     return RESULT_OK(self);
 }

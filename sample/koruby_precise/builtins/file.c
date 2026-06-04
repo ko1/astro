@@ -141,7 +141,7 @@ static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
         VALUE l = korb_str_new(c, sp + 1, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
-            RESULT _yr = korb_yield(c, 1, &l);
+            RESULT _yr = korb_yield(c, c->sp_top, 1, &l);
             if (_yr.state != KORB_NORMAL) { free(line); return _yr; }
         } else {
             korb_ary_push(c, sp + 1, sp[0], l);
@@ -326,7 +326,7 @@ RESULT io_class_popen(CTX *c, int argc, VALUE *sp) {
     }
     VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
-    VALUE r = UNWRAP(korb_yield_r(c, 1, &io));
+    VALUE r = UNWRAP(korb_yield_r(c, c->sp_top, 1, &io));
     /* Only close if the block didn't already close io: io.close fclose's the
      * FILE* and nils @fp, so an unconditional pclose(fp) here double-frees it
      * (io/popen_spec abort).  Re-read @fp to detect that. */
@@ -525,7 +525,7 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
     const ID fp_id = korb_io_fp_id_();
     struct korb_frame *const ioframe = c->current_frame;
     ioframe->last_line = io;
-    RESULT _yr = korb_yield_r(c, 1, &ioframe->last_line);
+    RESULT _yr = korb_yield_r(c, c->sp_top, 1, &ioframe->last_line);
     fclose(fp);
     korb_ivar_set(ioframe->last_line, fp_id, Qnil);
     ioframe->last_line = Qnil;
@@ -837,7 +837,7 @@ static RESULT dir_chdir(CTX *c, int argc, VALUE *sp) {
         if (chdir(path) != 0) {
             return korb_raise(c, NULL, "could not chdir to %s", path);
         }
-        VALUE r = UNWRAP(korb_yield_r(c, 0, NULL));
+        VALUE r = UNWRAP(korb_yield_r(c, c->sp_top, 0, NULL));
         if (chdir(prev) != 0) { /* unlikely; best-effort restore */ }
         return RESULT_OK(r);
     }
@@ -1142,7 +1142,7 @@ static RESULT process_fork(CTX *c, int argc, VALUE *sp) {
     if (pid < 0) return RESULT_OK(Qnil);
     if (pid == 0) {
         RESULT _yr = RESULT_OK(Qnil);
-        if (korb_block_given(c)) _yr = korb_yield(c, 0, NULL);
+        if (korb_block_given(c)) _yr = korb_yield(c, c->sp_top, 0, NULL);
         if (_yr.state == KORB_RAISE) {
             VALUE s = korb_inspect(c, c->sp_top, _yr.value);
             fprintf(stderr, "fork child: %s\n", korb_str_cstr(s));

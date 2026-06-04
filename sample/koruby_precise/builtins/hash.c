@@ -129,7 +129,7 @@ static RESULT hash_each(CTX *c, int argc, VALUE *sp) {
         fr.last_line = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(c, c->sp_top, fr.last_line, e->key);
         korb_ary_push(c, c->sp_top, fr.last_line, e->value);
-        RESULT _y = korb_yield(c, 1, &fr.last_line);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &fr.last_line);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     c->current_frame = fr.prev;
@@ -208,7 +208,7 @@ static RESULT hash_each_value(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        CHECK(korb_yield(c, 1, &e->value));
+        CHECK(korb_yield(c, c->sp_top, 1, &e->value));
     }
     return RESULT_OK(self);
 }
@@ -224,7 +224,7 @@ static RESULT hash_each_key(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        CHECK(korb_yield(c, 1, &e->key));
+        CHECK(korb_yield(c, c->sp_top, 1, &e->key));
     }
     return RESULT_OK(self);
 }
@@ -308,7 +308,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
             }
             if (has_block && already) {
                 VALUE args[3] = { e->key, existing, e->value };
-                VALUE merged = UNWRAP(korb_yield(c, 3, args));
+                VALUE merged = UNWRAP(korb_yield(c, c->sp_top, 3, args));
                 korb_hash_aset(c, r, e->key, merged);
             } else {
                 korb_hash_aset(c, r, e->key, e->value);
@@ -384,7 +384,7 @@ static RESULT hash_merge_bang(CTX *c, int argc, VALUE *sp) {
                     sp[0] = e->key;
                     sp[1] = existing;
                     sp[2] = e->value;
-                    RESULT yr = korb_yield_r(c, 3, &sp[0]);
+                    RESULT yr = korb_yield_r(c, c->sp_top, 3, &sp[0]);
                     if (yr.state != KORB_NORMAL) return yr;
                     val = yr.value;
                 }
@@ -558,7 +558,7 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
     }
     /* Not found: priority is block > default arg > KeyError. */
     if (korb_block_given(c)) {
-        VALUE r = UNWRAP(korb_yield(c, 1, &argv[0]));
+        VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &argv[0]));
         return RESULT_OK(r);
     }
     if (argc >= 2) return RESULT_OK(argv[1]);
@@ -599,7 +599,7 @@ static RESULT hash_delete(CTX *c, int argc, VALUE *sp) {
     if (!target) {
         /* Not found: if a block was given, yield key and return its result. */
         if (korb_block_given(c)) {
-            VALUE r = UNWRAP(korb_yield(c, 1, &key));
+            VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &key));
             return RESULT_OK(r);
         }
         return RESULT_OK(Qnil);
@@ -718,7 +718,7 @@ static RESULT hash_map(CTX *c, int argc, VALUE *sp) {
     KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         korb_ary_push(c, c->sp_top, fr.last_line, yr.value);
     }
@@ -742,7 +742,7 @@ static RESULT hash_select(CTX *c, int argc, VALUE *sp) {
     ((struct korb_hash *)r)->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = UNWRAP(korb_yield(c, 2, args));
+        VALUE m = UNWRAP(korb_yield(c, c->sp_top, 2, args));
         if (RTEST(m)) korb_hash_aset(c, r, e->key, e->value);
     }
     return RESULT_OK(r);
@@ -766,7 +766,7 @@ static RESULT hash_partition(CTX *c, int argc, VALUE *sp) {
     KORB_HASH_YIELD_FRAME(c, fr2, Qnil);                        /* pair */
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         VALUE m = yr.value;
         fr2.last_line = korb_ary_new_capa(c, c->sp_top, 2);
@@ -1104,7 +1104,7 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (RTEST(yr.value)) {
             sp[0] = self;
@@ -1145,7 +1145,7 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (RTEST(yr.value)) {
             sp[0] = self;
@@ -1183,7 +1183,7 @@ static RESULT hash_keep_if(CTX *c, int argc, VALUE *sp) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (!RTEST(yr.value)) {
             sp[0] = self;
@@ -1286,7 +1286,7 @@ static RESULT hash_fetch_values(CTX *c, int argc, VALUE *sp) {
             if (korb_block_given(c)) {
                 sp[0] = k;
                 c->sp_top = sp + 1;
-                RESULT yr = korb_yield(c, 1, &sp[0]);
+                RESULT yr = korb_yield(c, c->sp_top, 1, &sp[0]);
                 if (yr.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return yr; }
                 c->sp_top = sp;
                 korb_ary_push(c, c->sp_top, fr.last_line, yr.value);
@@ -1321,7 +1321,7 @@ static RESULT hash_reject(CTX *c, int argc, VALUE *sp) {
     rh->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
-        VALUE drop = UNWRAP(korb_yield(c, 2, args));
+        VALUE drop = UNWRAP(korb_yield(c, c->sp_top, 2, args));
         if (!RTEST(drop)) korb_hash_aset(c, r, e->key, e->value);
     }
     return RESULT_OK(r);
@@ -1454,7 +1454,7 @@ static RESULT hash_count(CTX *c, int argc, VALUE *sp) {
     long n = 0;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
-        VALUE r = UNWRAP(korb_yield(c, 2, args));
+        VALUE r = UNWRAP(korb_yield(c, c->sp_top, 2, args));
         if (RTEST(r)) n++;
     }
     return RESULT_OK(INT2FIX(n));
@@ -1476,7 +1476,7 @@ static RESULT hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int 
         fr2.last_line = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(c, c->sp_top, fr2.last_line, e->key);
         korb_ary_push(c, c->sp_top, fr2.last_line, e->value);
-        RESULT yr = korb_yield(c, 1, &fr2.last_line);
+        RESULT yr = korb_yield(c, c->sp_top, 1, &fr2.last_line);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         fr2.last_match = yr.value;  /* bk */
         if (first) {
@@ -1571,7 +1571,7 @@ static RESULT hash_reduce(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, c->sp_top, fr.last_match, e->key);
         korb_ary_push(c, c->sp_top, fr.last_match, e->value);
         VALUE args[2] = { fr.last_line, fr.last_match };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         fr.last_line = yr.value;   /* acc */
     }
@@ -1641,7 +1641,7 @@ static RESULT hash_group_by(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, c->sp_top, fr.last_line, e->key);
         korb_ary_push(c, c->sp_top, fr.last_line, e->value);
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         fr.last_match = yr.value;   /* key */
         fr2.last_line = korb_hash_aref(c, r, fr.last_match);   /* bucket */
@@ -1679,7 +1679,7 @@ static RESULT hash_sort_by(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, c->sp_top, fr2.last_line, e->key);
         korb_ary_push(c, c->sp_top, fr2.last_line, e->value);
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         fr2.last_match = yr.value;   /* k */
         korb_ary_push(c, c->sp_top, fr.last_line, fr2.last_line);
@@ -1717,7 +1717,7 @@ static RESULT hash_filter_map(CTX *c, int argc, VALUE *sp) {
     KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (RTEST(yr.value)) korb_ary_push(c, c->sp_top, fr.last_line, yr.value);
     }
@@ -1742,7 +1742,7 @@ static RESULT hash_sum(CTX *c, int argc, VALUE *sp) {
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         if (korb_block_given(c)) {
             VALUE args[2] = { e->key, e->value };
-            RESULT yr = korb_yield(c, 2, args);
+            RESULT yr = korb_yield(c, c->sp_top, 2, args);
             if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
             fr.last_match = yr.value;   /* addend */
         } else {
@@ -1777,7 +1777,7 @@ static RESULT hash_each_with_object(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, c->sp_top, fr.last_match, e->key);
         korb_ary_push(c, c->sp_top, fr.last_match, e->value);
         VALUE args[2] = { fr.last_match, fr.last_line };   /* pair, memo */
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
     }
     VALUE memo = fr.last_line;
@@ -1823,7 +1823,7 @@ static RESULT hash_flat_map(CTX *c, int argc, VALUE *sp) {
     KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        RESULT yr = korb_yield(c, 2, args);
+        RESULT yr = korb_yield(c, c->sp_top, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         fr.last_match = yr.value;   /* m */
         if (!SPECIAL_CONST_P(fr.last_match) && BUILTIN_TYPE(fr.last_match) == T_ARRAY) {

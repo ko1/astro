@@ -1195,7 +1195,7 @@ node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
-    return korb_yield(c, argc, &c->current_frame->fp[arg_index]);
+    return korb_yield(c, c->sp_top, argc, &c->current_frame->fp[arg_index]);
 }
 
 /* `yield *arr` (or `yield a, *b, c`) — args were materialized into a
@@ -1206,10 +1206,10 @@ node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 {
     VALUE arr = c->current_frame->fp[arr_slot];
     if (SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
-        return korb_yield(c, 0, NULL);
+        return korb_yield(c, c->sp_top, 0, NULL);
     }
     struct korb_array *a = (struct korb_array *)arr;
-    return korb_yield(c, (uint32_t)a->len, korb_ary_items(a));
+    return korb_yield(c, c->sp_top, (uint32_t)a->len, korb_ary_items(a));
 }
 
 // ---------------- arithmetic (generic + fixnum fast path) ----------------

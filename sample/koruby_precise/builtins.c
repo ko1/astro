@@ -974,7 +974,7 @@ void korb_init_builtins(CTX *c) {
                                                              korb_intern("to_ary"))) {
                         return RESULT_OK(Qnil);
                     }
-                    RESULT _rr = korb_funcall(c, o, korb_intern("to_ary"), 0, NULL);
+                    RESULT _rr = korb_funcall(c, c->sp_top, o, korb_intern("to_ary"), 0, NULL);
                     if (_rr.state == KORB_RAISE) return RESULT_OK(Qnil);
                     if (_rr.state != KORB_NORMAL) return _rr;
                     VALUE r = _rr.value;
@@ -1017,7 +1017,7 @@ void korb_init_builtins(CTX *c) {
                 /* Use korb_eq for value compare. */
                 if (e->value == target) return RESULT_OK(e->key);
                 if (!SPECIAL_CONST_P(e->value) && !SPECIAL_CONST_P(target)) {
-                    VALUE r = UNWRAP(korb_funcall(c, e->value, korb_intern("=="), 1, &target));
+                    VALUE r = UNWRAP(korb_funcall(c, c->sp_top, e->value, korb_intern("=="), 1, &target));
                     if (RTEST(r)) return RESULT_OK(e->key);
                 }
             }
@@ -1097,7 +1097,7 @@ void korb_init_builtins(CTX *c) {
                     VALUE o = argv[0];
                     if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_HASH) return RESULT_OK(o);
                     if (SPECIAL_CONST_P(o)) return RESULT_OK(Qnil);
-                    RESULT _rr = korb_funcall(c, o, korb_intern("to_hash"), 0, NULL);
+                    RESULT _rr = korb_funcall(c, c->sp_top, o, korb_intern("to_hash"), 0, NULL);
                     if (_rr.state == KORB_RAISE) {
                         VALUE bang = _rr.value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -1148,7 +1148,7 @@ void korb_init_builtins(CTX *c) {
                     VALUE o = argv[0];
                     if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_STRING) return RESULT_OK(o);
                     if (SPECIAL_CONST_P(o)) return RESULT_OK(Qnil);
-                    RESULT _rr = korb_funcall(c, o, korb_intern("to_str"), 0, NULL);
+                    RESULT _rr = korb_funcall(c, c->sp_top, o, korb_intern("to_str"), 0, NULL);
                     if (_rr.state == KORB_RAISE) {
                         VALUE bang = _rr.value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -1459,8 +1459,8 @@ void korb_init_builtins(CTX *c) {
             c->sp_top = sp;
             VALUE self = sp[-argc - 1];
             VALUE *argv = sp - argc;
-            VALUE s = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
-            return korb_funcall(c, s, korb_intern("[]"), argc, argv);
+            VALUE s = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_s"), 0, NULL));
+            return korb_funcall(c, c->sp_top, s, korb_intern("[]"), argc, argv);
         }
         DEF_R(KORB_VM(c)->symbol_class, "[]",    _sym_aref, -1);
         DEF_R(KORB_VM(c)->symbol_class, "slice", _sym_aref, -1);
@@ -1479,14 +1479,14 @@ void korb_init_builtins(CTX *c) {
             VALUE self = sp[-argc - 1];
             VALUE *argv = sp - argc;
             VALUE s = korb_str_new_cstr(c, c->sp_top, korb_id_name(korb_sym2id(self)));
-            return korb_funcall(c, s, korb_intern("start_with?"), argc, argv);
+            return korb_funcall(c, c->sp_top, s, korb_intern("start_with?"), argc, argv);
         }
         RESULT _sym_ends(CTX *c, int argc, VALUE *sp) {
             c->sp_top = sp;
             VALUE self = sp[-argc - 1];
             VALUE *argv = sp - argc;
             VALUE s = korb_str_new_cstr(c, c->sp_top, korb_id_name(korb_sym2id(self)));
-            return korb_funcall(c, s, korb_intern("end_with?"), argc, argv);
+            return korb_funcall(c, c->sp_top, s, korb_intern("end_with?"), argc, argv);
         }
         RESULT _sym_encoding(CTX *c, int argc, VALUE *sp) {
             c->sp_top = sp;
@@ -1807,7 +1807,7 @@ void korb_init_builtins(CTX *c) {
                         return RESULT_OK(Qnil);
                     }
                     /* Delegate to self.new(*argv). */
-                    return korb_funcall(c, self, korb_intern("new"), argc, argv);
+                    return korb_funcall(c, c->sp_top, self, korb_intern("new"), argc, argv);
                 }
                 struct korb_class *cExcMeta = (struct korb_class *)cExc->basic.klass;
                 if (cExcMeta) {

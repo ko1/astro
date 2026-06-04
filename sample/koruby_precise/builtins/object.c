@@ -502,7 +502,7 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
     /* Explicit restore (not UNWRAP): a raise from the block body must still
      * reset blk->cref off the C-stack blk_new_cref — else the registered proc
      * keeps a dangling cref and the next GC walks garbage. */
-    RESULT yr = korb_yield(c, 1, av0);
+    RESULT yr = korb_yield(c, c->sp_top, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     if (yr.state != KORB_NORMAL) return yr;
@@ -547,7 +547,7 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     if (sing) blk->cref = &blk_new_cref;
     /* Explicit restore (see instance_eval): reset blk->cref off the C-stack
      * blk_new_cref even on a block-body raise. */
-    RESULT yr = korb_yield(c, (uint32_t)argc, argv);
+    RESULT yr = korb_yield(c, c->sp_top, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     if (yr.state != KORB_NORMAL) return yr;
@@ -1042,7 +1042,7 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
 
     if (c->current_block) {
         VALUE av[1] = { self };
-        RESULT _yr = korb_yield(c, 1, av);
+        RESULT _yr = korb_yield(c, c->sp_top, 1, av);
         if (_yr.state == KORB_RAISE) return _yr;
         /* BREAK/NEXT/RETURN from a tap block: silently consumed (tap
          * always returns self). */
@@ -1061,7 +1061,7 @@ RESULT obj_then(CTX *c, int argc, VALUE *sp) {
     
     if (c->current_block) {
         VALUE av[1] = { self };
-        return korb_yield(c, 1, av);
+        return korb_yield(c, c->sp_top, 1, av);
     }
     return RESULT_OK(self);
 }

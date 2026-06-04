@@ -463,7 +463,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         long _rl = ((struct korb_array *)_fr.last_line)->len; \
         for (long _i = 0; _i < _rl; _i++) { \
             VALUE _el = korb_ary_aref(_fr.last_line, _i); \
-            RESULT _y = korb_yield(c, 1, &_el); \
+            RESULT _y = korb_yield(c, c->sp_top, 1, &_el); \
             if (_y.state != KORB_NORMAL) { c->current_frame = _fr.prev; return _y; } \
         } \
         VALUE _selfr = _fr.last_match; \
@@ -1151,7 +1151,7 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            CHECK(korb_yield(c, 1, &b));
+            CHECK(korb_yield(c, c->sp_top, 1, &b));
         }
         return RESULT_OK(c->current_frame->self);
     }
@@ -1184,7 +1184,7 @@ static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         VALUE ch = korb_str_new(c, c->sp_top, s->ptr + i, 1);
-        CHECK(korb_yield(c, 1, &ch));
+        CHECK(korb_yield(c, c->sp_top, 1, &ch));
     }
     return RESULT_OK(c->current_frame->self);
 }
@@ -1656,7 +1656,7 @@ static RESULT str_gsub(CTX *c, int argc, VALUE *sp) {
             s = (struct korb_string *)sp[0];
         } else if (c->current_block) {
             sp[4] = korb_str_new(c, sp + 5, s->ptr + ms, ml);
-            RESULT _yr_g = korb_yield(c, 1, &sp[4]);
+            RESULT _yr_g = korb_yield(c, c->sp_top, 1, &sp[4]);
             if (_yr_g.state != KORB_NORMAL) return _yr_g;
             sp[4] = _yr_g.value;
             if (BUILTIN_TYPE(sp[4]) == T_STRING) korb_str_concat(c, sp + 5, sp[3], sp[4]);
@@ -1694,7 +1694,7 @@ static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
         s = (struct korb_string *)sp[0];
     } else if (c->current_block) {
         sp[4] = korb_str_new(c, sp + 5, s->ptr + ms, ml);
-        RESULT _yr_s = korb_yield(c, 1, &sp[4]);
+        RESULT _yr_s = korb_yield(c, c->sp_top, 1, &sp[4]);
         if (_yr_s.state != KORB_NORMAL) return _yr_s;
         sp[4] = _yr_s.value;
         if (BUILTIN_TYPE(sp[4]) == T_STRING) korb_str_concat(c, sp + 5, sp[3], sp[4]);
@@ -2539,7 +2539,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
     const long len = s->len;
     for (long i = 0; i < len; i++) {
         VALUE b = INT2FIX((unsigned char)ptr[i]);
-        RESULT _y = korb_yield(c, 1, &b);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &b);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -3161,7 +3161,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
         if (ptr[i] == '\n') {
             VALUE line = korb_str_new(c, c->sp_top, ptr + start, i - start + 1);
             if (has_block) {
-                RESULT _y = korb_yield(c, 1, &line);
+                RESULT _y = korb_yield(c, c->sp_top, 1, &line);
                 if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             } else {
                 korb_ary_push(c, c->sp_top, fr.last_line, line);
@@ -3172,7 +3172,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
     if (start < len) {
         VALUE line = korb_str_new(c, c->sp_top, ptr + start, len - start);
         if (has_block) {
-            RESULT _y = korb_yield(c, 1, &line);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &line);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, c->sp_top, fr.last_line, line);

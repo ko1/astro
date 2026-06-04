@@ -827,7 +827,7 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
     };
     c->current_frame = &fr;
     VALUE block_arg[1] = { fr.last_match };
-    RESULT _br = korb_yield(c, 1, block_arg);
+    RESULT _br = korb_yield(c, c->sp_top, 1, block_arg);
     /* state == THROW: tag/value live on _br.value as a 2-element ary. */
     if (_br.state == KORB_THROW && !SPECIAL_CONST_P(_br.value) &&
         BUILTIN_TYPE(_br.value) == T_ARRAY) {
@@ -1625,7 +1625,7 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "no block given (loop)");
     }
     for (;;) {
-        RESULT _yr = korb_yield(c, 0, NULL);
+        RESULT _yr = korb_yield(c, c->sp_top, 0, NULL);
         if (_yr.state == KORB_NORMAL) continue;
         if (_yr.state == KORB_BREAK) return RESULT_OK(_yr.value);
         if (_yr.state == KORB_RAISE) {

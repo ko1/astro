@@ -464,7 +464,7 @@ static RESULT ary_each(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE recv = fr.last_match;
@@ -500,7 +500,7 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         /* receiver moves across korb_yield — re-read from the frame slot. */
         VALUE args[2] = { korb_ary_aref(fr.last_match, i), INT2FIX(i) };
-        RESULT _y = korb_yield(c, 2, args);
+        RESULT _y = korb_yield(c, c->sp_top, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE recv = fr.last_match;
@@ -532,7 +532,7 @@ static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
      * "tolerates increasing size"); len is only the capa hint. */
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
     }
@@ -553,7 +553,7 @@ static RESULT ary_select(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (RTEST(_y.value)) korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
     }
@@ -612,7 +612,7 @@ static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
     i = argc > 0 ? 0 : 1;
     for (; i < len; i++) {
         VALUE args[2] = { fr.last_line, korb_ary_aref(fr.last_match, i) };
-        RESULT _y = korb_yield(c, 2, args);
+        RESULT _y = korb_yield(c, c->sp_top, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         fr.last_line = _y.value;
     }
@@ -710,7 +710,7 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         if (has_block) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield_r(c, 1, &v);
+            RESULT _y = korb_yield_r(c, c->sp_top, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             fr.last_line = _y.value;
         } else {
@@ -863,7 +863,7 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *e
     VALUE r;
     if (has_block) {
         VALUE pair[2] = { root[0], root[1] };
-        RESULT _r = korb_yield(c, 2, pair);
+        RESULT _r = korb_yield(c, c->sp_top, 2, pair);
         if (_r.state != KORB_NORMAL) { c->sp_top = root; *err = _r; return 0; }
         r = _r.value;
     } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
@@ -973,7 +973,7 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
      * "tolerates increasing size during iteration"); n is only the capa hint. */
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elem = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &elem);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &elem);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         sp[0] = _y.value;                 /* yielded key (transient) */
         c->sp_top = sp + 1;
@@ -1085,7 +1085,7 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, 1, &sp[0]);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
             if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fc.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
@@ -1345,7 +1345,7 @@ static RESULT ary_include(CTX *c, int argc, VALUE *sp) {
 /* Result.value holds Qtrue / Qfalse; non-NORMAL state propagates raise. */
 static RESULT ary_predicate_match(CTX *c, VALUE elem, int argc, VALUE *argv) {
     if (korb_block_given(c)) {
-        VALUE r = UNWRAP(korb_yield(c, 1, &elem));
+        VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &elem));
         return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
     }
     if (argc >= 1) {
@@ -1505,7 +1505,7 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elt = korb_ary_aref(fr.last_match, i);
         if (has_block) {
-            RESULT _y = korb_yield(c, 1, &elt);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             elt = _y.value;
         }
@@ -1568,7 +1568,7 @@ static RESULT ary_each_slice(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(fr.last_match, j));
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, 1, &sp[0]);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
             if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
@@ -2049,7 +2049,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
         /* Re-read length each step (block may grow the array, CRuby). */
         for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, 1, &v);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             if (!NIL_P(_y.value) && _y.value != Qfalse) { c->current_frame = fr.prev; return RESULT_OK(INT2FIX(i)); }
         }
@@ -2331,7 +2331,7 @@ static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
          * (shared "tolerates increasing size during iteration" spec). */
         for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, 1, &v);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             if (!NIL_P(_y.value) && _y.value != Qfalse) n++;
         }
@@ -2560,7 +2560,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
     if (has_block) {
         for (long i = start; i < end; i++) {
             VALUE iv = INT2FIX(i);
-            VALUE r = UNWRAP(korb_yield(c, 1, &iv));
+            VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &iv));
             /* R5: re-derive a after the yield GC point. */
             a = (struct korb_array *)sp[-argc - 1];
             korb_ary_items(a)[i] = r;
@@ -2643,7 +2643,7 @@ static RESULT ary_find(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (RTEST(_y.value)) { VALUE r = korb_ary_aref(fr.last_match, i); c->current_frame = fr.prev; return RESULT_OK(r); }
     }
@@ -2667,12 +2667,12 @@ static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
      * snapshot at the funcall call site) and live in sp slots. */
     KORB_ARY_YIELD_FRAME(c, fm, korb_ary_aref(sp[-argc - 1], 0));   /* m */
     KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);                     /* receiver */
-    RESULT _y0 = korb_yield(c, 1, &fm.last_line);
+    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fm.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y0; }
     fm.last_match = _y0.value;     /* mk */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_line, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y; }
         fr.last_match = _y.value;   /* k: candidate key, park across funcall */
         RESULT _cmp = korb_funcall(c, c->sp_top, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
@@ -2794,12 +2794,12 @@ static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
      * candidate key all span the yield + <=> funcall GC points). */
     KORB_ARY_YIELD_FRAME(c, fm, korb_ary_aref(sp[-argc - 1], 0));   /* m */
     KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);                     /* receiver */
-    RESULT _y0 = korb_yield(c, 1, &fm.last_line);
+    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fm.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y0; }
     fm.last_match = _y0.value;     /* mk */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_line, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y; }
         fr.last_match = _y.value;   /* k: candidate key, park across funcall */
         RESULT _cmp = korb_funcall(c, c->sp_top, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
@@ -3005,7 +3005,7 @@ static RESULT ary_each_with_object(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];                  /* receiver */
     for (long i = 0; i < alen; i++) {
         VALUE args[2] = { korb_ary_aref(fr.last_match, i), fr.last_line };
-        RESULT _y = korb_yield(c, 2, args);
+        RESULT _y = korb_yield(c, c->sp_top, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_line;
@@ -3133,7 +3133,7 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
     if (norm >= 0 && norm < a->len) return RESULT_OK(korb_ary_items(a)[norm]);
     if (korb_block_given(c)) {
         VALUE arg[1] = { argv[0] };
-        return korb_yield(c, 1, arg);
+        return korb_yield(c, c->sp_top, 1, arg);
     }
     if (argc == 2) return RESULT_OK(argv[1]);
     VALUE eI = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
@@ -3169,7 +3169,7 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_items(a)[norm]);
         } else if (block_p) {
             VALUE arg[1] = { argv[k] };
-            RESULT _yr = korb_yield(c, 1, arg);
+            RESULT _yr = korb_yield(c, c->sp_top, 1, arg);
             if (_yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return _yr; }
             korb_ary_push(c, c->sp_top, fr.last_line, _yr.value);
         } else {
@@ -3213,7 +3213,7 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
          * if a block is given, else nil).  Don't raise FrozenError. */
         if (korb_block_given(c)) {
             VALUE blk_args[1] = { argv[0] };
-            return korb_yield(c, 1, blk_args);
+            return korb_yield(c, c->sp_top, 1, blk_args);
         }
         return RESULT_OK(Qnil);
     }
@@ -3304,7 +3304,7 @@ static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
-        RESULT _y = korb_yield(c, 1, &elt);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
             korb_ary_items((struct korb_array *)fr.last_match)[w++] = korb_ary_aref(fr.last_match, r);
@@ -3338,7 +3338,7 @@ static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
     /* Re-read length each step so a block may grow the array (CRuby). */
     for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
-        RESULT _y = korb_yield(c, 1, &elt);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
             korb_ary_items((struct korb_array *)fr.last_match)[w++] = korb_ary_aref(fr.last_match, r);
@@ -3370,7 +3370,7 @@ static RESULT ary_reverse_each(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = korb_ary_len(fr.last_match) - 1; i >= 0; i--) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -3393,7 +3393,7 @@ static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
             korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
@@ -3508,7 +3508,7 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE iv = INT2FIX(i);
-        RESULT _y = korb_yield(c, 1, &iv);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &iv);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -3648,7 +3648,7 @@ static RESULT ary_combine(CTX *c, struct korb_frame *fr, long r, long start,
         VALUE copy = korb_ary_new_capa(c, c->sp_top, r);
         VALUE buf = fr->last_line;
         for (long i = 0; i < r; i++) korb_ary_push(c, c->sp_top, copy, korb_ary_aref(buf, i));
-        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, 1, &copy));
+        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, c->sp_top, 1, &copy));
         else korb_ary_push(c, c->sp_top, result_or_nil, copy);
         return RESULT_OK(Qnil);
     }
@@ -3715,7 +3715,7 @@ static RESULT ary_perm(CTX *c, struct korb_frame *fr, long r,
         VALUE copy = korb_ary_new_capa(c, c->sp_top, r);
         VALUE buf = fr->last_line;
         for (long i = 0; i < r; i++) korb_ary_push(c, c->sp_top, copy, korb_ary_aref(buf, i));
-        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, 1, &copy));
+        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, c->sp_top, 1, &copy));
         else korb_ary_push(c, c->sp_top, result_or_nil, copy);
         return RESULT_OK(Qnil);
     }
@@ -3849,7 +3849,7 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
         if (alen == 0) { c->current_frame = fr.prev; return RESULT_OK(Qnil); }  /* cleared mid-iter */
         for (long i = 0; i < alen; i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, 1, &v);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         }
         iter++;
@@ -3866,7 +3866,7 @@ static RESULT ary_rcombine(CTX *c, struct korb_frame *fr, long r, long start,
         VALUE copy = korb_ary_new_capa(c, c->sp_top, r);
         VALUE buf = fr->last_line;
         for (long i = 0; i < r; i++) korb_ary_push(c, c->sp_top, copy, korb_ary_aref(buf, i));
-        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, 1, &copy));
+        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, c->sp_top, 1, &copy));
         else korb_ary_push(c, c->sp_top, result_or_nil, copy);
         return RESULT_OK(Qnil);
     }
@@ -3899,7 +3899,7 @@ static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp_top);
-        CHECK(korb_yield(c, 1, &empty));
+        CHECK(korb_yield(c, c->sp_top, 1, &empty));
         /* Re-read self: korb_yield moved the receiver array; the C-local
          * `self` is stale and returning it left the enumerator generator
          * block's send-result dangling (SEGV via .to_a under STRESS). */
@@ -3923,7 +3923,7 @@ static RESULT ary_rperm(CTX *c, struct korb_frame *fr, long r,
         VALUE copy = korb_ary_new_capa(c, c->sp_top, r);
         VALUE buf = fr->last_line;
         for (long i = 0; i < r; i++) korb_ary_push(c, c->sp_top, copy, korb_ary_aref(buf, i));
-        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, 1, &copy));
+        if (NIL_P(result_or_nil)) CHECK(korb_yield(c, c->sp_top, 1, &copy));
         else korb_ary_push(c, c->sp_top, result_or_nil, copy);
         return RESULT_OK(Qnil);
     }
@@ -3956,7 +3956,7 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
         VALUE empty = korb_ary_new(c, c->sp_top);
-        CHECK(korb_yield(c, 1, &empty));
+        CHECK(korb_yield(c, c->sp_top, 1, &empty));
         /* Re-read self: korb_yield moved the receiver array; the C-local
          * `self` is stale and returning it left the enumerator generator
          * block's send-result dangling (SEGV via .to_a under STRESS). */
@@ -4018,7 +4018,7 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
         }
         if (empty) { c->sp_top = sp; break; }
         if (c->current_block) {
-            RESULT _y = korb_yield(c, 1, &sp[0]);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
             if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
@@ -4171,7 +4171,7 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
         KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);
         for (long i = 0; i < size; i++) {
             VALUE iv = INT2FIX(i);
-            RESULT _y = korb_yield(c, 1, &iv);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &iv);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
         }
@@ -4310,7 +4310,7 @@ static RESULT ary_take_while(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (!RTEST(_y.value)) break;
         korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
@@ -4333,7 +4333,7 @@ static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (!RTEST(_y.value)) break;
     }
@@ -4366,7 +4366,7 @@ static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         sp[0] = _y.value;
         c->sp_top = sp + 1;
@@ -4589,7 +4589,7 @@ static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(fr.last_match, i + j));
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, 1, &sp[0]);
+            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
             if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
@@ -4623,13 +4623,13 @@ static RESULT ary_minmax_by(CTX *c, int argc, VALUE *sp) {
     KORB_ARY_YIELD_FRAME(c, fmin, korb_ary_aref(sp[-argc - 1], 0));  /* min_e */
     KORB_ARY_YIELD_FRAME(c, fmax, korb_ary_aref(sp[-argc - 1], 0));  /* max_e */
     KORB_ARY_YIELD_FRAME(c, frcv, sp[-argc - 1]);                    /* receiver */
-    RESULT _y0 = korb_yield(c, 1, &fmin.last_line);
+    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fmin.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _y0; }
     fmin.last_match = _y0.value;   /* min_k */
     fmax.last_match = _y0.value;   /* max_k */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(frcv.last_line, i);
-        RESULT _y = korb_yield(c, 1, &v);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _y; }
         frcv.last_match = _y.value;   /* k, parked across the funcalls */
         RESULT _cmin = korb_funcall(c, c->sp_top, frcv.last_match, korb_intern("<=>"), 1, &fmin.last_match);
@@ -4675,7 +4675,7 @@ static RESULT ary_bsearch(CTX *c, int argc, VALUE *sp) {
     while (lo < hi) {
         long mid = lo + (hi - lo) / 2;
         VALUE probe = korb_ary_aref(fr.last_match, mid);
-        RESULT _y = korb_yield(c, 1, &probe);
+        RESULT _y = korb_yield(c, c->sp_top, 1, &probe);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         VALUE r = _y.value;
         if (TRUE_P(r) || FALSE_P(r) || NIL_P(r)) {
