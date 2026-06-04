@@ -419,6 +419,14 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
             argc--;
         }
     }
+    /* kw_cause is a moving handle held across korb_exc_new / set_backtrace /
+     * korb_ivar_get/set GC fires below (the value-stack slots there are scratch
+     * for those calls, so they can't durably park it).  Park it in this cfunc
+     * frame's last_line slot — the frame chain is scanned regardless of
+     * c->sp_top; immediate Qundef/Qnil are skipped by the scan.  Re-read at the
+     * `cause:` application below so it's the forwarded handle (exception/full_message
+     * re-raise crashed in korb_ivar_set on a stale cause under STRESS+PURGE). */
+    c->current_frame->last_line = kw_cause;
     if (argc == 0 && !UNDEF_P(kw_cause)) {
         /* `raise cause: x` with no positional args — CRuby raises
          * ArgumentError "only cause is given with no arguments". */
@@ -501,9 +509,10 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
     }
     /* Apply explicit `cause:` kwarg.  Override any auto-linked cause. */
     if (!UNDEF_P(kw_cause)) {
+        const VALUE kc = c->current_frame->last_line;   /* forwarded across the GC points above */
         if (!SPECIAL_CONST_P(exc_val) && BUILTIN_TYPE(exc_val) == T_OBJECT) {
             korb_ivar_set(exc_val, korb_intern("@cause"),
-                          NIL_P(kw_cause) ? Qnil : kw_cause);
+                          NIL_P(kc) ? Qnil : kc);
         }
     }
     return (RESULT){ exc_val, KORB_RAISE };
