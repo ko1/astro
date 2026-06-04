@@ -5,7 +5,6 @@ extern RESULT korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
 /* Proc#lambda? — true for ->{} / lambda{}, false for Proc.new / { } blocks. */
 static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -18,7 +17,6 @@ static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {
  * Any *rest makes it negative: -(req + 1).
  * Lambdas: opt also makes it negative. */
 static RESULT proc_arity(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -36,7 +34,6 @@ static RESULT proc_arity(CTX *c, int argc, VALUE *sp) {
 
 /* Proc#== — same Proc identity. */
 static RESULT proc_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -45,7 +42,6 @@ static RESULT proc_eq(CTX *c, int argc, VALUE *sp) {
 
 /* Proc.new — captures the current block as a Proc. */
 static RESULT proc_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
