@@ -481,9 +481,9 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
     /* self, the __members__ array, and the result are moving handles, and
      * korb_ary_new_capa / korb_intern / korb_ary_push below all fire GC.
      * Park them at sp[0..2] (scanned) and re-derive each iteration.  The
-     * korb_ary_new_capa(c, sp+3, ...) below publishes c->sp_top = sp+3 via
-     * korb_alloc before its first GC, covering the sp[0..2] park slots; no
-     * GC runs between the park stores and that alloc. */
+     * korb_ary_new_capa(c, sp+3, ...) below publishes the scan top as sp+3
+     * via korb_alloc before its first GC, covering the sp[0..2] park slots;
+     * no GC runs between the park stores and that alloc. */
     sp[0] = self;
     sp[1] = members_v;
     sp[2] = 0;
@@ -1038,7 +1038,6 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     /* Struct#eql? — same struct class + all members eql?. */
     {
         RESULT _struct_eql(CTX *c, int argc, VALUE *sp) {
-            c->sp_top = sp;
             VALUE self = sp[-argc - 1];
             VALUE *argv = sp - argc;
             if (SPECIAL_CONST_P(argv[0])) return RESULT_OK(Qfalse);
@@ -1058,7 +1057,8 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             RESULT rb = struct_to_a(c, 0, sp + 3);
             if (rb.state != KORB_NORMAL) { if (eql_top > 0) eql_top--; return rb; }
             sp[2] = rb.value;
-            RESULT res = korb_funcall_r(c, c->sp_top, sp[1], korb_intern("eql?"), 1, &sp[2]);
+            /* publish sp+3 so parked a=sp[1] / b=sp[2] stay scanned. */
+            RESULT res = korb_funcall_r(c, sp + 3, sp[1], korb_intern("eql?"), 1, &sp[2]);
             if (eql_top > 0) eql_top--;
             return res;
         }
@@ -1067,7 +1067,6 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     /* Struct#hash — XOR of element hashes + class hash. */
     {
         RESULT _struct_hash(CTX *c, int argc, VALUE *sp) {
-            c->sp_top = sp;
             VALUE self = sp[-argc - 1];
             static __thread VALUE hash_stk[64];
             static __thread int hash_top = 0;
@@ -1083,7 +1082,8 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             long alen = ((struct korb_array *)sp[0])->len;
             for (long i = 0; i < alen; i++) {
                 struct korb_array *a = (struct korb_array *)sp[0];   /* re-derive after funcall GC */
-                RESULT rh = korb_funcall_r(c, c->sp_top, korb_ary_items(a)[i], korb_intern("hash"), 0, NULL);
+                /* publish sp+1 so the parked values array sp[0] stays scanned. */
+                RESULT rh = korb_funcall_r(c, sp + 1, korb_ary_items(a)[i], korb_intern("hash"), 0, NULL);
                 if (rh.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return rh; }
                 long eh = FIXNUM_P(rh.value) ? FIX2LONG(rh.value) : 0;
                 h = (h * 31) ^ eh;
@@ -1096,15 +1096,16 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     /* Struct#inspect / #to_s — #<struct ClassName key=val, ...> */
     {
         RESULT _struct_inspect(CTX *c, int argc, VALUE *sp) {
-            c->sp_top = sp;
             VALUE self = sp[-argc - 1];
             static __thread VALUE ins_stk[64];
             static __thread int ins_top = 0;
             for (int j = 0; j < ins_top; j++) {
-                if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "#<struct ...>"));
+                if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, sp, "#<struct ...>"));
             }
             if (ins_top < 64) { ins_stk[ins_top] = self; ins_top++; }
-            VALUE result = korb_str_new_cstr(c, c->sp_top, "#<struct ");
+            /* result parked at sp[0]; the per-fragment str_new_cstr / str_concat
+             * below stage at sp+1, publishing sp+1 (covers sp[0]) via korb_alloc. */
+            VALUE result = korb_str_new_cstr(c, sp, "#<struct ");
             sp[0] = result;
             /* re-derive the class after the alloc GC (self moves; kl with it) */
             struct korb_class *kl = (struct korb_class *)((struct korb_object *)sp[-argc - 1])->basic.klass;
@@ -1113,9 +1114,9 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
              * != NULL). CRuby Struct#inspect omits the class name in
              * both cases. */
             if (kl->name && kl->anon_parent == NULL && kl->name != korb_intern("(anon)")) {
-                VALUE nm = korb_str_new_cstr(c, c->sp_top + 1, korb_id_name(kl->name));
-                sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], nm);
-                sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, " "));
+                VALUE nm = korb_str_new_cstr(c, sp + 1, korb_id_name(kl->name));
+                sp[0] = korb_str_concat(c, sp + 1, sp[0], nm);
+                sp[0] = korb_str_concat(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, " "));
             }
             /* __members__ lives on the original Struct.new class; walk the
              * super chain so subclasses (`class Foo < Struct.new(:a)`)
@@ -1136,22 +1137,22 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                     struct korb_array *ms = (struct korb_array *)mv;
                     if (i >= ms->len) break;
                     VALUE mi = korb_ary_items(ms)[i];
-                    if (i > 0) sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, ", "));
+                    if (i > 0) sp[0] = korb_str_concat(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, ", "));
                     ID mid = SYMBOL_P(mi) ? korb_sym2id(mi) : korb_intern(korb_str_cstr(mi));
                     const char *base = korb_id_name(mid);
                     long bl = strlen(base);
                     char *iv = korb_xmalloc_atomic(bl + 2);
                     iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-                    sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, base));
-                    sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, "="));
+                    sp[0] = korb_str_concat(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, base));
+                    sp[0] = korb_str_concat(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, "="));
                     /* Read the ivar value AFTER the concats above (GC points)
                      * so it isn't a stale handle when inspected. */
                     VALUE val = korb_ivar_get(sp[-argc - 1], korb_intern(iv));
-                    VALUE ins = korb_inspect(c, c->sp_top + 1, val);
-                    sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], ins);
+                    VALUE ins = korb_inspect(c, sp + 1, val);
+                    sp[0] = korb_str_concat(c, sp + 1, sp[0], ins);
                 }
             }
-            sp[0] = korb_str_concat(c, c->sp_top + 1, sp[0], korb_str_new_cstr(c, c->sp_top + 1, ">"));
+            sp[0] = korb_str_concat(c, sp + 1, sp[0], korb_str_new_cstr(c, sp + 1, ">"));
             if (ins_top > 0) ins_top--;
             return RESULT_OK(sp[0]);
         }
@@ -1164,10 +1165,13 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     /* Now attr_accessor — overrides Struct#length etc. when a member
      * shadows a standard name. */
     {
-        /* stage [klass, argv...] for module_attr_accessor cfunc_r ABI */
-        c->sp_top[0] = (VALUE)klass;
-        for (int i = 0; i < argc; i++) c->sp_top[1 + i] = argv[i];
-        DROP_RESULT(module_attr_accessor(c, argc, c->sp_top + 1 + argc));
+        /* stage [klass, argv...] for module_attr_accessor cfunc_r ABI at
+         * sp[1..] (sp[0] is the live klass park, sp[1] is free since members
+         * was consumed into the const table); attr_accessor publishes
+         * sp+2+argc, covering the sp[0] park across its method-add GCs. */
+        sp[1] = sp[0];   /* klass, re-read from its park */
+        for (int i = 0; i < argc; i++) sp[2 + i] = argv[i];
+        DROP_RESULT(module_attr_accessor(c, argc, sp + 2 + argc));
     }
     /* attr_accessor / method-add above may have fired GC; re-derive klass. */
     klass = (struct korb_class *)sp[0];
@@ -1179,12 +1183,12 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     }
     /* class-level .members and .[] (synonym for .new) */
     {
-        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, klass);
+        struct korb_class *meta = korb_singleton_class_of(c, sp + 2, klass);
         klass = (struct korb_class *)sp[0];   /* re-derive after singleton alloc */
         korb_class_add_method_cfunc_r(meta, korb_intern("members"),
                                      struct_class_members, 0);
         RESULT _struct_keyword_init_p(CTX *c, int argc, VALUE *sp) {
-            (void)argc; c->sp_top = sp;
+            (void)argc;
             VALUE self = sp[-argc - 1];
             VALUE v = korb_const_get_inherited((struct korb_class *)self, korb_intern("__keyword_init__"));
             if (UNDEF_P(v) || NIL_P(v)) return RESULT_OK(Qnil);
@@ -1192,9 +1196,8 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         }
         korb_class_add_method_cfunc_r(meta, korb_intern("keyword_init?"), _struct_keyword_init_p, 0);
         RESULT _struct_class_aref(CTX *c, int argc, VALUE *sp) {
-            c->sp_top = sp;
             VALUE self = sp[-argc - 1];
-            return korb_funcall_r(c, c->sp_top, self, korb_intern("new"), argc, sp - argc);
+            return korb_funcall_r(c, sp, self, korb_intern("new"), argc, sp - argc);
         }
         korb_class_add_method_cfunc_r(meta, korb_intern("[]"), _struct_class_aref, -1);
     }
@@ -1222,18 +1225,19 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         c->current_block->self = (VALUE)klass;
         c->current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
-        RESULT _yr = korb_yield(c, c->sp_top, 1, av0);
+        /* publish sp+1 so the klass park at sp[0] stays scanned (and forwarded)
+         * across the block body's GCs; it is re-read from sp[0] below. */
+        RESULT _yr = korb_yield(c, sp + 1, 1, av0);
         c->current_block->self = prev_blk_self;
         c->current_block->cref = prev_blk_cref;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;
         /* BREAK from class body is silently consumed; other states propagate. */
-        if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) { c->sp_top = sp; return _yr; }
+        if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) { return _yr; }
     }
     /* klass may have moved during the block yield — return it from sp[0]. */
     VALUE result = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(result);
 }
 
