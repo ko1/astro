@@ -1243,7 +1243,6 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1259,24 +1258,22 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
         /* Coerce via #to_str (CRuby semantics: const_get accepts a
          * String-convertible name).  Park arg across the two funcalls so the
          * second (to_str) doesn't deref a handle moved by the first (IDIOM B). */
-        VALUE *const asp = c->sp_top;
+        VALUE *const asp = sp;
         asp[0] = arg;
-        c->sp_top = asp + 1;
-        RESULT rtr = korb_funcall(c, c->sp_top, asp[0], korb_intern("respond_to?"), 1,
+        /* funcalls publish asp+1, covering the parked asp[0]=arg. */
+        RESULT rtr = korb_funcall(c, asp + 1, asp[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (rtr.state != KORB_NORMAL) { c->sp_top = asp; return rtr; }
+        if (rtr.state != KORB_NORMAL) { return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT tsr = korb_funcall(c, c->sp_top, asp[0], korb_intern("to_str"), 0, NULL);
-            if (tsr.state != KORB_NORMAL) { c->sp_top = asp; return tsr; }
+            RESULT tsr = korb_funcall(c, asp + 1, asp[0], korb_intern("to_str"), 0, NULL);
+            if (tsr.state != KORB_NORMAL) { return tsr; }
             VALUE r = tsr.value;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 name = korb_intern_n(((struct korb_string *)r)->ptr,
                                      ((struct korb_string *)r)->len);
-                c->sp_top = asp;
                 goto have_name;
             }
         }
-        c->sp_top = asp;
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         /* arg went stale across the respond_to?/to_str funcalls — re-read the
          * forwarded receiver-arg slot for the error's class name. */
@@ -1310,7 +1307,6 @@ have_name:;
 }
 
 static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1330,19 +1326,18 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
             /* Two funcalls on the same by-value moving handle — park name_arg
              * across both so the second (to_str) doesn't deref a moved handle
              * (IDIOM B). */
-            VALUE *const nsp = c->sp_top;
+            VALUE *const nsp = sp;
             nsp[0] = name_arg;
-            c->sp_top = nsp + 1;
-            RESULT rtr = korb_funcall(c, c->sp_top, nsp[0], korb_intern("respond_to?"), 1,
+            /* funcalls publish nsp+1, covering the parked nsp[0]=name_arg. */
+            RESULT rtr = korb_funcall(c, nsp + 1, nsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (rtr.state != KORB_NORMAL) { c->sp_top = nsp; return rtr; }
+            if (rtr.state != KORB_NORMAL) { return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, c->sp_top, nsp[0], korb_intern("to_str"), 0, NULL);
-                if (tsr.state != KORB_NORMAL) { c->sp_top = nsp; return tsr; }
+                RESULT tsr = korb_funcall(c, nsp + 1, nsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { return tsr; }
                 nsp[0] = tsr.value;
             }
             name_arg = nsp[0];
-            c->sp_top = nsp;
         }
     }
     const char *namep = NULL;
@@ -1354,7 +1349,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         struct korb_string *str = (struct korb_string *)name_arg;
         namep = str->ptr; namelen = str->len;
     } else {
-        VALUE inspv = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("inspect"), 0, NULL));
+        VALUE inspv = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("inspect"), 0, NULL));
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
         /* Fetch TypeError AFTER the inspect funcall's GC — a class fetched
