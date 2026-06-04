@@ -440,7 +440,6 @@ static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[0]);
 }
 static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -470,14 +469,17 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
         struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
         VALUE end_v = r2->end;
         bool excl = r2->exclude_end;
-        VALUE cmp = UNWRAP(korb_funcall(c, c->sp_top, sp[1], id_cmp, 1, &end_v));
+        sp[2] = sp[1];           /* recv = cursor, above live sp[0]/sp[1] */
+        sp[3] = end_v;
+        VALUE cmp = UNWRAP(korb_call(c, sp + 4, id_cmp, 1));
         if (!FIXNUM_P(cmp)) break;
         long cv = FIX2LONG(cmp);
         if (excl ? (cv >= 0) : (cv > 0)) break;
         { long cl = range_succ_len(sp[1]), el = range_succ_len(end_v);
           if (cl >= 0 && el >= 0 && cl > el) break; }
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
-        sp[1] = UNWRAP(korb_funcall(c, c->sp_top, sp[1], id_succ, 0, NULL));
+        sp[2] = sp[1];
+        sp[1] = UNWRAP(korb_call(c, sp + 3, id_succ, 0));
     }
     return RESULT_OK(sp[0]);
 }
@@ -485,7 +487,6 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Range methods (extended) ---------- */
 static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -509,7 +510,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
         for (double v = b; fexcl ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
-                CHECK(korb_yield(c, c->sp_top, 1, &fv));
+                CHECK(korb_yield(c, sp + 1, 1, &fv));
             } else {
                 korb_ary_push(c, sp + 1, sp[0], fv);
             }
@@ -535,12 +536,12 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
     if (step > 0) {
         for (long i = b; i <= e; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, c->sp_top, 1, &v));
+            CHECK(korb_yield(c, sp, 1, &v));
         }
     } else {
         for (long i = b; i >= e; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, c->sp_top, 1, &v));
+            CHECK(korb_yield(c, sp, 1, &v));
         }
     }
     return RESULT_OK(sp[-argc - 1]);   /* self moved across the yields */
@@ -549,13 +550,14 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
 /* Range#zip — pair each element with the corresponding element of
  * each given Array.  Missing slots get nil. */
 static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Materialize self via to_a then delegate to Array#zip. */
-    VALUE arr = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_a"), 0, NULL));
-    return korb_funcall(c, c->sp_top, arr, korb_intern("zip"), argc, argv);
+    sp[0] = sp[-argc - 1];   /* self */
+    VALUE arr = UNWRAP(korb_call(c, sp + 1, korb_intern("to_a"), 0));
+    sp[0] = arr;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    return korb_call(c, sp + 1 + argc, korb_intern("zip"), argc);
 }
 
 /* Range#each_with_index — yields (value, index) pairs. */
