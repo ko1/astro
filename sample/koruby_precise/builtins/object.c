@@ -224,26 +224,24 @@ static ID korb_name_to_id_(VALUE v) {
  * raises NameError / TypeError and returns 0. */
 /* On NORMAL, returns the interned ID in *out_id.  On raise/non-NORMAL,
  * returns the RESULT (with state set); *out_id is left untouched. */
-static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE v, ID *out_id) {
+static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE *sp, VALUE v, ID *out_id) {
     /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
     if (!SYMBOL_P(v) &&
         (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) &&
         !SPECIAL_CONST_P(v)) {
         /* Two funcalls on the same by-value moving handle — park it across
          * both so the second (to_str) doesn't deref a moved v (IDIOM B). */
-        VALUE *const vsp = c->sp_top;
-        vsp[0] = v;
-        c->sp_top = vsp + 1;
-        RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
+        VALUE *const vsp = sp;
+        vsp[0] = v;   /* park v across both funcalls; covered by vsp+1 calls */
+        RESULT rtr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+        if (rtr.state != KORB_NORMAL) { return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
-            if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+            RESULT tsr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("to_str"), 0, NULL);
+            if (tsr.state != KORB_NORMAL) { return tsr; }
             vsp[0] = tsr.value;
         }
         v = vsp[0];
-        c->sp_top = vsp;
     }
     const char *p; long n;
     if (SYMBOL_P(v)) {
@@ -278,7 +276,7 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
     }
     if (argc < 1) return RESULT_OK(Qnil);
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    CHECK(korb_cvar_name_to_id_or_raise(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     /* Walk the receiver's class chain via the existing helper.  We
      * reuse korb_cvar_get which uses cref/current_class — set those
@@ -309,7 +307,7 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
                    korb_id_name(korb_class_of_class(self)->name));
     }
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    CHECK(korb_cvar_name_to_id_or_raise(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     argv = sp - argc;
     extern RESULT korb_cvar_set(CTX *c, ID name, VALUE val);
@@ -331,7 +329,7 @@ RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(Qfalse);
     ID name = 0;
-    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));   /* GC point (interns name) */
+    CHECK(korb_cvar_name_to_id_or_raise(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(Qfalse);
     /* Walk super chain + transitive includes (CRuby semantics). */
