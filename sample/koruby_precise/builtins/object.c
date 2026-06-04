@@ -1041,11 +1041,10 @@ RESULT obj_itself(CTX *c, int argc, VALUE *sp) {
 
 
 /* ---------- Object#dup / clone / instance_variables ---------- */
-static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
+static RESULT obj_dup_impl(CTX *c, VALUE *sp, VALUE self, bool preserve_frozen);
 
-static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
+static RESULT obj_dup_impl_freeze(CTX *c, VALUE *sp, VALUE self, bool preserve_frozen, int freeze_arg);
 static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1065,19 +1064,18 @@ static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
             }
         }
     }
-    return obj_dup_impl_freeze(c, self, true, freeze_arg);
+    return obj_dup_impl_freeze(c, sp, self, true, freeze_arg);
 }
 static RESULT obj_dup(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return obj_dup_impl_freeze(c, self, false, -1);
+    return obj_dup_impl_freeze(c, sp, self, false, -1);
 }
-static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
-    return obj_dup_impl_freeze(c, self, preserve_frozen, -1);
+static RESULT obj_dup_impl(CTX *c, VALUE *sp, VALUE self, bool preserve_frozen) {
+    return obj_dup_impl_freeze(c, sp, self, preserve_frozen, -1);
 }
-static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg) {
+static RESULT obj_dup_impl_freeze(CTX *c, VALUE *sp, VALUE self, bool preserve_frozen, int freeze_arg) {
     if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     enum korb_type t = BUILTIN_TYPE(self);
     /* Capture the source's frozen state NOW, while self is fresh.  The
@@ -1104,7 +1102,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         /* korb_object_new fires GC and objects are arena (moving) — park the
          * source self at dsp[0] and re-read `o` from it so the ivar copy
          * below reads the live (forwarded) source, not a stale C-local. */
-        VALUE *const dsp = c->sp_top;
+        VALUE *const dsp = sp;
         dsp[0] = self;
         r = korb_object_new(c, dsp + 1, k);
         dsp[1] = r;                 /* park result alongside source */
@@ -1129,21 +1127,21 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
     } else if (t == T_ARRAY) {
         /* Park source (vsp[0]) and result (vsp[1]) across the push GC
          * points; re-read the source via korb_ary_aref each iteration. */
-        VALUE *const vsp = c->sp_top;
+        VALUE *const vsp = sp;
         vsp[0] = self;
         long n = ((struct korb_array *)self)->len;
         vsp[1] = korb_ary_new_capa(c, vsp + 2, n);
         for (long i = 0; i < n; i++) korb_ary_push(c, vsp + 2, vsp[1], korb_ary_aref(vsp[0], i));
         r = vsp[1];
     } else if (t == T_STRING) {
-        r = korb_str_new(c, c->sp_top, korb_str_cstr(self), korb_str_len(self));
+        r = korb_str_new(c, sp, korb_str_cstr(self), korb_str_len(self));
     } else if (t == T_RANGE) {
         /* Range#dup / #clone — a fresh, distinct Range with the same bounds
          * (begin/end are read before korb_range_new's GC point). */
         struct korb_range *rng = (struct korb_range *)self;
-        r = korb_range_new(c, c->sp_top, rng->begin, rng->end, rng->exclude_end);
+        r = korb_range_new(c, sp, rng->begin, rng->end, rng->exclude_end);
     } else if (t == T_HASH) {
-        r = korb_hash_new(c, c->sp_top);
+        r = korb_hash_new(c, sp);
         struct korb_hash *h = (struct korb_hash *)self;
         struct korb_hash *rh = (struct korb_hash *)r;
         /* Preserve compare_by_identity / default_value / default_proc
@@ -1166,16 +1164,18 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
          * use only libc allocs (korb_xrealloc / korb_class_alias_method /
          * korb_const_set / korb_module_include), so re-deriving once after
          * each real GC point suffices. */
-        VALUE *const vsp = c->sp_top;
+        VALUE *const vsp = sp;
         vsp[0] = self;        /* park source */
         vsp[1] = Qnil;        /* will hold nk */
-        c->sp_top = vsp + 2;
+        /* the korb_class_new/korb_module_new(c, vsp+2) below publish vsp+2
+         * via korb_alloc before their first GC, covering the vsp[0]/vsp[1]
+         * parks; no GC runs between the park stores and that alloc. */
         struct korb_class *src = (struct korb_class *)vsp[0];
         struct korb_class *nk;
         if (t == T_CLASS) {
-            nk = korb_class_new(c, c->sp_top, 0, src->super, src->instance_type);
+            nk = korb_class_new(c, vsp + 2, 0, src->super, src->instance_type);
         } else {
-            nk = korb_module_new(c, c->sp_top, 0);
+            nk = korb_module_new(c, vsp + 2, 0);
         }
         vsp[1] = (VALUE)nk;   /* park nk */
         src = (struct korb_class *)vsp[0];   /* re-read after the alloc GC */
@@ -1229,7 +1229,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
             struct korb_class *src_meta = (struct korb_class *)src->basic.klass;
             /* korb_singleton_class_of is a GC point: re-read nk from its park
              * for the receiver, and re-read src/src_meta afterwards. */
-            struct korb_class *nk_meta = korb_singleton_class_of(c, c->sp_top, vsp[1]);
+            struct korb_class *nk_meta = korb_singleton_class_of(c, vsp + 2, vsp[1]);
             src = (struct korb_class *)vsp[0];
             src_meta = (struct korb_class *)src->basic.klass;
             for (uint32_t b = 0; b < src_meta->methods.bucket_cnt; b++) {
@@ -1239,7 +1239,6 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
             }
         }
         r = vsp[1];           /* re-read nk (forwarded) */
-        c->sp_top = vsp;      /* pop parks */
     } else if (t == T_PROC) {
         /* Shallow copy: alloc a fresh struct, copy fields. */
         struct korb_proc *src = (struct korb_proc *)self;
@@ -1274,7 +1273,9 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
                                    : korb_intern("initialize_copy");
         if (k && korb_class_find_method(k, hook)) {
             VALUE args[1] = { hs ? hs[0] : self };
-            CHECK(korb_funcall(c, c->sp_top, hs ? hs[1] : r, hook, 1, args));
+            /* hs = sp (T_OBJECT parked source/result at sp[0]/sp[1]); publish
+             * sp+2 so both stay scanned across the hook funcall. */
+            CHECK(korb_funcall(c, sp + 2, hs ? hs[1] : r, hook, 1, args));
         }
         if (hs) r = hs[1];          /* re-read result after the hook GC */
     }
