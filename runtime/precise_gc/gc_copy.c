@@ -347,6 +347,32 @@ aro_gc_alloc_raw(CTX *c, size_t payload_size)
     return payload;
 }
 
+/* Audit query: is `p` a moved-out (stale) heap payload — an arena pointer NOT in
+ * the current active (to-space) live region [active_base, active_top)?  A copy
+ * GC can answer this exactly: a live object is in the active region; a handle
+ * left over from before a collection points to a retired plane (PURGE) or the
+ * inactive space (non-PURGE).  Used by a sample's construction-time check to
+ * catch an already-collected value being wrapped.  Does NOT dereference p;
+ * immediates / non-arena (libc-immortal) pointers report not-stale. */
+int
+aro_gc_addr_stale(CTX *c, const void *p)
+{
+    if (p == NULL || ((uintptr_t)p & 7u)) return 0;
+    const ASTroGC *const gc = ARO_GC_INSTANCE(c);
+    if (!gc || !gc->active_base) return 0;
+    const char *const cp = (const char *)p;
+    if (cp >= gc->active_base && cp < gc->active_top) return 0;   /* live */
+    if (gc->purge_arena_base &&
+        cp >= gc->purge_arena_base && cp < gc->purge_arena_end)
+        return 1;   /* PURGE: in the super-arena but not the active plane = retired */
+    {   /* non-PURGE: the inactive space holds stale (pre-swap) copies */
+        const char *const inactive = (gc->active_idx == 0) ? gc->space1 : gc->space0;
+        if (inactive && cp >= inactive && cp < inactive + gc->region_bytes)
+            return 1;
+    }
+    return 0;   /* outside arena = libc-immortal, not stale */
+}
+
 void *
 aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 {

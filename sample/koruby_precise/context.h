@@ -238,12 +238,18 @@ typedef struct {
 extern uint32_t korb_g_gc_clock;
 extern void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
                                    const char *file, int line);
+extern void korb_result_audit_construct(VALUE v, const char *file, int line);
 /* AROH contract hook: the shared GC runtime calls AROH_GC_SAFEPOINT() at every
  * alloc (= every point a moving GC could fire).  koruby implements it as the
  * RESULT-audit clock tick; the runtime knows nothing koruby-specific. */
 #define AROH_GC_SAFEPOINT()  (korb_g_gc_clock++)
-/* Build a RESULT, stamping the current GC clock. */
-#define RESULT_MK(v, st)  ((RESULT){(v), (st), korb_g_gc_clock})
+/* Build a RESULT, stamping the current GC clock, and check (copy-GC stale test)
+ * that the value isn't already a moved-out handle at this wrap site. */
+#define RESULT_MK(v, st)  (__extension__({                               \
+    VALUE _mkv = (v);                                                    \
+    korb_result_audit_construct(_mkv, __FILE__, __LINE__);               \
+    (RESULT){_mkv, (st), korb_g_gc_clock};                               \
+}))
 /* Read .value, asserting no alloc (potential GC) has happened since
  * construction (for heap values).  Pinpoints "held a RESULT across a potential
  * GC and used .value" at the use site.  Evaluates the RESULT expr exactly once. */

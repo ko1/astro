@@ -33,6 +33,25 @@ void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
     fflush(stderr);
     abort();
 }
+/* Construction-time check (the copy-GC stale-object test): the RESULT-clock
+ * alone can't see a value that was ALREADY stale when wrapped (it stamps "now"
+ * onto whatever pointer).  But a copy GC can answer "is this object moved-out?"
+ * directly — so at every RESULT construction, if the value is a heap handle
+ * that no longer lives in the active space, it was a raw VALUE held across a GC
+ * before being wrapped.  Report at the wrap site. */
+extern int aro_gc_addr_stale(struct CTX_struct *c, const void *p);
+extern struct CTX_struct koruby_bootstrap_ctx;
+void korb_result_audit_construct(VALUE v, const char *file, int line) {
+    if (SPECIAL_CONST_P(v) || v == 0) return;
+    if (aro_gc_addr_stale(&koruby_bootstrap_ctx, (const void *)v)) {
+        fprintf(stderr,
+            "\n*** RESULT-AUDIT(construct): wrapping a STALE value=%p into a RESULT at %s:%d\n"
+            "    (the object is no longer in the active space — a raw VALUE was held across a GC before being wrapped)\n",
+            (void *)v, file, line);
+        fflush(stderr);
+        abort();
+    }
+}
 #endif
 
 /* ---------------------------------------------------------------------------
