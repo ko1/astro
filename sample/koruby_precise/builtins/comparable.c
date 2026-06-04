@@ -243,7 +243,6 @@ static RESULT module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, V
 }
 
 static RESULT module_undef_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -251,7 +250,6 @@ static RESULT module_undef_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_remove_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -259,7 +257,6 @@ static RESULT module_remove_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_undef_or_remove_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -268,7 +265,6 @@ static RESULT module_undef_or_remove_method(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_alias_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -359,7 +355,7 @@ static RESULT module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE
  * called at top-level. */
 bool g_top_level_default_private = true;
 
-static RESULT module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
+static RESULT module_set_visibility(CTX *c, VALUE *sp, VALUE self, int argc, VALUE *argv,
                                    enum korb_visibility v)
 {
     if (argc == 0) {
@@ -394,41 +390,37 @@ static RESULT module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
         }
         return RESULT_OK(argv[0]);
     }
-    VALUE r = korb_ary_new_capa(c, c->sp_top, argc);
+    VALUE r = korb_ary_new_capa(c, sp, argc);
     for (int i = 0; i < argc; i++) {
-        if (SYMBOL_P(argv[i])) korb_ary_push(c, c->sp_top, r, argv[i]);
+        if (SYMBOL_P(argv[i])) korb_ary_push(c, sp, r, argv[i]);
         else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
-            korb_ary_push(c, c->sp_top, r, korb_id2sym(korb_intern_n(((struct korb_string *)argv[i])->ptr,
+            korb_ary_push(c, sp, r, korb_id2sym(korb_intern_n(((struct korb_string *)argv[i])->ptr,
                                                        ((struct korb_string *)argv[i])->len)));
         } else {
-            korb_ary_push(c, c->sp_top, r, argv[i]);
+            korb_ary_push(c, sp, r, argv[i]);
         }
     }
     return RESULT_OK(r);
 }
 static RESULT module_private(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE);
+    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PRIVATE);
 }
 static RESULT module_public(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PUBLIC);
+    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PUBLIC);
 }
 static RESULT module_protected(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED);
+    return module_set_visibility(c, sp, self, argc, argv, KORB_VIS_PROTECTED);
 }
 static RESULT module_const_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -451,9 +443,8 @@ static RESULT module_const_defined_p(CTX *c, int argc, VALUE *sp) {
         : korb_const_has((struct korb_class *)self, name)));
 }
 static RESULT module_module_function(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
+    (void)c;
     VALUE self = sp[-argc - 1];
-    VALUE *argv = sp - argc;
  return RESULT_OK(self); }
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */
