@@ -11,12 +11,14 @@ static bool flt_op_native(VALUE v) {
 /* Run the coerce protocol on `other` for Float `self`.  On NORMAL,
  * value is the coerced op result (or Qundef when no #coerce or invalid
  * pair). */
-static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
+static RESULT flt_coerce_dispatch(CTX *c, VALUE *sp, VALUE self, VALUE other, ID op) {
     if (SPECIAL_CONST_P(other)) return RESULT_OK(Qundef);
     /* Call #coerce unconditionally (covers method_missing / mock coerce, which
      * korb_class_find_method doesn't see); a missing coerce surfaces as
      * NoMethodError -> not coercible (Qundef -> caller's TypeError). */
-    RESULT cr = korb_funcall_r(c, c->sp_top, other, korb_intern("coerce"), 1, &self);
+    sp[0] = other;
+    sp[1] = self;
+    RESULT cr = korb_call(c, sp + 2, korb_intern("coerce"), 1);
     if (cr.state == KORB_RAISE) {
         VALUE bang = cr.value;
         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -32,13 +34,15 @@ static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
     if (p->len != 2) return RESULT_OK(Qundef);
-    return korb_funcall(c, c->sp_top, korb_ary_items(p)[0], op, 1, &korb_ary_items(p)[1]);
+    sp[0] = korb_ary_items(p)[0];
+    sp[1] = korb_ary_items(p)[1];
+    return korb_call(c, sp + 2, op, 1);
 }
 
-#define FLT_BINOP_COERCE_OR_RAISE(c, v, op_name)                          \
+#define FLT_BINOP_COERCE_OR_RAISE(c, sp, v, op_name)                      \
     do {                                                                   \
         if (!flt_op_native((v))) {                                          \
-            VALUE _co = UNWRAP(flt_coerce_dispatch((c), self, (v),           \
+            VALUE _co = UNWRAP(flt_coerce_dispatch((c), (sp), self, (v),     \
                                             korb_intern((op_name))));        \
             if (!UNDEF_P(_co)) return RESULT_OK(_co);                         \
             VALUE _eTy = korb_const_get(KORB_VM(c)->object_class,              \
@@ -51,28 +55,25 @@ static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
 
 /* ---------- Float ---------- */
 static RESULT flt_plus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "+");
-    return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) + korb_num2dbl(argv[0])));
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "+");
+    return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) + korb_num2dbl(argv[0])));
 }
 static RESULT flt_minus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "-");
-    return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) - korb_num2dbl(argv[0])));
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "-");
+    return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) - korb_num2dbl(argv[0])));
 }
 static RESULT flt_mul(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "*");
-    return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) * korb_num2dbl(argv[0])));
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "*");
+    return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) * korb_num2dbl(argv[0])));
 }
 /* Ruby uses floored modulo: the result takes the sign of the divisor. */
 static double korb_float_floored_mod(double a, double b) {
@@ -81,25 +82,23 @@ static double korb_float_floored_mod(double a, double b) {
     return r;
 }
 static RESULT flt_mod(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "%");
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "%");
     /* CRuby: Float#% by zero (0 or 0.0) raises ZeroDivisionError. */
     if (korb_num2dbl(argv[0]) == 0.0) {
         return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
                           "divided by 0");
     }
-    return RESULT_OK(korb_float_new(c, c->sp_top,
+    return RESULT_OK(korb_float_new(c, sp,
                      korb_float_floored_mod(korb_num2dbl(self), korb_num2dbl(argv[0]))));
 }
 static RESULT flt_divmod(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "divmod");
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "divmod");
     if (korb_num2dbl(argv[0]) == 0.0) {
         return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError")),
                           "divided by 0");
@@ -109,20 +108,16 @@ static RESULT flt_divmod(CTX *c, int argc, VALUE *sp) {
     double r = korb_float_floored_mod(a, b);
     /* a/b/q/r are C doubles (no rooting needed).  Park the two boxed results
      * on the value stack across the array alloc/pushes. */
-    VALUE *const vsp = c->sp_top;
+    VALUE *const vsp = sp;
     vsp[0] = korb_dbl2int(c, vsp, q);   /* quotient (Integer / Bignum) */
-    c->sp_top = vsp + 1;
-    vsp[1] = korb_float_new(c, vsp + 1, r);   /* remainder (Float) */
-    c->sp_top = vsp + 2;
-    vsp[2] = korb_ary_new_capa(c, vsp + 3, 2);
+    vsp[1] = korb_float_new(c, vsp + 1, r);   /* remainder; float_new(vsp+1) covers vsp[0] */
+    vsp[2] = korb_ary_new_capa(c, vsp + 3, 2);  /* ary_new(vsp+3) covers vsp[0..1] */
     korb_ary_push(c, vsp + 3, vsp[2], vsp[0]);
     korb_ary_push(c, vsp + 3, vsp[2], vsp[1]);
     VALUE result = vsp[2];
-    c->sp_top = vsp;
     return RESULT_OK(result);
 }
 static RESULT flt_div(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -132,8 +127,8 @@ static RESULT flt_div(CTX *c, int argc, VALUE *sp) {
         return korb_raise_argument_error(c,
                    "wrong number of arguments (given %d, expected 1)", argc);
     }
-    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "/");
-    return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) / korb_num2dbl(argv[0])));
+    FLT_BINOP_COERCE_OR_RAISE(c, sp, argv[0], "/");
+    return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) / korb_num2dbl(argv[0])));
 }
 /* Format a double using the shortest %.<p>g that round-trips back
  * to the same bit pattern.  This matches CRuby's `3.14.to_s == "3.14"`
@@ -148,7 +143,6 @@ static void korb_float_to_shortest(double d, char *out, size_t out_cap) {
 /* Float#step(limit, step) [{ |x| ... }] — yield self, self+step, ...
  * up to (and including) limit.  Mirrors Numeric#step. */
 static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -163,7 +157,7 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
         for (double v = start; v <= limit + 1e-12; v += step) {
             VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
-                CHECK(korb_yield(c, c->sp_top, 1, &fv));
+                CHECK(korb_yield(c, sp + 1, 1, &fv));
             } else {
                 korb_ary_push(c, sp + 1, sp[0], fv);
             }
@@ -172,7 +166,7 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
         for (double v = start; v >= limit - 1e-12; v += step) {
             VALUE fv = korb_float_new(c, sp + 1, v);
             if (has_block) {
-                CHECK(korb_yield(c, c->sp_top, 1, &fv));
+                CHECK(korb_yield(c, sp + 1, 1, &fv));
             } else {
                 korb_ary_push(c, sp + 1, sp[0], fv);
             }
@@ -182,7 +176,6 @@ static RESULT flt_step(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_nan_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -191,7 +184,6 @@ static RESULT flt_nan_p(CTX *c, int argc, VALUE *sp) {
 
 /* Float#infinite? — returns 1, -1, or nil (CRuby convention). */
 static RESULT flt_infinite_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -201,7 +193,6 @@ static RESULT flt_infinite_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_finite_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -210,7 +201,6 @@ static RESULT flt_finite_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_zero_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -218,7 +208,6 @@ static RESULT flt_zero_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_positive_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -226,7 +215,6 @@ static RESULT flt_positive_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_negative_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -234,14 +222,13 @@ static RESULT flt_negative_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     double d = korb_num2dbl(self);
     /* Ruby uses fixed names for special values, not C's "inf" / "nan". */
-    if (isnan(d)) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "NaN"));
-    if (isinf(d)) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, d < 0 ? "-Infinity" : "Infinity"));
+    if (isnan(d)) return RESULT_OK(korb_str_new_cstr(c, sp, "NaN"));
+    if (isinf(d)) return RESULT_OK(korb_str_new_cstr(c, sp, d < 0 ? "-Infinity" : "Infinity"));
     char b[64];
     korb_float_to_shortest(d, b, sizeof(b));
     /* Ruby's Float#to_s appends ".0" for whole-number Floats so the
@@ -254,7 +241,7 @@ static RESULT flt_to_s(CTX *c, int argc, VALUE *sp) {
         size_t l = strlen(b);
         if (l + 2 < sizeof(b)) { b[l] = '.'; b[l+1] = '0'; b[l+2] = 0; }
     }
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, b));
+    return RESULT_OK(korb_str_new_cstr(c, sp, b));
 }
 
 
@@ -264,7 +251,6 @@ static RESULT flt_to_s(CTX *c, int argc, VALUE *sp) {
  * raise も `return korb_raise(...)` で in-band 伝搬。 caller は cfunc_r
  * 経由で UNWRAP する。 */
 static RESULT flt_coerce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     if (argc < 1) {
         return korb_raise_argument_error(c, "wrong number of arguments");
@@ -294,54 +280,50 @@ static RESULT flt_coerce(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_abs2(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
-    return RESULT_OK(korb_float_new(c, c->sp_top, v * v));
+    return RESULT_OK(korb_float_new(c, sp, v * v));
 }
 
 /* ---------- Float methods (extended) ---------- */
 static RESULT flt_floor(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return RESULT_OK(korb_dbl2int(c, c->sp_top, floor(v)));
+    if (n == 0) return RESULT_OK(korb_dbl2int(c, sp, floor(v)));
     /* Float#floor(n) returns Float for n > 0, Integer for n < 0. */
     if (n > 0) {
         double m = pow(10.0, (double)n);
-        return RESULT_OK(korb_float_new(c, c->sp_top, floor(v * m) / m));
+        return RESULT_OK(korb_float_new(c, sp, floor(v * m) / m));
     }
     /* n < 0: round to nearest 10^|n|, return Integer.  Compute via
      * scale-divide-floor-multiply (instead of v * pow(10, n) which
      * underflows to 0 for very negative n and triggered a SIGFPE). */
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(c, c->sp_top, floor(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, sp, floor(v / scale) * scale));
 }
 static RESULT flt_ceil(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return RESULT_OK(korb_dbl2int(c, c->sp_top, ceil(v)));
+    if (n == 0) return RESULT_OK(korb_dbl2int(c, sp, ceil(v)));
     if (n > 0) {
         double m = pow(10.0, (double)n);
-        return RESULT_OK(korb_float_new(c, c->sp_top, ceil(v * m) / m));
+        return RESULT_OK(korb_float_new(c, sp, ceil(v * m) / m));
     }
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(c, c->sp_top, ceil(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, sp, ceil(v / scale) * scale));
 }
 /* Float#eql? — type-strict.  `1.0.eql?(1) == false` in CRuby; the
  * default Object#eql? falls through to ==, which coerces, so we need
  * a bespoke version here. */
 static RESULT flt_eql(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -355,7 +337,6 @@ static RESULT flt_eql(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -372,10 +353,13 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
         VALUE nv = argv[0];
         if (!FIXNUM_P(nv)) {
             if (!SPECIAL_CONST_P(nv)) {
-                VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
+                sp[0] = nv;
+                sp[1] = korb_id2sym(korb_intern("to_int"));
+                VALUE rt = UNWRAP(korb_call(c, sp + 2, korb_intern("respond_to?"), 1));
+                nv = sp[0];   /* re-read forwarded nv */
                 if (RTEST(rt)) {
-                    nv = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("to_int"), 0, NULL));
+                    sp[0] = nv;
+                    nv = UNWRAP(korb_call(c, sp + 1, korb_intern("to_int"), 0));
                 }
             }
             if (!FIXNUM_P(nv)) {
@@ -392,7 +376,7 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
      *  - positive precision → return self unchanged (CRuby rounds NaN to
      *    NaN, Infinity to Infinity). */
     if (isnan(v) || isinf(v)) {
-        if (n > 0) return RESULT_OK(korb_float_new(c, c->sp_top, v));
+        if (n > 0) return RESULT_OK(korb_float_new(c, sp, v));
         if (isnan(v)) {
             VALUE eR = (n < 0)
                 ? korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"))
@@ -404,21 +388,20 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
     }
     if (posargc < 1 || n == 0) {
         /* No arg / arg==0 → round to integer, return Integer. */
-        return RESULT_OK(korb_dbl2int(c, c->sp_top, round(v)));
+        return RESULT_OK(korb_dbl2int(c, sp, round(v)));
     }
     if (n > 0) {
         /* Round to n decimals, return Float.  Big n may saturate. */
-        if (n > 308) return RESULT_OK(korb_float_new(c, c->sp_top, v));
+        if (n > 308) return RESULT_OK(korb_float_new(c, sp, v));
         double scale = pow(10.0, (double)n);
-        return RESULT_OK(korb_float_new(c, c->sp_top, round(v * scale) / scale));
+        return RESULT_OK(korb_float_new(c, sp, round(v * scale) / scale));
     }
     /* Negative precision → round to nearest 10^|n|, return Integer. */
     if (-n > 308) return RESULT_OK(INT2FIX(0));
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(c, c->sp_top, round(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, sp, round(v / scale) * scale));
 }
 static RESULT flt_truncate(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -441,27 +424,26 @@ static RESULT flt_truncate(CTX *c, int argc, VALUE *sp) {
         double scale = pow(10.0, (double)prec);
         double scaled = v * scale;
         double truncated = scaled >= 0 ? floor(scaled) : ceil(scaled);
-        return RESULT_OK(korb_float_new(c, c->sp_top, truncated / scale));
+        return RESULT_OK(korb_float_new(c, sp, truncated / scale));
     }
     if (prec < 0) {
         double scale = pow(10.0, (double)(-prec));
         double scaled = v / scale;
         double truncated = scaled >= 0 ? floor(scaled) : ceil(scaled);
-        return RESULT_OK(korb_dbl2int(c, c->sp_top, truncated * scale));
+        return RESULT_OK(korb_dbl2int(c, sp, truncated * scale));
     }
     /* truncate toward zero — same as to_i for Float. */
-    return RESULT_OK(korb_dbl2int(c, c->sp_top, v >= 0 ? floor(v) : ceil(v)));
+    return RESULT_OK(korb_dbl2int(c, sp, v >= 0 ? floor(v) : ceil(v)));
 }
 
 static RESULT flt_pow(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(self);
     double a = korb_num2dbl(self);
     double b = korb_num2dbl(argv[0]);
-    return RESULT_OK(korb_float_new(c, c->sp_top, pow(a, b)));
+    return RESULT_OK(korb_float_new(c, sp, pow(a, b)));
 }
 
 /* Reject non-Numeric arg with ArgumentError (CRuby semantics).
@@ -482,7 +464,6 @@ static RESULT flt_check_numeric(CTX *c, VALUE other) {
                    korb_id_name(korb_class_of_class(other)->name));
 }
 static RESULT flt_lt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -490,7 +471,6 @@ static RESULT flt_lt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_num2dbl(self) < korb_num2dbl(argv[0])));
 }
 static RESULT flt_le(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -498,7 +478,6 @@ static RESULT flt_le(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_num2dbl(self) <= korb_num2dbl(argv[0])));
 }
 static RESULT flt_gt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -506,7 +485,6 @@ static RESULT flt_gt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_num2dbl(self) > korb_num2dbl(argv[0])));
 }
 static RESULT flt_ge(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -514,7 +492,6 @@ static RESULT flt_ge(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_num2dbl(self) >= korb_num2dbl(argv[0])));
 }
 static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -530,10 +507,13 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
         /* Special: when self is ±Infinity and `other` responds to
          * #infinite?, use the sign comparison instead of the coerce path. */
         if (isinf(a)) {
-            VALUE rtinf = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
-                                       (VALUE[]){ korb_id2sym(korb_intern("infinite?")) }));
+            sp[0] = other;
+            sp[1] = korb_id2sym(korb_intern("infinite?"));
+            VALUE rtinf = UNWRAP(korb_call(c, sp + 2, korb_intern("respond_to?"), 1));
+            other = sp[0];   /* re-read forwarded other */
             if (RTEST(rtinf)) {
-                VALUE ov = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("infinite?"), 0, NULL));
+                sp[0] = other;
+                VALUE ov = UNWRAP(korb_call(c, sp + 1, korb_intern("infinite?"), 0));
                 long osign;
                 if (NIL_P(ov)) osign = 0;
                 else if (FIXNUM_P(ov)) osign = FIX2LONG(ov);
@@ -543,17 +523,23 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
                 return RESULT_OK(INT2FIX(asign > osign ? 1 : -1));
             }
         }
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
+        sp[0] = other;
+        sp[1] = korb_id2sym(korb_intern("coerce"));
+        VALUE rt = UNWRAP(korb_call(c, sp + 2, korb_intern("respond_to?"), 1));
+        other = sp[0];   /* re-read forwarded other */
         if (!RTEST(rt)) return RESULT_OK(Qnil);
-        VALUE pair = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("coerce"), 1, &self));
+        sp[0] = other;
+        sp[1] = self;
+        VALUE pair = UNWRAP(korb_call(c, sp + 2, korb_intern("coerce"), 1));
         if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY ||
             ((struct korb_array *)pair)->len != 2) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "coerce must return [x, y]");
         }
         struct korb_array *p = (struct korb_array *)pair;
-        return korb_funcall(c, c->sp_top, korb_ary_items(p)[0], korb_intern("<=>"), 1, &korb_ary_items(p)[1]);
+        sp[0] = korb_ary_items(p)[0];
+        sp[1] = korb_ary_items(p)[1];
+        return korb_call(c, sp + 2, korb_intern("<=>"), 1);
     }
     /* Self == ±Infinity, other == finite Integer/Bignum: ±Infinity wins. */
     if (isinf(a) && (FIXNUM_P(other) ||
@@ -567,7 +553,6 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(INT2FIX(a < b ? -1 : a > b ? 1 : 0));
 }
 RESULT flt_to_i(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -577,41 +562,36 @@ RESULT flt_to_i(CTX *c, int argc, VALUE *sp) {
         VALUE eD = korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError"));
         return korb_raise(c, (struct korb_class *)eD, isnan(v) ? "NaN" : (v < 0 ? "-Infinity" : "Infinity"));
     }
-    return RESULT_OK(korb_dbl2int(c, c->sp_top, v >= 0 ? floor(v) : ceil(v)));
+    return RESULT_OK(korb_dbl2int(c, sp, v >= 0 ? floor(v) : ceil(v)));
 }
 static RESULT flt_to_f(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(self);
 }
 static RESULT flt_uminus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(korb_float_new(c, c->sp_top, -korb_num2dbl(self)));
+    return RESULT_OK(korb_float_new(c, sp, -korb_num2dbl(self)));
 }
 static RESULT flt_uplus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(self);
 }
 static RESULT flt_abs(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
     /* fabs handles -0.0 → +0.0 correctly (sign bit cleared). */
-    return RESULT_OK(korb_float_new(c, c->sp_top, fabs(v)));
+    return RESULT_OK(korb_float_new(c, sp, fabs(v)));
 }
 
 static RESULT flt_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
