@@ -348,6 +348,31 @@ That is exactly why these were IDIOM B. **Do not just delete a case-3 write** �
 convert it to a frame park, or the staged slot silently leaves the scan range.
 When unsure which case you have, treat it as case 3 (frame park is always safe).
 
+**The cfunc-entry prologue `c->sp_top = sp;` is NOT always dead.** It is the most
+common write, but it does real work: it publishes the cfunc's stack top so that
+**sp-less helpers** the cfunc calls can read `c->sp_top` as their staging base.
+Two kinds of cfunc:
+- *Leaf / libc-helper cfunc* (e.g. boolean, symbol, most accessors): its callees
+  either take an `sp` and self-publish, or are libc (non-moving, ignore sp). The
+  entry write is genuinely dead — delete it (and change any `korb_x(c, c->sp_top,
+  …)` read in the SAME cfunc to `sp`, since the entry write made them equal).
+- *Compute cfunc that calls an sp-less helper* — e.g. `rng_min` →
+  `rng_cmp(c, a, b, &err)`, `exc_to_s` → `exc_to_s_internal(c, self)`. These
+  helpers have **no `sp` param** and use `c->sp_top` (set by the caller's entry
+  write) as their own funcall/alloc staging base. **Deleting the entry write here
+  crashes** (the helper allocs against a wrong `c->sp_top`) — and it shows up as a
+  *NORMAL-mode* regression/SEGV, not just STRESS. **First thread `sp` into the
+  helper** (add a `VALUE *sp` param, pass it from every caller, change the
+  helper's `c->sp_top` → `sp`), THEN delete the callers' entry writes.
+
+So the per-file order is: (a) find sp-less helpers in the file that read
+`c->sp_top` (`grep 'c->sp_top'` for reads inside `static …(CTX *c, …)` with no
+`sp`), thread `sp` through them; (b) then remove entry writes + change in-cfunc
+`c->sp_top` reads to `sp`; (c) verify NORMAL-mode pass/fail parity vs HEAD **and**
+STRESS+PURGE rc=0. Never blunt-`replace_all` `c->sp_top`→`sp` across a file: it
+hits sp-less helpers (undeclared `sp`) and reads that aren't `sp`-equal. (Both
+exception.c and range.c regressed this way and were reverted.)
+
 **Same pass: adopt `SP_SET`.** While editing a file, convert its `sp[i] = v`
 value-stack stores to `SP_SET(sp, i, v)` (§6.1) so the object audit covers them.
 Touch each site once.
