@@ -724,27 +724,27 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_a"), 0, NULL);
+        sp[0] = sp[-argc - 1];   /* self */
+        return korb_call(c, sp + 1, korb_intern("to_a"), 0);
     }
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, sp));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
     /* Park the result array in a synthetic frame across the per-element
      * korb_yield (the block body may allocate and move the result under a
      * moving GC).  Source elements are fixnums derived from `i`, so they
      * need no re-rooting.  See KORB_RNG_YIELD_FRAME / array.c ary_map. */
-    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-        korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
+        korb_ary_push(c, sp, fr.last_line, _y.value);
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
@@ -752,23 +752,22 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, sp));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
     /* Park the result array in a synthetic frame across the per-element
      * korb_yield (see rng_map / array.c ary_select).  Selected elements are
      * fixnums derived from `i`. */
-    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_RNG_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-        if (RTEST(_y.value)) korb_ary_push(c, c->sp_top, fr.last_line, v);
+        if (RTEST(_y.value)) korb_ary_push(c, sp, fr.last_line, v);
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
