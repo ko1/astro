@@ -5307,6 +5307,11 @@ struct korb_fiber {
     struct korb_class *resumer_current_class;
     struct korb_frame *resumer_current_frame;
     VALUE resumer_bang;                  /* save resumer's $! */
+    /* The fiber that resumed THIS fiber (NULL when the main context did).
+     * Forms the active resume chain (current_fiber -> resumer_fiber -> ...);
+     * used by korb_scan_fiber_roots to scan the resumer frames of every fiber
+     * in the chain (nested fibers — see that function). */
+    struct korb_fiber *resumer_fiber;
     struct korb_cref *fiber_cref;       /* save fiber's lexical const ref */
     struct korb_class *fiber_current_class;
     struct korb_frame *fiber_current_frame;
@@ -5422,6 +5427,7 @@ VALUE korb_fiber_new(CTX *c, VALUE *sp, struct korb_proc *block) {
      * GC pass (a few µs) but the per-switch path stays free. */
     /* Phase 1 stub: was GC_add_roots(...) — fiber stack precise tracking comes in Phase 4 */ (void)0;
     fib->state = KF_INIT;
+    fib->resumer_fiber = NULL;
     fib->args = NULL;
     fib->argc = 0;
     fib->result = Qnil;
@@ -5489,6 +5495,7 @@ RESULT korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
      * Yield will reverse this. */
     struct korb_fiber *prev = current_fiber;
     current_fiber = fib;
+    fib->resumer_fiber = prev;   /* who resumed us (NULL = main context) */
     fib->resumer_fp = c->current_frame->fp;
     fib->resumer_sp = c->sp_top;
     fib->resumer_stack_base = c->stack_base;
@@ -5669,12 +5676,27 @@ void korb_scan_fiber_roots(VALUE fibv, void *ctx, koruby_edge_fn fn) {
                              fib->stack, fib->stack + fib->stack_size);
     } else if (fib == current_fiber) {
         /* The running fiber's own stack is the live c->stack (scanned by
-         * phase a); scan the suspended resumer's saved stack + frame chain. */
-        if (fib->resumer_stack_base && fib->resumer_sp)
-            for (VALUE *p = fib->resumer_stack_base; p < fib->resumer_sp; p++)
-                kf_visit_val(ctx, fn, p);
-        kf_visit_frame_chain(ctx, fn, fib->resumer_current_frame, NULL, NULL);
-        kf_visit_val(ctx, fn, &fib->resumer_bang);
+         * phase a).  Scan the saved resumer state of EVERY fiber in the active
+         * resume chain (this running fiber + its resumer_fiber links): each is
+         * suspended-in-resume with a LIVE resumer that nothing else scans (the
+         * main walk is bounded to the running fiber's stack, and each fiber
+         * only scans its OWN resumer).  Bound each scan to the RESUMER's stack:
+         * a fiber resumer -> stop at its fiber_root rather than crossing
+         * fiber_root.prev into that fiber's stale first-resumer stack; the main
+         * context resumer (resumer_fiber == NULL) -> walk unbounded to the
+         * sentinel.  Without this, nested fibers (Enumerator#first -> self.next
+         * -> ... -> self.next) leave the outermost main-stack resumer frame
+         * unscanned -> its self goes stale -> STRESS+PURGE SEGV. */
+        for (struct korb_fiber *rf = fib; rf; rf = rf->resumer_fiber) {
+            if (rf->resumer_stack_base && rf->resumer_sp)
+                for (VALUE *p = rf->resumer_stack_base; p < rf->resumer_sp; p++)
+                    kf_visit_val(ctx, fn, p);
+            const char *rlo = rf->resumer_fiber ? rf->resumer_fiber->stack : NULL;
+            const char *rhi = rf->resumer_fiber
+                              ? rf->resumer_fiber->stack + rf->resumer_fiber->stack_size : NULL;
+            kf_visit_frame_chain(ctx, fn, rf->resumer_current_frame, rlo, rhi);
+            kf_visit_val(ctx, fn, &rf->resumer_bang);
+        }
     }
 }
 
