@@ -100,7 +100,7 @@ static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
  * follow-on character (NameError otherwise).
  * Returns the interned ID on success, otherwise leaves *err set
  * to the raise RESULT and returns 0. */
-static ID coerce_ivar_name(CTX *c, VALUE v, RESULT *err) {
+static ID coerce_ivar_name(CTX *c, VALUE *sp, VALUE v, RESULT *err) {
     const char *cstr; long clen;
     if (SYMBOL_P(v)) {
         const char *s = korb_id_name(korb_sym2id(v));
@@ -114,28 +114,24 @@ static ID coerce_ivar_name(CTX *c, VALUE v, RESULT *err) {
          * TWICE — park it so the second call / error path don't deref a
          * handle the first moved (IDIOM B). */
         if (!SPECIAL_CONST_P(v)) {
-            VALUE *const _vsp = c->sp_top;
-            _vsp[0] = v;
-            c->sp_top = _vsp + 1;
+            VALUE *const _vsp = sp;
+            _vsp[0] = v;   /* park v across the two funcalls; covered by _vsp+1 calls */
             VALUE to_str_sym = korb_id2sym(korb_intern("to_str"));
-            RESULT rr = korb_funcall_r(c, c->sp_top, _vsp[0], korb_intern("respond_to?"), 1, &to_str_sym);
+            RESULT rr = korb_funcall_r(c, _vsp + 1, _vsp[0], korb_intern("respond_to?"), 1, &to_str_sym);
             if (rr.state == KORB_NORMAL && RTEST(rr.value)) {
-                RESULT tr = korb_funcall_r(c, c->sp_top, _vsp[0], korb_intern("to_str"), 0, NULL);
-                if (tr.state != KORB_NORMAL) { c->sp_top = _vsp; *err = tr; return 0; }
+                RESULT tr = korb_funcall_r(c, _vsp + 1, _vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) { *err = tr; return 0; }
                 if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_STRING) {
-                    c->sp_top = _vsp;
                     *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                                        "can't convert to String (to_str gave non-String)");
                     return 0;
                 }
-                /* ->ptr is a libc-stable buffer, valid after the park pops. */
+                /* ->ptr is a libc-stable buffer. */
                 cstr = ((struct korb_string *)tr.value)->ptr;
                 clen = ((struct korb_string *)tr.value)->len;
-                c->sp_top = _vsp;
                 goto check_name;
             }
             v = _vsp[0];
-            c->sp_top = _vsp;
         }
         *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                           "%s is not a symbol nor a string",
@@ -170,7 +166,7 @@ static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
                           "wrong number of arguments (given 0, expected 1)");
     }
     RESULT err = RESULT_OK(Qnil);
-    ID name = coerce_ivar_name(c, argv[0], &err);
+    ID name = coerce_ivar_name(c, sp, argv[0], &err);
     if (name == 0) return err;
     self = sp[-argc - 1];   /* coerce_ivar_name may intern (GC); re-read self */
     return RESULT_OK(korb_ivar_get(self, name));
@@ -186,7 +182,7 @@ static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
                           "wrong number of arguments (given %d, expected 2)", argc);
     }
     RESULT err = RESULT_OK(Qnil);
-    ID name = coerce_ivar_name(c, argv[0], &err);
+    ID name = coerce_ivar_name(c, sp, argv[0], &err);
     if (name == 0) return err;
     /* coerce_ivar_name may intern (GC point): re-read self/argv from their
      * scanned slots before the deref / store (IDIOM A). */
@@ -1373,7 +1369,7 @@ static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
                           "wrong number of arguments (given 0, expected 1)");
     }
     RESULT err = RESULT_OK(Qnil);
-    ID name = coerce_ivar_name(c, argv[0], &err);
+    ID name = coerce_ivar_name(c, sp, argv[0], &err);
     if (name == 0) return err;
     self = sp[-argc - 1];   /* coerce_ivar_name may intern (GC); re-read self */
     CHECK_FROZEN_R(c, self);
