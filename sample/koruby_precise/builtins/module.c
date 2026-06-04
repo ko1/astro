@@ -23,25 +23,24 @@ static RESULT ivar_getter_dispatch(CTX *c, int argc, VALUE *sp) {
 
 /* Resolve an attr_*'s name argument: accept Symbol/String, fall back
  * to #to_str.  On NORMAL writes *out_id; on raise returns the RESULT. */
-static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
+static RESULT attr_resolve_name(CTX *c, VALUE *sp, VALUE arg, ID *out_id, const char *meth) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
             /* Two funcalls on the same by-value moving handle — park it so the
-             * second (to_str) doesn't deref a handle the first moved (IDIOM B). */
-            VALUE *const vsp = c->sp_top;
+             * second (to_str) doesn't deref a handle the first moved (IDIOM B).
+             * The funcalls publish sp+1, covering the parked sp[0]=v. */
+            VALUE *const vsp = sp;
             vsp[0] = v;
-            c->sp_top = vsp + 1;
-            RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
+            RESULT rtr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+            if (rtr.state != KORB_NORMAL) { return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
-                if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+                RESULT tsr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { return tsr; }
                 vsp[0] = tsr.value;
             }
             v = vsp[0];
-            c->sp_top = vsp;
         }
     }
     ID name;
@@ -75,28 +74,26 @@ static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth)
  * on success; returns the raise RESULT otherwise.  (The old inline pattern
  * blindly cast a non-Symbol arg to korb_string and crashed in korb_intern_n
  * on a fixnum/special — method_defined_spec's TypeError cases.) */
-static RESULT name_arg_to_id(CTX *c, VALUE arg, ID *out_id) {
+static RESULT name_arg_to_id(CTX *c, VALUE *sp, VALUE arg, ID *out_id) {
     VALUE v = arg;
     if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
         if (!SPECIAL_CONST_P(v)) {
             /* v is a by-value moving handle with no slot to re-read, and we
              * funcall on it TWICE (respond_to? then to_str) — the first call
              * can move it, so the second would deref a stale handle (IDIOM B:
-             * park on the value stack, re-read between/after calls; explicit
-             * RESULT checks, pop on every exit). */
-            VALUE *const vsp = c->sp_top;
+             * park at sp[0], re-read between/after; the funcalls publish sp+1
+             * which covers the park). */
+            VALUE *const vsp = sp;
             vsp[0] = v;
-            c->sp_top = vsp + 1;
-            RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
+            RESULT rtr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
+            if (rtr.state != KORB_NORMAL) { return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
-                if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
+                RESULT tsr = korb_funcall(c, vsp + 1, vsp[0], korb_intern("to_str"), 0, NULL);
+                if (tsr.state != KORB_NORMAL) { return tsr; }
                 vsp[0] = tsr.value;
             }
             v = vsp[0];          /* re-read forwarded handle */
-            c->sp_top = vsp;     /* pop */
         }
     }
     if (SYMBOL_P(v)) { *out_id = korb_sym2id(v); return RESULT_OK(Qnil); }
@@ -124,7 +121,6 @@ static RESULT attr_check_frozen(CTX *c, VALUE self) {
     return RESULT_OK(Qnil);
 }
 static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -140,7 +136,7 @@ static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
     sp[1] = korb_ary_new(c, sp + 2);
     for (int i = 0; i < argc; i++) {
         ID name;
-        CHECK(attr_resolve_name(c, argv[i], &name, "attr_reader"));
+        CHECK(attr_resolve_name(c, sp + 2, argv[i], &name, "attr_reader"));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
@@ -154,7 +150,6 @@ static RESULT module_attr_reader(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -168,7 +163,7 @@ static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
     sp[1] = korb_ary_new(c, sp + 2);
     for (int i = 0; i < argc; i++) {
         ID name;
-        CHECK(attr_resolve_name(c, argv[i], &name, "attr_writer"));
+        CHECK(attr_resolve_name(c, sp + 2, argv[i], &name, "attr_writer"));
         const char *base = korb_id_name(name);
         long bl = strlen(base);
         char *sn = korb_xmalloc_atomic(bl + 2);
@@ -185,7 +180,6 @@ static RESULT module_attr_writer(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_attr_accessor(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -501,13 +495,12 @@ static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
  * protected.  When inherit is false, only the receiver's own method
  * table (and its prepends/includes) is consulted, not super classes. */
 static RESULT module_method_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    ID name; CHECK(name_arg_to_id(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = NULL;
@@ -543,13 +536,12 @@ static struct korb_method *find_method_with_inherit(struct korb_class *klass, ID
     return NULL;
 }
 static RESULT module_public_method_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    ID name; CHECK(name_arg_to_id(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
@@ -557,13 +549,12 @@ static RESULT module_public_method_defined_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_private_method_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    ID name; CHECK(name_arg_to_id(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
@@ -571,13 +562,12 @@ static RESULT module_private_method_defined_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_protected_method_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
-    ID name; CHECK(name_arg_to_id(c, argv[0], &name));   /* GC point (interns name) */
+    ID name; CHECK(name_arg_to_id(c, sp, argv[0], &name));   /* GC point (interns name) */
     self = sp[-argc - 1];   /* re-read: self may have moved (IDIOM A) */
     bool inherit = (argc < 2) || RTEST(argv[1]);
     struct korb_method *m = find_method_with_inherit((struct korb_class *)self, name, inherit);
