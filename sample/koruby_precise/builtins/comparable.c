@@ -449,7 +449,6 @@ static RESULT module_module_function(CTX *c, int argc, VALUE *sp) {
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */
 static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -507,7 +506,6 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#[] — read by index or symbol. */
 static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -563,7 +561,6 @@ static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#[]= */
 static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -757,7 +754,6 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#size / length */
 static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -769,13 +765,12 @@ static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
 
 /* Struct.members at the class level — return the members array. */
 static RESULT struct_class_members(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (BUILTIN_TYPE(self) != T_CLASS) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (BUILTIN_TYPE(self) != T_CLASS) return RESULT_OK(korb_ary_new(c, sp));
     VALUE members_v = korb_const_get((struct korb_class *)self, korb_intern("__members__"));
-    if (UNDEF_P(members_v)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (UNDEF_P(members_v)) return RESULT_OK(korb_ary_new(c, sp));
     return RESULT_OK(members_v);
 }
 
