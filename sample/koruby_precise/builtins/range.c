@@ -776,7 +776,6 @@ static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -786,14 +785,13 @@ static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
     if (r->exclude_end) e--;
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = UNWRAP(korb_yield(c, c->sp_top, 1, &v));
+        VALUE m = UNWRAP(korb_yield(c, sp, 1, &v));
         if (!RTEST(m)) return RESULT_OK(Qfalse);
     }
     return RESULT_OK(Qtrue);
 }
 
 static RESULT rng_any_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -803,14 +801,13 @@ static RESULT rng_any_p(CTX *c, int argc, VALUE *sp) {
     if (r->exclude_end) e--;
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = UNWRAP(korb_yield(c, c->sp_top, 1, &v));
+        VALUE m = UNWRAP(korb_yield(c, sp, 1, &v));
         if (RTEST(m)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
 }
 
 static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -820,7 +817,7 @@ static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
      * infinity is the conventional carrier for "infinite". */
     if (argc == 0 && !korb_block_given(c) &&
         (NIL_P(r->begin) || NIL_P(r->end))) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, 1.0/0.0));
+        return RESULT_OK(korb_float_new(c, sp, 1.0/0.0));
     }
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(INT2FIX(0));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
