@@ -1362,10 +1362,12 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         struct korb_string *str = (struct korb_string *)name_arg;
         namep = str->ptr; namelen = str->len;
     } else {
-        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         VALUE inspv = UNWRAP(korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL));
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
+        /* Fetch TypeError AFTER the inspect funcall's GC — a class fetched
+         * before would be a stale (retired-plane) handle by the korb_raise. */
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string", insp);
     }
