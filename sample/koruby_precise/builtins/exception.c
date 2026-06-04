@@ -188,45 +188,71 @@ static RESULT exc_cause(CTX *c, int argc, VALUE *sp) {
  * (Class)" + back-trace lines.  Ignore kwargs entirely. */
 static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    (void)argv;
 
-    VALUE msg = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
-    if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
-        msg = korb_str_new_cstr(c, c->sp_top, "");
+    /* Park result (sp[0]) + a per-part scratch string (sp[1]) across the many
+     * korb_str_new_cstr / korb_str_concat GC points: bare C-locals (msg, r)
+     * would be relocated and the next concat would deref a moved-out handle
+     * (STRESS+PURGE SEGV).  korb_str_concat may relocate its dest, so always
+     * re-capture sp[0] from its return. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[1] = UNWRAP(korb_funcall(c, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
+        sp[1] = korb_str_new_cstr(c, sp + 2, "");
     }
-    VALUE r = korb_str_new_cstr(c, c->sp_top, "");
-    korb_str_concat(c, c->sp_top, r, msg);
+    sp[0] = korb_str_new_cstr(c, sp + 2, "");
+    sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    VALUE self = sp[-argc - 1];   /* re-read after the to_s funcall GC */
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT) {
         struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
         if (k && k->name) {
             const char *kn = korb_id_name(k->name);
             if (kn && kn[0] != 0) {
-                korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, " ("));
-                korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, kn));
-                korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ")"));
+                sp[1] = korb_str_new_cstr(c, sp + 2, " (");
+                sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+                sp[1] = korb_str_new_cstr(c, sp + 2, kn);
+                sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+                sp[1] = korb_str_new_cstr(c, sp + 2, ")");
+                sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
             }
         }
     }
-    korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, "\n"));
+    sp[1] = korb_str_new_cstr(c, sp + 2, "\n");
+    sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    VALUE r = sp[0];
+    c->sp_top = sp;
     return RESULT_OK(r);
 }
 /* Exception#detailed_message — returns "message (Class)" by default,
  * or just the message if Class is RuntimeError. */
 static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    (void)argv;
 
-    VALUE msg = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(msg);
+    /* Park msg/result (sp[0]) + part scratch (sp[1]) across the to_s funcall
+     * and the str_new/concat GC points; re-read self from its slot after the
+     * funcall (a bare C-local self would be moved and the klass deref below
+     * would fault under STRESS+PURGE). */
+    sp[0] = 0; sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[0] = UNWRAP(korb_funcall(c, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    VALUE self = sp[-argc - 1];
+    if (SPECIAL_CONST_P(self)) { VALUE m = sp[0]; c->sp_top = sp; return RESULT_OK(m); }
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-    if (strcmp(kn, "RuntimeError") == 0) return RESULT_OK(msg);
-    VALUE r = korb_str_dup(c, c->sp_top, msg);
-    korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, " ("));
-    korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, kn));
-    korb_str_concat(c, c->sp_top, r, korb_str_new_cstr(c, c->sp_top, ")"));
+    if (strcmp(kn, "RuntimeError") == 0) { VALUE m = sp[0]; c->sp_top = sp; return RESULT_OK(m); }
+    sp[0] = korb_str_dup(c, sp + 2, sp[0]);
+    sp[1] = korb_str_new_cstr(c, sp + 2, " (");
+    sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    sp[1] = korb_str_new_cstr(c, sp + 2, kn);
+    sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    sp[1] = korb_str_new_cstr(c, sp + 2, ")");
+    sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    VALUE r = sp[0];
+    c->sp_top = sp;
     return RESULT_OK(r);
 }
 
