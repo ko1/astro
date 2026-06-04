@@ -782,6 +782,9 @@ void  korb_exc_set_backtrace(CTX *c, VALUE *sp, VALUE exc, int raise_line);
 
 /* method dispatch helper */
 RESULT korb_funcall(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv);
+/* korb_call(c, sp, mid, argc): stack-based dispatch — recv=sp[-1-argc],
+ * args=sp[-argc..sp-1]. Target convention (see object.c). */
+RESULT_FN RESULT korb_call(CTX *c, VALUE *sp, ID mid, int argc);
 RESULT korb_funcall_with_block(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
 

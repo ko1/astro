@@ -71,13 +71,16 @@ static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
 
 /* Range#hash — same begin / end / exclude_end? must hash equal. */
 static RESULT rng_hash(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
+    (void)argv;
 
     struct korb_range *r = (struct korb_range *)self;
-    VALUE bh = UNWRAP(korb_funcall(c, c->sp_top, r->begin, korb_intern("hash"), 0, NULL));
-    VALUE eh = UNWRAP(korb_funcall(c, c->sp_top, r->end,   korb_intern("hash"), 0, NULL));
+    sp[0] = r->begin;                                          /* recv on the stack */
+    VALUE bh = UNWRAP(korb_call(c, sp + 1, korb_intern("hash"), 0));
+    r = (struct korb_range *)sp[-argc - 1];                    /* re-read: self moved across the call */
+    sp[0] = r->end;
+    VALUE eh = UNWRAP(korb_call(c, sp + 1, korb_intern("hash"), 0));
     long bn = FIXNUM_P(bh) ? FIX2LONG(bh) : 0;
     long en = FIXNUM_P(eh) ? FIX2LONG(eh) : 0;
     long h = bn ^ (en * 0x9E3779B97F4A7C15L) ^ (r->exclude_end ? 0x5A : 0);

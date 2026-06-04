@@ -4642,6 +4642,19 @@ RESULT korb_funcall(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv
     return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
+/* korb_call — the stack-based dispatch entry (target calling convention).
+ * recv + args are ALREADY staged on the value stack by the caller:
+ *   recv at sp[-1-argc], args at sp[-argc .. sp-1].
+ * Everything is read fresh from the (GC-scanned) stack via sp, so no VALUE
+ * passes through a C-local/register that could go stale across a GC.  Callers
+ * migrate from korb_funcall(c, sp, recv, mid, argc, argv) to staging recv/args
+ * themselves + korb_call(c, sp+1+argc, mid, argc).  korb_funcall stays as a
+ * transitional wrapper until all callsites are migrated. */
+RESULT korb_call(CTX *c, VALUE *sp, ID mid, int argc) {
+    c->sp_top = sp;
+    return korb_dispatch_binop(c, sp[-1 - argc], mid, argc, sp - argc);
+}
+
 /* korb_funcall_r is an alias of korb_funcall (both RESULT-native now). */
 RESULT korb_funcall_r(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv) {
     c->sp_top = sp;
