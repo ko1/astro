@@ -319,5 +319,39 @@ normal use. Add a fresh `KORB_AUDIT_OBJECT` at any new store sink you suspect
 - [ ] Restore `c->current_frame` on **every** exit, incl. raise.
 - [ ] Run §6.
 
+## 8. Migrating an existing `c->sp_top =` write (the elimination campaign)
+
+Goal: `grep -rn 'c->sp_top *=' builtins/ node.def object.c` → **0** (Fiber
+switch aside). Classify each write and apply the matching move; verify per file
+against the §6 gate (a load-bearing park removed wrong = STRESS+PURGE SEGV).
+
+1. **Alloc-preceding** — `c->sp_top = TOP; X = aro_gc_alloc(c, SIZE);`
+   → `X = korb_alloc(c, TOP, SIZE);`. The write moves into the single wrapper.
+   These live only in object.c's handle constructors.
+2. **Staging-publish before a self-publishing helper** — `c->sp_top = sp + N;`
+   right before `korb_ary_new` / `korb_ary_push` / `korb_str_new` / … (any helper
+   that takes an `sp` and allocates). **Delete the write** and make sure the
+   helper is passed `sp + N` (or higher) as its staging base: the helper's
+   `korb_alloc` republishes a top ≥ `sp + N`, so the caller's `sp[0..N-1]` stay
+   scanned. No explicit write needed.
+3. **Park across a non-alloc GC point** — `c->sp_top = sp + N; korb_funcall(…)`
+   / `korb_yield(…)` / `korb_intern(…)`, holding `sp[0..N-1]` live across it.
+   This is the retired IDIOM B. → **frame park** (IDIOM C): move the live values
+   into a synthetic frame's `last_line`/`last_match` (or re-fetch, IDIOM E, for
+   >2). The frame chain is scanned regardless of `c->sp_top`.
+
+**The case-3 caveat — verify before deleting.** Case 2's safety relies on the
+callee threading `sp` down to its `korb_alloc`. A bare `korb_funcall` does NOT
+take a staging `sp` from you — its callee runs at its own stack level — so a
+value you staged below it is kept live only as long as `c->sp_top` covers it.
+That is exactly why these were IDIOM B. **Do not just delete a case-3 write** —
+convert it to a frame park, or the staged slot silently leaves the scan range.
+When unsure which case you have, treat it as case 3 (frame park is always safe).
+
+**Same pass: adopt `SP_SET`.** While editing a file, convert its `sp[i] = v`
+value-stack stores to `SP_SET(sp, i, v)` (§6.1) so the object audit covers them.
+Touch each site once.
+
 Cross-refs: `docs/array_moving_gc.md` (campaign log), `docs/stress_rooting_spec.md`
-(iterator P1/P2 origin), memory `[[project_koruby_precise_gc_bump_migration]]`.
+(iterator P1/P2 origin), memory `[[project_koruby_precise_gc_bump_migration]]`,
+`[[sp_top-design-rule]]`, `[[project_koruby_precise_sp_threading]]`.
