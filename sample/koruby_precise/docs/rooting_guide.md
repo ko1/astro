@@ -14,6 +14,38 @@ rooting hygiene.
 
 ---
 
+## 0. THE ABSOLUTE RULE — never write `c->sp_top`
+
+**Writing `c->sp_top` is forbidden.** Not "discouraged", not "only in alloc
+helpers" — **forbidden everywhere**: cfunc bodies, AST dispatchers, *and* the
+alloc helpers themselves. Any `c->sp_top = …` is debt to delete, not a pattern
+to copy. The field itself is being eliminated.
+
+**Why:** the live root-stack top is *threaded as the `sp` parameter* down the
+call chain (register-resident). Storing it back into the CTX (`c->sp_top = …`)
+creates a second source of truth that goes out of sync — a caller bumps it to
+hold a slot, an inner alloc helper rewinds it with `c->sp_top = sp`, and the
+caller's slot silently falls out of the scanned range → stale handle → SEGV.
+This exact class burned us repeatedly. The fix is structural: **the GC reads the
+root boundary from the threaded `sp`, never from a stored field.**
+
+**What this means when you write code:**
+- An alloc helper takes `(CTX *c, VALUE *sp, …)` and **passes `sp` onward** to the
+  GC. It does not store it.
+- To hold scratch across an allocation, pass `sp + N` to the helper — never
+  reserve by writing `c->sp_top`.
+- To root a handle across a non-alloc GC point (funcall / yield / intern), use a
+  **frame park** (IDIOM C) or `yield_self_chain` (IDIOM C-variant). Those write
+  `c->current_frame` / `c->yield_self_chain`, **never** `c->sp_top`.
+- If a handle already sits in a scanned slot (`self`, an arg), just **re-read** it
+  (IDIOM A).
+
+The idioms below are written to this rule. IDIOM B (the old "bump `c->sp_top` to
+park") is **retired and forbidden**; it is listed only so you recognise and
+remove it.
+
+---
+
 ## 1. What is a *moving handle*?
 
 Every object allocated through `aro_gc_alloc` moves. In koruby_precise that is:
@@ -82,25 +114,24 @@ When a loop both allocates and reads the array, re-derive `a` **inside the
 loop / in the condition**:
 ```c
 while (((struct korb_array *)sp[-argc-1])->len < need)   // re-derive in the condition!
-    korb_ary_push(c, c->sp_top, sp[-argc-1], Qnil);      // push to the re-read handle
+    korb_ary_push(c, sp, sp[-argc-1], Qnil);             // pass threaded sp as staging base — NOT c->sp_top
 ```
 
-### IDIOM B — value-stack park (for things with no slot to re-read)
-A handle held only in a C-local — e.g. a **by-value function argument**, a
-freshly-coerced value, a per-element temporary — has no receiver/arg slot.
-Park it on the value stack (it then sits in the scan range) and read it back:
-
-```c
-VALUE *const root = c->sp_top;
-root[0] = x; root[1] = y;
-c->sp_top = root + 2;                 // publish: now [stack_base, sp_top) covers root[0..1]
-RESULT r = korb_funcall(c, root[0], id, 1, &root[1]);   // GC point
-... use root[0] / root[1] (forwarded) ...
-c->sp_top = root;                     // pop on EVERY exit path
-```
-- Use **explicit `RESULT` checks, not `UNWRAP`**, on the parked region — `UNWRAP`
-  early-returns on raise and would **leak the park** (and skip the pop).
-- Canonical: `korb_to_int_or_raise`, `str_coerce_arg`, `ary_sort_compare`.
+### IDIOM B — value-stack park ⚠️ FORBIDDEN (writes `c->sp_top` — being removed)
+> **Do NOT use this.** Writing `c->sp_top` from a cfunc / dispatcher / alloc
+> helper is **forbidden** (see §0). The old "park by bumping `c->sp_top`" pattern
+> is the single biggest source of remaining writes and is being eliminated
+> wholesale. If you find it in the code, it is debt to migrate, not an example to
+> copy. Replacements:
+> - **≤2 handles across a GC point** → frame park (IDIOM C): the frame's
+>   `last_line` / `last_match` slots are scanned with no `c->sp_top` write.
+> - **a handle that already lives in a scanned slot** (`self`, an arg) → just
+>   **re-read** it (IDIOM A) — no park needed.
+> - **>2 handles** → re-fetch from a stable container each use (IDIOM E), or push
+>   one frame per pair.
+>
+> The historical form was `VALUE *root = c->sp_top; …; c->sp_top = root + N; …;
+> c->sp_top = root;`. Every such site must go.
 
 ### IDIOM C — synthetic frame park (for handles that must survive a yield)
 `korb_yield` / `proc_call` run the block body at a **lower** `sp_top` (the
@@ -138,24 +169,58 @@ return RESULT_OK(selfr);
   value-stack parks survive), then yield each element afterward** from a frame
   (see `str_split`, `struct_each`).
 
-### IDIOM D — walk cursor (class hierarchy / linked walks)
-Walking `k = k->super` (or includes/prepends) while each step is a GC point: the
-cursor moves. Park the cursor on the value stack and re-derive the class from
-the slot before every use, advance via the re-read super:
+#### IDIOM C-variant — `yield_self_chain` park (one handle, across arbitrary eval)
+When you need to root **a single handle across a whole sub-evaluation** (not a
+loop) — e.g. a node evaluator that must preserve a saved value across `body` +
+`ensure` + `rescue` clauses — pushing a full synthetic `korb_frame` is overkill.
+`c->yield_self_chain` is a lighter LIFO of `struct korb_yield_self_save {VALUE
+self; struct korb_yield_self_save *prev;}` that `visit_roots` also walks
+regardless of `sp_top`, so a slot parked there survives a raise-unwind too:
 
 ```c
-sp[0] = korb_ary_new(c, sp + 1);   // result
-sp[1] = self;                      // walk cursor
-c->sp_top = sp + 2;
-while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
-    struct korb_class *k = (struct korb_class *)sp[1];
-    for (int i = k->includes_cnt-1; i >= 0; i--)
-        push_module(c, sp[0], ((struct korb_class *)sp[1])->includes[i]);  // re-derive per push
-    sp[1] = (VALUE)((struct korb_class *)sp[1])->super;                    // advance via re-read
-}
-c->sp_top = sp;
+struct korb_yield_self_save save = { .self = x, .prev = c->yield_self_chain };
+c->yield_self_chain = &save;          // park
+RESULT r = EVAL_ARG(c, some_node);    // GC points, may raise/unwind
+x = save.self;                        // re-read forwarded handle
+c->yield_self_chain = save.prev;      // unpark on EVERY exit path
 ```
-Canonical: `class_ancestors`.
+- **LIFO discipline:** nest saves so the inner one pops first (`save.prev`
+  captures the chain *at push time*; unpark = restore to `save.prev`). Re-park
+  fresh after a `goto retry`.
+- **Idempotent unpark:** writing `c->yield_self_chain = save.prev` twice is safe
+  *iff* nothing else pushed since — handy when several exit paths share a tail.
+- Canonical: `node_ensure` / `node_rescue` / `node_rescue_else` parking the saved
+  `$!` (`prev_bang`) across the body/rescue/ensure clauses — a raw C-local there
+  goes stale and gets written back into `$!`, so a later bare `raise` re-raises a
+  moved-out exception (commit `b89a68b9`).
+
+### IDIOM D — walk cursor (class hierarchy / linked walks)
+Walking `k = k->super` (or includes/prepends) while each step is a GC point: the
+cursor moves. Park the result **and** the cursor in a **frame** (two slots —
+`last_line` / `last_match`), re-derive the class from the slot before every use,
+and advance via the re-read super. **No `c->sp_top` write:**
+
+```c
+struct korb_frame fr = {
+    .prev = c->current_frame, .self = c->current_frame->self,
+    .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+    .current_class = c->current_frame->current_class,
+    .current_file = c->current_frame->current_file,
+    .last_line  = korb_ary_new(c, sp),   // result (sp = the threaded staging base)
+    .last_match = self,                  // walk cursor
+};
+c->current_frame = &fr;
+while (fr.last_match != 0 && !SPECIAL_CONST_P(fr.last_match)) {
+    struct korb_class *k = (struct korb_class *)fr.last_match;
+    for (int i = k->includes_cnt-1; i >= 0; i--)
+        push_module(c, fr.last_line, ((struct korb_class *)fr.last_match)->includes[i]);
+    fr.last_match = (VALUE)((struct korb_class *)fr.last_match)->super;   // advance via re-read
+}
+VALUE result = fr.last_line;
+c->current_frame = fr.prev;              // restore on EVERY exit
+return RESULT_OK(result);
+```
+Canonical: `class_ancestors` (frame-park form).
 
 ### IDIOM E — re-fetch from a stable container (when slot pressure is tight)
 If you can't spare parking slots, re-derive a handle from a **stable** place each
@@ -166,24 +231,26 @@ Canonical: `_struct_inspect`, `struct_to_h`.
 
 ## 4. Special hazards (do NOT do these)
 
+- **Writing `c->sp_top` anywhere.** The cardinal sin — see §0.
 - **libc shadow buffers for moving handles.** Copying moving VALUEs into a
   `korb_xmalloc` array and holding it across a GC point: the heap pointers inside
-  the libc buffer are *outside* the scan range → stale. Park the sources on the
-  **value stack** instead. (Old `ary_concat` / `str_prepend` bug.)
+  the libc buffer are *outside* the scan range → stale. Park the sources in a
+  **frame** (IDIOM C) instead. (Old `ary_concat` / `str_prepend` bug.)
 - **Returning the entry-time `self`** after an internal GC. Re-read it.
 - **`a->len` / `members->len` in a loop condition** read from a stale cached
   handle. Re-derive in the condition.
 - **A second `korb_funcall` on the same by-value arg** after a `respond_to?`
-  funcall — the arg moved. Re-read it (IDIOM A/B) before the second call.
-- **`korb_yield` with value-stack parks above the block env** — use IDIOM C.
+  funcall — the arg moved. Re-read it (IDIOM A) before the second call.
+- **`korb_yield` with handles held in C-locals across the body** — use IDIOM C.
 
-## 5. The `c->sp_top` convention (strict)
-- **Allowed:** a builtin reserves its own park slots before a loop
-  (`c->sp_top = sp + K`) and restores after (`c->sp_top = sp`). IDIOM B/C/D do this.
-- **Forbidden:** writing `c->sp_top = sp + N` at a `korb_ary_push` / `korb_ary_aset`
-  *call site* — the push wrapper handles its own staging. Alloc helpers
-  (`korb_ary_new_capa`, …) set `c->sp_top` internally; the caller only passes the
-  staging base. See `[[sp_top_design_rule]]`.
+## 5. The `c->sp_top` rule
+**Never write `c->sp_top`.** This section used to sanction "a builtin reserves
+park slots via `c->sp_top = sp + K`" — that is now **withdrawn and forbidden**
+(see §0). `sp` is threaded as a parameter and carried to the GC by the alloc
+helper; nothing stores it back into the CTX. To hold scratch across an
+allocation, pass `sp + N` to the helper. To park across a non-alloc GC point,
+use a frame (IDIOM C) or `yield_self_chain` (IDIOM C-variant). Migration of the
+remaining writes is the top-priority campaign (`[[project_koruby_precise_sp_threading]]`).
 
 ## 6. Verification discipline (REQUIRED for every change)
 
@@ -203,15 +270,47 @@ The STRESS+PURGE sweep **is** the enforcement mechanism — a stale handle that
 escapes review is caught as a deterministic SEGV. Keep the gate in CI-spirit:
 no change lands that increases the SEGV count.
 
+### 6.1 RESULT-audit — pinpoint a stale handle to `file:line` (debugging aid)
+The STRESS+PURGE SEGV tells you a stale handle *exists* but crashes at the
+*deref*, often far from where the handle went stale. The **RESULT-audit** build
+(`-DKORB_RESULT_AUDIT`, fully `#ifdef`-gated → zero cost in release) names the
+exact site. It has three detectors, all keyed off the copy GC's to-space bounds
+(`aro_gc_addr_stale`) and a logical "GC-could-have-fired" clock
+(`korb_g_gc_clock`, ticked at every alloc via the `AROH_GC_SAFEPOINT()` contract
+hook — deterministic, independent of whether STRESS actually collected):
+
+1. **construction-time** (`RESULT_MK`): fires when a *stale* raw VALUE is wrapped
+   into a RESULT → catches "I returned an already-moved handle".
+2. **held-across-GC** (`gc_clock` stamped in RESULT, checked by `RESULT_VAL` /
+   `UNWRAP`): fires when a RESULT's `.value` is read after the clock advanced →
+   catches "I held a RESULT across a GC point then used `.value`".
+3. **store-time** (`KORB_AUDIT_LIVING(v, "what")`): fires when a stale value is
+   *written* into a sink (`korb_gvar_set`, `korb_ivar_set`) → catches the
+   save/restore-of-a-raw-snapshot bug at the store, the closest point to the root.
+
+Usage:
+```
+rm -f *.o koruby_precise && CCACHE_DISABLE=1 make CC="gcc -DKORB_RESULT_AUDIT"
+ASTRO_GC_STRESS=1 ASTRO_GC_PURGE=1 gdb -batch -ex run -ex 'bt 12' \
+    --args ./koruby_precise test/cruby_runner/run_rubyspec.rb <spec>
+```
+The `*** RESULT-AUDIT(...)` line gives `file:line`; the `bt` gives the callsite.
+After the fix, the audit run must be silent **and** the release SEGV must be
+gone. **Restore the release binary** (`rm -f *.o koruby_precise && make`) before
+normal use. Add a fresh `KORB_AUDIT_LIVING` at any new store sink you suspect.
+Full design: memory `[[project_koruby_result_audit]]`.
+
 ## 7. Writing-a-builtin checklist
+- [ ] **No `c->sp_top = …` anywhere** (per §0). Pass `sp` / `sp + N` to alloc
+      helpers; never store the root top in the CTX.
 - [ ] Is `self`/each arg a moving handle (per §1)?
 - [ ] Does the body cross a GC point (per §2) before its last use / return?
-- [ ] If yes: pick an idiom — A (re-read slot) by default; B (park) for by-value
-      temporaries; C (frame) if a yield is involved; D (cursor) for walks; E
-      (re-fetch) under slot pressure.
+- [ ] If yes: pick an idiom — A (re-read slot) by default; C (frame) for handles
+      with no slot / across a yield; D (frame cursor) for walks; E (re-fetch)
+      under slot pressure. **Never B** (retired/forbidden).
 - [ ] Re-derive array/length in loop conditions, not from a cached handle.
 - [ ] Return the **re-read** handle.
-- [ ] Pop `c->sp_top` / restore `c->current_frame` on **every** exit, incl. raise.
+- [ ] Restore `c->current_frame` on **every** exit, incl. raise.
 - [ ] Run §6.
 
 Cross-refs: `docs/array_moving_gc.md` (campaign log), `docs/stress_rooting_spec.md`
