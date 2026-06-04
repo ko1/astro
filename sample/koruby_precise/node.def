@@ -1903,6 +1903,14 @@ node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
     struct korb_frame *const _saved_frame = c->current_frame;
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    /* Park the saved $! across body + rescue_body: it is a raw moving handle
+     * written back into $! at the restores below, and both eval arms allocate
+     * (GC).  A C-local prev_bang would go stale → $! holds a retired-plane
+     * handle → a later bare `raise` re-raises a moved-out exception (SEGV under
+     * STRESS+PURGE).  visit_roots forwards yield_self_chain regardless of sp;
+     * re-read _bang_save.self at every exit, unpark to _bang_save.prev. */
+    struct korb_yield_self_save _bang_save = { .self = prev_bang, .prev = c->yield_self_chain };
+    c->yield_self_chain = &_bang_save;
     RESULT _br = EVAL_ARG(c, body);
     /* Rewind to the construct's control frame: a raise inside `body` unwinds
      * via RESULT propagation and may leave c->current_frame dangling (a popped
@@ -1954,9 +1962,13 @@ retry:;
         }
         /* `retry` inside the rescue body re-evaluates the begin body. */
         if (_rr.state == KORB_RETRY) {
+            prev_bang = _bang_save.self;             /* forwarded across GCs */
+            c->yield_self_chain = _bang_save.prev;   /* unpark before re-parking at retry */
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry;
         }
+        prev_bang = _bang_save.self;                 /* forwarded across GCs */
+        c->yield_self_chain = _bang_save.prev;       /* unpark */
         /* If rescue body re-raised (or raised a new exception), $! is
          * the new exception — leave it as-is.  Only restore prev_bang
          * when rescue completed normally. */
@@ -1968,6 +1980,7 @@ retry:;
         return RESULT_OK(v);
     }
     /* Body did not raise (or no rescue body): propagate body's RESULT. */
+    c->yield_self_chain = _bang_save.prev;           /* unpark */
     if (_br.state != KORB_NORMAL) return _br;
     return RESULT_OK(v);
 }
@@ -1992,6 +2005,12 @@ node_rescue_else(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
 retry_re:;
     bool rescued = false;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    /* Park the saved $! across body + rescue_body (+ else_body): a raw moving
+     * handle written back into $! at the restores below.  See node_rescue's
+     * _bang_save note — a C-local would go stale across the eval GCs and leave
+     * $! pointing into a retired plane (SEGV under STRESS+PURGE). */
+    struct korb_yield_self_save _bang_save = { .self = prev_bang, .prev = c->yield_self_chain };
+    c->yield_self_chain = &_bang_save;
     RESULT _br = EVAL_ARG(c, body);
     c->current_frame = _saved_frame;
     VALUE v = _br.value;
@@ -2027,13 +2046,17 @@ retry_re:;
             c->sp_top = _rsp;
         }
         if (_rr.state == KORB_RETRY) {
+            prev_bang = _bang_save.self;             /* forwarded across GCs */
+            c->yield_self_chain = _bang_save.prev;   /* unpark before re-parking at retry */
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry_re;
         }
         if (_rr.state != KORB_RAISE) {
+            prev_bang = _bang_save.self;             /* forwarded across GCs */
             korb_gvar_set(korb_intern("$!"), prev_bang);
         }
     }
+    c->yield_self_chain = _bang_save.prev;           /* unpark (both rescue / no-rescue paths) */
     /* No rescue was triggered → else body replaces the result. */
     if (!rescued && cur_state == KORB_NORMAL && else_body) {
         RESULT _er = EVAL_ARG(c, else_body);
@@ -2702,6 +2725,16 @@ node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
      * the matching note in node_rescue. */
     struct korb_frame *const _saved_frame = c->current_frame;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    /* Park the saved $! (prev_bang) across BOTH body and ensure: it is a raw
+     * moving handle that the restore below writes back into $!.  body +
+     * ensure_body run arbitrary allocating code (GC), so a C-local prev_bang
+     * goes stale → $! ends up holding a retired-plane handle → a later bare
+     * `raise` re-raises a moved-out exception (SEGV under STRESS+PURGE).  Park
+     * on yield_self_chain (forwarded by visit_roots regardless of sp); this
+     * outer save must nest OUTSIDE the _br_save below (LIFO pop order).  Found
+     * by the RESULT-audit living check firing at korb_gvar_set. */
+    struct korb_yield_self_save _bang_save = { .self = prev_bang, .prev = c->yield_self_chain };
+    c->yield_self_chain = &_bang_save;
     /* Run body — capture its RESULT (we'll always run the ensure clause,
      * then propagate the saved state). */
     RESULT _br = EVAL_ARG(c, body);
@@ -2723,6 +2756,8 @@ node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
     RESULT _er = EVAL_ARG(c, ensure_body);
     _br.value = _br_save.self;          /* forwarded across the ensure GC */
     c->yield_self_chain = _br_save.prev;
+    prev_bang = _bang_save.self;        /* re-read forwarded prev_bang before unpark */
+    c->yield_self_chain = _bang_save.prev;
     /* If the ensure body itself raised / broke / returned, it wins.
      * Otherwise propagate the body's RESULT (including its state). */
     if (_er.state != KORB_NORMAL) {
