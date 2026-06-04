@@ -1260,11 +1260,11 @@ static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
 /* Module#private_class_method(:foo, ...) — mark singleton method as
  * private.  Stub-level: just set visibility flag.  We keep things
  * simple — return self regardless. */
-static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
+static RESULT class_visibility_set(CTX *c, VALUE *sp, VALUE self, int argc, VALUE *argv,
                                   enum korb_visibility v) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(self);
     extern struct korb_class *korb_singleton_class_of(CTX *c, VALUE *sp, struct korb_class *);
-    struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
+    struct korb_class *meta = korb_singleton_class_of(c, sp, (struct korb_class *)self);
     /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];
@@ -1276,10 +1276,10 @@ static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         if (!SYMBOL_P(arg) &&
             (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
             !SPECIAL_CONST_P(arg)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                arg = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("to_str"), 0, NULL));
+                arg = UNWRAP(korb_funcall(c, sp, arg, korb_intern("to_str"), 0, NULL));
             }
         }
         ID name = 0;
@@ -1308,24 +1308,21 @@ static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
     return RESULT_OK(self);
 }
 static RESULT module_private_class_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return class_visibility_set(c, self, argc, argv, KORB_VIS_PRIVATE);
+    return class_visibility_set(c, sp, self, argc, argv, KORB_VIS_PRIVATE);
 }
 
 static RESULT module_public_class_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return class_visibility_set(c, self, argc, argv, KORB_VIS_PUBLIC);
+    return class_visibility_set(c, sp, self, argc, argv, KORB_VIS_PUBLIC);
 }
 
 /* Module#private_constant / public_constant — visibility on constants. */
 static RESULT module_private_constant(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1351,7 +1348,6 @@ static RESULT module_private_constant(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(self);
 }
 static RESULT module_public_constant(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1374,17 +1370,16 @@ static RESULT module_public_constant(CTX *c, int argc, VALUE *sp) {
  * stack, innermost first.  Just walks c->current_frame->cref which already mirrors
  * the source's `module M; class C; ...; end; end` nesting. */
 static RESULT module_class_nesting(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    sp[0] = korb_ary_new(c, sp);   /* park the result across the per-cref push GCs */
     for (struct korb_cref *cur = c->current_frame->cref; cur; cur = cur->prev) {
         if (cur->klass && cur->klass != KORB_VM(c)->object_class) {
-            korb_ary_push(c, c->sp_top, arr, (VALUE)cur->klass);
+            korb_ary_push(c, sp + 1, sp[0], (VALUE)cur->klass);
         }
     }
-    return RESULT_OK(arr);
+    return RESULT_OK(sp[0]);
 }
 
 static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
