@@ -277,11 +277,19 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
 
 static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
     /* out parked at vsp[0], source at vsp[1]; push stages at vsp+2 and the
-     * source is re-read each iteration via korb_ary_aref. */
+     * source is re-read each iteration via korb_ary_aref.  Park arr at vsp[1]
+     * BEFORE korb_ary_new — its GC relocates the by-value arr, so the
+     * BUILTIN_TYPE check would otherwise deref a retired-plane object
+     * (io/select STRESS+PURGE). */
     VALUE *const vsp = c->sp_top;
-    vsp[0] = korb_ary_new(c, vsp + 2);
-    if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return vsp[0];
+    vsp[0] = 0;
     vsp[1] = arr;
+    c->sp_top = vsp + 2;
+    vsp[0] = korb_ary_new(c, vsp + 2);
+    arr = vsp[1];   /* re-read forwarded arr */
+    if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
+        VALUE empty = vsp[0]; c->sp_top = vsp; return empty;
+    }
     long n = ((struct korb_array *)arr)->len;
     for (long i = 0; i < n; i++) {
         VALUE el = korb_ary_aref(vsp[1], i);
@@ -291,7 +299,9 @@ static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
         if (fd < 0) continue;
         if (FD_ISSET(fd, set)) korb_ary_push(c, vsp + 2, vsp[0], korb_ary_aref(vsp[1], i));
     }
-    return vsp[0];
+    VALUE result = vsp[0];
+    c->sp_top = vsp;
+    return result;
 }
 
 /* IO.popen(cmd[, mode]) [{|io| ...}]
@@ -461,9 +471,19 @@ RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
      * the korb_select_collect_ready calls (which scratch from c->sp_top) and
      * the pushes stage above the parked result. */
     sp[0] = korb_ary_new_capa(c, sp + 1, 3);
-    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, rs, &rset));
-    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, ws, &wset));
-    korb_ary_push(c, sp + 1, sp[0], korb_select_collect_ready(c, es, &eset));
+    /* korb_select_collect_ready fires GC (builds a fresh Array), which moves
+     * the parked result sp[0].  Compute it into a local FIRST so the C
+     * arg-eval order can't read sp[0] before that GC and hand korb_ary_push a
+     * stale (retired-plane) ret array under STRESS+PURGE — re-read sp[0] in
+     * the push's args afterwards. */
+    /* rs/ws/es (C-locals) went stale across korb_ary_new_capa above — re-read
+     * the forwarded arg slots for each collect call. */
+    VALUE ready_r = korb_select_collect_ready(c, (argc >= 1) ? argv[0] : Qnil, &rset);
+    korb_ary_push(c, sp + 1, sp[0], ready_r);
+    VALUE ready_w = korb_select_collect_ready(c, (argc >= 2) ? argv[1] : Qnil, &wset);
+    korb_ary_push(c, sp + 1, sp[0], ready_w);
+    VALUE ready_e = korb_select_collect_ready(c, (argc >= 3) ? argv[2] : Qnil, &eset);
+    korb_ary_push(c, sp + 1, sp[0], ready_e);
     return RESULT_OK(sp[0]);
 }
 
