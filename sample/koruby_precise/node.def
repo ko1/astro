@@ -1893,7 +1893,20 @@ node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
 {
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    /* Park the rescue frame's self across the body EVAL.  When the body raises,
+     * the raise-unwind can leave c->current_frame->self pointing at a moved-out
+     * (retired-plane) object — confirmed by instrumentation: the rescue body
+     * (e.g. an Enumerator's `rescue StopIteration`, which calls
+     * self.__rescue_class_check) then dispatches on the stale self and SEGVs
+     * under STRESS+PURGE.  Restore the GC-forwarded value before running the
+     * rescue.  (Balanced per `retry` iteration; the body NORMAL path restores
+     * the same forwarded value, a no-op.) */
+    VALUE *const _self_root = AROH_ROOT_STACK_TOP(c);
+    _self_root[0] = c->current_frame->self;
+    AROH_ROOT_STACK_SET_TOP(c, _self_root + 1);
     RESULT _br = EVAL_ARG(c, body);
+    c->current_frame->self = _self_root[0];
+    AROH_ROOT_STACK_SET_TOP(c, _self_root);
     VALUE v = _br.value;
     if (_br.state == KORB_RAISE && rescue_body) {
         VALUE exc = _br.value;
