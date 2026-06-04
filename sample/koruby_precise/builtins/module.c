@@ -1048,55 +1048,52 @@ static RESULT class_name(CTX *c, int argc, VALUE *sp) {
  * korb_ary_push and the recursion, so we take the array by its (scanned)
  * parked slot — re-read *arr_slot after each GC — and park m on the value
  * stack and re-read it after the push (IDIOM B/D). */
-static void ancestors_push_module(CTX *c, VALUE *arr_slot, struct korb_class *m) {
+static void ancestors_push_module(CTX *c, VALUE *sp, VALUE *arr_slot, struct korb_class *m) {
     if (!m) return;
-    VALUE *const msp = c->sp_top;
-    msp[0] = (VALUE)m;            /* park m */
-    c->sp_top = msp + 1;
+    VALUE *const msp = sp;
+    msp[0] = (VALUE)m;            /* park m at sp[0]; korb_ary_push(c, sp+1) and
+                                    the recursion (sp+1) keep it scanned */
     struct korb_array *a = (struct korb_array *)*arr_slot;
     for (long j = 0; j < a->len; j++) {
-        if (korb_ary_items(a)[j] == msp[0]) { c->sp_top = msp; return; }
+        if (korb_ary_items(a)[j] == msp[0]) { return; }
     }
-    korb_ary_push(c, c->sp_top, *arr_slot, msp[0]);   /* GC: *arr_slot/msp[0] survive */
+    korb_ary_push(c, sp + 1, *arr_slot, msp[0]);   /* GC: *arr_slot/msp[0] survive */
     /* Recurse into m's own includes (latest-include first to match
      * CRuby's "module that is included later sits earlier in
      * ancestors").  Re-read m from msp[0] each iteration. */
     for (int32_t i = (int32_t)((struct korb_class *)msp[0])->includes_cnt - 1; i >= 0; i--) {
-        ancestors_push_module(c, arr_slot, ((struct korb_class *)msp[0])->includes[i]);
+        ancestors_push_module(c, sp + 1, arr_slot, ((struct korb_class *)msp[0])->includes[i]);
     }
-    c->sp_top = msp;
 }
 
 static RESULT class_ancestors(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_ary_new(c, sp));
     /* The result array and every class on the super/include/prepend walk are
      * moving arena handles, and each ancestors_push_module is a korb_ary_push
      * (GC point).  Park the array (sp[0]) and the walk cursor (sp[1]) and
-     * re-derive the class from sp[1] before each push. */
+     * re-derive the class from sp[1] before each push; ancestors_push_module
+     * is given sp+2 (above both parks).  korb_ary_new(c, sp+2) publishes sp+2
+     * before its GC, covering the parks. */
     sp[1] = self;                      /* park cursor BEFORE the alloc GC */
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new(c, sp + 2);   /* stage above both parks */
     while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
         struct korb_class *k = (struct korb_class *)sp[1];
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, &sp[0], ((struct korb_class *)sp[1])->prepends[i]);
+            ancestors_push_module(c, sp + 2, &sp[0], ((struct korb_class *)sp[1])->prepends[i]);
         }
-        ancestors_push_module(c, &sp[0], (struct korb_class *)sp[1]);
+        ancestors_push_module(c, sp + 2, &sp[0], (struct korb_class *)sp[1]);
         for (int32_t i = (int32_t)((struct korb_class *)sp[1])->includes_cnt - 1; i >= 0; i--) {
-            ancestors_push_module(c, &sp[0], ((struct korb_class *)sp[1])->includes[i]);
+            ancestors_push_module(c, sp + 2, &sp[0], ((struct korb_class *)sp[1])->includes[i]);
         }
         sp[1] = (VALUE)((struct korb_class *)sp[1])->super;
     }
     VALUE result = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(result);
 }
 static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1112,7 +1109,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
         if (cur && cur->name == korb_intern("(singleton)")) {
             meta = cur;
         } else {
-            meta = korb_class_new(c, c->sp_top, korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
+            meta = korb_class_new(c, sp, korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
             /* korb_class_new is a GC point: self/o and the old class cur are
              * moving and the C-locals are now stale.  Re-derive both from the
              * forwarded receiver slot before touching cur->ivar_* / o->klass. */
@@ -1138,7 +1135,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
         }
     } else if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
         /* extending a class extends its metaclass — include into singleton */
-        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
+        struct korb_class *meta = korb_singleton_class_of(c, sp, (struct korb_class *)self);
         for (int i = 0; i < argc; i++) {
             if (!SPECIAL_CONST_P(argv[i]) &&
                 (BUILTIN_TYPE(argv[i]) == T_MODULE || BUILTIN_TYPE(argv[i]) == T_CLASS)) {
@@ -1157,7 +1154,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
             /* Re-read self from its slot: a prior korb_class_new / extended
              * hook funcall (GC points) may have moved the receiver. */
             VALUE obj_v = sp[-argc - 1];
-            CHECK(korb_funcall(c, c->sp_top, argv[i], korb_intern("extended"), 1, &obj_v));
+            CHECK(korb_funcall(c, sp, argv[i], korb_intern("extended"), 1, &obj_v));
         }
     }
     return RESULT_OK(sp[-argc - 1]);
