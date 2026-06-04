@@ -328,7 +328,6 @@ static RESULT obj_define_singleton_method(CTX *c, int argc, VALUE *sp) {
 
 /* Class#superclass */
 static RESULT class_superclass(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -572,9 +571,9 @@ static RESULT module_protected_method_defined_p(CTX *c, int argc, VALUE *sp) {
  * protected_instance_methods — visibility-filtered list.  Only own
  * methods (no inherited) since the existing instance_methods walks
  * super for inherited. */
-static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
+static VALUE module_methods_by_vis(CTX *c, VALUE *sp, VALUE self, int argc, VALUE *argv,
                                      enum korb_visibility vis) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new(c, c->sp_top);
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new(c, sp);
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
     /* Park the result array (msp[0]) and the current class (msp[1]) across
      * the per-method korb_ary_push / korb_id2sym GC points — classes are
@@ -582,7 +581,7 @@ static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
      * are libc (non-moving), so an entry pointer `e` stays valid across GC;
      * only the class struct (holding the buckets ptr) moves, so re-read it
      * from msp[1] each time. */
-    VALUE *const msp = c->sp_top;
+    VALUE *const msp = sp;
     msp[0] = self;                          /* park class BEFORE korb_ary_new GC */
     msp[1] = korb_ary_new(c, msp + 1);      /* result array (msp[0] stays scanned) */
     bool first = true;
@@ -610,47 +609,42 @@ static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
     return msp[1];
 }
 static RESULT module_private_instance_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(module_methods_by_vis(c, self, argc, argv, KORB_VIS_PRIVATE));
+    return RESULT_OK(module_methods_by_vis(c, sp, self, argc, argv, KORB_VIS_PRIVATE));
 }
 static RESULT module_public_instance_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(module_methods_by_vis(c, self, argc, argv, KORB_VIS_PUBLIC));
+    return RESULT_OK(module_methods_by_vis(c, sp, self, argc, argv, KORB_VIS_PUBLIC));
 }
 static RESULT module_protected_instance_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(module_methods_by_vis(c, self, argc, argv, KORB_VIS_PROTECTED));
+    return RESULT_OK(module_methods_by_vis(c, sp, self, argc, argv, KORB_VIS_PROTECTED));
 }
 
 /* Module#constants — sym list of declared constants. */
 static RESULT module_constants(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        return RESULT_OK(korb_ary_new(c, c->sp_top));
+        return RESULT_OK(korb_ary_new(c, sp));
     }
-    /* Park the result across korb_ary_new + the per-const korb_ary_push GC
-     * points; re-read self from the receiver slot for the loop init (const
-     * entries are libc-stable, so following e->next is safe). */
-    VALUE *const vsp = c->sp_top;
+    /* Park the result at vsp[0] across the per-const korb_ary_push GC points;
+     * re-read self from the receiver slot for the loop init (const entries are
+     * libc-stable, so following e->next is safe).  korb_ary_push(c, vsp+1)
+     * publishes vsp+1 before its GC, keeping vsp[0] scanned. */
+    VALUE *const vsp = sp;
     vsp[0] = korb_ary_new(c, vsp);
-    c->sp_top = vsp + 1;
     for (struct korb_const_entry *e = ((struct korb_class *)sp[-argc - 1])->constants; e; e = e->next) {
         korb_ary_push(c, vsp + 1, vsp[0], korb_id2sym(e->name));
     }
     VALUE r = vsp[0];
-    c->sp_top = vsp;
     return RESULT_OK(r);
 }
 
