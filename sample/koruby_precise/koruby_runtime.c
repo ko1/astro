@@ -16,6 +16,25 @@
 
 extern struct koruby_option OPTION;
 
+#ifdef KORB_RESULT_AUDIT
+/* Logical "a GC could have fired here" clock — ticked at every alloc
+ * (KORB_GC_CLOCK_TICK in aro_gc_alloc).  RESULT stamps it at construction; a
+ * heap .value read at a different clock = the RESULT was held across a
+ * potential collection without re-reading from a scanned slot. */
+uint32_t korb_g_gc_clock = 0;
+void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
+                            const char *file, int line) {
+    fprintf(stderr,
+        "\n*** RESULT-AUDIT: stale RESULT.value=%p read at %s:%d\n"
+        "    (stamped @gc_clock=%u, now=%u — %u alloc/GC-points crossed "
+        "while the RESULT was held)\n",
+        (void *)v, file, line,
+        (unsigned)stamp, (unsigned)now, (unsigned)(now - stamp));
+    fflush(stderr);
+    abort();
+}
+#endif
+
 /* ---------------------------------------------------------------------------
  * Precise GC root scan + per-type edge walk.
  *

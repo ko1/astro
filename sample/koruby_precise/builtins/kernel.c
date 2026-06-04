@@ -511,11 +511,21 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
     if (!UNDEF_P(kw_cause)) {
         const VALUE kc = c->current_frame->last_line;   /* forwarded across the GC points above */
         if (!SPECIAL_CONST_P(exc_val) && BUILTIN_TYPE(exc_val) == T_OBJECT) {
-            korb_ivar_set(exc_val, korb_intern("@cause"),
-                          NIL_P(kc) ? Qnil : kc);
+            /* korb_ivar_set fires GC; park exc_val on the value stack and
+             * re-read it after, so the RAISE value we return is the forwarded
+             * (live) handle.  Otherwise the returned exception is stale and a
+             * consumer that holds it across a GC — node_rescue's @cause-linking
+             * korb_ivar_get — derefs a retired plane → SEGV under STRESS+PURGE
+             * (kernel/raise re-raise-with-cause). */
+            VALUE *const esp = c->sp_top;
+            esp[0] = exc_val;
+            c->sp_top = esp + 1;
+            korb_ivar_set(esp[0], korb_intern("@cause"), NIL_P(kc) ? Qnil : kc);
+            exc_val = esp[0];
+            c->sp_top = esp;
         }
     }
-    return (RESULT){ exc_val, KORB_RAISE };
+    return RESULT_RAISE_R(exc_val);
 }
 
 static RESULT kernel_inspect(CTX *c, int argc, VALUE *sp) {
@@ -787,7 +797,7 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
     VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
     korb_ary_push(c, c->sp_top, pair, argv[0]);
     korb_ary_push(c, c->sp_top, pair, argc >= 2 ? argv[1] : Qnil);
-    return (RESULT){ pair, KORB_THROW };
+    return RESULT_THROW_R(pair);
 }
 
 static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
@@ -973,7 +983,7 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
         korb_ivar_set(esp[0], korb_intern("@success"), KORB_BOOL(success));
         e = esp[0]; c->sp_top = esp;
     }
-    return (RESULT){ e, KORB_RAISE };
+    return RESULT_RAISE_R(e);
 }
 static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -1005,7 +1015,7 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
         korb_ivar_set(esp[0], korb_intern("@success"), Qfalse);
         e = esp[0]; c->sp_top = esp;
     }
-    return (RESULT){ e, KORB_RAISE };
+    return RESULT_RAISE_R(e);
 }
 
 static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {

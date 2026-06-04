@@ -18,6 +18,13 @@
 #include "context.h"  /* CTX_struct + sample-provided AROH_VISIT_ROOTS contract macro (= 必須) */
 #include "gc.h"
 
+/* AROH contract: a sample's context.h may define AROH_GC_SAFEPOINT() to be
+ * notified at every alloc (= every point a moving GC could fire) — e.g. to
+ * advance a logical clock.  Samples that don't opt in get this no-op default. */
+#ifndef AROH_GC_SAFEPOINT
+#define AROH_GC_SAFEPOINT() ((void)0)
+#endif
+
 /* Public alloc API — thin wrapper around the backend's raw alloc.
  *
  * Sample stores the returned VALUE directly into a GC-visible slot
@@ -32,6 +39,7 @@ VALUE
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
     (void)c;
+    AROH_GC_SAFEPOINT();   /* RESULT-audit: every alloc is a potential-GC point (no-op in release) */
     return (VALUE)(uintptr_t)aro_gc_alloc_raw(c, payload_size);
 }
 
@@ -39,6 +47,7 @@ VALUE
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     (void)c;
+    AROH_GC_SAFEPOINT();
     return (VALUE)(uintptr_t)aro_gc_alloc_byte_raw(c, payload_size);
 }
 

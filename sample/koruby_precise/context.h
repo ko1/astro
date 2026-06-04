@@ -220,7 +220,53 @@ typedef uint64_t state_serial_t;
 typedef struct {
     VALUE   value;
     uint8_t state;
+#ifdef KORB_RESULT_AUDIT
+    /* GC clock at construction time (korb_g_gc_clock ticks at every alloc =
+     * every point where a moving GC *could* fire).  A heap .value read when
+     * gc_clock != current means an alloc happened since this RESULT was built
+     * — i.e. the value was held across a potential collection without
+     * re-reading from a scanned slot, so the pointer is potentially a
+     * moved-out / retired-plane handle.  Using the *could-have* clock (not the
+     * did-collect generation) makes the check deterministic: it fires even when
+     * STRESS happened not to collect at that alloc.  Release builds omit this
+     * field entirely (zero cost). */
+    uint32_t gc_clock;   /* fits in the post-state padding: RESULT stays 16 bytes (register-return ABI unchanged) */
+#endif
 } RESULT;
+
+#ifdef KORB_RESULT_AUDIT
+extern uint32_t korb_g_gc_clock;
+extern void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
+                                   const char *file, int line);
+/* AROH contract hook: the shared GC runtime calls AROH_GC_SAFEPOINT() at every
+ * alloc (= every point a moving GC could fire).  koruby implements it as the
+ * RESULT-audit clock tick; the runtime knows nothing koruby-specific. */
+#define AROH_GC_SAFEPOINT()  (korb_g_gc_clock++)
+/* Build a RESULT, stamping the current GC clock. */
+#define RESULT_MK(v, st)  ((RESULT){(v), (st), korb_g_gc_clock})
+/* Read .value, asserting no alloc (potential GC) has happened since
+ * construction (for heap values).  Pinpoints "held a RESULT across a potential
+ * GC and used .value" at the use site.  Evaluates the RESULT expr exactly once. */
+#define RESULT_VAL(r) ({                                                  \
+    RESULT _rv = (r);                                                     \
+    if (__builtin_expect(_rv.gc_clock != korb_g_gc_clock, 0) &&          \
+        !SPECIAL_CONST_P(_rv.value) && _rv.value != 0)                    \
+        korb_result_audit_fail(_rv.value, _rv.gc_clock, korb_g_gc_clock,  \
+                               __FILE__, __LINE__);                       \
+    _rv.value;                                                           \
+})
+#define RESULT_AUDIT_CHECK(r) do {                                       \
+    if (__builtin_expect((r).gc_clock != korb_g_gc_clock, 0) &&         \
+        !SPECIAL_CONST_P((r).value) && (r).value != 0)                   \
+        korb_result_audit_fail((r).value, (r).gc_clock, korb_g_gc_clock, \
+                               __FILE__, __LINE__);                       \
+} while (0)
+#else
+#define AROH_GC_SAFEPOINT()   ((void)0)
+#define RESULT_MK(v, st)      ((RESULT){(v), (st)})
+#define RESULT_VAL(r)         ((r).value)
+#define RESULT_AUDIT_CHECK(r) ((void)0)
+#endif
 
 /* Mark RESULT-returning functions so the compiler enforces that callers
  * actually use the returned value (UNWRAP / CHECK / inline handling).
@@ -242,14 +288,14 @@ typedef struct {
     (void)_drop_r.value;                                        \
 } while (0)
 
-#define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
-#define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
-#define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
-#define RESULT_BREAK_R(v)   ((RESULT){(v), KORB_BREAK})
-#define RESULT_NEXT_R(v)    ((RESULT){(v), KORB_NEXT})
-#define RESULT_THROW_R(v)   ((RESULT){(v), KORB_THROW})
-#define RESULT_REDO_R(v)    ((RESULT){(v), KORB_REDO})
-#define RESULT_RETRY_R(v)   ((RESULT){(v), KORB_RETRY})
+#define RESULT_OK(v)        RESULT_MK((v), KORB_NORMAL)
+#define RESULT_RAISE_R(v)   RESULT_MK((v), KORB_RAISE)
+#define RESULT_RETURN_R(v)  RESULT_MK((v), KORB_RETURN)
+#define RESULT_BREAK_R(v)   RESULT_MK((v), KORB_BREAK)
+#define RESULT_NEXT_R(v)    RESULT_MK((v), KORB_NEXT)
+#define RESULT_THROW_R(v)   RESULT_MK((v), KORB_THROW)
+#define RESULT_REDO_R(v)    RESULT_MK((v), KORB_REDO)
+#define RESULT_RETRY_R(v)   RESULT_MK((v), KORB_RETRY)
 
 /* UNWRAP — extract VALUE from RESULT, propagate non-NORMAL via early
  * return.  Caller's function must return RESULT.  Uses GNU statement
@@ -258,6 +304,7 @@ typedef struct {
     RESULT _r = (call);                                   \
     if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
         return _r;                                        \
+    RESULT_AUDIT_CHECK(_r);                               \
     _r.value;                                             \
 })
 

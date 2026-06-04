@@ -634,21 +634,21 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
         c->running_block->return_target_frame) {
         c->state_target_frame = c->running_block->return_target_frame;
     }
-    return (RESULT){ v, KORB_RETURN };
+    return RESULT_RETURN_R(v);
 }
 
 NODE_DEF
 node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
     VALUE v = EVAL_ARG_UNWRAP(c, value);
-    return (RESULT){ v, KORB_BREAK };
+    return RESULT_BREAK_R(v);
 }
 
 NODE_DEF
 node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
     VALUE v = EVAL_ARG_UNWRAP(c, value);
-    return (RESULT){ v, KORB_NEXT };
+    return RESULT_NEXT_R(v);
 }
 
 NODE_DEF
@@ -1938,7 +1938,7 @@ retry:;
          * handle (IDIOM B). */
         if (_rr.state == KORB_RAISE && _rr.value && !SPECIAL_CONST_P(_rr.value)) {
             VALUE *const _rsp = c->sp_top;
-            _rsp[0] = _rr.value;                                     /* park BEFORE any GC */
+            _rsp[0] = RESULT_VAL(_rr);                                     /* park BEFORE any GC */
             _rsp[1] = c->current_frame->fp[exception_lvar_index];
             c->sp_top = _rsp + 2;
             ID _cause_id = korb_intern("@cause");   /* may GC; both parked above */
@@ -1975,7 +1975,7 @@ retry:;
 NODE_DEF
 node_retry(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return (RESULT){ Qnil, KORB_RETRY };
+    return RESULT_RETRY_R(Qnil);
 }
 
 /* `begin body; rescue ...; else else_body; end` — else runs iff body
@@ -2012,7 +2012,7 @@ retry_re:;
          * handle (IDIOM B). */
         if (_rr.state == KORB_RAISE && _rr.value && !SPECIAL_CONST_P(_rr.value)) {
             VALUE *const _rsp = c->sp_top;
-            _rsp[0] = _rr.value;                                     /* park BEFORE any GC */
+            _rsp[0] = RESULT_VAL(_rr);                                     /* park BEFORE any GC */
             _rsp[1] = c->current_frame->fp[exception_lvar_index];
             c->sp_top = _rsp + 2;
             ID _cause_id = korb_intern("@cause");   /* may GC; both parked above */
@@ -2040,14 +2040,14 @@ retry_re:;
         v = _er.value;
         cur_state = _er.state;
     }
-    if (cur_state != KORB_NORMAL) return (RESULT){ v, cur_state };
+    if (cur_state != KORB_NORMAL) return RESULT_MK(v, cur_state);
     return RESULT_OK(v);
 }
 
 NODE_DEF
 node_redo(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return (RESULT){ Qnil, KORB_REDO };
+    return RESULT_REDO_R(Qnil);
 }
 
 NODE_DEF
@@ -2076,7 +2076,7 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
             }
         }
     }
-    return (RESULT){ e, KORB_RAISE };
+    return RESULT_RAISE_R(e);
 }
 
 // ---------------- multi-assign helpers ----------------

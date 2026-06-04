@@ -2911,7 +2911,7 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     }
     VALUE exc_out = sp[1];
     c->sp_top = sp;
-    return (RESULT){ exc_out, KORB_RAISE };
+    return RESULT_RAISE_R(exc_out);
 }
 
 /* ---- inspect / to_s ---- */
@@ -5561,7 +5561,7 @@ RESULT korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
     /* Body-raise bridges via fib->result_state (set by korb_fiber_entry). */
     if (UNLIKELY(fib->result_state != KORB_NORMAL)) {
-        RESULT _r = (RESULT){ fib->result_exc, fib->result_state };
+        RESULT _r = RESULT_MK(fib->result_exc, fib->result_state);
         fib->result_state = KORB_NORMAL;
         fib->result_exc = Qnil;
         return _r;
