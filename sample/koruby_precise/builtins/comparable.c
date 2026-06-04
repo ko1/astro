@@ -472,20 +472,21 @@ static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, sp));
     /* self, the __members__ array, and the result are moving handles, and
      * korb_ary_new_capa / korb_intern / korb_ary_push below all fire GC.
-     * Park them at sp[0..2] (scanned) and re-derive each iteration. */
+     * Park them at sp[0..2] (scanned) and re-derive each iteration.  The
+     * korb_ary_new_capa(c, sp+3, ...) below publishes c->sp_top = sp+3 via
+     * korb_alloc before its first GC, covering the sp[0..2] park slots; no
+     * GC runs between the park stores and that alloc. */
     sp[0] = self;
     sp[1] = members_v;
     sp[2] = 0;
-    c->sp_top = sp + 3;
     sp[2] = korb_ary_new_capa(c, sp + 3, ((struct korb_array *)sp[1])->len);
     long mlen = ((struct korb_array *)sp[1])->len;
     for (long i = 0; i < mlen; i++) {
@@ -500,7 +501,6 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, sp + 3, sp[2], korb_ivar_get(sp[0], iv_id));
     }
     VALUE result = sp[2];
-    c->sp_top = sp;
     return RESULT_OK(result);
 }
 
@@ -618,8 +618,6 @@ static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#each — yield each value. */
 static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
-
     sp[0] = sp[-argc - 1];                       /* feed self to struct_to_a */
     VALUE arr = UNWRAP(struct_to_a(c, 0, sp + 1));
     /* Park the result array (last_line) + self (last_match) in a synthetic
@@ -636,7 +634,7 @@ static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
     long n = ((struct korb_array *)fr.last_line)->len;
     for (long i = 0; i < n; i++) {
         VALUE el = korb_ary_items((struct korb_array *)fr.last_line)[i];
-        RESULT _y = korb_yield_r(c, c->sp_top, 1, &el);
+        RESULT _y = korb_yield_r(c, sp, 1, &el);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE selfr = fr.last_match;
@@ -646,7 +644,6 @@ static RESULT struct_each(CTX *c, int argc, VALUE *sp) {
 
 /* Struct#== — same struct class + equal members. */
 static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -674,20 +671,21 @@ static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
     RESULT rb = struct_to_a(c, 0, sp + 3);
     if (rb.state != KORB_NORMAL) { if (struct_eq_top > 0) struct_eq_top--; return rb; }
     sp[2] = rb.value; /* re-use sp[2] to hold b for funcall arg */
-    RESULT res = korb_funcall_r(c, c->sp_top, sp[1], korb_intern("=="), 1, &sp[2]);
+    /* publish sp+3 so the parked a=sp[1] / b=sp[2] stay scanned while the
+     * == funcall stages its callee frame above them. */
+    RESULT res = korb_funcall_r(c, sp + 3, sp[1], korb_intern("=="), 1, &sp[2]);
     if (struct_eq_top > 0) struct_eq_top--;
     return res;
 }
 
 /* Struct#to_h — with optional block that transforms each [key, value] pair. */
 static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp_top));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, sp));
     /* The hash header is arena-allocated (MOVING — the old "libc/non-moving"
      * note was stale).  Park it in this cfunc frame's last_line slot, not on
      * the value stack: the per-element block yield below lowers c->sp_top below
@@ -695,9 +693,11 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
      * so the hash goes stale → SEGV in korb_hash_aset under STRESS+PURGE.  The
      * frame chain is walked by koruby_visit_roots regardless of c->sp_top. */
     struct korb_frame *const hframe = c->current_frame;
-    hframe->last_line = korb_hash_new(c, c->sp_top);
+    hframe->last_line = korb_hash_new(c, sp);
     hframe->last_match = sp[-argc - 1];   /* park struct receiver across yields too */
-    c->sp_top = sp + 3;   /* cover sp[1]/sp[2] yield-arg staging below */
+    /* sp[1]/sp[2] hold the yield args; they are staged immediately before
+     * each korb_yield_r(c, sp + 3, ...) below, which publishes sp+3 and so
+     * covers them.  No GC runs between the staging and the yield. */
     bool has_block = (c->current_block != NULL);
     /* self and __members__ are moving handles, and korb_intern / korb_yield /
      * korb_funcall / korb_hash_aset below all fire GC.  Re-derive members
@@ -720,7 +720,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
         if (has_block) {
             sp[1] = key;
             sp[2] = val;
-            RESULT yr = korb_yield_r(c, c->sp_top, 2, &sp[1]);
+            RESULT yr = korb_yield_r(c, sp + 3, 2, &sp[1]);
             if (yr.state != KORB_NORMAL) return yr;
             VALUE pair = yr.value;
             if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
@@ -728,7 +728,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
                 if (!SPECIAL_CONST_P(pair)) {
                     struct korb_class *pkl = korb_class_of_class(pair);
                     if (korb_class_find_method(pkl, korb_intern("to_ary"))) {
-                        RESULT tr = korb_funcall_r(c, c->sp_top, pair, korb_intern("to_ary"), 0, NULL);
+                        RESULT tr = korb_funcall_r(c, sp + 3, pair, korb_intern("to_ary"), 0, NULL);
                         if (tr.state != KORB_NORMAL) return tr;
                         pair = tr.value;
                     }
