@@ -1891,6 +1891,16 @@ node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF @noinline
 node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
 {
+    /* The enclosing construct's control frame, valid on entry.  A raise inside
+     * `body` unwinds via RESULT propagation; if any prologue on the raised path
+     * skipped its c->current_frame restore (e.g. an early `return _err`), then
+     * c->current_frame is left DANGLING — pointing at a popped C-stack frame
+     * whose memory is reused as parser/dump/fprintf scratch.  The rescue body
+     * must run in THIS frame (CRuby rewinds to the catch control frame), so
+     * snapshot it here and rewind below before touching ->self / rescue_body —
+     * otherwise GC walks the dangling frame chain and SEGVs under STRESS+PURGE
+     * (struct/new's after-block `Struct.send(:remove_const, …)` etc.). */
+    struct korb_frame *const _saved_frame = c->current_frame;
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     /* Park the rescue frame's self across the body EVAL.  When the body raises,
@@ -1905,6 +1915,10 @@ retry:;
     _self_root[0] = c->current_frame->self;
     AROH_ROOT_STACK_SET_TOP(c, _self_root + 1);
     RESULT _br = EVAL_ARG(c, body);
+    /* Rewind to the construct's frame: the raise-unwind may have left
+     * c->current_frame dangling (see _saved_frame note above).  Do this BEFORE
+     * dereferencing ->self (which would otherwise write into freed stack). */
+    c->current_frame = _saved_frame;
     c->current_frame->self = _self_root[0];
     AROH_ROOT_STACK_SET_TOP(c, _self_root);
     VALUE v = _br.value;
@@ -1973,10 +1987,16 @@ node_retry(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 NODE_DEF
 node_rescue_else(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *rescue_body, NODE *else_body, uint32_t exception_lvar_index)
 {
+    /* Rewind to the construct's control frame after the body: a raise-unwind
+     * through a prologue that skipped its current_frame restore leaves it
+     * dangling, and rescue_body / the exception_lvar write below would touch a
+     * freed frame → GC SEGV.  See node_rescue's _saved_frame note. */
+    struct korb_frame *const _saved_frame = c->current_frame;
 retry_re:;
     bool rescued = false;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     RESULT _br = EVAL_ARG(c, body);
+    c->current_frame = _saved_frame;
     VALUE v = _br.value;
     uint8_t cur_state = _br.state;
     if (_br.state == KORB_RAISE && rescue_body) {
@@ -2677,10 +2697,18 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 NODE_DEF
 node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *ensure_body)
 {
+    /* Construct's control frame (valid on entry).  The ensure body must run in
+     * THIS frame; a raise inside `body` that unwound through a prologue which
+     * skipped its c->current_frame restore leaves c->current_frame dangling
+     * (popped C-stack frame, reused as scratch), so rewind before ensure_body —
+     * otherwise GC walks the dangling chain and SEGVs under STRESS+PURGE.  See
+     * the matching note in node_rescue. */
+    struct korb_frame *const _saved_frame = c->current_frame;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     /* Run body — capture its RESULT (we'll always run the ensure clause,
      * then propagate the saved state). */
     RESULT _br = EVAL_ARG(c, body);
+    c->current_frame = _saved_frame;   /* rewind dangling frame before ensure_body */
     if (_br.state == KORB_RAISE) {
         /* $! reflects in-flight exception during ensure body. */
         korb_gvar_set(korb_intern("$!"), _br.value);
