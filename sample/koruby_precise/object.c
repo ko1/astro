@@ -5678,6 +5678,21 @@ void korb_scan_fiber_roots(VALUE fibv, void *ctx, koruby_edge_fn fn) {
     }
 }
 
+/* C-stack bounds of the currently-running fiber (NULL if not in a fiber).
+ * koruby_visit_roots uses this to stop its c->current_frame chain walk at the
+ * fiber_root frame rather than crossing fiber_root.prev into the resumer's
+ * reused/stale stack — the same hazard kf_visit_frame_chain guards against,
+ * but on the MAIN frame walk while a fiber is the live execution context. */
+void korb_current_fiber_cstack(const char **lo, const char **hi) {
+    if (current_fiber) {
+        *lo = current_fiber->stack;
+        *hi = current_fiber->stack + current_fiber->stack_size;
+    } else {
+        *lo = NULL;
+        *hi = NULL;
+    }
+}
+
 RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
     /* sp is passed directly to korb_fiber_new — c->sp_top sync happens
      * inside the alloc helper (which currently is a no-op since

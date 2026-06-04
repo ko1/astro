@@ -194,7 +194,17 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
      * generous and turns runaway frame-walk crashes into a quiet
      * truncation under STRESS+PURGE. */
     int frame_depth = 0;
+    /* If a fiber is the live execution context, c->current_frame is on the
+     * fiber's C stack and its chain ends at fiber_root, whose .prev points
+     * back into the RESUMER's reused/stale stack.  Stop the walk at the fiber
+     * stack boundary so we don't forward those stale frames' slots (the
+     * suspended resumer is scanned separately by korb_scan_fiber_roots).  When
+     * not in a fiber, fib_lo == NULL and the walk is unbounded as before. */
+    extern void korb_current_fiber_cstack(const char **lo, const char **hi);
+    const char *fib_lo, *fib_hi;
+    korb_current_fiber_cstack(&fib_lo, &fib_hi);
     for (struct korb_frame *f = c->current_frame; f && frame_depth < 4096; f = f->prev, frame_depth++) {
+        if (fib_lo && ((const char *)f < fib_lo || (const char *)f >= fib_hi)) break;
         visit_value_slot(ctx, fn, &f->self);
         visit_value_slot(ctx, fn, &f->last_line);
         visit_value_slot(ctx, fn, &f->last_match);
