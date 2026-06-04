@@ -157,7 +157,6 @@ check_name:;
 }
 
 static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -173,7 +172,6 @@ static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -267,7 +265,6 @@ static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE *sp, VALUE v, ID *out_
 }
 extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
 RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -294,7 +291,6 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -323,7 +319,6 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -357,7 +352,6 @@ RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
  * creating one if needed.  All subsequent define_method on it adds
  * a method visible only to this object. */
 RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -548,7 +542,6 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
 /* Module#instance_method(name) — returns an UnboundMethod, represented
  * as a Method object whose receiver is the class itself. */
 static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -580,7 +573,6 @@ static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
 /* Method#unbind — return an UnboundMethod (a Method-shaped record
  * whose receiver is the class instead of an instance). */
 static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -600,7 +592,6 @@ static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
 
 /* UnboundMethod#bind(obj) — return a Method bound to obj. */
 static RESULT method_bind(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -639,7 +630,6 @@ static RESULT method_call(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -676,7 +666,6 @@ static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_arity(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -701,7 +690,6 @@ static RESULT method_arity(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_name(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -710,7 +698,6 @@ static RESULT method_name(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_receiver(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
