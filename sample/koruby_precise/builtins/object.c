@@ -779,7 +779,6 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
 }
 
 static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -797,7 +796,6 @@ static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
 /* Method#source_location — [file, line] of the method's body node,
  * or nil for cfunc / synthesized methods. */
 static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -820,7 +818,6 @@ static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
 
 /* Proc#source_location — same shape, drawn from blk->body. */
 RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -959,7 +956,6 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -980,7 +976,6 @@ static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1286,7 +1281,6 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
     return RESULT_OK(r);
 }
 static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1345,7 +1339,6 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
  * its previous value.  Raises NameError if not defined, FrozenError if
  * self is frozen, TypeError for bad name args. */
 static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1388,7 +1381,6 @@ static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_ivar_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
