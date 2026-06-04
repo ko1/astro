@@ -309,11 +309,22 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (middle > p->opt_cnt) middle -= p->opt_cnt; else middle = 0;
-        /* 4) *rest: gather whatever is left in "middle" (after opt). */
+        /* 4) *rest: gather whatever is left in "middle" (after opt).
+         * Park the rest array on the value stack (rsp[0]) and re-read it each
+         * iteration: korb_ary_push can grow → GC → move the array, leaving a
+         * bare C-local stale (it parks/forwards its `ary` arg at sp[0], not the
+         * caller's local).  rsp[0] sits below c->sp_top so the push GCs forward
+         * it in place; reading it fresh each push avoids the moved-out handle
+         * (SEGV in korb_ary_push_sp under STRESS+PURGE, e.g. time/strftime's
+         * `def foo(*a)` rest binding). argv[] stays valid (scanned, below rsp). */
         if (p->rest_slot >= 0) {
-            VALUE rest = korb_ary_new(c, c->sp_top);
-            for (uint32_t i = 0; i < middle; i++) korb_ary_push(c, c->sp_top, rest, argv[arg_cur++]);
-            new_fp[p->rest_slot] = rest;
+            VALUE *const rsp = c->sp_top;
+            rsp[0] = korb_ary_new(c, rsp + 1);
+            c->sp_top = rsp + 1;                 /* publish rsp[0] for the push GCs */
+            for (uint32_t i = 0; i < middle; i++)
+                korb_ary_push(c, rsp + 1, rsp[0], argv[arg_cur++]);
+            new_fp[p->rest_slot] = rsp[0];
+            c->sp_top = rsp;                     /* pop the rest scratch */
         }
         /* 5) Posts: absolute slots = param_base + params_cnt + (rest?1:0). */
         if (post_cnt > 0) {
