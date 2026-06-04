@@ -72,7 +72,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, NULL, "no receiver for symbol proc");
         }
         ID name = korb_sym2id(p->self);
-        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+        return korb_funcall(c, c->sp_top, argv[0], name, argc - 1, argv + 1);
     }
     /* Method-proc shim: created by Method#to_proc; dispatch as
      * `m.receiver.send(m.name, *args)`. */
@@ -80,7 +80,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj *m = (struct korb_method_obj *)p->self;
-        return korb_funcall(c, m->receiver, m->name, argc, argv);
+        return korb_funcall(c, c->sp_top, m->receiver, m->name, argc, argv);
     }
     /* Lambda is strict: argc must match params_cnt (or be in
      * required..total range when rest/optional are present).
@@ -230,11 +230,11 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         } else if (!SPECIAL_CONST_P(arg0)) {
             /* respond_to? swallow: any raise leaves arr as Qnil
              * (treated as "no destructure"). */
-            RESULT _rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+            RESULT _rt = korb_funcall(c, c->sp_top, arg0, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
             if (_rt.state == KORB_NORMAL && RTEST(_rt.value)) {
                 /* to_ary swallow: raise → return Qnil (matches prior behavior). */
-                RESULT _ta = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                RESULT _ta = korb_funcall(c, c->sp_top, arg0, korb_intern("to_ary"), 0, NULL);
                 if (_ta.state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return RESULT_OK(Qnil);

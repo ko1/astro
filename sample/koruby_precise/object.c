@@ -1239,7 +1239,7 @@ RESULT korb_const_lookup(CTX *c, ID name) {
         struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, k);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
+            return korb_funcall(c, c->sp_top, (VALUE)k, korb_intern("const_missing"), 1, &sym);
         }
     }
     VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
@@ -1811,7 +1811,7 @@ uint64_t korb_hash_value(CTX *c, VALUE v) {
             m->defining_class != KORB_VM(c)->kernel_module) {
             /* User #hash raise → fall back to identity; we can't
              * propagate a RESULT from this hot uint64_t-returning helper. */
-            RESULT _r_r = korb_funcall(c, v, korb_intern("hash"), 0, NULL);
+            RESULT _r_r = korb_funcall(c, c->sp_top, v, korb_intern("hash"), 0, NULL);
             if (_r_r.state == KORB_NORMAL && FIXNUM_P(_r_r.value))
                 return (uint64_t)FIX2LONG(_r_r.value) * 11400714819323198485ULL;
         }
@@ -1844,7 +1844,7 @@ bool korb_eql(CTX *c, VALUE a, VALUE b) {
         if (m && m->defining_class != KORB_VM(c)->object_class &&
             m->defining_class != KORB_VM(c)->kernel_module) {
             VALUE arg = b;
-            RESULT _r_r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg);
+            RESULT _r_r = korb_funcall(c, c->sp_top, a, korb_intern("eql?"), 1, &arg);
             return _r_r.state == KORB_NORMAL && RTEST(_r_r.value);
         }
     }
@@ -2325,7 +2325,7 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
     if (blk->body == NULL && SYMBOL_P(blk->self)) {
         if (argc < 1) return korb_raise(c, NULL, "no receiver for symbol proc");
         ID name = korb_sym2id(blk->self);
-        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+        return korb_funcall(c, c->sp_top, argv[0], name, argc - 1, argv + 1);
     }
     /* Method-proc shim (`&obj.method(:m)`): dispatch as receiver.send(name, *args). */
     if (blk->body == NULL && !SPECIAL_CONST_P(blk->self) &&
@@ -2333,7 +2333,7 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
         ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj { struct RBasic basic; VALUE receiver; ID name; };
         struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-        return korb_funcall(c, mo->receiver, mo->name, argc, argv);
+        return korb_funcall(c, c->sp_top, mo->receiver, mo->name, argc, argv);
     }
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
@@ -2464,11 +2464,11 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
             arr = arg0;
         } else if (!SPECIAL_CONST_P(arg0)) {
             /* Try to_ary if it responds to it (honors respond_to_missing?). */
-            RESULT _rt_r = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+            RESULT _rt_r = korb_funcall(c, c->sp_top, arg0, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
             VALUE rt = (_rt_r.state == KORB_NORMAL) ? _rt_r.value : Qfalse;
             if (RTEST(rt)) {
-                RESULT _coerced_r = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                RESULT _coerced_r = korb_funcall(c, c->sp_top, arg0, korb_intern("to_ary"), 0, NULL);
                 if (_coerced_r.state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
                     return _coerced_r;
@@ -3270,7 +3270,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         if (k && c) {
             struct korb_method *m = korb_class_find_method(k, korb_intern("inspect"));
             if (m && m->type == KORB_METHOD_AST) {
-                RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
+                RESULT _r_r = korb_funcall(c, c->sp_top, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
                 if (BUILTIN_TYPE(r) == T_STRING) return r;
             }
         }
@@ -3320,7 +3320,7 @@ VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
          * loop back here); only redirect when the user actually
          * overrode it as an AST method. */
         if (m && m->type == KORB_METHOD_AST) {
-            RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
+            RESULT _r_r = korb_funcall(c, c->sp_top, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
             if (BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }
@@ -3337,7 +3337,7 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
         struct korb_class *klass = korb_class_of_class(v);
         struct korb_method *m = korb_class_find_method(klass, korb_intern("to_s"));
         if (m && m->type == KORB_METHOD_AST) {
-            RESULT _r_r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
+            RESULT _r_r = korb_funcall(c, c->sp_top, v, korb_intern("to_s"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
             /* If user's to_s returned something other than a String,
              * fall through to the default rendering rather than
              * crash inside korb_str_concat. */
@@ -4632,19 +4632,27 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
     return _br;
 }
 
-RESULT korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
+/* korb_funcall / _r / _with_block take the caller's value-stack top `sp` and
+ * publish it (c->sp_top = sp) so the dispatch builds the callee frame above the
+ * caller's live slots.  This replaces the per-cfunc entry `c->sp_top = sp`:
+ * a cfunc passes its own sp here, so nested calls are correctly framed without
+ * the cfunc writing c->sp_top itself (rooting_guide §0 / §8). */
+RESULT korb_funcall(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv) {
+    c->sp_top = sp;
     return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
 /* korb_funcall_r is an alias of korb_funcall (both RESULT-native now). */
-RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
+RESULT korb_funcall_r(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv) {
+    c->sp_top = sp;
     return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
 /* Same as korb_funcall, but the called method sees `block` as its
  * implicit block (yield / block_given?).  Used by Class#new to
  * forward `Foo.new { ... }`'s block into Foo#initialize. */
-RESULT korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
+RESULT korb_funcall_with_block(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
+    c->sp_top = sp;
     struct korb_proc *prev = c->current_block;
     if (NIL_P(block) || SPECIAL_CONST_P(block) || BUILTIN_TYPE(block) != T_PROC) {
         c->current_block = NULL;
@@ -4657,8 +4665,8 @@ RESULT korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv
 }
 
 /* Alias of korb_funcall_with_block. */
-RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
-    return korb_funcall_with_block(c, recv, mid, argc, argv, block);
+RESULT korb_funcall_with_block_r(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
+    return korb_funcall_with_block(c, sp, recv, mid, argc, argv, block);
 }
 
 /* ---- runtime init ---- */

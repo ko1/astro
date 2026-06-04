@@ -62,7 +62,7 @@ static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfo
         if (UNLIKELY(e->serial != korb_g_method_serial || e->gen != korb_g_gc_gen ||
                      e->klass != klass || e->name != name)) {
             struct korb_method *m = korb_class_find_method(klass, name);
-            if (!m) return korb_funcall(c, self, name, argc - 1, argv + 1);
+            if (!m) return korb_funcall(c, c->sp_top, self, name, argc - 1, argv + 1);
             korb_method_cache_fill(&e->mc, klass, m);
             e->klass = klass;
             e->name = name;
@@ -72,7 +72,7 @@ static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfo
         uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
         return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
     }
-    return korb_funcall(c, self, name, argc - 1, argv + 1);
+    return korb_funcall(c, c->sp_top, self, name, argc - 1, argv + 1);
 }
 
 static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
@@ -116,9 +116,9 @@ static ID coerce_ivar_name(CTX *c, VALUE v, RESULT *err) {
             _vsp[0] = v;
             c->sp_top = _vsp + 1;
             VALUE to_str_sym = korb_id2sym(korb_intern("to_str"));
-            RESULT rr = korb_funcall_r(c, _vsp[0], korb_intern("respond_to?"), 1, &to_str_sym);
+            RESULT rr = korb_funcall_r(c, c->sp_top, _vsp[0], korb_intern("respond_to?"), 1, &to_str_sym);
             if (rr.state == KORB_NORMAL && RTEST(rr.value)) {
-                RESULT tr = korb_funcall_r(c, _vsp[0], korb_intern("to_str"), 0, NULL);
+                RESULT tr = korb_funcall_r(c, c->sp_top, _vsp[0], korb_intern("to_str"), 0, NULL);
                 if (tr.state != KORB_NORMAL) { c->sp_top = _vsp; *err = tr; return 0; }
                 if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_STRING) {
                     c->sp_top = _vsp;
@@ -236,11 +236,11 @@ static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE v, ID *out_id) {
         VALUE *const vsp = c->sp_top;
         vsp[0] = v;
         c->sp_top = vsp + 1;
-        RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+        RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
         if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+            RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
             if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
             vsp[0] = tsr.value;
         }
@@ -475,13 +475,13 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
      * crashes inside korb_yield with a NULL body. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
+            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, 0, NULL);
+            return korb_funcall(c, c->sp_top, self, mo->name, 0, NULL);
         }
         return RESULT_OK(Qnil);
     }
@@ -527,13 +527,13 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
             ID name = korb_sym2id(blk->self);
-            return korb_funcall(c, self, name, (uint32_t)argc, argv);
+            return korb_funcall(c, c->sp_top, self, name, (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
+            return korb_funcall(c, c->sp_top, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(Qnil);
     }
@@ -644,7 +644,7 @@ static RESULT method_call(CTX *c, int argc, VALUE *sp) {
         return korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
                                         m->receiver, m->name, argc, argv);
     }
-    return korb_funcall(c, m->receiver, m->name, argc, argv);
+    return korb_funcall(c, c->sp_top, m->receiver, m->name, argc, argv);
 }
 
 static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
@@ -870,7 +870,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
-        return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
+        return korb_funcall(c, c->sp_top, p->self, korb_intern("parameters"), 0, NULL);
     }
     /* r parked at sp[0], current pair at sp[1]; pushes/allocs stage at sp+2
      * so both survive the korb_ary_new_capa / korb_intern GC points. */
@@ -1029,7 +1029,7 @@ static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
      * overrides #== / #equal? to return false, identical instances
      * still match. */
     if (self == argv[0]) return RESULT_OK(Qtrue);
-    return korb_funcall(c, self, korb_intern("=="), 1, argv);
+    return korb_funcall(c, c->sp_top, self, korb_intern("=="), 1, argv);
 }
 
 
@@ -1306,7 +1306,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
                                    : korb_intern("initialize_copy");
         if (k && korb_class_find_method(k, hook)) {
             VALUE args[1] = { hs ? hs[0] : self };
-            CHECK(korb_funcall(c, hs ? hs[1] : r, hook, 1, args));
+            CHECK(korb_funcall(c, c->sp_top, hs ? hs[1] : r, hook, 1, args));
         }
         if (hs) r = hs[1];          /* re-read result after the hook GC */
     }

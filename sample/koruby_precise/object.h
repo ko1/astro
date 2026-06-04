@@ -781,8 +781,8 @@ VALUE korb_build_backtrace(CTX *c, int raise_line);
 void  korb_exc_set_backtrace(CTX *c, VALUE *sp, VALUE exc, int raise_line);
 
 /* method dispatch helper */
-RESULT korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
-RESULT korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+RESULT korb_funcall(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv);
+RESULT korb_funcall_with_block(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 RESULT korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
 
 extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
@@ -964,9 +964,9 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
 
 /* RESULT-returning bridges around korb_funcall / korb_funcall_with_block.
  * Used in new-ABI cfuncs / helpers (where UNWRAP propagates the state). */
-RESULT_FN RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+RESULT_FN RESULT korb_funcall_r(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv);
 /* korb_yield_r — defined as a static inline below near korb_yield. */
-RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE *sp, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 
 
 

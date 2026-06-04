@@ -14,7 +14,7 @@ static RESULT exc_message(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    return korb_funcall(c, c->sp_top, self, korb_intern("to_s"), 0, NULL);
 }
 static RESULT exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
@@ -32,7 +32,7 @@ static RESULT exc_to_s_internal(CTX *c, VALUE self) {
     }
     /* CRuby calls #to_s on @message if it isn't a String. */
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
-        return korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
+        return korb_funcall(c, c->sp_top, msg, korb_intern("to_s"), 0, NULL);
     }
     return RESULT_OK(msg);
 }
@@ -57,7 +57,7 @@ static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
      *   to_s == ""           → just the class name  (no #<...:>)
      *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
      *   to_s == anything else → "#<Class: <to_s>>" */
-    RESULT _rt_s = korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    RESULT _rt_s = korb_funcall(c, c->sp_top, self, korb_intern("to_s"), 0, NULL);
     if (_rt_s.state == KORB_RAISE) return RESULT_OK(Qnil);
     VALUE s = _rt_s.value;
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
@@ -148,7 +148,7 @@ static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
     if (eff_argc >= 1) {
         VALUE msg = argv[0];
         if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
-            VALUE s = UNWRAP(korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
+            VALUE s = UNWRAP(korb_funcall(c, c->sp_top, msg, korb_intern("to_s"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
             /* self went stale across the to_s funcall's GC — re-read the
              * forwarded staging slot before storing through it. */
@@ -198,7 +198,7 @@ static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
      * re-capture sp[0] from its return. */
     sp[0] = 0; sp[1] = 0;
     c->sp_top = sp + 2;
-    sp[1] = UNWRAP(korb_funcall(c, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    sp[1] = UNWRAP(korb_funcall(c, c->sp_top, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
     if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
         sp[1] = korb_str_new_cstr(c, sp + 2, "");
     }
@@ -238,7 +238,7 @@ static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
      * would fault under STRESS+PURGE). */
     sp[0] = 0; sp[1] = 0;
     c->sp_top = sp + 2;
-    sp[0] = UNWRAP(korb_funcall(c, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    sp[0] = UNWRAP(korb_funcall(c, c->sp_top, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
     VALUE self = sp[-argc - 1];
     if (SPECIAL_CONST_P(self)) { VALUE m = sp[0]; c->sp_top = sp; return RESULT_OK(m); }
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
@@ -270,7 +270,7 @@ static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
     VALUE n = korb_object_new(c, c->sp_top, k);
     VALUE msg = argv[0];
     if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
-        VALUE s = UNWRAP(korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
+        VALUE s = UNWRAP(korb_funcall(c, c->sp_top, msg, korb_intern("to_s"), 0, NULL));
         if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
     }
     korb_ivar_set(n, korb_intern("@message"), msg);

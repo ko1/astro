@@ -32,11 +32,11 @@ static RESULT attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth)
             VALUE *const vsp = c->sp_top;
             vsp[0] = v;
             c->sp_top = vsp + 1;
-            RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+            RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
             if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+                RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
                 if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
                 vsp[0] = tsr.value;
             }
@@ -87,11 +87,11 @@ static RESULT name_arg_to_id(CTX *c, VALUE arg, ID *out_id) {
             VALUE *const vsp = c->sp_top;
             vsp[0] = v;
             c->sp_top = vsp + 1;
-            RESULT rtr = korb_funcall(c, vsp[0], korb_intern("respond_to?"), 1,
+            RESULT rtr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
             if (rtr.state != KORB_NORMAL) { c->sp_top = vsp; return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, vsp[0], korb_intern("to_str"), 0, NULL);
+                RESULT tsr = korb_funcall(c, c->sp_top, vsp[0], korb_intern("to_str"), 0, NULL);
                 if (tsr.state != KORB_NORMAL) { c->sp_top = vsp; return tsr; }
                 vsp[0] = tsr.value;
             }
@@ -245,7 +245,7 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
         struct korb_class *meta = korb_class_of_class(argv[i]);
         if (meta && korb_class_find_method(meta, korb_intern("included"))) {
             VALUE klass_v = self;
-            CHECK(korb_funcall(c, argv[i], korb_intern("included"), 1, &klass_v));
+            CHECK(korb_funcall(c, c->sp_top, argv[i], korb_intern("included"), 1, &klass_v));
         }
     }
     if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
@@ -299,7 +299,7 @@ static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
         }
         /* Bound Method (receiver is an instance): fall back to the
          * Proc-shim path so `m.receiver.send(m.name, *args)` runs. */
-        VALUE pr = UNWRAP(korb_funcall(c, argv[1], korb_intern("to_proc"), 0, NULL));
+        VALUE pr = UNWRAP(korb_funcall(c, c->sp_top, argv[1], korb_intern("to_proc"), 0, NULL));
         if (BUILTIN_TYPE(pr) != T_PROC) return RESULT_OK(Qnil);
         p = (struct korb_proc *)pr;
     } else if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_PROC) {
@@ -711,13 +711,13 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
      * idea as obj_instance_eval. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
+            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, 0, NULL);
+            return korb_funcall(c, c->sp_top, self, mo->name, 0, NULL);
         }
         return RESULT_OK(self);
     }
@@ -763,13 +763,13 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
     struct korb_proc *blk = c->current_block;
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
+            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
+            return korb_funcall(c, c->sp_top, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(self);
     }
@@ -977,7 +977,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             struct korb_class *super_meta = korb_class_of_class(sp[0]);
             if (super_meta && korb_class_find_method(super_meta, inherited_id)) {
                 VALUE child_v = sp[1];
-                CHECK(korb_funcall(c, sp[0], inherited_id, 1, &child_v));
+                CHECK(korb_funcall(c, c->sp_top, sp[0], inherited_id, 1, &child_v));
             }
         }
         super = (struct korb_class *)sp[0];   /* re-read after funcall GC */
@@ -1027,7 +1027,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
     RESULT init_r = RESULT_OK(Qnil);
     if (m) {
         VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
-        init_r = korb_funcall_with_block(c, sp[1], id_initialize, argc, argv, blk);
+        init_r = korb_funcall_with_block(c, c->sp_top, sp[1], id_initialize, argc, argv, blk);
     }
     VALUE obj = sp[1];
     /* `break N` from the block passed to .new escapes .new with value N
@@ -1185,7 +1185,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
             /* Re-read self from its slot: a prior korb_class_new / extended
              * hook funcall (GC points) may have moved the receiver. */
             VALUE obj_v = sp[-argc - 1];
-            CHECK(korb_funcall(c, argv[i], korb_intern("extended"), 1, &obj_v));
+            CHECK(korb_funcall(c, c->sp_top, argv[i], korb_intern("extended"), 1, &obj_v));
         }
     }
     return RESULT_OK(sp[-argc - 1]);
@@ -1304,10 +1304,10 @@ static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         if (!SYMBOL_P(arg) &&
             (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
             !SPECIAL_CONST_P(arg)) {
-            VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                arg = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
+                arg = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("to_str"), 0, NULL));
             }
         }
         ID name = 0;

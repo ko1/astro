@@ -135,7 +135,7 @@ node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
     if (name == korb_intern("$@")) {
         VALUE exc = korb_gvar_get(korb_intern("$!"));
         if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return RESULT_OK(Qnil);
-        RESULT _bt = korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL);
+        RESULT _bt = korb_funcall(c, c->sp_top, exc, korb_intern("backtrace"), 0, NULL);
         return RESULT_OK((_bt.state == KORB_NORMAL) ? _bt.value : Qnil);
     }
     return RESULT_OK(korb_gvar_get(name));
@@ -179,7 +179,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         }
         /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
         if (strcmp(nm, "$stdout") == 0 || strcmp(nm, "$stderr") == 0) {
-            RESULT _rt_w = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+            RESULT _rt_w = korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("write")) });
             VALUE rt = (_rt_w.state == KORB_NORMAL) ? _rt_w.value : Qfalse;
             if (!RTEST(rt)) {
@@ -195,11 +195,11 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
          * #to_int gives non-Integer, raise TypeError. */
         if (strcmp(nm, "$.") == 0) {
             if (SPECIAL_CONST_P(v) ? !FIXNUM_P(v) : BUILTIN_TYPE(v) != T_BIGNUM) {
-                RESULT _rt_t = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                RESULT _rt_t = korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
                 VALUE rt = (_rt_t.state == KORB_NORMAL) ? _rt_t.value : Qfalse;
                 if (RTEST(rt)) {
-                    v = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
+                    v = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("to_int"), 0, NULL));
                     bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
                                                      : BUILTIN_TYPE(v) == T_BIGNUM;
                     if (!is_int) {
@@ -245,7 +245,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
                 VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
                 return korb_raise(c, (struct korb_class *)eA, "$! not set");
             }
-            korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
+            korb_funcall(c, c->sp_top, exc, korb_intern("set_backtrace"), 1, &v);
             return RESULT_OK(v);
         }
         /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
@@ -435,7 +435,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                 struct korb_class *p_meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)sp[0]);
                 if (p_meta && korb_class_find_method(p_meta, korb_intern("const_missing"))) {
                     VALUE sym = korb_id2sym(name);
-                    return korb_funcall(c, sp[0], korb_intern("const_missing"), 1, &sym);
+                    return korb_funcall(c, c->sp_top, sp[0], korb_intern("const_missing"), 1, &sym);
                 }
                 VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                 return korb_raise(c, (struct korb_class *)eName,
@@ -454,17 +454,17 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
         struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)sp[0]);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return korb_funcall(c, sp[0], korb_intern("const_missing"), 1, &sym);
+            return korb_funcall(c, c->sp_top, sp[0], korb_intern("const_missing"), 1, &sym);
         }
         /* Park eName / name_v / prefix in sp[1..3] across korb_funcall sites. */
         sp[1] = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         sp[2] = 0;
         sp[3] = 0;
-        RESULT _name_r = korb_funcall(c, sp[0], korb_intern("name"), 0, NULL);
+        RESULT _name_r = korb_funcall(c, c->sp_top, sp[0], korb_intern("name"), 0, NULL);
         sp[2] = (_name_r.state == KORB_NORMAL) ? _name_r.value : Qnil;
         if (NIL_P(sp[2]) || (BUILTIN_TYPE(sp[2]) == T_STRING &&
                               ((struct korb_string *)sp[2])->len == 0)) {
-            RESULT _ins_r = korb_funcall(c, sp[0], korb_intern("inspect"), 0, NULL);
+            RESULT _ins_r = korb_funcall(c, c->sp_top, sp[0], korb_intern("inspect"), 0, NULL);
             sp[3] = (_ins_r.state == KORB_NORMAL) ? _ins_r.value
                                                    : korb_str_new_cstr(c, sp + 4, "<anonymous>");
         } else {
@@ -809,7 +809,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         struct korb_class *super_meta = korb_class_of_class(sp[0]);
         if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
             VALUE child_v = sp[1];
-            RESULT _ih = korb_funcall(c, sp[0], korb_intern("inherited"), 1, &child_v);
+            RESULT _ih = korb_funcall(c, c->sp_top, sp[0], korb_intern("inherited"), 1, &child_v);
             if (_ih.state != KORB_NORMAL) return _ih;
         }
     }
@@ -884,7 +884,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             struct korb_class *super_meta = korb_class_of_class((VALUE)KORB_VM(c)->object_class);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
                 VALUE child_v = sp[0];
-                RESULT _ih = korb_funcall(c, (VALUE)KORB_VM(c)->object_class, korb_intern("inherited"), 1, &child_v);
+                RESULT _ih = korb_funcall(c, c->sp_top, (VALUE)KORB_VM(c)->object_class, korb_intern("inherited"), 1, &child_v);
                 if (_ih.state != KORB_NORMAL) return _ih;
             }
         }
@@ -1008,7 +1008,7 @@ node_case_eqq_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 {
     VALUE r = EVAL_ARG_UNWRAP(c, recv);
     VALUE arg = c->current_frame->fp[arg_index];
-    return korb_funcall(c, r, korb_intern("==="), 1, &arg);
+    return korb_funcall(c, c->sp_top, r, korb_intern("==="), 1, &arg);
 }
 
 NODE_DEF
@@ -2131,11 +2131,11 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         return RESULT_OK(a);
     }
     /* respond_to?(:to_ary)? */
-    RESULT _rt_a = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+    RESULT _rt_a = korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
                             (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
     VALUE rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
     if (RTEST(rt)) {
-        VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_ary"), 0, NULL));
+        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("to_ary"), 0, NULL));
         if (NIL_P(r)) {
             /* CRuby: to_ary returning nil wraps in [v]. */
             VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
@@ -2197,11 +2197,11 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         VALUE rt = Qfalse;
         if (!has_to_a) {
             VALUE to_a_sym = korb_id2sym(id_to_a);
-            RESULT _rt_a = korb_funcall(c, vroot[0], korb_intern("respond_to?"), 1, &to_a_sym);
+            RESULT _rt_a = korb_funcall(c, c->sp_top, vroot[0], korb_intern("respond_to?"), 1, &to_a_sym);
             rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
         }
         if (has_to_a || RTEST(rt)) {
-            RESULT _tr = korb_funcall(c, vroot[0], id_to_a, 0, NULL);
+            RESULT _tr = korb_funcall(c, c->sp_top, vroot[0], id_to_a, 0, NULL);
             if (_tr.state != KORB_NORMAL) { AROH_ROOT_STACK_SET_TOP(c, vroot); return _tr; }
             VALUE r = _tr.value;
             if (BUILTIN_TYPE(r) == T_ARRAY) { AROH_ROOT_STACK_SET_TOP(c, vroot); return RESULT_OK(r); }
@@ -2539,7 +2539,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
         if (mm && mm->defining_class != KORB_VM(c)->object_class) {
             VALUE name_sym = korb_id2sym(m->name);
-            return korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
+            return korb_funcall(c, c->sp_top, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
         }
         VALUE eNoMethod = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
         return korb_raise(c, (struct korb_class *)eNoMethod,
@@ -3022,7 +3022,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         struct korb_class *meta = korb_class_of_class((VALUE)target);
         if (meta && korb_class_find_method(meta, korb_intern("method_added"))) {
             VALUE name_sym = korb_id2sym(name);
-            korb_funcall(c, (VALUE)target, korb_intern("method_added"), 1, &name_sym);
+            korb_funcall(c, c->sp_top, (VALUE)target, korb_intern("method_added"), 1, &name_sym);
         }
     }
     return RESULT_OK(korb_id2sym(name));

@@ -62,12 +62,12 @@ static RESULT hash_aref(CTX *c, int argc, VALUE *sp) {
     if (kls == KORB_VM(c)->hash_class) {
         if (!NIL_P(h->default_proc)) {
             VALUE args[2] = {self, argv[0]};
-            return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
+            return korb_funcall(c, c->sp_top, h->default_proc, korb_intern("call"), 2, args);
         }
         return RESULT_OK(h->default_value);
     }
     /* Subclass: defer to #default so overrides apply. */
-    return korb_funcall(c, self, korb_intern("default"), 1, &argv[0]);
+    return korb_funcall(c, c->sp_top, self, korb_intern("default"), 1, &argv[0]);
 }
 static RESULT hash_aset(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -112,7 +112,7 @@ static RESULT hash_each(CTX *c, int argc, VALUE *sp) {
     /* No block: return Enumerator. */
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("each"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     /* CRuby Hash#each yields a single 2-element Array per pair: a
      * 1-param block sees the [key, value] tuple; a 2-param block
@@ -204,7 +204,7 @@ static RESULT hash_each_value(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("each_value"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -220,7 +220,7 @@ static RESULT hash_each_key(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("each_key"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -274,7 +274,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
              * unconditionally (covers method_missing-based mocks); only
              * skip if it raises NoMethodError. */
             if (!SPECIAL_CONST_P(arg)) {
-                RESULT _th = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                RESULT _th = korb_funcall(c, c->sp_top, arg, korb_intern("to_hash"), 0, NULL);
                 if (_th.state == KORB_RAISE) {
                     /* swallow NoMethodError; propagate other errors */
                     VALUE bang = _th.value;
@@ -337,7 +337,7 @@ static RESULT hash_merge_bang(CTX *c, int argc, VALUE *sp) {
                 return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
                                   "no implicit conversion of (special) into Hash");
             }
-            RESULT tr = korb_funcall_r(c, arg, korb_intern("to_hash"), 0, NULL);
+            RESULT tr = korb_funcall_r(c, c->sp_top, arg, korb_intern("to_hash"), 0, NULL);
             if (tr.state == KORB_RAISE) {
                 VALUE bang = tr.value;
                 VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -663,7 +663,7 @@ static RESULT hash_eq(CTX *c, int argc, VALUE *sp) {
         }
         if (e->value == bv) continue;
         /* Dispatch e->value.==(bv) for user-defined equality. */
-        RESULT er = korb_funcall_r(c, e->value, korb_intern("=="), 1, &bv);
+        RESULT er = korb_funcall_r(c, c->sp_top, e->value, korb_intern("=="), 1, &bv);
         if (er.state != KORB_NORMAL) { if (eq_top > 0) eq_top--; return er; }
         if (!RTEST(er.value)) { result = false; break; }
     }
@@ -709,7 +709,7 @@ static RESULT hash_map(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("map"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     struct korb_hash *h = (struct korb_hash *)self;
     /* Park the result Array (moving) in a synthetic frame across the per-pair
@@ -735,7 +735,7 @@ static RESULT hash_select(CTX *c, int argc, VALUE *sp) {
     /* No block: return Enumerator (.to_enum(:select)). */
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("select"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     const struct korb_hash *h = (const struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp_top);
@@ -829,22 +829,22 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         /* Try #to_hash first (CRuby checks before #to_ary). */
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) != T_HASH &&
             BUILTIN_TYPE(arg) != T_ARRAY) {
-            VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
             /* respond_to? is a GC point — re-read arg (still the original
              * argument) before dispatching the coercion on it. */
             arg = argv[0];
             if (RTEST(rt)) {
-                VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
+                VALUE coerced = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("to_hash"), 0, NULL));
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_HASH) {
                     arg = coerced;
                 }
             } else {
-                VALUE rt2 = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                VALUE rt2 = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("respond_to?"), 1,
                                          (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
                 arg = argv[0];
                 if (RTEST(rt2)) {
-                    VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
+                    VALUE coerced = UNWRAP(korb_funcall(c, c->sp_top, arg, korb_intern("to_ary"), 0, NULL));
                     if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
                         arg = coerced;
                     }
@@ -972,7 +972,7 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
     VALUE *prev_sp = c->sp_top;
     c->sp_top = sp + 1 + argc;
-    UNWRAP(korb_funcall_r(c, h, korb_intern("initialize"), argc, sp + 1));
+    UNWRAP(korb_funcall_r(c, c->sp_top, h, korb_intern("initialize"), argc, sp + 1));
     h = sp[0];
     c->sp_top = prev_sp;
     return RESULT_OK(h);
@@ -989,7 +989,7 @@ static RESULT hash_default_get(CTX *c, int argc, VALUE *sp) {
      * call the proc with (self, key); otherwise return default_value. */
     if (!NIL_P(h->default_proc) && argc >= 1) {
         VALUE args[2] = { self, argv[0] };
-        return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
+        return korb_funcall(c, c->sp_top, h->default_proc, korb_intern("call"), 2, args);
     }
     return RESULT_OK(h->default_value);
 }
@@ -1034,10 +1034,10 @@ static RESULT hash_default_proc_set(CTX *c, int argc, VALUE *sp) {
     /* Coerce non-Proc via #to_proc (mock objects, etc.). */
     if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
         if (!SPECIAL_CONST_P(blk)) {
-            VALUE rt = UNWRAP(korb_funcall(c, blk, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, blk, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_proc")) }));
             if (RTEST(rt)) {
-                blk = UNWRAP(korb_funcall(c, blk, korb_intern("to_proc"), 0, NULL));
+                blk = UNWRAP(korb_funcall(c, c->sp_top, blk, korb_intern("to_proc"), 0, NULL));
             }
         }
         if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
@@ -1087,7 +1087,7 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("delete_if"));
-        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
@@ -1129,7 +1129,7 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
      * order: enumerator first, frozen check on iteration). */
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("reject!"));
-        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
@@ -1168,7 +1168,7 @@ static RESULT hash_keep_if(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("keep_if"));
-        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
@@ -1312,7 +1312,7 @@ static RESULT hash_reject(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("reject"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
     }
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp_top);
@@ -1342,10 +1342,10 @@ static RESULT hash_replace(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
             if (RTEST(rt)) {
-                other = UNWRAP(korb_funcall(c, other, korb_intern("to_hash"), 0, NULL));
+                other = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("to_hash"), 0, NULL));
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
@@ -1484,7 +1484,7 @@ static RESULT hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int 
             fr.last_match = fr2.last_match;
             first = false;
         } else {
-            RESULT cr = korb_funcall(c, fr2.last_match, korb_intern("<=>"), 1, &fr.last_match);
+            RESULT cr = korb_funcall(c, c->sp_top, fr2.last_match, korb_intern("<=>"), 1, &fr.last_match);
             if (cr.state != KORB_NORMAL) { c->current_frame = fr.prev; return cr; }
             VALUE cmp = cr.value;
             if (FIXNUM_P(cmp)) {
@@ -1534,10 +1534,10 @@ static RESULT hash_sort(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     if (korb_block_given(c)) {
-        return korb_funcall_with_block(c, sp[0], korb_intern("sort"), 0, NULL,
+        return korb_funcall_with_block(c, c->sp_top, sp[0], korb_intern("sort"), 0, NULL,
                                         (VALUE)c->current_block);
     }
-    return korb_funcall(c, sp[0], korb_intern("sort"), 0, NULL);
+    return korb_funcall(c, c->sp_top, sp[0], korb_intern("sort"), 0, NULL);
 }
 
 /* Hash#deconstruct_keys — pattern-match support hook.  Spec: takes one
@@ -1605,7 +1605,7 @@ static RESULT hash_dig(CTX *c, int argc, VALUE *sp) {
                    "%s does not have #dig method",
                    korb_id_name(korb_class_of_class(first)->name));
     }
-    return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
+    return korb_funcall(c, c->sp_top, first, korb_intern("dig"), argc - 1, argv + 1);
 }
 
 /* ---------- Hash#has_value? / value? ---------- */
@@ -1690,7 +1690,7 @@ static RESULT hash_sort_by(CTX *c, int argc, VALUE *sp) {
         long j = i;
         while (j > 0) {
             struct korb_array *ka = (struct korb_array *)fr.last_match;
-            RESULT cr = korb_funcall(c, korb_ary_items(ka)[j], korb_intern("<=>"), 1, &korb_ary_items(ka)[j-1]);
+            RESULT cr = korb_funcall(c, c->sp_top, korb_ary_items(ka)[j], korb_intern("<=>"), 1, &korb_ary_items(ka)[j-1]);
             if (cr.state != KORB_NORMAL) { c->current_frame = fr.prev; return cr; }
             if (!FIXNUM_P(cr.value) || FIX2LONG(cr.value) >= 0) break;
             ka = (struct korb_array *)fr.last_match;
@@ -1750,7 +1750,7 @@ static RESULT hash_sum(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(c, c->sp_top, fr.last_match, e->key);
             korb_ary_push(c, c->sp_top, fr.last_match, e->value);
         }
-        RESULT ar = korb_funcall(c, fr.last_line, korb_intern("+"), 1, &fr.last_match);
+        RESULT ar = korb_funcall(c, c->sp_top, fr.last_line, korb_intern("+"), 1, &fr.last_match);
         if (ar.state != KORB_NORMAL) { c->current_frame = fr.prev; return ar; }
         fr.last_line = ar.value;   /* acc */
     }

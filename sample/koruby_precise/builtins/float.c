@@ -16,7 +16,7 @@ static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     /* Call #coerce unconditionally (covers method_missing / mock coerce, which
      * korb_class_find_method doesn't see); a missing coerce surfaces as
      * NoMethodError -> not coercible (Qundef -> caller's TypeError). */
-    RESULT cr = korb_funcall_r(c, other, korb_intern("coerce"), 1, &self);
+    RESULT cr = korb_funcall_r(c, c->sp_top, other, korb_intern("coerce"), 1, &self);
     if (cr.state == KORB_RAISE) {
         VALUE bang = cr.value;
         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
@@ -32,7 +32,7 @@ static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
     if (p->len != 2) return RESULT_OK(Qundef);
-    return korb_funcall(c, korb_ary_items(p)[0], op, 1, &korb_ary_items(p)[1]);
+    return korb_funcall(c, c->sp_top, korb_ary_items(p)[0], op, 1, &korb_ary_items(p)[1]);
 }
 
 #define FLT_BINOP_COERCE_OR_RAISE(c, v, op_name)                          \
@@ -372,10 +372,10 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
         VALUE nv = argv[0];
         if (!FIXNUM_P(nv)) {
             if (!SPECIAL_CONST_P(nv)) {
-                VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
                 if (RTEST(rt)) {
-                    nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
+                    nv = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("to_int"), 0, NULL));
                 }
             }
             if (!FIXNUM_P(nv)) {
@@ -530,10 +530,10 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
         /* Special: when self is ±Infinity and `other` responds to
          * #infinite?, use the sign comparison instead of the coerce path. */
         if (isinf(a)) {
-            VALUE rtinf = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+            VALUE rtinf = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
                                        (VALUE[]){ korb_id2sym(korb_intern("infinite?")) }));
             if (RTEST(rtinf)) {
-                VALUE ov = UNWRAP(korb_funcall(c, other, korb_intern("infinite?"), 0, NULL));
+                VALUE ov = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("infinite?"), 0, NULL));
                 long osign;
                 if (NIL_P(ov)) osign = 0;
                 else if (FIXNUM_P(ov)) osign = FIX2LONG(ov);
@@ -543,17 +543,17 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
                 return RESULT_OK(INT2FIX(asign > osign ? 1 : -1));
             }
         }
-        VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
         if (!RTEST(rt)) return RESULT_OK(Qnil);
-        VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
+        VALUE pair = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("coerce"), 1, &self));
         if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY ||
             ((struct korb_array *)pair)->len != 2) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "coerce must return [x, y]");
         }
         struct korb_array *p = (struct korb_array *)pair;
-        return korb_funcall(c, korb_ary_items(p)[0], korb_intern("<=>"), 1, &korb_ary_items(p)[1]);
+        return korb_funcall(c, c->sp_top, korb_ary_items(p)[0], korb_intern("<=>"), 1, &korb_ary_items(p)[1]);
     }
     /* Self == ±Infinity, other == finite Integer/Bignum: ±Infinity wins. */
     if (isinf(a) && (FIXNUM_P(other) ||

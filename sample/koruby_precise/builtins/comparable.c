@@ -16,7 +16,7 @@ static long korb_cmp_call(CTX *c, VALUE self, VALUE other, RESULT *err) {
     VALUE *const _csp = c->sp_top;
     _csp[0] = self; _csp[1] = other;
     c->sp_top = _csp + 2;
-    RESULT _r = korb_funcall(c, _csp[0], korb_intern("<=>"), 1, &_csp[1]);
+    RESULT _r = korb_funcall(c, c->sp_top, _csp[0], korb_intern("<=>"), 1, &_csp[1]);
     if (_r.state != KORB_NORMAL) { c->sp_top = _csp; *err = _r; return 0; }
     VALUE r = _r.value;
     if (NIL_P(r)) {
@@ -112,7 +112,7 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     cmp_eq_depth++;
     /* If <=> raises, propagate the raise — CRuby's Comparable#== lets
      * exceptions go through. */
-    RESULT _cr = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
+    RESULT _cr = korb_funcall(c, c->sp_top, self, korb_intern("<=>"), 1, argv);
     cmp_eq_depth--;
     if (_cr.state != KORB_NORMAL) return _cr;
     VALUE r = _cr.value;
@@ -182,7 +182,7 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
      * own <=> (CRuby uses min.<=>(max)) so user-defined comparison
      * decides; nil result OR positive sign → ArgumentError. */
     if (!NIL_P(lo) && !NIL_P(hi)) {
-        VALUE r = UNWRAP(korb_funcall(c, lo, korb_intern("<=>"), 1, &hi));
+        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, lo, korb_intern("<=>"), 1, &hi));
         bool bad;
         if (NIL_P(r)) bad = true;
         else if (FIXNUM_P(r)) bad = FIX2LONG(r) > 0;
@@ -696,7 +696,7 @@ static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
     RESULT rb = struct_to_a(c, 0, sp + 3);
     if (rb.state != KORB_NORMAL) { if (struct_eq_top > 0) struct_eq_top--; return rb; }
     sp[2] = rb.value; /* re-use sp[2] to hold b for funcall arg */
-    RESULT res = korb_funcall_r(c, sp[1], korb_intern("=="), 1, &sp[2]);
+    RESULT res = korb_funcall_r(c, c->sp_top, sp[1], korb_intern("=="), 1, &sp[2]);
     if (struct_eq_top > 0) struct_eq_top--;
     return res;
 }
@@ -750,7 +750,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
                 if (!SPECIAL_CONST_P(pair)) {
                     struct korb_class *pkl = korb_class_of_class(pair);
                     if (korb_class_find_method(pkl, korb_intern("to_ary"))) {
-                        RESULT tr = korb_funcall_r(c, pair, korb_intern("to_ary"), 0, NULL);
+                        RESULT tr = korb_funcall_r(c, c->sp_top, pair, korb_intern("to_ary"), 0, NULL);
                         if (tr.state != KORB_NORMAL) return tr;
                         pair = tr.value;
                     }
@@ -899,7 +899,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             /* Stage self at c->sp_top[0] and call struct_to_a with sp+1. */
             c->sp_top[0] = self;
             VALUE arr = UNWRAP(struct_to_a(c, 0, c->sp_top + 1));
-            return korb_funcall(c, arr, korb_intern("values_at"), argc, argv);
+            return korb_funcall(c, c->sp_top, arr, korb_intern("values_at"), argc, argv);
         }
         korb_class_add_method_cfunc_r(klass, korb_intern("values_at"), _struct_values_at, -1);
     }
@@ -963,7 +963,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                                korb_id_name(korb_class_of_class(v)->name));
                 }
             }
-            return korb_funcall(c, v, korb_intern("dig"), argc - 1, &argv[1]);
+            return korb_funcall(c, c->sp_top, v, korb_intern("dig"), argc - 1, &argv[1]);
         }
         korb_class_add_method_cfunc_r(klass, korb_intern("dig"), _struct_dig, -1);
     }
@@ -1024,7 +1024,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
                     if (!SPECIAL_CONST_P(k)) {
                         struct korb_class *kk = korb_class_of_class(k);
                         if (korb_class_find_method(kk, korb_intern("to_int"))) {
-                            RESULT cr = korb_funcall_r(c, k, korb_intern("to_int"), 0, NULL);
+                            RESULT cr = korb_funcall_r(c, c->sp_top, k, korb_intern("to_int"), 0, NULL);
                             if (cr.state != KORB_NORMAL) return cr;
                             if (!FIXNUM_P(cr.value)) {
                                 return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
@@ -1087,7 +1087,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             RESULT rb = struct_to_a(c, 0, sp + 3);
             if (rb.state != KORB_NORMAL) { if (eql_top > 0) eql_top--; return rb; }
             sp[2] = rb.value;
-            RESULT res = korb_funcall_r(c, sp[1], korb_intern("eql?"), 1, &sp[2]);
+            RESULT res = korb_funcall_r(c, c->sp_top, sp[1], korb_intern("eql?"), 1, &sp[2]);
             if (eql_top > 0) eql_top--;
             return res;
         }
@@ -1112,7 +1112,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             long alen = ((struct korb_array *)sp[0])->len;
             for (long i = 0; i < alen; i++) {
                 struct korb_array *a = (struct korb_array *)sp[0];   /* re-derive after funcall GC */
-                RESULT rh = korb_funcall_r(c, korb_ary_items(a)[i], korb_intern("hash"), 0, NULL);
+                RESULT rh = korb_funcall_r(c, c->sp_top, korb_ary_items(a)[i], korb_intern("hash"), 0, NULL);
                 if (rh.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return rh; }
                 long eh = FIXNUM_P(rh.value) ? FIX2LONG(rh.value) : 0;
                 h = (h * 31) ^ eh;
@@ -1223,7 +1223,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         RESULT _struct_class_aref(CTX *c, int argc, VALUE *sp) {
             c->sp_top = sp;
             VALUE self = sp[-argc - 1];
-            return korb_funcall_r(c, self, korb_intern("new"), argc, sp - argc);
+            return korb_funcall_r(c, c->sp_top, self, korb_intern("new"), argc, sp - argc);
         }
         korb_class_add_method_cfunc_r(meta, korb_intern("[]"), _struct_class_aref, -1);
     }
@@ -1286,11 +1286,11 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
         VALUE *const asp = c->sp_top;
         asp[0] = arg;
         c->sp_top = asp + 1;
-        RESULT rtr = korb_funcall(c, asp[0], korb_intern("respond_to?"), 1,
+        RESULT rtr = korb_funcall(c, c->sp_top, asp[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
         if (rtr.state != KORB_NORMAL) { c->sp_top = asp; return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT tsr = korb_funcall(c, asp[0], korb_intern("to_str"), 0, NULL);
+            RESULT tsr = korb_funcall(c, c->sp_top, asp[0], korb_intern("to_str"), 0, NULL);
             if (tsr.state != KORB_NORMAL) { c->sp_top = asp; return tsr; }
             VALUE r = tsr.value;
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
@@ -1357,11 +1357,11 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
             VALUE *const nsp = c->sp_top;
             nsp[0] = name_arg;
             c->sp_top = nsp + 1;
-            RESULT rtr = korb_funcall(c, nsp[0], korb_intern("respond_to?"), 1,
+            RESULT rtr = korb_funcall(c, c->sp_top, nsp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
             if (rtr.state != KORB_NORMAL) { c->sp_top = nsp; return rtr; }
             if (RTEST(rtr.value)) {
-                RESULT tsr = korb_funcall(c, nsp[0], korb_intern("to_str"), 0, NULL);
+                RESULT tsr = korb_funcall(c, c->sp_top, nsp[0], korb_intern("to_str"), 0, NULL);
                 if (tsr.state != KORB_NORMAL) { c->sp_top = nsp; return tsr; }
                 nsp[0] = tsr.value;
             }
@@ -1378,7 +1378,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         struct korb_string *str = (struct korb_string *)name_arg;
         namep = str->ptr; namelen = str->len;
     } else {
-        VALUE inspv = UNWRAP(korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL));
+        VALUE inspv = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("inspect"), 0, NULL));
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
         /* Fetch TypeError AFTER the inspect funcall's GC — a class fetched
