@@ -24,7 +24,11 @@ extern struct korb_method *korb_class_find_method(const struct korb_class *klass
 /* Shared implementation for send / __send__ / public_send.
  * `enforce_public` ⇒ refuse to call private/protected methods (the
  * public_send semantics).  send / __send__ ignore visibility. */
-static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enforce_public) {
+static RESULT obj_send_impl(CTX *c, VALUE *sp, VALUE self, int argc, VALUE *argv, bool enforce_public) {
+    /* obj_send_impl dispatches via the raw prologue path (below), which reads
+     * c->sp_top as the stack top — so publish it here (sanctioned dispatch-entry
+     * publish, same as korb_call does internally). */
+    c->sp_top = sp;
     if (argc < 1) {
         return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
                           "no method name given");
@@ -62,7 +66,7 @@ static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfo
         if (UNLIKELY(e->serial != korb_g_method_serial || e->gen != korb_g_gc_gen ||
                      e->klass != klass || e->name != name)) {
             struct korb_method *m = korb_class_find_method(klass, name);
-            if (!m) return korb_funcall(c, c->sp_top, self, name, argc - 1, argv + 1);
+            if (!m) return korb_funcall(c, sp, self, name, argc - 1, argv + 1);
             korb_method_cache_fill(&e->mc, klass, m);
             e->klass = klass;
             e->name = name;
@@ -72,23 +76,21 @@ static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfo
         uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
         return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
     }
-    return korb_funcall(c, c->sp_top, self, name, argc - 1, argv + 1);
+    return korb_funcall(c, sp, self, name, argc - 1, argv + 1);
 }
 
 static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return obj_send_impl(c, self, argc, argv, false);
+    return obj_send_impl(c, sp, self, argc, argv, false);
 }
 
 static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return obj_send_impl(c, self, argc, argv, true);
+    return obj_send_impl(c, sp, self, argc, argv, true);
 }
 
 /* Validate an instance-variable-name argument per CRuby's
