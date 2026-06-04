@@ -87,14 +87,14 @@ static RESULT rng_hash(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* No block → Array stand-in (TODO: Enumerator once Fiber path is
      * GC-safe).  Array is close enough for most chain forms. */
     if (!korb_block_given(c)) {
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_a"), 0, NULL);
+        sp[0] = sp[-argc - 1];   /* self */
+        return korb_call(c, sp + 1, korb_intern("to_a"), 0);
     }
     /* Beginless range: TypeError (can't iterate starting from -Inf). */
     if (NIL_P(((struct korb_range *)self)->begin)) {
@@ -123,7 +123,7 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
             }
             for (long i = b; endless || i < stop_excl; i++) {
                 VALUE v = INT2FIX(i);
-                RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+                RESULT _y = korb_yield(c, sp, 1, &v);
                 if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             }
             VALUE result = fr.last_match;
@@ -142,7 +142,9 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     VALUE succ_sym      = korb_id2sym(id_succ);
     {
         struct korb_range *r = (struct korb_range *)fr.last_match;
-        RESULT _rt = korb_funcall(c, c->sp_top, r->begin, id_respond, 1, &succ_sym);
+        sp[0] = r->begin;
+        sp[1] = succ_sym;
+        RESULT _rt = korb_call(c, sp + 2, id_respond, 1);
         if (_rt.state != KORB_NORMAL) { c->current_frame = fr.prev; return _rt; }
         if (!RTEST(_rt.value)) {
             r = (struct korb_range *)fr.last_match;   /* re-read after funcall */
@@ -157,11 +159,13 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     while (true) {
         struct korb_range *r = (struct korb_range *)fr.last_match;
         if (NIL_P(r->end)) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &fr.last_line);
+            RESULT _y = korb_yield(c, sp, 1, &fr.last_line);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
             VALUE end = r->end;
-            RESULT _cm = korb_funcall(c, c->sp_top, fr.last_line, id_cmp, 1, &end);
+            sp[0] = fr.last_line;
+            sp[1] = end;
+            RESULT _cm = korb_call(c, sp + 2, id_cmp, 1);
             if (_cm.state != KORB_NORMAL) { c->current_frame = fr.prev; return _cm; }
             if (!FIXNUM_P(_cm.value)) break;
             long cv = FIX2LONG(_cm.value);
@@ -169,10 +173,11 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
             if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
             { long cl = range_succ_len(fr.last_line), el = range_succ_len(end);
               if (cl >= 0 && el >= 0 && cl > el) break; }
-            RESULT _y = korb_yield(c, c->sp_top, 1, &fr.last_line);
+            RESULT _y = korb_yield(c, sp, 1, &fr.last_line);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         }
-        RESULT _sx = korb_funcall(c, c->sp_top, fr.last_line, id_succ, 0, NULL);
+        sp[0] = fr.last_line;
+        RESULT _sx = korb_call(c, sp + 1, id_succ, 0);
         if (_sx.state != KORB_NORMAL) { c->current_frame = fr.prev; return _sx; }
         fr.last_line = _sx.value;
     }
@@ -562,7 +567,6 @@ static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
 
 /* Range#each_with_index — yields (value, index) pairs. */
 static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -573,7 +577,7 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
         if (r->exclude_end) e--;
         for (long i = b; i <= e; i++, idx++) {
             VALUE pair[2] = { INT2FIX(i), INT2FIX(idx) };
-            CHECK(korb_yield(c, c->sp_top, 2, pair));
+            CHECK(korb_yield(c, sp, 2, pair));
         }
         return RESULT_OK(sp[-argc - 1]);   /* self moved across the yields */
     }
@@ -593,15 +597,18 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
         struct korb_range *r2 = (struct korb_range *)fr.last_match;
         VALUE end_v = r2->end;
         bool excl = r2->exclude_end;
-        RESULT _cm = korb_funcall(c, c->sp_top, fr.last_line, id_cmp, 1, &end_v);
+        sp[0] = fr.last_line;
+        sp[1] = end_v;
+        RESULT _cm = korb_call(c, sp + 2, id_cmp, 1);
         if (_cm.state != KORB_NORMAL) { c->current_frame = fr.prev; return _cm; }
         if (!FIXNUM_P(_cm.value)) break;
         long cv = FIX2LONG(_cm.value);
         if (excl ? (cv >= 0) : (cv > 0)) break;
         VALUE pair[2] = { fr.last_line, INT2FIX(idx) };
-        RESULT _y = korb_yield(c, c->sp_top, 2, pair);
+        RESULT _y = korb_yield(c, sp, 2, pair);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-        RESULT _sx = korb_funcall(c, c->sp_top, fr.last_line, id_succ, 0, NULL);
+        sp[0] = fr.last_line;
+        RESULT _sx = korb_call(c, sp + 1, id_succ, 0);
         if (_sx.state != KORB_NORMAL) { c->current_frame = fr.prev; return _sx; }
         fr.last_line = _sx.value;
         idx++;
@@ -829,7 +836,6 @@ static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -862,7 +868,9 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
         KORB_RNG_YIELD_FRAME(c, fr, acc0);
         for (long i = start; i <= e; i++) {
             VALUE other = INT2FIX(i);
-            RESULT _r = korb_funcall(c, c->sp_top, fr.last_line, op, 1, &other);
+            sp[0] = fr.last_line;
+            sp[1] = other;
+            RESULT _r = korb_call(c, sp + 2, op, 1);
             if (_r.state != KORB_NORMAL) { c->current_frame = fr.prev; return _r; }
             fr.last_line = _r.value;
         }
@@ -873,7 +881,7 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
     KORB_RNG_YIELD_FRAME(c, fr, argc > 0 ? argv[0] : INT2FIX(b++));
     for (long i = b; i <= e; i++) {
         VALUE args[2] = { fr.last_line, INT2FIX(i) };
-        RESULT _y = korb_yield(c, c->sp_top, 2, args);
+        RESULT _y = korb_yield(c, sp, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         fr.last_line = _y.value;
     }
