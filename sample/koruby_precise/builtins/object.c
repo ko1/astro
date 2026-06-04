@@ -635,7 +635,7 @@ static RESULT method_call(CTX *c, int argc, VALUE *sp) {
         return korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
                                         m->receiver, m->name, argc, argv);
     }
-    return korb_funcall(c, c->sp_top, m->receiver, m->name, argc, argv);
+    return korb_funcall(c, sp, m->receiver, m->name, argc, argv);
 }
 
 static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
