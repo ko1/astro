@@ -51,7 +51,6 @@ static long korb_cmp_call(CTX *c, VALUE *sp, VALUE self, VALUE other, RESULT *er
 }
 
 static RESULT cmp_lt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -61,7 +60,6 @@ static RESULT cmp_lt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(cv < 0));
 }
 static RESULT cmp_le(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -71,7 +69,6 @@ static RESULT cmp_le(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(cv <= 0));
 }
 static RESULT cmp_gt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -81,7 +78,6 @@ static RESULT cmp_gt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(cv > 0));
 }
 static RESULT cmp_ge(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -91,7 +87,6 @@ static RESULT cmp_ge(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(cv >= 0));
 }
 static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -109,7 +104,7 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     cmp_eq_depth++;
     /* If <=> raises, propagate the raise — CRuby's Comparable#== lets
      * exceptions go through. */
-    RESULT _cr = korb_funcall(c, c->sp_top, self, korb_intern("<=>"), 1, argv);
+    RESULT _cr = korb_funcall(c, sp, self, korb_intern("<=>"), 1, argv);
     cmp_eq_depth--;
     if (_cr.state != KORB_NORMAL) return _cr;
     VALUE r = _cr.value;
@@ -133,7 +128,6 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
                       korb_id_name(korb_class_of_class(other_r)->name));
 }
 static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -148,7 +142,6 @@ static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(lo >= 0 && hi <= 0));
 }
 static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -179,7 +172,7 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
      * own <=> (CRuby uses min.<=>(max)) so user-defined comparison
      * decides; nil result OR positive sign → ArgumentError. */
     if (!NIL_P(lo) && !NIL_P(hi)) {
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, lo, korb_intern("<=>"), 1, &hi));
+        VALUE r = UNWRAP(korb_funcall(c, sp, lo, korb_intern("<=>"), 1, &hi));
         bool bad;
         if (NIL_P(r)) bad = true;
         else if (FIXNUM_P(r)) bad = FIX2LONG(r) > 0;
