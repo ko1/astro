@@ -1903,24 +1903,21 @@ node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
     struct korb_frame *const _saved_frame = c->current_frame;
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
-    /* Park the rescue frame's self across the body EVAL.  When the body raises,
-     * the raise-unwind can leave c->current_frame->self pointing at a moved-out
-     * (retired-plane) object — confirmed by instrumentation: the rescue body
-     * (e.g. an Enumerator's `rescue StopIteration`, which calls
-     * self.__rescue_class_check) then dispatches on the stale self and SEGVs
-     * under STRESS+PURGE.  Restore the GC-forwarded value before running the
-     * rescue.  (Balanced per `retry` iteration; the body NORMAL path restores
-     * the same forwarded value, a no-op.) */
-    VALUE *const _self_root = AROH_ROOT_STACK_TOP(c);
-    _self_root[0] = c->current_frame->self;
-    AROH_ROOT_STACK_SET_TOP(c, _self_root + 1);
     RESULT _br = EVAL_ARG(c, body);
-    /* Rewind to the construct's frame: the raise-unwind may have left
-     * c->current_frame dangling (see _saved_frame note above).  Do this BEFORE
-     * dereferencing ->self (which would otherwise write into freed stack). */
+    /* Rewind to the construct's control frame: a raise inside `body` unwinds
+     * via RESULT propagation and may leave c->current_frame dangling (a popped
+     * deeper frame).  _saved_frame's self stays fresh on its own — it remains
+     * an ancestor of c->current_frame throughout the body, so visit_roots'
+     * frame-chain walk forwards it every GC.  So we ONLY rewind; we must NOT
+     * restore ->self from a value-stack park: such a park goes stale when the
+     * unwind drops c->sp_top below it, and writing it back would CLOBBER the
+     * correctly-forwarded frame self with a retired-plane pointer → SEGV in a
+     * rescue-body self-call (e.g. `rescue NoMethodError` → __rescue_class_check)
+     * under STRESS+PURGE.  (An earlier fix parked+restored self here; the later
+     * _saved_frame rewind made that redundant and it became actively harmful —
+     * confirmed by watchpoint: GC forwards the slot to the live addr, then the
+     * restore overwrites it with the stale parked copy.) */
     c->current_frame = _saved_frame;
-    c->current_frame->self = _self_root[0];
-    AROH_ROOT_STACK_SET_TOP(c, _self_root);
     VALUE v = _br.value;
     if (_br.state == KORB_RAISE && rescue_body) {
         VALUE exc = _br.value;
