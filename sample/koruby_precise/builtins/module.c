@@ -346,19 +346,19 @@ static RESULT class_superclass(CTX *c, int argc, VALUE *sp) {
 
 /* Module#instance_methods([include_inherited=true]) — sym list. */
 static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        return RESULT_OK(korb_ary_new(c, c->sp_top));
+        return RESULT_OK(korb_ary_new(c, sp));
     }
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
     /* Park result (sp[0]) + walk cursor (sp[1]); the class moves across
-     * korb_ary_push, method-table entries are libc-stable (IDIOM D). */
-    VALUE *const vsp = c->sp_top;
+     * korb_ary_push, method-table entries are libc-stable (IDIOM D).  The
+     * korb_ary_new(c, vsp+2) below publishes vsp+2 before its GC, covering
+     * the vsp[0]/vsp[1] parks. */
+    VALUE *const vsp = sp;
     vsp[1] = self;                       /* walk cursor */
-    c->sp_top = vsp + 2;
     vsp[0] = korb_ary_new(c, vsp + 2);   /* result */
     while (vsp[1] != 0 && !SPECIAL_CONST_P(vsp[1])) {
         uint32_t bcnt = ((struct korb_class *)vsp[1])->methods.bucket_cnt;
@@ -371,7 +371,6 @@ static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
         vsp[1] = (VALUE)((struct korb_class *)vsp[1])->super;
     }
     VALUE r = vsp[0];
-    c->sp_top = vsp;
     return RESULT_OK(r);
 }
 
@@ -380,16 +379,16 @@ static RESULT module_instance_methods(CTX *c, int argc, VALUE *sp) {
 /* Helper: collect methods of `vis` visibility from the receiver's class
  * chain.  vis = -1 means "all public + protected" (default for #methods).
  * vis = KORB_VIS_PUBLIC / PRIVATE / PROTECTED selects exactly that set. */
-static VALUE methods_with_visibility(CTX *c, VALUE self, int vis, bool include_inherited) {
+static VALUE methods_with_visibility(CTX *c, VALUE *sp, VALUE self, int vis, bool include_inherited) {
     /* The class chain (k) is a moving handle and the result array (r) grows
      * across korb_ary_push — both must survive every GC point.  Park r at
      * sp[0] and the walk cursor at sp[1] (IDIOM D); re-derive the class from
      * sp[1] each use, advance via the re-read super.  Method-table entries
      * (e) are libc-stable, so following e->next across korb_ary_push is safe;
-     * only reads through k (buckets / super) need a fresh class. */
-    VALUE *const sp = c->sp_top;
+     * only reads through k (buckets / super) need a fresh class.  The
+     * korb_ary_new(c, sp+2) below publishes sp+2 before its GC, covering the
+     * sp[0]/sp[1] parks. */
     sp[1] = (VALUE)korb_class_of_class(self);   /* walk cursor */
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new(c, sp + 2);            /* result */
     while (sp[1] != 0 && !SPECIAL_CONST_P(sp[1])) {
         uint32_t bcnt = ((struct korb_class *)sp[1])->methods.bucket_cnt;
@@ -415,40 +414,35 @@ static VALUE methods_with_visibility(CTX *c, VALUE self, int vis, bool include_i
         sp[1] = (VALUE)((struct korb_class *)sp[1])->super;   /* advance via re-read */
     }
     VALUE result = sp[0];
-    c->sp_top = sp;
     return result;
 }
 static RESULT obj_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return RESULT_OK(methods_with_visibility(c, self, -1, include_inherited));
+    return RESULT_OK(methods_with_visibility(c, sp, self, -1, include_inherited));
 }
 static RESULT obj_public_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return RESULT_OK(methods_with_visibility(c, self, KORB_VIS_PUBLIC, include_inherited));
+    return RESULT_OK(methods_with_visibility(c, sp, self, KORB_VIS_PUBLIC, include_inherited));
 }
 static RESULT obj_private_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return RESULT_OK(methods_with_visibility(c, self, KORB_VIS_PRIVATE, include_inherited));
+    return RESULT_OK(methods_with_visibility(c, sp, self, KORB_VIS_PRIVATE, include_inherited));
 }
 static RESULT obj_protected_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return RESULT_OK(methods_with_visibility(c, self, KORB_VIS_PROTECTED, include_inherited));
+    return RESULT_OK(methods_with_visibility(c, sp, self, KORB_VIS_PROTECTED, include_inherited));
 }
 
 /* Object#singleton_methods — methods defined directly on this object's
@@ -790,7 +784,6 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
 /* Module#< — true if self is a subclass/submodule of other. */
 extern bool korb_module_has_ancestor(struct korb_class *, struct korb_class *);
 static RESULT module_lt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -811,7 +804,6 @@ static RESULT module_lt(CTX *c, int argc, VALUE *sp) {
 /* Module#<=> — -1 if self < target, 0 if equal, 1 if self > target,
  * nil if unrelated. */
 static RESULT module_cmp(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -824,7 +816,6 @@ static RESULT module_cmp(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qnil);
 }
 static RESULT module_le(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -833,7 +824,6 @@ static RESULT module_le(CTX *c, int argc, VALUE *sp) {
     return module_lt(c, argc, sp);
 }
 static RESULT module_gt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -856,7 +846,6 @@ static RESULT module_gt(CTX *c, int argc, VALUE *sp) {
     return _r;
 }
 static RESULT module_ge(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -880,7 +869,6 @@ bool korb_module_has_ancestor(struct korb_class *m, struct korb_class *target) {
 
 /* ---------- Class === (for case/when class match) ---------- */
 static RESULT class_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
