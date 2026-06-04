@@ -122,11 +122,18 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) {
         return RESULT_OK(KORB_BOOL(((struct korb_float *)r)->value == 0.0));
     }
-    /* Non-nil non-numeric — CRuby raises ArgumentError. */
+    /* Non-nil non-numeric — CRuby raises ArgumentError.  Re-read self/other
+     * from the (scanned) value stack: the #<=> funcall above fired GC, so the
+     * C-local self/argv handles are stale → korb_class_of_class derefs a
+     * retired plane under STRESS+PURGE (comparable/equal_value).  Nothing
+     * between here and korb_raise allocates (intern is pre-interned, id_name /
+     * class_of_class don't alloc; korb_raise formats before allocating). */
+    const VALUE self_r  = sp[-argc - 1];
+    const VALUE other_r = sp[-argc];
     return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
                       "comparison of %s with %s failed",
-                      korb_id_name(korb_class_of_class(self)->name),
-                      korb_id_name(korb_class_of_class(argv[0])->name));
+                      korb_id_name(korb_class_of_class(self_r)->name),
+                      korb_id_name(korb_class_of_class(other_r)->name));
 }
 static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
