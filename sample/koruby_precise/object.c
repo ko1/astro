@@ -5623,7 +5623,8 @@ static inline void kf_visit_val(void *ctx, koruby_edge_fn fn, VALUE *slot) {
     if (v == 0 || SPECIAL_CONST_P(v)) return;
     fn(ctx, (void **)slot);
 }
-static void kf_visit_frame_chain(void *ctx, koruby_edge_fn fn, struct korb_frame *f) {
+static void kf_visit_frame_chain(void *ctx, koruby_edge_fn fn, struct korb_frame *f,
+                                 const char *stk_lo, const char *stk_hi) {
     int depth = 0;
     /* Forward only the guarded VALUE roots (self/$_/$~).  The cref /
      * current_class / block pointer fields of a suspended fiber/resumer frame
@@ -5638,6 +5639,15 @@ static void kf_visit_frame_chain(void *ctx, koruby_edge_fn fn, struct korb_frame
          * e.g. 0xa8...02), so stop the walk at any implausible frame pointer
          * (misaligned or tiny) rather than dereferencing garbage. */
         if (((uintptr_t)f & 0x7) != 0 || (uintptr_t)f < 0x10000) break;
+        /* When walking a suspended fiber's OWN frame chain, stop as soon as a
+         * frame leaves the fiber's C stack.  The fiber_root frame's .prev
+         * points back into the RESUMER's stack (see korb_fiber_entry), whose
+         * memory is reused after the first resume returns — those frames are
+         * stale, and forwarding their self slots derefs garbage (often a
+         * retired-plane ptr → STRESS+PURGE SEGV, or to-space corruption).  The
+         * resumer chain is walked separately (with stk_lo == NULL) where its
+         * frames are still live. */
+        if (stk_lo && ((const char *)f < stk_lo || (const char *)f >= stk_hi)) break;
         kf_visit_val(ctx, fn, &f->self);
         kf_visit_val(ctx, fn, &f->last_line);
         kf_visit_val(ctx, fn, &f->last_match);
@@ -5651,16 +5661,19 @@ void korb_scan_fiber_roots(VALUE fibv, void *ctx, koruby_edge_fn fn) {
     kf_visit_val(ctx, fn, &fib->fiber_bang);
     for (int i = 0; i < fib->argc && fib->args; i++) kf_visit_val(ctx, fn, &fib->args[i]);
     if (fib->state == KF_SUSPENDED) {
-        /* Fiber's own saved stack + frame chain (its live state while parked). */
+        /* Fiber's own saved stack + frame chain (its live state while parked).
+         * Bound the frame-chain walk to the fiber's C stack so it stops at
+         * fiber_root rather than crossing .prev into the resumer's stale stack. */
         for (VALUE *p = fib->frame; p < fib->fiber_sp; p++) kf_visit_val(ctx, fn, p);
-        kf_visit_frame_chain(ctx, fn, fib->fiber_current_frame);
+        kf_visit_frame_chain(ctx, fn, fib->fiber_current_frame,
+                             fib->stack, fib->stack + fib->stack_size);
     } else if (fib == current_fiber) {
         /* The running fiber's own stack is the live c->stack (scanned by
          * phase a); scan the suspended resumer's saved stack + frame chain. */
         if (fib->resumer_stack_base && fib->resumer_sp)
             for (VALUE *p = fib->resumer_stack_base; p < fib->resumer_sp; p++)
                 kf_visit_val(ctx, fn, p);
-        kf_visit_frame_chain(ctx, fn, fib->resumer_current_frame);
+        kf_visit_frame_chain(ctx, fn, fib->resumer_current_frame, NULL, NULL);
         kf_visit_val(ctx, fn, &fib->resumer_bang);
     }
 }
