@@ -104,7 +104,24 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
                  * GCs and a later `super` into the method derefs a retired
                  * plane → SEGV (module/prepend's super-through-define_method). */
                 struct korb_proc *const mp = m->u.proc.proc;
-                if (mp) visit_value_slot(ctx, fn, &mp->self);
+                if (mp) {
+                    visit_value_slot(ctx, fn, &mp->self);
+                    /* Captured closure env: a define_method'd proc is
+                     * snapshotted into the table (korb_class_add_method_proc,
+                     * the only `m->u.proc.proc =` site) with env heap-copied to
+                     * exactly env_size VALUEs (korb_xmalloc).  Those entries are
+                     * closure-captured locals pointing into the moving arena;
+                     * proc_call copies them into the body frame, so a stale
+                     * entry propagates onto the (otherwise-scanned) value stack
+                     * and a later closure-var read derefs a retired plane
+                     * (module/define_method).  The array is exactly env_size
+                     * long → forwarding [0,env_size) is in-bounds. */
+                    if (mp->env) {
+                        for (uint32_t k = 0; k < mp->env_size; k++) {
+                            visit_value_slot(ctx, fn, &mp->env[k]);
+                        }
+                    }
+                }
             }
         }
     }
