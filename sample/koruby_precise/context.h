@@ -239,11 +239,21 @@ extern uint32_t korb_g_gc_clock;
 extern void korb_result_audit_fail(VALUE v, uint32_t stamp, uint32_t now,
                                    const char *file, int line);
 extern void korb_result_audit_construct(VALUE v, const char *file, int line);
-/* Generic living check: report if `v` is a moved-out (stale) heap handle being
- * stored/used at this site.  Use to instrument store points (gvar/ivar/sp) so
- * the FIRST place a stale raw VALUE is written gets pinpointed. */
-extern void korb_audit_living(VALUE v, const char *what, const char *file, int line);
-#define KORB_AUDIT_LIVING(v, what) korb_audit_living((v), (what), __FILE__, __LINE__)
+/* General object audit: validate `v` at a store/use site and report the first
+ * place a bad VALUE is written.  "Living" (not a moved-out / stale heap handle)
+ * is the first check; the helper is the home for further object-state checks
+ * (type tag sanity, freed-flag, klass validity, …) as we add them.  Use to
+ * instrument store points (gvar/ivar/sp). */
+extern void korb_audit_object(VALUE v, const char *what, const char *file, int line);
+#define KORB_AUDIT_OBJECT(v, what) korb_audit_object((v), (what), __FILE__, __LINE__)
+/* Value-stack store: `sp[i] = v`, auditing v (the value stack is a scanned
+ * store sink — the most common park target, so a bad value parked here is
+ * caught at the write).  Evaluates v once; yields the stored value. */
+#define SP_SET(sp, i, v) (__extension__({                                \
+    VALUE _spv = (v);                                                    \
+    KORB_AUDIT_OBJECT(_spv, "sp_set");                                   \
+    (sp)[(i)] = _spv;                                                    \
+}))
 /* AROH contract hook: the shared GC runtime calls AROH_GC_SAFEPOINT() at every
  * alloc (= every point a moving GC could fire).  koruby implements it as the
  * RESULT-audit clock tick; the runtime knows nothing koruby-specific. */
@@ -277,7 +287,8 @@ extern void korb_audit_living(VALUE v, const char *what, const char *file, int l
 #define RESULT_MK(v, st)      ((RESULT){(v), (st)})
 #define RESULT_VAL(r)         ((r).value)
 #define RESULT_AUDIT_CHECK(r) ((void)0)
-#define KORB_AUDIT_LIVING(v, what) ((void)0)
+#define KORB_AUDIT_OBJECT(v, what) ((void)0)
+#define SP_SET(sp, i, v) ((sp)[(i)] = (v))
 #endif
 
 /* Mark RESULT-returning functions so the compiler enforces that callers

@@ -187,6 +187,16 @@ struct korb_method *method_table_get(const struct korb_method_table *mt, ID name
     return NULL;
 }
 
+/* korb_alloc — THE single sanctioned writer of c->sp_top (rooting_guide §0).
+ * Publishes the staging top `top` (the caller's live-stack top, with enough
+ * scratch above) and allocates `size` bytes.  Every real alloc site routes
+ * through here; nothing else writes c->sp_top except Fiber switch.  Non-alloc
+ * parks use a frame (IDIOM C), never a c->sp_top bump. */
+static inline VALUE korb_alloc(CTX *restrict c, VALUE *restrict top, size_t size) {
+    c->sp_top = top;
+    return aro_gc_alloc(c, size);
+}
+
 struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class *super, enum korb_type instance_type) {
     /* Park super / k / child_meta in sp[0..2].  Caller must pass `sp` as
      * its current top-of-live (= c->sp_top) so we don't trample slots the
@@ -194,15 +204,14 @@ struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class 
     sp[0] = (VALUE)super;
     sp[1] = 0;
     sp[2] = 0;
-    c->sp_top = sp + 3;                 /* publish slots before alloc */
-    sp[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+    sp[1] = korb_alloc(c, sp + 3, sizeof(struct korb_class));
     super = (struct korb_class *)sp[0];
     struct korb_class *k = (struct korb_class *)sp[1];
     k->basic.head.flags = T_CLASS;
     k->basic.klass = KORB_VM(c)->class_class;
     if (super && super->basic.klass &&
         (struct korb_class *)super->basic.klass != KORB_VM(c)->class_class) {
-        sp[2] = aro_gc_alloc(c, sizeof(struct korb_class));
+        sp[2] = korb_alloc(c, sp + 3, sizeof(struct korb_class));
         super = (struct korb_class *)sp[0];
         k     = (struct korb_class *)sp[1];
         struct korb_class *child_meta = (struct korb_class *)sp[2];
@@ -1268,7 +1277,7 @@ bool korb_gvar_defined(ID name) {
 }
 
 void korb_gvar_set(ID name, VALUE v) {
-    KORB_AUDIT_LIVING(v, "gvar_set");
+    KORB_AUDIT_OBJECT(v, "gvar_set");
     for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) { gvars.vals[i] = v; return; }
     if (gvars.size >= gvars.capa) {
         uint32_t nc = gvars.capa == 0 ? 8 : gvars.capa * 2;
@@ -1307,10 +1316,9 @@ VALUE korb_object_new(CTX *c, VALUE *sp, struct korb_class *klass) {
      * Reload from sp[0] after each potential GC site to follow moves. */
     sp[0] = (VALUE)klass;
     sp[1] = 0;
-    c->sp_top = sp + 2;          /* publish slots before alloc */
     int it = klass->instance_type ? klass->instance_type : T_OBJECT;
     if (it == T_CLASS || it == T_MODULE) {
-        sp[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+        sp[1] = korb_alloc(c, sp + 2, sizeof(struct korb_class));
         klass = (struct korb_class *)sp[0];
         struct korb_class *k = (struct korb_class *)sp[1];
         k->basic.head.flags = it;
@@ -1337,7 +1345,7 @@ VALUE korb_object_new(CTX *c, VALUE *sp, struct korb_class *klass) {
         ((struct korb_string *)sv)->basic.klass = klass;
         return sv;
     }
-    sp[1] = aro_gc_alloc(c, sizeof(struct korb_object));
+    sp[1] = korb_alloc(c, sp + 2, sizeof(struct korb_object));
     klass = (struct korb_class *)sp[0];
     struct korb_object *o = (struct korb_object *)sp[1];
     o->basic.head.flags = it;
@@ -1486,8 +1494,8 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
 }
 
 void korb_ivar_set(VALUE obj, ID name, VALUE val) {
-    KORB_AUDIT_LIVING(obj, "ivar_set:obj");
-    KORB_AUDIT_LIVING(val, "ivar_set:val");
+    KORB_AUDIT_OBJECT(obj, "ivar_set:obj");
+    KORB_AUDIT_OBJECT(val, "ivar_set:val");
     if (SPECIAL_CONST_P(obj)) return;
     /* Class-level @ivars (rare but legal — `class Foo; @count = 0`). */
     if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
@@ -1590,8 +1598,7 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
  * GC walks the caller's live values.  Legacy callers without a local sp
  * pass `c->sp_top` (= equivalent to today's "caller has already synced"). */
 VALUE korb_str_new(CTX *c, VALUE *sp, const char *p, long len) {
-    c->sp_top = sp;
-    VALUE v = aro_gc_alloc(c, sizeof(struct korb_string));
+    VALUE v = korb_alloc(c, sp, sizeof(struct korb_string));
     struct korb_string *s = (struct korb_string *)v;
     s->basic.head.flags = T_STRING;
     s->basic.klass = KORB_VM(c)->string_class;  /* may be NULL during bootstrap */
@@ -1661,8 +1668,7 @@ extern void koruby_register_libc_obj(struct RBasic *obj);
 static VALUE korb_ary_backing_new(CTX *c, VALUE *sp, long capa) {
     if (capa < 4) capa = 4;
     size_t bytes = offsetof(struct korb_ary_backing, items) + (size_t)capa * sizeof(VALUE);
-    c->sp_top = sp;                 /* publish staging top just before GC point */
-    VALUE bv = aro_gc_alloc(c, bytes);
+    VALUE bv = korb_alloc(c, sp, bytes);
     struct korb_ary_backing *b = (struct korb_ary_backing *)bv;
     b->basic.head.flags = T_ARY_BACKING;
     b->basic.klass = 0;
@@ -1674,8 +1680,7 @@ VALUE korb_ary_new_capa(CTX *c, VALUE *sp, long capa) {
      * moving objects.  Park the handle at sp[0] across the backing alloc;
      * the backing alloc stages above it at sp+1. */
     sp[0] = 0;
-    c->sp_top = sp;                 /* publish before the handle alloc */
-    sp[0] = aro_gc_alloc(c, sizeof(struct korb_array));
+    sp[0] = korb_alloc(c, sp, sizeof(struct korb_array));
     {
         struct korb_array *a = (struct korb_array *)sp[0];
         a->basic.head.flags = T_ARRAY;
@@ -1960,8 +1965,7 @@ VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl) {
      * T_RANGE case walks begin/end on copy, so no libc registry needed. */
     sp[0] = b;
     sp[1] = e;
-    c->sp_top = sp + 2;                 /* publish before the alloc */
-    VALUE rv = aro_gc_alloc(c, sizeof(struct korb_range));
+    VALUE rv = korb_alloc(c, sp + 2, sizeof(struct korb_range));
     struct korb_range *r = (struct korb_range *)rv;
     r->basic.head.flags = T_RANGE;
     r->basic.klass = (VALUE)KORB_VM(c)->range_class;

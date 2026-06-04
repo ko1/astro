@@ -30,8 +30,11 @@ This exact class burned us repeatedly. The fix is structural: **the GC reads the
 root boundary from the threaded `sp`, never from a stored field.**
 
 **What this means when you write code:**
-- An alloc helper takes `(CTX *c, VALUE *sp, …)` and **passes `sp` onward** to the
-  GC. It does not store it.
+- The **one** function that writes `c->sp_top` is the wrapper
+  `korb_alloc(c, top, size)` (object.c): it sets `c->sp_top = top` and calls
+  `aro_gc_alloc`. Every real allocation goes through it; nothing else writes the
+  field (Fiber switch aside). An alloc helper takes `(CTX *c, VALUE *sp, …)` and
+  calls `korb_alloc(c, sp + N, size)` — it never writes `c->sp_top` itself.
 - To hold scratch across an allocation, pass `sp + N` to the helper — never
   reserve by writing `c->sp_top`.
 - To root a handle across a non-alloc GC point (funcall / yield / intern), use a
@@ -284,9 +287,11 @@ hook — deterministic, independent of whether STRESS actually collected):
 2. **held-across-GC** (`gc_clock` stamped in RESULT, checked by `RESULT_VAL` /
    `UNWRAP`): fires when a RESULT's `.value` is read after the clock advanced →
    catches "I held a RESULT across a GC point then used `.value`".
-3. **store-time** (`KORB_AUDIT_LIVING(v, "what")`): fires when a stale value is
-   *written* into a sink (`korb_gvar_set`, `korb_ivar_set`) → catches the
-   save/restore-of-a-raw-snapshot bug at the store, the closest point to the root.
+3. **store-time** (`KORB_AUDIT_OBJECT(v, "what")` — general object audit, "living"
+   is its first check; `SP_SET(sp,i,v)` runs it on every value-stack store):
+   fires when a bad value is *written* into a sink (`korb_gvar_set`,
+   `korb_ivar_set`, the value stack) → catches the save/restore-of-a-raw-snapshot
+   bug at the store, the closest point to the root.
 
 Usage:
 ```
@@ -297,8 +302,9 @@ ASTRO_GC_STRESS=1 ASTRO_GC_PURGE=1 gdb -batch -ex run -ex 'bt 12' \
 The `*** RESULT-AUDIT(...)` line gives `file:line`; the `bt` gives the callsite.
 After the fix, the audit run must be silent **and** the release SEGV must be
 gone. **Restore the release binary** (`rm -f *.o koruby_precise && make`) before
-normal use. Add a fresh `KORB_AUDIT_LIVING` at any new store sink you suspect.
-Full design: memory `[[project_koruby_result_audit]]`.
+normal use. Add a fresh `KORB_AUDIT_OBJECT` at any new store sink you suspect
+(or use `SP_SET` for value-stack stores). Full design: memory
+`[[project_koruby_result_audit]]`.
 
 ## 7. Writing-a-builtin checklist
 - [ ] **No `c->sp_top = …` anywhere** (per §0). Pass `sp` / `sp + N` to alloc
