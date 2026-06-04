@@ -1258,11 +1258,20 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+            /* Park other across the respond_to?/to_str funcalls (IDIOM B): a
+             * bare C-local would be relocated by the first funcall's GC, so
+             * the second funcall's recv and the BUILTIN_TYPE check below would
+             * deref a moved-out (retired-plane) handle under STRESS+PURGE. */
+            VALUE *const osp = c->sp_top;
+            osp[0] = other;
+            c->sp_top = osp + 1;
+            VALUE rt = UNWRAP(korb_funcall(c, osp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                other = UNWRAP(korb_funcall(c, other, korb_intern("to_str"), 0, NULL));
+                osp[0] = UNWRAP(korb_funcall(c, osp[0], korb_intern("to_str"), 0, NULL));
             }
+            other = osp[0];
+            c->sp_top = osp;
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1297,13 +1306,21 @@ static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+            /* Park other across the respond_to?/to_str funcalls (IDIOM B) so a
+             * moving GC doesn't strand the bare C-local before the second
+             * funcall / type check (STRESS+PURGE SEGV at BUILTIN_TYPE). */
+            VALUE *const osp = c->sp_top;
+            osp[0] = other;
+            c->sp_top = osp + 1;
+            VALUE rt = UNWRAP(korb_funcall(c, osp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                RESULT tr = korb_funcall_r(c, other, korb_intern("to_str"), 0, NULL);
-                if (tr.state != KORB_NORMAL) return tr;
-                other = tr.value;
+                RESULT tr = korb_funcall_r(c, osp[0], korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) { c->sp_top = osp; return tr; }
+                osp[0] = tr.value;
             }
+            other = osp[0];
+            c->sp_top = osp;
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
             return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
