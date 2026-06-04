@@ -45,8 +45,6 @@ static long range_succ_len(VALUE v) {
     (c)->current_frame = &fr
 
 static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Range.new(begin, end[, exclude_end=false]) */
@@ -59,14 +57,15 @@ static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
      * and #<=> returns nil, raise ArgumentError.  #<=> raising
      * propagates (CRuby semantics). */
     if (!NIL_P(argv[0]) && !NIL_P(argv[1])) {
-        VALUE arg2[1] = { argv[1] };
-        VALUE cmp = UNWRAP(korb_funcall_r(c, c->sp_top, argv[0], korb_intern("<=>"), 1, arg2));
+        sp[0] = argv[0];
+        sp[1] = argv[1];
+        VALUE cmp = UNWRAP(korb_call(c, sp + 2, korb_intern("<=>"), 1));
         if (NIL_P(cmp)) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg, "bad value for range");
         }
     }
-    return RESULT_OK(korb_range_new(c, c->sp_top, argv[0], argv[1], excl));
+    return RESULT_OK(korb_range_new(c, sp, argv[0], argv[1], excl));
 }
 
 /* Range#hash — same begin / end / exclude_end? must hash equal. */
@@ -611,7 +610,6 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -666,7 +664,8 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(Qnil);
     }
     /* Numeric mixed: delegate to to_a length. */
-    VALUE arr = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_a"), 0, NULL));
+    sp[0] = sp[-argc - 1];   /* self (re-read) */
+    VALUE arr = UNWRAP(korb_call(c, sp + 1, korb_intern("to_a"), 0));
     if (BUILTIN_TYPE(arr) == T_ARRAY) {
         return RESULT_OK(INT2FIX(((struct korb_array *)arr)->len));
     }
@@ -674,7 +673,6 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -703,8 +701,9 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
     {
         struct korb_range *r2 = (struct korb_range *)sp[-argc - 1];
         if (!NIL_P(r2->begin)) {
-            VALUE begin_v = r2->begin;
-            VALUE cmp = UNWRAP(korb_funcall(c, c->sp_top, begin_v, id_cmp, 1, &argv[0]));
+            sp[0] = r2->begin;
+            sp[1] = argv[0];
+            VALUE cmp = UNWRAP(korb_call(c, sp + 2, id_cmp, 1));
             if (!FIXNUM_P(cmp) || FIX2LONG(cmp) > 0) return RESULT_OK(Qfalse);
         }
     }
@@ -713,7 +712,9 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
         if (!NIL_P(r2->end)) {
             VALUE end_v = r2->end;
             bool excl = r2->exclude_end;
-            VALUE cmp = UNWRAP(korb_funcall(c, c->sp_top, argv[0], id_cmp, 1, &end_v));
+            sp[0] = argv[0];
+            sp[1] = end_v;
+            VALUE cmp = UNWRAP(korb_call(c, sp + 2, id_cmp, 1));
             if (!FIXNUM_P(cmp)) return RESULT_OK(Qfalse);
             long cv = FIX2LONG(cmp);
             if (excl ? (cv >= 0) : (cv > 0)) return RESULT_OK(Qfalse);
@@ -886,7 +887,6 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Range#exclude_end? ---------- */
 static RESULT rng_exclude_end_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
