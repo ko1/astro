@@ -514,15 +514,21 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
      * and a moving collector relocates it, so the close-time ivar_set below
      * would otherwise write through a retired-plane handle (STRESS+PURGE
      * SEGV in every io/file open-with-block spec).  Close the fp on raise
-     * too (ensure semantics) rather than leaking it. */
+     * too (ensure semantics) rather than leaking it.
+     *
+     * A value-stack park (iosp[0] under c->sp_top) is NOT enough: korb_yield
+     * lowers c->sp_top to the block's frame, so the parked slot drops out of
+     * the [stack_base, sp_top) scan range during the block's GCs and io goes
+     * stale.  Park in THIS cfunc frame's last_line slot instead — the frame
+     * chain is walked by koruby_visit_roots regardless of c->sp_top, so it
+     * stays forwarded across the block (the cfunc frame's $_ is unused). */
     const ID fp_id = korb_io_fp_id_();
-    VALUE *const iosp = c->sp_top;
-    iosp[0] = io;
-    c->sp_top = iosp + 1;
-    RESULT _yr = korb_yield_r(c, 1, &iosp[0]);
+    struct korb_frame *const ioframe = c->current_frame;
+    ioframe->last_line = io;
+    RESULT _yr = korb_yield_r(c, 1, &ioframe->last_line);
     fclose(fp);
-    korb_ivar_set(iosp[0], fp_id, Qnil);
-    c->sp_top = iosp;
+    korb_ivar_set(ioframe->last_line, fp_id, Qnil);
+    ioframe->last_line = Qnil;
     if (_yr.state != KORB_NORMAL) return _yr;
     return RESULT_OK(_yr.value);
 }
