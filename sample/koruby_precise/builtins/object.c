@@ -858,16 +858,15 @@ RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
  *   "".method(:gsub).to_proc.parameters
  * report [[:rest]] from the cfunc rather than [].  */
 RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(korb_ary_new(c, sp));
     struct korb_proc *p = (struct korb_proc *)self;
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
-        return korb_funcall(c, c->sp_top, p->self, korb_intern("parameters"), 0, NULL);
+        return korb_funcall(c, sp, p->self, korb_intern("parameters"), 0, NULL);
     }
     /* r parked at sp[0], current pair at sp[1]; pushes/allocs stage at sp+2
      * so both survive the korb_ary_new_capa / korb_intern GC points. */
@@ -1016,7 +1015,6 @@ static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1026,20 +1024,19 @@ static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
      * overrides #== / #equal? to return false, identical instances
      * still match. */
     if (self == argv[0]) return RESULT_OK(Qtrue);
-    return korb_funcall(c, c->sp_top, self, korb_intern("=="), 1, argv);
+    return korb_funcall(c, sp, self, korb_intern("=="), 1, argv);
 }
 
 
 /* ---------- Object#tap / #then / #itself ---------- */
 RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
 
     if (c->current_block) {
         VALUE av[1] = { self };
-        RESULT _yr = korb_yield(c, c->sp_top, 1, av);
+        RESULT _yr = korb_yield(c, sp, 1, av);
         if (_yr.state == KORB_RAISE) return _yr;
         /* BREAK/NEXT/RETURN from a tap block: silently consumed (tap
          * always returns self). */
@@ -1051,19 +1048,17 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[-argc - 1]);
 }
 RESULT obj_then(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    
+
     if (c->current_block) {
         VALUE av[1] = { self };
-        return korb_yield(c, c->sp_top, 1, av);
+        return korb_yield(c, sp, 1, av);
     }
     return RESULT_OK(self);
 }
 RESULT obj_itself(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
  return RESULT_OK(self); }
