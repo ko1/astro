@@ -273,6 +273,9 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
             visit_ptr_slot(ctx, fn, (void **)&c->current_block->enclosing_block);
         }
         for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            /* Same fiber-boundary stop as the main frame walk above: don't
+             * cross fiber_root.prev into the resumer's stale stack. */
+            if (fib_lo && ((const char *)f < fib_lo || (const char *)f >= fib_hi)) break;
             if (f->block) {
                 visit_value_slot(ctx, fn, &f->block->self);
                 visit_ptr_slot(ctx, fn, (void **)&f->block->enclosing_block);
