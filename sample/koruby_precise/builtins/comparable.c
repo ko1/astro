@@ -703,14 +703,23 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp_top));
-    sp[0] = korb_hash_new(c, c->sp_top); /* libc hash (non-moving); keep at sp[0] */
+    /* The hash header is arena-allocated (MOVING — the old "libc/non-moving"
+     * note was stale).  Park it in this cfunc frame's last_line slot, not on
+     * the value stack: the per-element block yield below lowers c->sp_top below
+     * a value-stack slot, dropping it from the [stack_base, sp_top) scan range
+     * so the hash goes stale → SEGV in korb_hash_aset under STRESS+PURGE.  The
+     * frame chain is walked by koruby_visit_roots regardless of c->sp_top. */
+    struct korb_frame *const hframe = c->current_frame;
+    hframe->last_line = korb_hash_new(c, c->sp_top);
+    hframe->last_match = sp[-argc - 1];   /* park struct receiver across yields too */
+    c->sp_top = sp + 3;   /* cover sp[1]/sp[2] yield-arg staging below */
     bool has_block = (c->current_block != NULL);
     /* self and __members__ are moving handles, and korb_intern / korb_yield /
      * korb_funcall / korb_hash_aset below all fire GC.  Re-derive members
      * (loop top) and self (sp[-argc-1]) each iteration; member names are
      * Symbols (immediate) so a snapshot key stays valid. */
     for (long i = 0; ; i++) {
-        VALUE self_i = sp[-argc - 1];
+        VALUE self_i = hframe->last_match;   /* forwarded across yields (frame-parked) */
         struct korb_class *kl_i = (struct korb_class *)((struct korb_object *)self_i)->basic.klass;
         VALUE mv = korb_const_get_inherited(kl_i, korb_intern("__members__"));
         if (UNDEF_P(mv) || BUILTIN_TYPE(mv) != T_ARRAY) break;
@@ -722,7 +731,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-        VALUE val = korb_ivar_get(sp[-argc - 1], korb_intern(iv));
+        VALUE val = korb_ivar_get(hframe->last_match, korb_intern(iv));
         if (has_block) {
             sp[1] = key;
             sp[2] = val;
@@ -753,9 +762,9 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
             key = korb_ary_items(pa)[0];
             val = korb_ary_items(pa)[1];
         }
-        korb_hash_aset(c, sp[0], key, val);
+        korb_hash_aset(c, hframe->last_line, key, val);   /* re-read forwarded hash */
     }
-    return RESULT_OK(sp[0]);
+    return RESULT_OK(hframe->last_line);
 }
 
 /* Struct#size / length */
