@@ -851,27 +851,36 @@ static bool korb_glob_simple_match(const char *pat, const char *name) {
 static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, bool recursive) {
     DIR *d = opendir(dir);
     if (!d) return;
+    /* Park the result array in the GC root stack across this whole directory
+     * scan: each korb_str_new_cstr / korb_ary_push AND each nested
+     * korb_glob_walk fires GC that relocates the array.  The previous code
+     * only re-read `out` after the match push, not after the recursive
+     * descent (line "korb_glob_walk(..., out, true)"), so a later iteration's
+     * push went through a moved-out (retired-plane) handle under STRESS+PURGE.
+     * The root slot is forwarded by visit_roots, so oroot[0] is always live. */
+    VALUE *const oroot = AROH_ROOT_STACK_TOP(c);
+    oroot[0] = out;
+    AROH_ROOT_STACK_SET_TOP(c, oroot + 1);
     struct dirent *de;
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
         if (korb_glob_simple_match(pat, de->d_name)) {
-            /* Park out at vsp[0] across the korb_str_new_cstr GC point so a
-             * moving collection can't strand the result handle. */
             VALUE *const vsp = c->sp_top;
-            vsp[0] = out;
+            vsp[0] = oroot[0];
             korb_ary_push(c, vsp + 1, vsp[0], korb_str_new_cstr(c, vsp + 1, path));
-            out = vsp[0];
+            oroot[0] = vsp[0];
         }
         if (recursive) {
             struct stat st;
             if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-                korb_glob_walk(c, path, pat, out, true);
+                korb_glob_walk(c, path, pat, oroot[0], true);
             }
         }
     }
     closedir(d);
+    AROH_ROOT_STACK_SET_TOP(c, oroot);
 }
 
 static RESULT dir_glob(CTX *c, int argc, VALUE *sp) {
@@ -884,24 +893,30 @@ static RESULT dir_glob(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp_top));
     const char *pat = korb_str_cstr(argv[0]);
-    VALUE out = korb_ary_new(c, c->sp_top);
+    /* Park the result array at sp[0] across korb_glob_walk (which fires GC):
+     * a bare C-local `out` would be stale on return (the walk relocates it). */
+    VALUE *const osp = c->sp_top;
+    osp[0] = korb_ary_new(c, osp + 1);
+    c->sp_top = osp + 1;
     /* Detect double-star + slash + rest recursive form. */
     if (strncmp(pat, "**/", 3) == 0) {
-        korb_glob_walk(c, ".", pat + 3, out, true);
-        return RESULT_OK(out);
-    }
-    /* Otherwise look in `.` if no /; else split last component. */
-    const char *slash = strrchr(pat, '/');
-    if (!slash) {
-        korb_glob_walk(c, ".", pat, out, false);
+        korb_glob_walk(c, ".", pat + 3, osp[0], true);
     } else {
-        char dir[4096];
-        long dl = slash - pat;
-        if (dl >= (long)sizeof(dir)) dl = sizeof(dir) - 1;
-        memcpy(dir, pat, dl); dir[dl] = 0;
-        korb_glob_walk(c, dir, slash + 1, out, false);
+        /* Otherwise look in `.` if no /; else split last component. */
+        const char *slash = strrchr(pat, '/');
+        if (!slash) {
+            korb_glob_walk(c, ".", pat, osp[0], false);
+        } else {
+            char dir[4096];
+            long dl = slash - pat;
+            if (dl >= (long)sizeof(dir)) dl = sizeof(dir) - 1;
+            memcpy(dir, pat, dl); dir[dl] = 0;
+            korb_glob_walk(c, dir, slash + 1, osp[0], false);
+        }
     }
-    return RESULT_OK(out);
+    VALUE result = osp[0];
+    c->sp_top = osp;
+    return RESULT_OK(result);
 }
 
 /* ---------- Process ---------- */
