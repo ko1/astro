@@ -95,6 +95,16 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
             visit_cref_chain(ctx, fn, m->def_cref);
             if (m->type == KORB_METHOD_PROC) {
                 visit_ptr_slot(ctx, fn, (void **)&m->u.proc.proc);
+                /* A define_method'd proc sitting in the method table holds a
+                 * captured `self` (the receiver bound by proc_call, line 343).
+                 * The proc itself is libc-allocated (non-moving), but its
+                 * `self` VALUE points into the moving arena — so it must be
+                 * forwarded here, NOT only while the proc is the running_block
+                 * (koruby_visit_roots (d')).  Otherwise self goes stale between
+                 * GCs and a later `super` into the method derefs a retired
+                 * plane → SEGV (module/prepend's super-through-define_method). */
+                struct korb_proc *const mp = m->u.proc.proc;
+                if (mp) visit_value_slot(ctx, fn, &mp->self);
             }
         }
     }
