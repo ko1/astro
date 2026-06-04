@@ -447,7 +447,6 @@ static RESULT obj_protected_methods(CTX *c, int argc, VALUE *sp) {
 /* Object#singleton_methods — methods defined directly on this object's
  * singleton class (not inherited from regular class). */
 static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -455,15 +454,16 @@ static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
      * across korb_ary_new / korb_singleton_class_of / per-method push GC —
      * self and classes are arena (moving).  Method-table buckets are libc
      * (non-moving) so entry pointers stay valid; re-read the class from
-     * msp[2] each use. */
-    VALUE *const msp = c->sp_top;
+     * msp[2] each use.  korb_ary_new(c, msp+2) publishes msp+2 before its GC,
+     * covering the msp[0] park. */
+    VALUE *const msp = sp;
     msp[0] = self;                       /* park self BEFORE korb_ary_new */
     msp[1] = korb_ary_new(c, msp + 2);   /* result */
     msp[2] = 0;
     if (SPECIAL_CONST_P(msp[0])) return RESULT_OK(msp[1]);
     if (BUILTIN_TYPE(msp[0]) == T_CLASS || BUILTIN_TYPE(msp[0]) == T_MODULE) {
         /* For a class, singleton_methods returns the metaclass methods. */
-        msp[2] = (VALUE)korb_singleton_class_of(c, c->sp_top, (struct korb_class *)msp[0]);
+        msp[2] = (VALUE)korb_singleton_class_of(c, msp + 3, (struct korb_class *)msp[0]);
     } else if (BUILTIN_TYPE(msp[0]) == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)msp[0];
         struct korb_class *cur = (struct korb_class *)o->basic.klass;
@@ -1028,7 +1028,6 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT class_name(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1036,7 +1035,7 @@ static RESULT class_name(CTX *c, int argc, VALUE *sp) {
      * registered name string. */
     struct korb_class *k = (struct korb_class *)self;
     if (!k->name || k->name == korb_intern("(anon)")) return RESULT_OK(Qnil);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, korb_id_name(k->name)));
+    return RESULT_OK(korb_str_new_cstr(c, sp, korb_id_name(k->name)));
 }
 
 /* (Array#hash folded into builtins/array.c) */
@@ -1161,7 +1160,6 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_prepend(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1198,7 +1196,6 @@ static RESULT module_prepend(CTX *c, int argc, VALUE *sp) {
 /* Module#remove_const(:NAME) — remove a constant from the module.
  * Returns the previous value, or raises NameError if missing. */
 static RESULT module_remove_const(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1225,7 +1222,6 @@ static RESULT module_remove_const(CTX *c, int argc, VALUE *sp) {
 /* Module#remove_class_variable(:@@name) — remove a cvar from the
  * module's own table.  Returns the previous value or raises NameError. */
 static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
