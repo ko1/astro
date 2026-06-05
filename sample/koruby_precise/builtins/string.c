@@ -2,7 +2,7 @@
 
 /* Forward decl — defined in builtins/array.c which is included after
  * builtins/string.c.  Needed for to_int coerce in #getbyte etc. */
-static RESULT korb_to_int_or_raise(CTX *c, VALUE v);
+static RESULT korb_to_int_or_raise(CTX *c, VALUE *sp, VALUE v);
 /* Forward decl for the to_str coerce helper (defined further below). */
 static RESULT str_coerce_arg(CTX *c, VALUE *sp, VALUE arg);
 /* Forward decl for UTF-8 char→byte index translation (defined later). */
@@ -811,7 +811,7 @@ static RESULT str_getbyte(CTX *c, int argc, VALUE *sp) {
     if (FIXNUM_P(argv[0])) {
         i = FIX2LONG(argv[0]);
     } else {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         i = FIX2LONG(iv);
     }
@@ -1491,7 +1491,7 @@ static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
         if (FIXNUM_P(argv[0])) {
             bits = FIX2LONG(argv[0]);
         } else {
-            VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+            VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
             if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             bits = FIX2LONG(iv);
         }
@@ -2861,7 +2861,7 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
     if (FIXNUM_P(argv[0])) {
         pos = FIX2LONG(argv[0]);
     } else {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         pos = FIX2LONG(iv);
     }

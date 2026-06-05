@@ -66,7 +66,7 @@ static RESULT ary_self(CTX *c, int argc, VALUE *sp) {
 /* Coerce v to an Integer via #to_int (CRuby protocol).  Returns the
  * Fixnum/Bignum on success.  On failure propagates the raise via RESULT.
  * Already-Integer values pass through. */
-static RESULT korb_to_int_or_raise(CTX *c, VALUE v) {
+static RESULT korb_to_int_or_raise(CTX *c, VALUE *sp, VALUE v) {
     if (FIXNUM_P(v)) return RESULT_OK(v);
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_BIGNUM) return RESULT_OK(v);
     /* Float / mock / user object — try #to_int.  Float defines to_int
@@ -79,35 +79,30 @@ static RESULT korb_to_int_or_raise(CTX *c, VALUE v) {
          * VALUE with no caller slot to re-read.  Park it on the value stack
          * so the moving GC forwards it; otherwise the second funcall (and
          * the error-message class lookups) dispatch on a dead pointer. */
-        VALUE *const vroot = c->sp_top;
+        VALUE *const vroot = sp;
         vroot[0] = v;
-        c->sp_top = vroot + 1;
-        RESULT _rt = korb_funcall(c, c->sp_top, vroot[0], korb_intern("respond_to?"), 1,
+        RESULT _rt = korb_funcall(c, sp + 1, vroot[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
-        if (_rt.state != KORB_NORMAL) { c->sp_top = vroot; return _rt; }
+        if (_rt.state != KORB_NORMAL) return _rt;
         if (RTEST(_rt.value)) {
-            RESULT _ri = korb_funcall(c, c->sp_top, vroot[0], korb_intern("to_int"), 0, NULL);
-            if (_ri.state != KORB_NORMAL) { c->sp_top = vroot; return _ri; }
+            RESULT _ri = korb_funcall(c, sp + 1, vroot[0], korb_intern("to_int"), 0, NULL);
+            if (_ri.state != KORB_NORMAL) return _ri;
             VALUE r = _ri.value;
             if (FIXNUM_P(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM)) {
-                c->sp_top = vroot;
                 return RESULT_OK(r);
             }
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             const char *src_n = is_float ? "Float"
                                 : korb_id_name(korb_class_of_class(vroot[0])->name);
-            RESULT _e = korb_raise(c, (struct korb_class *)eT,
+            return korb_raise(c, (struct korb_class *)eT,
                        "can't convert %s to Integer (%s#to_int gives %s)",
                        src_n, src_n,
                        SPECIAL_CONST_P(r) ? "(special)"
                            : korb_id_name(korb_class_of_class(r)->name));
-            c->sp_top = vroot;
-            return _e;
         }
         /* respond_to? was false: re-read the forwarded v for the tail's
-         * error message, then pop the park. */
+         * error message. */
         v = vroot[0];
-        c->sp_top = vroot;
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     const char *cn;
@@ -399,7 +394,7 @@ static RESULT ary_pop(CTX *c, int argc, VALUE *sp) {
                    "wrong number of arguments (given %d, expected 0..1)", argc);
     }
     if (argc >= 1) {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);  /* Bignum n: way bigger than array */
         long n = FIX2LONG(iv);
         if (n < 0) {
@@ -1126,7 +1121,7 @@ static RESULT ary_flatten(CTX *c, int argc, VALUE *sp) {
     if (argc >= 1 && !NIL_P(argv[0])) {
         VALUE d = argv[0];
         if (!FIXNUM_P(d)) {
-            d = UNWRAP(korb_to_int_or_raise(c, d));
+            d = UNWRAP(korb_to_int_or_raise(c, sp, d));
         }
         if (!FIXNUM_P(d)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1161,7 +1156,7 @@ static RESULT ary_flatten_bang(CTX *c, int argc, VALUE *sp) {
     if (argc >= 1 && !NIL_P(argv[0])) {
         VALUE d = argv[0];
         if (!FIXNUM_P(d)) {
-            d = UNWRAP(korb_to_int_or_raise(c, d));
+            d = UNWRAP(korb_to_int_or_raise(c, sp, d));
         }
         if (!FIXNUM_P(d)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -2021,7 +2016,7 @@ static RESULT ary_rotate_bang(CTX *c, int argc, VALUE *sp) {
     if (korb_ary_len(self) <= 1) return RESULT_OK(self);
     long n;
     if (argc >= 1) {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(self);
         n = FIX2LONG(iv);
     } else {
@@ -2064,7 +2059,7 @@ static RESULT ary_rotate(CTX *c, int argc, VALUE *sp) {
 
     long n;
     if (argc >= 1) {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(korb_ary_new(c, sp));
         n = FIX2LONG(iv);
     } else {
@@ -2140,7 +2135,7 @@ static RESULT ary_shift(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_array *a = (struct korb_array *)self;
     if (argc >= 1) {
-        VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+        VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
         if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
         long n = FIX2LONG(iv);
         if (n < 0) {
@@ -2268,7 +2263,7 @@ static RESULT ary_drop(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(self);
-    VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
     /* korb_to_int_or_raise is a GC point — re-read self. */
     self = sp[-argc - 1];
     if (!FIXNUM_P(iv)) return RESULT_OK(self);
@@ -2994,7 +2989,7 @@ static RESULT ary_at(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 1)", argc);
     }
-    VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
     if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
     /* R5: re-read self from its slot after the to_int GC point. */
     return RESULT_OK(korb_ary_aref(sp[-argc - 1], FIX2LONG(iv)));
@@ -3015,7 +3010,7 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 1..2)", argc);
     }
-    VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
     if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
     long i = FIX2LONG(iv);
     /* korb_to_int_or_raise is a GC point — re-read self (the C-local is a
@@ -3050,7 +3045,7 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];   /* source receiver (re-read post-alloc) */
     for (int k = 0; k < argc; k++) {
-        RESULT _ivr = korb_to_int_or_raise(c, argv[k]);
+        RESULT _ivr = korb_to_int_or_raise(c, sp, argv[k]);
         if (_ivr.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ivr; }
         if (!FIXNUM_P(_ivr.value)) { c->current_frame = fr.prev; return RESULT_OK(Qnil); }
         long i = FIX2LONG(_ivr.value);
@@ -3301,7 +3296,7 @@ static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
                    "wrong number of arguments (given 0, expected 1+)");
     }
     if (argc == 1) return RESULT_OK(self);  /* `arr.insert(i)` with no values is no-op */
-    VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
+    VALUE iv = UNWRAP(korb_to_int_or_raise(c, sp, argv[0]));
     /* korb_to_int_or_raise is a GC point; re-read self (the `self` C-local
      * is now a stale, possibly moved handle). */
     self = sp[-argc - 1];
