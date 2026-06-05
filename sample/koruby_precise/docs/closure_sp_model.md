@@ -514,6 +514,33 @@ body の sp(= new_fp + locals)が high-water と一致するようになった�
 `sp_transition_analysis.md §8` の通り reload 削減効果は ~0.1% で malloc/dispatch が支配的なので、
 本移行は「perf でなく設計(c->sp_top 撤去・per-CTX 化)」が目的。
 
+### 10.7 ★最重要発見(2026-06-05): `sp` と `c->sp_top` は別概念だった
+A7(`c->sp_top` read を `sp` に機械置換)を node.def で試行 → **gate 26/28 で破綻**
+(test_array `arr[1..2]` が `0` を返す)。root cause を追って **task の前提が誤りと判明**:
+
+- **`sp`(node の引数)= frame top**。`EVAL_ARG(c,n) = (*disp)(c, n, sp)` で **親の sp をそのまま
+  子へ伝播**するので、1 つの method body 内の全 node が**同じ sp(= method frame top)を共有**。
+  用途は **lvar アクセス専用**(`sp[idx - locals]`、parse 時固定の frame-relative オフセット)。**body 内で不変**。
+- **`c->sp_top` = 動的 staging top(high-water)**。node が sub-call 引数を積むと動く
+  (例 `node_aref`: `sp[0]=recv; sp[1]=idx; c->sp_top = sp + 2`)。alloc / sub-dispatch の staging
+  base はこちら。**親が staging すると c->sp_top = sp + N > sp**。
+- 決定的証拠: `arr[1..2]` で `node_aref` が sp[0]/sp[1] を積み c->sp_top=sp+2 にした状態で idx の
+  `1..2`(`node_range_new`)を EVAL_ARG。range node の引数 sp は **aref の frame-top sp**(= sp+2 ではない)。
+  元コード `korb_range_new(c, c->sp_top=sp+2)` は aref slot の上に積むが、`sp` に変えると **aref の
+  sp[0]/sp[1] を上書き** → recv/idx 破壊 → `0`。
+
+**帰結**: 「`c->sp_top` read を `sp` に置換」という A7 は**原理的に不可**。`sp`(frame top, lvar 用)と
+`c->sp_top`(staging top, 動的)は**本質的に別物**で、現設計は「sp 固定 + staging は global c->sp_top」
+を意図的に選んでいる(lvar bake を単純な frame-relative に保つため)。
+
+**真の「sp 一本」= stack-machine 化**(= user の "`sp[-parsed_frame_idx + local_idx]`" 設計そのもの):
+parser が各プログラム点の **staging 深さを算出**し、lvar を「動く sp からの負オフセット
+(`idx - locals - depth`)」で bake、`EVAL_ARG` は **動く top** を渡し、`korb_alloc` だけが publish。
+これは bake walker + 全 node の staging を書き換える**大規模リファクタ**(YARV 的 stack 深さ計算の導入)。
+A1〜A6 は frame **配置**を threaded frame-sp に寄せた有効な布石だが、staging top の撤去はこの
+stack-machine 化が前提。代替は staging top を**第 2 引数**として thread(frame sp + staging top の
+「二本」案、"一本" ではない)。→ 方針は user 判断。
+
 ---
 
 ## 付録: 主要 source 索引
