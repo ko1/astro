@@ -118,7 +118,6 @@ static RESULT io_gets(CTX *c, int argc, VALUE *sp) {
 
 static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -137,7 +136,7 @@ static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
         VALUE l = korb_str_new(c, sp + 1, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
-            RESULT _yr = korb_yield(c, c->sp_top, 1, &l);
+            RESULT _yr = korb_yield(c, sp, 1, &l);
             if (_yr.state != KORB_NORMAL) { free(line); return _yr; }
         } else {
             korb_ary_push(c, sp + 1, sp[0], l);
@@ -301,7 +300,6 @@ static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
  * - Without block: return reader IO; caller must close.
  * Mode "r" (default) reads from cmd's stdout; "w" writes to cmd's stdin. */
 RESULT io_class_popen(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
@@ -318,7 +316,7 @@ RESULT io_class_popen(CTX *c, int argc, VALUE *sp) {
     }
     VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
-    VALUE r = UNWRAP(korb_yield_r(c, c->sp_top, 1, &io));
+    VALUE r = UNWRAP(korb_yield_r(c, sp, 1, &io));
     /* Only close if the block didn't already close io: io.close fclose's the
      * FILE* and nils @fp, so an unconditional pclose(fp) here double-frees it
      * (io/popen_spec abort).  Re-read @fp to detect that. */
@@ -352,7 +350,6 @@ static long korb_copy_fd_(int from_fd, int to_fd, long max_len) {
 }
 
 RESULT io_class_copy_stream(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
     if (argc < 2) {
         return korb_raise(c, NULL, "IO.copy_stream(src, dst[, len[, src_offset]])");
@@ -482,7 +479,6 @@ RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
  * Without a block: return the IO; caller must close. */
 extern struct korb_class *korb_vm_file_class_(void);
 static RESULT file_open(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qnil);
@@ -506,16 +502,16 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
      * SEGV in every io/file open-with-block spec).  Close the fp on raise
      * too (ensure semantics) rather than leaking it.
      *
-     * A value-stack park (iosp[0] under c->sp_top) is NOT enough: korb_yield
-     * lowers c->sp_top to the block's frame, so the parked slot drops out of
+     * A value-stack park (iosp[0] under sp) is NOT enough: korb_yield
+     * lowers sp to the block's frame, so the parked slot drops out of
      * the [stack_base, sp_top) scan range during the block's GCs and io goes
      * stale.  Park in THIS cfunc frame's last_line slot instead — the frame
-     * chain is walked by koruby_visit_roots regardless of c->sp_top, so it
+     * chain is walked by koruby_visit_roots regardless of sp, so it
      * stays forwarded across the block (the cfunc frame's $_ is unused). */
     const ID fp_id = korb_io_fp_id_();
     struct korb_frame *const ioframe = c->current_frame;
     ioframe->last_line = io;
-    RESULT _yr = korb_yield_r(c, c->sp_top, 1, &ioframe->last_line);
+    RESULT _yr = korb_yield_r(c, sp, 1, &ioframe->last_line);
     fclose(fp);
     korb_ivar_set(ioframe->last_line, fp_id, Qnil);
     ioframe->last_line = Qnil;
@@ -799,7 +795,6 @@ static RESULT dir_entries(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT dir_chdir(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qnil);
     const char *path = korb_str_cstr(argv[0]);
@@ -809,7 +804,7 @@ static RESULT dir_chdir(CTX *c, int argc, VALUE *sp) {
         if (chdir(path) != 0) {
             return korb_raise(c, NULL, "could not chdir to %s", path);
         }
-        VALUE r = UNWRAP(korb_yield_r(c, c->sp_top, 0, NULL));
+        VALUE r = UNWRAP(korb_yield_r(c, sp, 0, NULL));
         if (chdir(prev) != 0) { /* unlikely; best-effort restore */ }
         return RESULT_OK(r);
     }
@@ -1101,7 +1096,6 @@ static RESULT process_spawn(CTX *c, int argc, VALUE *sp) {
 /* Process.fork { ... } — fork; in child, run block then exit.  In
  * parent, return child pid. */
 static RESULT process_fork(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1109,9 +1103,9 @@ static RESULT process_fork(CTX *c, int argc, VALUE *sp) {
     if (pid < 0) return RESULT_OK(Qnil);
     if (pid == 0) {
         RESULT _yr = RESULT_OK(Qnil);
-        if (korb_block_given(c)) _yr = korb_yield(c, c->sp_top, 0, NULL);
+        if (korb_block_given(c)) _yr = korb_yield(c, sp, 0, NULL);
         if (_yr.state == KORB_RAISE) {
-            VALUE s = korb_inspect(c, c->sp_top, _yr.value);
+            VALUE s = korb_inspect(c, sp, _yr.value);
             fprintf(stderr, "fork child: %s\n", korb_str_cstr(s));
             _exit(1);
         }
@@ -1231,7 +1225,6 @@ static int signal_name_to_num(const char *n) {
 
 static RESULT signal_trap(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -1294,7 +1287,6 @@ static RESULT signal_list(CTX *c, int argc, VALUE *sp) {
 /* Kernel#sleep — pause for N seconds (Float or Integer).  No timer
  * accuracy goal beyond what nanosleep gives. */
 RESULT kernel_sleep(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1312,7 +1304,6 @@ RESULT kernel_sleep(CTX *c, int argc, VALUE *sp) {
 
 RESULT proc_clock_gettime_stub(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -1321,12 +1312,11 @@ RESULT proc_clock_gettime_stub(CTX *c, int argc, VALUE *sp) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return RESULT_OK(korb_float_new(c, c->sp_top, t));
+    return RESULT_OK(korb_float_new(c, sp, t));
 }
 
 RESULT time_now_stub(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -1336,7 +1326,7 @@ RESULT time_now_stub(CTX *c, int argc, VALUE *sp) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return RESULT_OK(korb_float_new(c, c->sp_top, t));
+    return RESULT_OK(korb_float_new(c, sp, t));
 }
 
 
