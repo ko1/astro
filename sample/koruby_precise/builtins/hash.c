@@ -166,26 +166,22 @@ static RESULT hash_compare_by_identity_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT hash_keys(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
-    sp[0] = 0;                       /* park slot; zero before it becomes scanned */
-    c->sp_top = sp + 1;
+    sp[0] = 0;                       /* park slot; korb_ary_new(c, sp+1) publishes sp+1 */
     sp[0] = korb_ary_new(c, sp + 1);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) korb_ary_push(c, sp + 1, sp[0], e->key);
     return RESULT_OK(sp[0]);
 }
 
 static RESULT hash_values(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
     sp[0] = 0;
-    c->sp_top = sp + 1;
     sp[0] = korb_ary_new(c, sp + 1);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) korb_ary_push(c, sp + 1, sp[0], e->value);
     return RESULT_OK(sp[0]);
@@ -397,14 +393,12 @@ static RESULT hash_invert(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT hash_to_a(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
-    /* r=sp[0], pair=sp[1] parked; zero-fill + reserve so both are scanned. */
+    /* r=sp[0], pair=sp[1] parked; korb_ary_new(c, sp+2) publishes sp+2. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new(c, sp + 2);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         sp[1] = korb_ary_new_capa(c, sp + 2, 2);
@@ -413,7 +407,6 @@ static RESULT hash_to_a(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     VALUE result = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(result);
 }
 
