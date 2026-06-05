@@ -385,7 +385,6 @@ static RESULT kernel_print(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -502,7 +501,8 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
              * consumer that holds it across a GC — node_rescue's @cause-linking
              * korb_ivar_get — derefs a retired plane → SEGV under STRESS+PURGE
              * (kernel/raise re-raise-with-cause). */
-            VALUE *const esp = c->sp_top;
+            /* sp[0] park around the sp-less korb_ivar_set GC point (sanctioned). */
+            VALUE *const esp = sp;
             esp[0] = exc_val;
             c->sp_top = esp + 1;
             korb_ivar_set(esp[0], korb_intern("@cause"), NIL_P(kc) ? Qnil : kc);
@@ -752,7 +752,6 @@ static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
  * val; otherwise re-propagates.  No setjmp/longjmp — the existing
  * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
 static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -765,21 +764,20 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
      * re-read from the forwarded argv slots AFTER it — caching them in
      * C-locals before the alloc left the throw pair holding a stale tag, which
      * the catcher's korb_eq then deref'd (SEGV, catch_spec under STRESS). */
-    VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(c, c->sp_top, pair, argv[0]);
-    korb_ary_push(c, c->sp_top, pair, argc >= 2 ? argv[1] : Qnil);
+    VALUE pair = korb_ary_new_capa(c, sp, 2);
+    korb_ary_push(c, sp, pair, argv[0]);
+    korb_ary_push(c, sp, pair, argc >= 2 ? argv[1] : Qnil);
     return RESULT_THROW_R(pair);
 }
 
 static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
      * or no tag (`catch {}` — the block param is the implicit tag).
      * For the no-tag form we synthesize a fresh Object as the tag. */
-    VALUE tag0 = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp_top, KORB_VM(c)->object_class);
+    VALUE tag0 = (argc >= 1) ? argv[0] : korb_object_new(c, sp, KORB_VM(c)->object_class);
     /* Park the tag in a synthetic frame across korb_yield: the block body
      * runs at a lower sp_top, so the moving tag (especially the synthesized
      * no-tag Object) would not be forwarded if held only as a C-local /
@@ -798,7 +796,7 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
     };
     c->current_frame = &fr;
     VALUE block_arg[1] = { fr.last_match };
-    RESULT _br = korb_yield(c, c->sp_top, 1, block_arg);
+    RESULT _br = korb_yield(c, sp, 1, block_arg);
     /* state == THROW: tag/value live on _br.value as a 2-element ary. */
     if (_br.state == KORB_THROW && !SPECIAL_CONST_P(_br.value) &&
         BUILTIN_TYPE(_br.value) == T_ARRAY) {
@@ -1373,7 +1371,6 @@ static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
 extern RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 extern RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
 static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1389,7 +1386,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
             VALUE klass_v = (VALUE)korb_class_of_class(argv[0]);
             if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
                                                   korb_intern("to_str"))) {
-                coerced = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("to_str"), 0, NULL));
+                coerced = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("to_str"), 0, NULL));
             }
         }
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
@@ -1418,7 +1415,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
          * NOT GC-scanned) AFTER it, re-read from the forwarded value-stack
          * slots — otherwise binding_eval_via deref's a stale argv[0]. */
         VALUE forward[3];
-        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp_top, "(eval)");
+        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, sp, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
         forward[0] = argv[0];
         struct korb_binding *b = (struct korb_binding *)argv[1];
