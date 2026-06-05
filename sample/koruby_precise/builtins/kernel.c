@@ -1138,7 +1138,6 @@ static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
  * level so the result starts at the actual caller (CRuby behavior).
  */
 static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1238,7 +1237,6 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[1]);
 }
 static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1274,7 +1272,6 @@ static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
 
 /* Kernel#global_variables — Array of Symbols naming each defined gvar. */
 static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     extern uint32_t koruby_gvars_size(void);
     extern ID *koruby_gvars_keys(void);
     uint32_t n = koruby_gvars_size();
@@ -1303,7 +1300,6 @@ static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
  * from inside an `it` block (current_frame->method.name == :it),
  * return [] to avoid leaking mspec_shim internals. */
 static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1350,11 +1346,10 @@ static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE h = korb_hash_new(c, c->sp_top);
+    VALUE h = korb_hash_new(c, sp);
     /* Skip past the AST method that's hosting this cfunc call (typically
      * Kernel#binding from bootstrap) to get to the user's frame. */
     struct korb_frame *f = c->current_frame ? c->current_frame->prev : NULL;
@@ -1568,7 +1563,6 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
  * Lets `super` from an overridden initialize at the top of the chain
  * succeed (CRuby has the same convention via BasicObject#initialize). */
 static RESULT kernel_initialize_default(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1576,7 +1570,6 @@ static RESULT kernel_initialize_default(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1586,7 +1579,7 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "no block given (loop)");
     }
     for (;;) {
-        RESULT _yr = korb_yield(c, c->sp_top, 0, NULL);
+        RESULT _yr = korb_yield(c, sp, 0, NULL);
         if (_yr.state == KORB_NORMAL) continue;
         if (_yr.state == KORB_BREAK) return RESULT_OK(_yr.value);
         if (_yr.state == KORB_RAISE) {
@@ -1603,7 +1596,6 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
     }
 }
 static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1618,7 +1610,6 @@ static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK((VALUE)c->current_block);
 }
 static RESULT kernel_proc(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1643,17 +1634,15 @@ static RESULT kernel_proc(CTX *c, int argc, VALUE *sp) {
  * aro_gc_collect + aro_gc_stats; use those instead of libgc API. */
 
 RESULT objspace_each_object(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Yields nothing.  Returns 0 (the count of yielded objects). */
-    if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, sp));
     return RESULT_OK(INT2FIX(0));
 }
 
 RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1661,7 +1650,7 @@ RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
      * don't track per-type counts so just provide :TOTAL from the
      * GC framework's heap_bytes stat / 64. */
     size_t heap_bytes = ARO_GC_COMMON(c)->stats.heap_bytes;
-    VALUE h = korb_hash_new(c, c->sp_top);
+    VALUE h = korb_hash_new(c, sp);
     korb_hash_aset(c, h, korb_id2sym(korb_intern("TOTAL")),
                    INT2FIX((long)(heap_bytes / 64)));
     korb_hash_aset(c, h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));
@@ -1675,7 +1664,6 @@ RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
