@@ -10,11 +10,10 @@
  * to `to_s`). */
 static RESULT exc_to_s_internal(CTX *c, VALUE self);
 static RESULT exc_message(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return korb_funcall(c, c->sp_top, self, korb_intern("to_s"), 0, NULL);
+    return korb_funcall(c, sp, self, korb_intern("to_s"), 0, NULL);
 }
 static RESULT exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
@@ -37,18 +36,16 @@ static RESULT exc_to_s_internal(CTX *c, VALUE self) {
     return RESULT_OK(msg);
 }
 static RESULT exc_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return exc_to_s_internal(c, self);
 }
 static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "#<Exception>"));
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_str_new_cstr(c, sp, "#<Exception>"));
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     while (k && (k->basic.head.flags & FL_SINGLETON)) k = k->super;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
@@ -57,30 +54,28 @@ static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
      *   to_s == ""           → just the class name  (no #<...:>)
      *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
      *   to_s == anything else → "#<Class: <to_s>>" */
-    RESULT _rt_s = korb_funcall(c, c->sp_top, self, korb_intern("to_s"), 0, NULL);
+    RESULT _rt_s = korb_funcall(c, sp, self, korb_intern("to_s"), 0, NULL);
     if (_rt_s.state == KORB_RAISE) return RESULT_OK(Qnil);
     VALUE s = _rt_s.value;
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
                        ? korb_str_cstr(s) : "";
-    if (ms[0] == '\0') return RESULT_OK(korb_str_new_cstr(c, c->sp_top, kn));
+    if (ms[0] == '\0') return RESULT_OK(korb_str_new_cstr(c, sp, kn));
     char *buf = korb_xmalloc_atomic(strlen(kn) + strlen(ms) + 8);
     sprintf(buf, "#<%s: %s>", kn, ms);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, buf));
+    return RESULT_OK(korb_str_new_cstr(c, sp, buf));
 }
 static RESULT exc_backtrace(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
     if (!UNDEF_P(bt) && !NIL_P(bt)) return RESULT_OK(bt);
-    return RESULT_OK(korb_ary_new(c, c->sp_top));
+    return RESULT_OK(korb_ary_new(c, sp));
 }
 
 /* Exception#set_backtrace(arg) — accepts nil, a String, or an Array of
  * Strings.  Anything else is TypeError. */
 static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     if (argc < 1) {
         return korb_raise_argument_error(c, "wrong number of arguments (given 0, expected 1)");
@@ -91,7 +86,7 @@ static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
         bt = Qnil;
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
         bt = korb_ary_new_capa(c, sp, 1);
-        korb_ary_push(c, c->sp_top, bt, arg);
+        korb_ary_push(c, sp, bt, arg);
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)arg;
         for (long i = 0; i < a->len; i++) {
@@ -117,7 +112,6 @@ static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
  * #backtrace (or nil if no backtrace).  Tests that probe individual
  * Location attributes will fail, but the common nil-vs-set check works. */
 static RESULT exc_backtrace_locations(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -126,7 +120,6 @@ static RESULT exc_backtrace_locations(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(bt);
 }
 static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -148,7 +141,7 @@ static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
     if (eff_argc >= 1) {
         VALUE msg = argv[0];
         if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
-            VALUE s = UNWRAP(korb_funcall(c, c->sp_top, msg, korb_intern("to_s"), 0, NULL));
+            VALUE s = UNWRAP(korb_funcall(c, sp, msg, korb_intern("to_s"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
             /* self went stale across the to_s funcall's GC — re-read the
              * forwarded staging slot before storing through it. */
@@ -175,7 +168,6 @@ static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
  * "current" when this one was raised, or nil if none.  Set by
  * node_rescue when raise happens inside a rescue body. */
 static RESULT exc_cause(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -258,7 +250,6 @@ static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
 
 /* Exception#exception([msg]) — re-construct or return self. */
 static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -267,10 +258,10 @@ static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
     /* Build a new instance of self's class with msg = argv[0]. */
     if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
-    VALUE n = korb_object_new(c, c->sp_top, k);
+    VALUE n = korb_object_new(c, sp, k);
     VALUE msg = argv[0];
     if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
-        VALUE s = UNWRAP(korb_funcall(c, c->sp_top, msg, korb_intern("to_s"), 0, NULL));
+        VALUE s = UNWRAP(korb_funcall(c, sp, msg, korb_intern("to_s"), 0, NULL));
         if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
     }
     korb_ivar_set(n, korb_intern("@message"), msg);
@@ -280,7 +271,6 @@ static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
 /* NoMethodError#receiver — the object the missing method was called on.
  * Set by korb_dispatch_call / korb_dispatch_visibility_raise. */
 static RESULT nme_receiver(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE v = korb_ivar_get(self, korb_intern("@receiver"));
     if (UNDEF_P(v)) {
@@ -289,7 +279,6 @@ static RESULT nme_receiver(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(v);
 }
 static RESULT nme_name(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -299,7 +288,6 @@ static RESULT nme_name(CTX *c, int argc, VALUE *sp) {
 
 /* SystemExit#status / #success? — set by Kernel#exit. */
 static RESULT syx_status(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -307,7 +295,6 @@ static RESULT syx_status(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(UNDEF_P(v) ? INT2FIX(0) : v);
 }
 static RESULT syx_success_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
