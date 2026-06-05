@@ -2349,9 +2349,10 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp_top;
-    VALUE *new_fp = prev_fp + arg_index;
+    VALUE *new_fp = c->sp_top;   /* COPY-based(sp-1本): super callee も top に積む */
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { return korb_raise(c, NULL, "stack overflow"); }
-    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp_top) { for (VALUE *p = c->sp_top; p < _ns; p++) *p = Qnil; c->sp_top = _ns; } }
+    for (uint32_t i = 0; i < argc; i++) new_fp[i] = prev_fp[arg_index + i];
+    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; for (VALUE *p = new_fp + argc; p < _ns; p++) *p = Qnil; c->sp_top = _ns; }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
     /* Push a frame so a nested `super` inside sm sees sm as its method
@@ -2436,9 +2437,10 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp_top;
-    VALUE *new_fp = prev_fp + arg_index;
+    VALUE *new_fp = c->sp_top;   /* COPY-based(sp-1本): super callee も top に積む */
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { return korb_raise(c, NULL, "stack overflow"); }
-    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp_top) { for (VALUE *p = c->sp_top; p < _ns; p++) *p = Qnil; c->sp_top = _ns; } }
+    for (uint32_t i = 0; i < argc; i++) new_fp[i] = prev_fp[arg_index + i];
+    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; for (VALUE *p = new_fp + argc; p < _ns; p++) *p = Qnil; c->sp_top = _ns; }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
     struct korb_frame frame;
