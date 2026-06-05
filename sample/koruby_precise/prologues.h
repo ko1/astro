@@ -113,17 +113,19 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * frame.self with a stale pointer that GC has long since moved. */
     VALUE *prev_sp = c->sp_top;
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE *new_fp = prev_fp + arg_index;
-    /* Grow c->sp_top + zero-fill the newly-exposed slots so stale heap
-     * pointers left over in those addresses (from prior frames popped
-     * at this location) don't get treated as live roots by the next
-     * visit_roots. */
+    /* COPY-based frame placement (sp-1本 移行): callee frame は overlay
+     * (prev_fp + arg_index) ではなく、現在の top(c->sp_top, = 全 live data の
+     * 上)に積み、引数を caller scratch からコピーする。これにより新 frame は
+     * 必ず top に居て、body の sp(= new_fp + locals)がそのまま「真の top」に
+     * なる(block / nested scope で node-sp < high-water になる divergence を解消)。 */
+    VALUE *new_fp = c->sp_top;
+    for (uint32_t i = 0; i < argc; i++) new_fp[i] = prev_fp[arg_index + i];
+    /* args を [new_fp, new_fp+argc) にコピー済み。[new_fp+argc, new_sp) を
+     * zero-fill してから c->sp_top を bump(GC が初期化済み slot だけ見るように)。 */
     {
         VALUE *new_sp = new_fp + mc->locals_cnt;
-        if (new_sp > c->sp_top) {
-            for (VALUE *p = c->sp_top; p < new_sp; p++) *p = Qnil;
-            c->sp_top = new_sp;
-        }
+        for (VALUE *p = new_fp + argc; p < new_sp; p++) *p = Qnil;
+        c->sp_top = new_sp;
     }
 
     /* Heavy state save/restore only when method body actually uses it. */
@@ -276,17 +278,19 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * frame.self with a stale pointer that GC has long since moved. */
     VALUE *prev_sp = c->sp_top;
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE *new_fp = prev_fp + arg_index;
-    /* Grow c->sp_top + zero-fill the newly-exposed slots so stale heap
-     * pointers left over in those addresses (from prior frames popped
-     * at this location) don't get treated as live roots by the next
-     * visit_roots. */
+    /* COPY-based frame placement (sp-1本 移行): callee frame は overlay
+     * (prev_fp + arg_index) ではなく、現在の top(c->sp_top, = 全 live data の
+     * 上)に積み、引数を caller scratch からコピーする。これにより新 frame は
+     * 必ず top に居て、body の sp(= new_fp + locals)がそのまま「真の top」に
+     * なる(block / nested scope で node-sp < high-water になる divergence を解消)。 */
+    VALUE *new_fp = c->sp_top;
+    for (uint32_t i = 0; i < argc; i++) new_fp[i] = prev_fp[arg_index + i];
+    /* args を [new_fp, new_fp+argc) にコピー済み。[new_fp+argc, new_sp) を
+     * zero-fill してから c->sp_top を bump(GC が初期化済み slot だけ見るように)。 */
     {
         VALUE *new_sp = new_fp + mc->locals_cnt;
-        if (new_sp > c->sp_top) {
-            for (VALUE *p = c->sp_top; p < new_sp; p++) *p = Qnil;
-            c->sp_top = new_sp;
-        }
+        for (VALUE *p = new_fp + argc; p < new_sp; p++) *p = Qnil;
+        c->sp_top = new_sp;
     }
 
     bool simple = mc->is_simple_frame;
