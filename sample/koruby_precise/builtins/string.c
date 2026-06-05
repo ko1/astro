@@ -451,7 +451,7 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
         long _rl = ((struct korb_array *)_fr.last_line)->len; \
         for (long _i = 0; _i < _rl; _i++) { \
             VALUE _el = korb_ary_aref(_fr.last_line, _i); \
-            RESULT _y = korb_yield(c, c->sp_top, 1, &_el); \
+            RESULT _y = korb_yield(c, sp, 1, &_el); \
             if (_y.state != KORB_NORMAL) { c->current_frame = _fr.prev; return _y; } \
         } \
         VALUE _selfr = _fr.last_match; \
@@ -587,7 +587,6 @@ static RESULT str_chomp(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_chomp_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -619,7 +618,6 @@ static inline bool str_is_rstrip_ws(unsigned char ch) {
 }
 
 static RESULT str_strip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -627,33 +625,30 @@ static RESULT str_strip(CTX *c, int argc, VALUE *sp) {
     long start = 0, end = s->len;
     while (start < end && str_is_lstrip_ws((unsigned char)s->ptr[start])) start++;
     while (end > start && str_is_rstrip_ws((unsigned char)s->ptr[end-1])) end--;
-    return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr + start, end - start));
+    return RESULT_OK(korb_str_new(c, sp, s->ptr + start, end - start));
 }
 
 static RESULT str_lstrip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_string *s = (struct korb_string *)self;
     long start = 0;
     while (start < s->len && str_is_lstrip_ws((unsigned char)s->ptr[start])) start++;
-    return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr + start, s->len - start));
+    return RESULT_OK(korb_str_new(c, sp, s->ptr + start, s->len - start));
 }
 
 static RESULT str_rstrip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_string *s = (struct korb_string *)self;
     long end = s->len;
     while (end > 0 && str_is_rstrip_ws((unsigned char)s->ptr[end-1])) end--;
-    return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr, end));
+    return RESULT_OK(korb_str_new(c, sp, s->ptr, end));
 }
 
 static RESULT str_lstrip_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -670,7 +665,6 @@ static RESULT str_lstrip_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_rstrip_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -685,7 +679,6 @@ static RESULT str_rstrip_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_strip_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -703,7 +696,6 @@ static RESULT str_strip_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_to_i(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -723,7 +715,6 @@ static RESULT str_to_i(CTX *c, int argc, VALUE *sp) {
  *   * stops at the first non-matching byte; remaining input is ignored.
  * Hex/oct prefixes are NOT recognized. "Infinity" / "NaN" return 0.0. */
 static RESULT str_to_f(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -778,16 +769,15 @@ static RESULT str_to_f(CTX *c, int argc, VALUE *sp) {
         }
         if (!exp_digit) { blen = save_blen; p = save_p; }
     }
-    if (!saw_digit) return RESULT_OK(korb_float_new(c, c->sp_top, 0.0));
+    if (!saw_digit) return RESULT_OK(korb_float_new(c, sp, 0.0));
     buf[blen] = '\0';
-    return RESULT_OK(korb_float_new(c, c->sp_top, strtod(buf, NULL)));
+    return RESULT_OK(korb_float_new(c, sp, strtod(buf, NULL)));
 }
 
 /* String#byteslice — byte-indexed slice.  koruby is byte-only so this
  * is identical to #[] for the integer / range / (idx, len) forms. */
 static RESULT str_byteslice(CTX *c, int argc, VALUE *sp);
 static RESULT str_append_as_bytes(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -796,17 +786,16 @@ static RESULT str_append_as_bytes(CTX *c, int argc, VALUE *sp) {
     for (int i = 0; i < argc; i++) {
         if (FIXNUM_P(argv[i])) {
             char ch = (char)(FIX2LONG(argv[i]) & 0xff);
-            VALUE tmp = korb_str_new(c, c->sp_top, &ch, 1);
+            VALUE tmp = korb_str_new(c, sp, &ch, 1);
             /* korb_str_new moved self — concat to the re-read handle. */
-            korb_str_concat(c, c->sp_top, sp[-argc - 1], tmp);
+            korb_str_concat(c, sp, sp[-argc - 1], tmp);
         } else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
-            korb_str_concat(c, c->sp_top, sp[-argc - 1], argv[i]);
+            korb_str_concat(c, sp, sp[-argc - 1], argv[i]);
         }
     }
     return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT str_setbyte(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -823,7 +812,6 @@ static RESULT str_setbyte(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(argv[1]);
 }
 static RESULT str_getbyte(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -847,7 +835,6 @@ static RESULT str_getbyte(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_aref(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -857,7 +844,7 @@ static RESULT str_aref(CTX *c, int argc, VALUE *sp) {
         long bstart, blen;
         int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, 1, &bstart, &blen);
         if (rc != 0 || blen == 0) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr + bstart, blen));
+        return RESULT_OK(korb_str_new(c, sp, s->ptr + bstart, blen));
     }
     if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[0];
@@ -889,7 +876,7 @@ static RESULT str_aref(CTX *c, int argc, VALUE *sp) {
         long bstart, blen;
         int rc = str_char_range_to_bytes(s->ptr, s->len, b, count, &bstart, &blen);
         if (rc != 0) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr + bstart, blen));
+        return RESULT_OK(korb_str_new(c, sp, s->ptr + bstart, blen));
     }
     if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
         long char_idx = FIX2LONG(argv[0]);
@@ -898,14 +885,13 @@ static RESULT str_aref(CTX *c, int argc, VALUE *sp) {
         long bstart, blen;
         int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, char_cnt, &bstart, &blen);
         if (rc != 0) return RESULT_OK(Qnil);
-        return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr + bstart, blen));
+        return RESULT_OK(korb_str_new(c, sp, s->ptr + bstart, blen));
     }
     return RESULT_OK(Qnil);
 }
 
 /* Body for byteslice — same as aref since koruby is byte-only. */
 static RESULT str_byteslice(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -974,7 +960,6 @@ static int str_char_range_to_bytes(const char *p, long byte_len,
 }
 
 static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -985,7 +970,7 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
      * if the result isn't a String. */
     VALUE val = argv[argc - 1];
     if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, val, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, val, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         val = argv[argc - 1];  /* re-read across the respond_to? GC */
         if (!RTEST(rt)) {
@@ -995,7 +980,7 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
                        SPECIAL_CONST_P(val) ? "(special)"
                            : korb_id_name(korb_class_of_class(val)->name));
         }
-        VALUE coerced = UNWRAP(korb_funcall(c, c->sp_top, val, korb_intern("to_str"), 0, NULL));
+        VALUE coerced = UNWRAP(korb_funcall(c, sp, val, korb_intern("to_str"), 0, NULL));
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
@@ -1067,7 +1052,6 @@ static RESULT str_aset(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1085,7 +1069,6 @@ static RESULT str_index(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_rindex(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1111,12 +1094,11 @@ static RESULT str_rindex(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_chars(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Park self + result in sp[0..1].  korb_ary_new_capa / korb_str_new
-     * publish c->sp_top = sp+2 internally before their GC trigger. */
+     * publish sp = sp+2 internally before their GC trigger. */
     sp[0] = self;
     sp[1] = 0;
     sp[1] = korb_ary_new_capa(c, sp + 2, ((struct korb_string *)sp[0])->len);
@@ -1129,7 +1111,6 @@ static RESULT str_chars(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1139,7 +1120,7 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            CHECK(korb_yield(c, c->sp_top, 1, &b));
+            CHECK(korb_yield(c, sp, 1, &b));
         }
         return RESULT_OK(c->current_frame->self);
     }
@@ -1152,7 +1133,6 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1171,14 +1151,13 @@ static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
-        VALUE ch = korb_str_new(c, c->sp_top, s->ptr + i, 1);
-        CHECK(korb_yield(c, c->sp_top, 1, &ch));
+        VALUE ch = korb_str_new(c, sp, s->ptr + i, 1);
+        CHECK(korb_yield(c, sp, 1, &ch));
     }
     return RESULT_OK(c->current_frame->self);
 }
 
 static RESULT str_start_with(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1187,10 +1166,10 @@ static RESULT str_start_with(CTX *c, int argc, VALUE *sp) {
         VALUE p_v = argv[i];
         if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
             if (!SPECIAL_CONST_P(p_v)) {
-                VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, p_v, korb_intern("respond_to?"), 1,
+                VALUE rt = UNWRAP(korb_funcall(c, sp, p_v, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
                 if (RTEST(rt)) {
-                    RESULT tr = korb_funcall_r(c, c->sp_top, p_v, korb_intern("to_str"), 0, NULL);
+                    RESULT tr = korb_funcall_r(c, sp, p_v, korb_intern("to_str"), 0, NULL);
                     if (tr.state != KORB_NORMAL) return tr;
                     p_v = tr.value;
                 }
@@ -1212,7 +1191,6 @@ static RESULT str_start_with(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_end_with(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1222,10 +1200,10 @@ static RESULT str_end_with(CTX *c, int argc, VALUE *sp) {
         /* Coerce via to_str — TypeError if not convertible. */
         if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
             if (!SPECIAL_CONST_P(p_v)) {
-                VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, p_v, korb_intern("respond_to?"), 1,
+                VALUE rt = UNWRAP(korb_funcall(c, sp, p_v, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
                 if (RTEST(rt)) {
-                    RESULT tr = korb_funcall_r(c, c->sp_top, p_v, korb_intern("to_str"), 0, NULL);
+                    RESULT tr = korb_funcall_r(c, sp, p_v, korb_intern("to_str"), 0, NULL);
                     if (tr.state != KORB_NORMAL) return tr;
                     p_v = tr.value;
                 }
@@ -1247,7 +1225,6 @@ static RESULT str_end_with(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_include(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1259,7 +1236,7 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
              * bare C-local would be relocated by the first funcall's GC, so
              * the second funcall's recv and the BUILTIN_TYPE check below would
              * deref a moved-out (retired-plane) handle under STRESS+PURGE. */
-            VALUE *const osp = c->sp_top;
+            VALUE *const osp = sp;
             osp[0] = other;
             c->sp_top = osp + 1;
             VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, osp[0], korb_intern("respond_to?"), 1,
