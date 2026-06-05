@@ -1000,7 +1000,6 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1012,11 +1011,11 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
      * frames (frame chain always scanned).  A nil cooked entry contributes
      * nil for every position.  The per-row tuple is transient at sp[0]. */
     bool has_block = korb_block_given(c);
-    KORB_ARY_YIELD_FRAME(c, fc, korb_ary_new_capa(c, c->sp_top, argc));   /* cooked[] */
+    KORB_ARY_YIELD_FRAME(c, fc, korb_ary_new_capa(c, sp, argc));   /* cooked[] */
     fc.last_match = fc.last_line;             /* cooked-sources array */
     fc.last_line  = sp[-argc - 1];            /* source receiver */
     KORB_ARY_YIELD_FRAME(c, fr,
-        has_block ? Qnil : korb_ary_new_capa(c, c->sp_top, korb_ary_len(sp[-argc - 1])));  /* result */
+        has_block ? Qnil : korb_ary_new_capa(c, sp, korb_ary_len(sp[-argc - 1])));  /* result */
     for (int j = 0; j < argc; j++) {
         VALUE v = (sp - argc)[j];
         VALUE cooked = Qnil;
@@ -1024,41 +1023,40 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
             cooked = v;
         } else {
             /* Try to_ary, then to_a. */
-            VALUE rt_ary = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
+            VALUE rt_ary = UNWRAP(korb_funcall(c, sp, v, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (RTEST(rt_ary)) {
-                VALUE r2 = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("to_ary"), 0, NULL));
+                VALUE r2 = UNWRAP(korb_funcall(c, sp, v, korb_intern("to_ary"), 0, NULL));
                 if (!SPECIAL_CONST_P(r2) && BUILTIN_TYPE(r2) == T_ARRAY) cooked = r2;
             }
             if (NIL_P(cooked)) {
-                VALUE rt_a = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
+                VALUE rt_a = UNWRAP(korb_funcall(c, sp, v, korb_intern("respond_to?"), 1,
                                           (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
                 if (RTEST(rt_a)) {
-                    VALUE r2 = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("to_a"), 0, NULL));
+                    VALUE r2 = UNWRAP(korb_funcall(c, sp, v, korb_intern("to_a"), 0, NULL));
                     if (!SPECIAL_CONST_P(r2) && BUILTIN_TYPE(r2) == T_ARRAY) cooked = r2;
                 }
             }
             if (NIL_P(cooked)) {
                 /* CRuby fallback: if arg responds to #each, collect up to
                  * self's length via __zip_each__ (each with break at size). */
-                VALUE rt_each = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("respond_to?"), 1,
+                VALUE rt_each = UNWRAP(korb_funcall(c, sp, v, korb_intern("respond_to?"), 1,
                                              (VALUE[]){ korb_id2sym(korb_intern("each")) }));
                 if (RTEST(rt_each)) {
                     VALUE args[2] = { v, INT2FIX(korb_ary_len(fc.last_line)) };
-                    VALUE arr = UNWRAP(korb_funcall_r(c, c->sp_top,
+                    VALUE arr = UNWRAP(korb_funcall_r(c, sp,
                         (VALUE)KORB_VM(c)->array_class,
                         korb_intern("__zip_each__"), 2, args));
                     if (!SPECIAL_CONST_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) cooked = arr;
                 }
             }
         }
-        korb_ary_push(c, c->sp_top, fc.last_match, cooked);   /* nil tuple element if unset */
+        korb_ary_push(c, sp, fc.last_match, cooked);   /* nil tuple element if unset */
     }
 
     long n = korb_ary_len(fc.last_line);
     for (long i = 0; i < n; i++) {
         sp[0] = korb_ary_new_capa(c, sp + 1, 1 + argc);
-        c->sp_top = sp + 1;
         korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(fc.last_line, i));
         for (int j = 0; j < argc; j++) {
             VALUE cooked = korb_ary_aref(fc.last_match, j);
@@ -1069,12 +1067,11 @@ static RESULT ary_zip(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
-            if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fc.prev; return _y; }
+            RESULT _y = korb_yield(c, sp + 1, 1, &sp[0]);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fc.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
         }
-        c->sp_top = sp;
     }
     VALUE result = fr.last_line;
     c->current_frame = fc.prev;
@@ -1519,7 +1516,6 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_each_slice(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1531,22 +1527,20 @@ static RESULT ary_each_slice(CTX *c, int argc, VALUE *sp) {
     /* Park collected (fr.last_line) + source receiver (fr.last_match) in a
      * synthetic frame; the current slice is built at sp[0] (reserved across
      * its push-grow, then yielded / pushed). */
-    KORB_ARY_YIELD_FRAME(c, fr, has_block ? Qnil : korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, has_block ? Qnil : korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < alen; i += n) {
         long end = i + n; if (end > alen) end = alen;
         sp[0] = korb_ary_new_capa(c, sp + 1, end - i);
-        c->sp_top = sp + 1;
         for (long j = i; j < end; j++) {
             korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(fr.last_match, j));
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
-            if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
+            RESULT _y = korb_yield(c, sp + 1, 1, &sp[0]);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
         }
-        c->sp_top = sp;
     }
     VALUE ret = has_block ? sp[-argc - 1] : fr.last_line;
     c->current_frame = fr.prev;
@@ -3901,7 +3895,6 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
 
 /* Array#product(*others) — Cartesian product. */
 static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3915,10 +3908,10 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
      * block mode) sits in fr.last_line.  idx[] is plain C longs.  Both
      * frame slots are walked by visit_roots regardless of sp_top. */
     KORB_ARY_YIELD_FRAME(c, fr,
-        c->current_block ? Qnil : korb_ary_new(c, c->sp_top));   /* result */
-    fr.last_match = korb_ary_new_capa(c, c->sp_top, n);          /* sources */
-    korb_ary_push(c, c->sp_top, fr.last_match, sp[-argc - 1]);
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, fr.last_match, (sp - argc)[i]);
+        c->current_block ? Qnil : korb_ary_new(c, sp));   /* result */
+    fr.last_match = korb_ary_new_capa(c, sp, n);          /* sources */
+    korb_ary_push(c, sp, fr.last_match, sp[-argc - 1]);
+    for (int i = 0; i < argc; i++) korb_ary_push(c, sp, fr.last_match, (sp - argc)[i]);
     /* Total size sanity: materializing a huge product is hopeless. */
     if (!c->current_block) {
         long total = 1;
@@ -3936,21 +3929,19 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
     long *idx = korb_xcalloc(n, sizeof(long));
     while (true) {
         sp[0] = korb_ary_new_capa(c, sp + 1, n);   /* row, parked across push-grow */
-        c->sp_top = sp + 1;
         bool empty = false;
         for (long i = 0; i < n; i++) {
             VALUE src = korb_ary_aref(fr.last_match, i);
             if (korb_ary_len(src) == 0) { empty = true; break; }
             korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(src, idx[i]));
         }
-        if (empty) { c->sp_top = sp; break; }
+        if (empty) { break; }
         if (c->current_block) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
-            if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
+            RESULT _y = korb_yield(c, sp + 1, 1, &sp[0]);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
         }
-        c->sp_top = sp;
         long j = n - 1;
         while (j >= 0) {
             idx[j]++;
@@ -4273,7 +4264,6 @@ static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
  * Previously aliased to #map, which is wrong for the common
  * `[[1,2],[3,4]].flat_map { |x| x }` shape. */
 static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4281,16 +4271,15 @@ static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
      * per-element korb_yield via the frame chain (see ary_map).  The yielded
      * value is parked at sp[0] across the inner push-grow loop (no yield
      * there, so an sp slot under a reservation is safe — the pushes self-
-     * publish c->sp_top to cover it). */
+     * publish sp to cover it). */
     long alen = korb_ary_len(self);
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         sp[0] = _y.value;
-        c->sp_top = sp + 1;
         if (!SPECIAL_CONST_P(sp[0]) && BUILTIN_TYPE(sp[0]) == T_ARRAY) {
             long malen = korb_ary_len(sp[0]);
             for (long j = 0; j < malen; j++) {
@@ -4299,7 +4288,6 @@ static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
         }
-        c->sp_top = sp;
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
@@ -4485,7 +4473,6 @@ static RESULT ary_shuffle(CTX *c, int argc, VALUE *sp) {
  * Sliding window of size n.  No block: returns Array<Array> of all
  * windows (koruby has no Enumerator).  With block: yields each window. */
 static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4495,7 +4482,7 @@ static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
     bool has_block = korb_block_given(c);
     /* Park out (fr.last_line) + source receiver (fr.last_match); the current
      * window is built at sp[0] (reserved across its push-grow). */
-    KORB_ARY_YIELD_FRAME(c, fr, has_block ? Qnil : korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, has_block ? Qnil : korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     if (n <= 0 || n > alen) {
         VALUE ret = has_block ? Qnil : fr.last_line;
@@ -4504,17 +4491,15 @@ static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i + n <= alen; i++) {
         sp[0] = korb_ary_new_capa(c, sp + 1, n);
-        c->sp_top = sp + 1;
         for (long j = 0; j < n; j++) {
             korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(fr.last_match, i + j));
         }
         if (has_block) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &sp[0]);
-            if (_y.state != KORB_NORMAL) { c->sp_top = sp; c->current_frame = fr.prev; return _y; }
+            RESULT _y = korb_yield(c, sp + 1, 1, &sp[0]);
+            if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         } else {
             korb_ary_push(c, sp + 1, fr.last_line, sp[0]);
         }
-        c->sp_top = sp;
     }
     VALUE ret = has_block ? Qnil : fr.last_line;
     c->current_frame = fr.prev;
