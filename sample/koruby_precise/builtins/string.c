@@ -1226,14 +1226,12 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
              * deref a moved-out (retired-plane) handle under STRESS+PURGE. */
             VALUE *const osp = sp;
             osp[0] = other;
-            c->sp_top = osp + 1;
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, osp[0], korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, osp + 1, osp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                osp[0] = UNWRAP(korb_funcall(c, c->sp_top, osp[0], korb_intern("to_str"), 0, NULL));
+                osp[0] = UNWRAP(korb_funcall(c, osp + 1, osp[0], korb_intern("to_str"), 0, NULL));
             }
             other = osp[0];
-            c->sp_top = osp;
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1256,7 +1254,6 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1271,18 +1268,16 @@ static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
             /* Park other across the respond_to?/to_str funcalls (IDIOM B) so a
              * moving GC doesn't strand the bare C-local before the second
              * funcall / type check (STRESS+PURGE SEGV at BUILTIN_TYPE). */
-            VALUE *const osp = c->sp_top;
+            VALUE *const osp = sp;
             osp[0] = other;
-            c->sp_top = osp + 1;
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, osp[0], korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, osp + 1, osp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                RESULT tr = korb_funcall_r(c, c->sp_top, osp[0], korb_intern("to_str"), 0, NULL);
-                if (tr.state != KORB_NORMAL) { c->sp_top = osp; return tr; }
+                RESULT tr = korb_funcall_r(c, osp + 1, osp[0], korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) { return tr; }
                 osp[0] = tr.value;
             }
             other = osp[0];
-            c->sp_top = osp;
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
             return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
@@ -1304,7 +1299,6 @@ static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_reverse(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2523,7 +2517,6 @@ static RESULT str_clone(CTX *c, int argc, VALUE *sp) {
  * (e.g. `"%{a}+%{b}" % {a:1, b:2}` → `"1+2"`); otherwise we
  * delegate to the Array / single-arg printf-style path. */
 static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2535,8 +2528,7 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
          * sp[1] for the accumulator. */
         sp[0] = self;
         sp[1] = 0;
-        c->sp_top = sp + 2;
-        sp[1] = korb_str_new(c, c->sp_top, "", 0);
+        sp[1] = korb_str_new(c, sp + 2, "", 0);
         #define out (sp[1])
         long i = 0;
         while (1) {
@@ -2561,8 +2553,8 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
                             VALUE eK = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
                             return korb_raise(c, (struct korb_class *)eK, "key%s not found", keybuf);
                         }
-                        VALUE vs = korb_to_s(c, c->sp_top, v);
-                        korb_str_concat(c, c->sp_top, out, vs);
+                        VALUE vs = korb_to_s(c, sp + 2, v);
+                        korb_str_concat(c, sp + 2, out, vs);
                         i = j + 1;
                         continue;
                     }
@@ -2616,21 +2608,21 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
                                     snprintf(buf, sizeof(buf), spec, (unsigned long)lv);
                                 }
                             } else if (conv == 's') {
-                                VALUE vs = (BUILTIN_TYPE(v) == T_STRING) ? v : korb_to_s(c, c->sp_top, v);
+                                VALUE vs = (BUILTIN_TYPE(v) == T_STRING) ? v : korb_to_s(c, sp + 2, v);
                                 snprintf(buf, sizeof(buf), spec, ((struct korb_string *)vs)->ptr);
                             } else if (conv == 'f' || conv == 'g' || conv == 'e') {
                                 snprintf(buf, sizeof(buf), spec, korb_num2dbl(v));
                             } else {
                                 buf[0] = 0;
                             }
-                            korb_str_concat(c, c->sp_top, out, korb_str_new_cstr(c, c->sp_top, buf));
+                            korb_str_concat(c, sp + 2, out, korb_str_new_cstr(c, sp + 2, buf));
                             i = k + 1;
                             continue;
                         }
                     }
                 }
             }
-            korb_str_concat(c, c->sp_top, out, korb_str_new(c, c->sp_top, fmt->ptr + i, 1));
+            korb_str_concat(c, sp + 2, out, korb_str_new(c, sp + 2, fmt->ptr + i, 1));
             i++;
         }
         #undef out
@@ -2656,7 +2648,6 @@ static RESULT str_percent(CTX *c, int argc, VALUE *sp) {
  * Parses an optional sign, optional "0x"/"0X" prefix, then hex digits.
  * Stops at first non-digit; returns 0 for fully unparsable input. */
 static RESULT str_hex(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2701,7 +2692,6 @@ static RESULT str_hex(CTX *c, int argc, VALUE *sp) {
  *   "0x"/"0X" → 16, "0b"/"0B" → 2, "0o"/"0O" or just leading '0' → 8,
  *   anything else → 10.  Sign-aware; 0 on no digits parsed. */
 static RESULT str_oct(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2751,7 +2741,6 @@ static RESULT str_oct(CTX *c, int argc, VALUE *sp) {
 /* ---------- String#prepend ----------
  * Mutates self by inserting other(s) at position 0; returns self. */
 static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2762,21 +2751,19 @@ static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
      * coercion GC points — rather than a libc shadow buffer whose moving
      * String handles would go stale. */
     for (int i = 0; i < argc; i++) sp[i] = Qnil;
-    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE a = argv[i];
         if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
             if (!SPECIAL_CONST_P(a)) {
-                VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, a, korb_intern("respond_to?"), 1,
+                VALUE rt = UNWRAP(korb_funcall(c, sp + argc, a, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
                 a = argv[i];  /* re-read across the respond_to? GC */
                 if (RTEST(rt)) {
-                    a = UNWRAP(korb_funcall(c, c->sp_top, a, korb_intern("to_str"), 0, NULL));
+                    a = UNWRAP(korb_funcall(c, sp + argc, a, korb_intern("to_str"), 0, NULL));
                 }
             }
             if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                c->sp_top = sp;
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[i]) ? "(special)"
@@ -2804,7 +2791,6 @@ static RESULT str_prepend(CTX *c, int argc, VALUE *sp) {
     s->ptr = np;
     s->len = total;
     s->capa = total;
-    c->sp_top = sp;
     return RESULT_OK((VALUE)s);
 }
 
