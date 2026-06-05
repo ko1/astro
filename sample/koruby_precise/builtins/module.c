@@ -3,7 +3,7 @@
 /* ---------- Module / Class metaprogramming ---------- */
 
 static RESULT ivar_getter_dispatch(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
+    (void)c;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -208,7 +208,6 @@ static RESULT module_attr_accessor(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_include(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -239,7 +238,7 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
         struct korb_class *meta = korb_class_of_class(argv[i]);
         if (meta && korb_class_find_method(meta, korb_intern("included"))) {
             VALUE klass_v = self;
-            CHECK(korb_funcall(c, c->sp_top, argv[i], korb_intern("included"), 1, &klass_v));
+            CHECK(korb_funcall(c, sp, argv[i], korb_intern("included"), 1, &klass_v));
         }
     }
     if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
@@ -249,7 +248,6 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
 extern void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_proc *p);
 
 static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -293,7 +291,7 @@ static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
         }
         /* Bound Method (receiver is an instance): fall back to the
          * Proc-shim path so `m.receiver.send(m.name, *args)` runs. */
-        VALUE pr = UNWRAP(korb_funcall(c, c->sp_top, argv[1], korb_intern("to_proc"), 0, NULL));
+        VALUE pr = UNWRAP(korb_funcall(c, sp, argv[1], korb_intern("to_proc"), 0, NULL));
         if (BUILTIN_TYPE(pr) != T_PROC) return RESULT_OK(Qnil);
         p = (struct korb_proc *)pr;
     } else if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_PROC) {
@@ -311,7 +309,6 @@ static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
 /* Object#define_singleton_method — same as define_method but installs
  * on the receiver's singleton class instead of `self`'s class. */
 static RESULT obj_define_singleton_method(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -651,7 +648,6 @@ static RESULT module_constants(CTX *c, int argc, VALUE *sp) {
 /* Module#class_eval(string) / Module#class_eval { ... } — evaluate
  * the source string or block with self = the module. */
 static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -669,7 +665,7 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
         VALUE prev_self = c->current_frame->self;
         struct korb_class *prev_class = c->current_frame->current_class;
         struct korb_cref *prev_cref = c->current_frame->cref;
-        c->current_frame->fp = c->sp_top + 1;
+        c->current_frame->fp = sp + 1;   /* eval-frame base (sanctioned) */
         c->current_frame->self = self;
         c->current_frame->current_class = klass;
         struct korb_cref top = { .klass = klass, .prev = NULL };
@@ -689,13 +685,13 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
      * idea as obj_instance_eval. */
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), 0, NULL);
+            return korb_funcall(c, sp, self, korb_sym2id(blk->self), 0, NULL);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, c->sp_top, self, mo->name, 0, NULL);
+            return korb_funcall(c, sp, self, mo->name, 0, NULL);
         }
         return RESULT_OK(self);
     }
@@ -717,7 +713,7 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
     c->current_frame->cref = &new_cref;
     blk->self = self;
     VALUE av0[1] = { self };
-    RESULT _br = korb_yield(c, c->sp_top, 1, av0);
+    RESULT _br = korb_yield(c, sp, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
@@ -731,23 +727,22 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
 /* Module#class_exec(*args) { |*args| ... } — like class_eval but
  * passes args to the block.  module_exec is just an alias. */
 static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(self);
-    
+
     if (!c->current_block) return RESULT_OK(self);
     struct korb_proc *blk = c->current_block;
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
-            return korb_funcall(c, c->sp_top, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
+            return korb_funcall(c, sp, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
             ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
-            return korb_funcall(c, c->sp_top, self, mo->name, (uint32_t)argc, argv);
+            return korb_funcall(c, sp, self, mo->name, (uint32_t)argc, argv);
         }
         return RESULT_OK(self);
     }
@@ -764,7 +759,7 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
     c->current_frame->current_class = klass;
     c->current_frame->cref = &new_cref;
     blk->self = self;
-    RESULT _br = korb_yield(c, c->sp_top, (uint32_t)argc, argv);
+    RESULT _br = korb_yield(c, sp, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
@@ -879,7 +874,6 @@ static RESULT class_eqq(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Class.new etc ---------- */
 static RESULT class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -949,7 +943,8 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             struct korb_class *super_meta = korb_class_of_class(sp[0]);
             if (super_meta && korb_class_find_method(super_meta, inherited_id)) {
                 VALUE child_v = sp[1];
-                CHECK(korb_funcall(c, c->sp_top, sp[0], inherited_id, 1, &child_v));
+                /* sp+2 keeps the parked super=sp[0] / child=sp[1] scanned. */
+                CHECK(korb_funcall(c, sp + 2, sp[0], inherited_id, 1, &child_v));
             }
         }
         super = (struct korb_class *)sp[0];   /* re-read after funcall GC */
@@ -969,7 +964,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             c->current_frame->cref = &new_cref;
             c->current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
-            RESULT _yr = korb_yield(c, c->sp_top, 1, av0);
+            RESULT _yr = korb_yield(c, sp + 2, 1, av0);   /* sp+2: keep sp[0]/sp[1] scanned */
             c->current_block->cref = prev_blk_cref;
             c->current_block->self = prev_blk_self;
             c->current_frame->self = prev_self;
@@ -990,8 +985,8 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK((VALUE)nk);
     }
     /* Park klass (sp[0]) + new object (sp[1]) across alloc-can-GC.
-     * korb_object_new sets c->sp_top = sp+2 internally; subsequent
-     * korb_funcall_with_block inherits that root-scan boundary. */
+     * korb_object_new publishes the scan top as sp+2 internally; the
+     * subsequent korb_funcall_with_block(c, sp+2, ...) keeps both parked. */
     sp[0] = (VALUE)klass;
     sp[1] = 0;
     sp[1] = korb_object_new(c, sp + 2, (struct korb_class *)sp[0]);
@@ -999,7 +994,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
     RESULT init_r = RESULT_OK(Qnil);
     if (m) {
         VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
-        init_r = korb_funcall_with_block(c, c->sp_top, sp[1], id_initialize, argc, argv, blk);
+        init_r = korb_funcall_with_block(c, sp + 2, sp[1], id_initialize, argc, argv, blk);
     }
     VALUE obj = sp[1];
     /* `break N` from the block passed to .new escapes .new with value N
@@ -1376,14 +1371,14 @@ static RESULT module_class_nesting(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Module.new — create an anonymous module.  If a block is given,
      * evaluate it with self = the new module (lets `include`/method defs
-     * land on the new module). */
-    struct korb_class *m = korb_module_new(c, c->sp_top, korb_intern("(anon)"));
+     * land on the new module).  m is held via the block's cref across the
+     * body (re-read as blk_new_cref.klass below), so it needs no stack park. */
+    struct korb_class *m = korb_module_new(c, sp, korb_intern("(anon)"));
     
     if (c->current_block) {
         VALUE prev_self = c->current_frame->self;
@@ -1401,7 +1396,7 @@ static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
          * the module, not the outer caller — same fix as Class.new. */
         c->current_block->self = (VALUE)m;
         VALUE argv0[1] = { (VALUE)m };
-        RESULT _yr = korb_yield(c, c->sp_top, 1, argv0);
+        RESULT _yr = korb_yield(c, sp, 1, argv0);
         c->current_block->cref = prev_blk_cref;
         c->current_block->self = prev_blk_self;
         c->current_frame->self = prev_self;
