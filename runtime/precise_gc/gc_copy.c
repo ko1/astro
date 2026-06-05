@@ -503,6 +503,29 @@ forward_payload(ASTroGC *gc, void *old_payload)
                  * PROT_NONE.  Cannot deref.  Stale ref. */
                 return NULL;
             }
+            /* A large object (malloc'd via large_alloc) lives OUTSIDE the
+             * from/to plane ranges.  glibc places its mmap wherever the
+             * kernel chooses — often just below/around the GC's reserved
+             * region — so the bounds checks above can miss it and it would
+             * be mistaken for a libc-immortal pointer: never marked, then
+             * swept by the large_head sweep, leaving a->backing dangling
+             * (reproduced by optcarrot's 256 KiB TILE_LUT Array backings).
+             * The in-to branch's large path only catches large objs that
+             * happen to land inside the reserved range.  Walk large_head
+             * (a short list) to disambiguate any out-of-range payload: mark +
+             * enqueue real large objects, leave genuine immortals as-is. */
+            if (gc->large_head) {
+                for (LargeObj *lo = gc->large_head; lo; lo = lo->next) {
+                    if (large_payload(lo) == old_payload) {
+                        if (!HDR_IS_MARKED((AroObjectHeader *)old_payload)) {
+                            HDR_SET_MARKED((AroObjectHeader *)old_payload);
+                            lo->next_gray = gc->large_gray;
+                            gc->large_gray = lo;
+                        }
+                        return old_payload;
+                    }
+                }
+            }
             /* libc-allocated immortal. */
             return old_payload;
         }

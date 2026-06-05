@@ -679,12 +679,17 @@ node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 NODE_DEF
 node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
-    /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
-    sp[0] = korb_ary_new_capa(c, sp + 1, argc);
+    /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1].
+     * Stage the new array at base = max(sp, c->sp_top), not sp[0]: when this
+     * literal is the RHS of an enclosing aref/aset (e.g. `h[1] = [9]`) that
+     * has bumped c->sp_top past its own recv/idx slots, staging at sp[0] would
+     * clobber them and send the []= to the wrong receiver. */
+    VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
+    base[0] = korb_ary_new_capa(c, base + 1, argc);
     for (uint32_t i = 0; i < argc; i++) {
-        korb_ary_push(c, sp + 1, sp[0], c->current_frame->fp[arg_index + i]);
+        korb_ary_push(c, base + 1, base[0], c->current_frame->fp[arg_index + i]);
     }
-    return RESULT_OK(sp[0]);
+    return RESULT_OK(base[0]);
 }
 
 NODE_DEF
@@ -1765,14 +1770,22 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 NODE_DEF
 node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, uint32_t arg_index)
 {
-    /* Pin r (sp[0]) + i (sp[1]) so they survive GC fires in inner
-     * korb_str_new / korb_node_aref_slow. */
-    sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
-    sp[0] = EVAL_ARG_UNWRAP(c, recv);
-    sp[1] = EVAL_ARG_UNWRAP(c, idx);
-    VALUE r = sp[0];
-    VALUE i = sp[1];
+    /* Stage recv + idx at a base ABOVE both the frame locals (>= sp) and any
+     * active staging from an enclosing node (>= c->sp_top).  A nested
+     * aref/aset in idx (e.g. `arr[brr[0]]`) recurses with c->sp_top bumped
+     * past these slots, so it stages higher and can't clobber recv/idx — the
+     * collision that made `arr[brr[0]]` read the wrong receiver.  Basing at
+     * max(sp, c->sp_top) also stays clear of the frame locals when c->sp_top
+     * sits below the frame top between operations (root stack == value stack
+     * here: AROH_ROOT_STACK_TOP is c->sp_top). */
+    VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
+    base[0] = 0; base[1] = 0;
+    c->sp_top = base + 2;
+    base[0] = EVAL_ARG_UNWRAP(c, recv);
+    base[1] = EVAL_ARG_UNWRAP(c, idx);
+    VALUE r = base[0];
+    VALUE i = base[1];
+    c->sp_top = base + 2;
     if (LIKELY(!korb_g_basic_op_redefined)) {
         if (FIXNUM_P(r) && FIXNUM_P(i)) {
             long b = FIX2LONG(i);
@@ -1803,7 +1816,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                     long pos = FIX2LONG(i);
                     if (pos < 0) pos += s->len;
                     if (pos < 0 || pos >= s->len) return RESULT_OK(Qnil);
-                    return RESULT_OK(korb_str_new(c, sp + 2, s->ptr + pos, 1));
+                    return RESULT_OK(korb_str_new(c, base + 2, s->ptr + pos, 1));
                 }
                 /* else: fall through to slow path */
             }
@@ -1816,15 +1829,22 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
 NODE_DEF
 node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
 {
-    /* Reserve 2 slots: sp[0] = r, sp[1] = i.  Zero-fill before
-     * bumping c->sp_top.  Body uses sp[0]/sp[1] across EVAL_ARG_UNWRAP(val). */
-    sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
-    sp[0] = EVAL_ARG_UNWRAP(c, recv);
-    sp[1] = EVAL_ARG_UNWRAP(c, idx);
+    /* Stage recv + idx at a base ABOVE both the frame locals (>= sp) and any
+     * active staging from an enclosing node (>= c->sp_top).  recv, idx and
+     * val all share this node's frame-top `sp` (EVAL_ARG propagates it), so a
+     * nested aref/aset in idx or val (e.g. `h[k] = opt[:default]`) must stage
+     * higher than recv/idx or it clobbers them and the []= hits the wrong
+     * receiver.  Bumping c->sp_top to base+2 forces those nested nodes (which
+     * base at max(sp, c->sp_top)) above base[0]/base[1].  base >= sp also keeps
+     * the slots clear of the frame locals when c->sp_top sits below sp. */
+    VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
+    base[0] = 0; base[1] = 0;
+    c->sp_top = base + 2;
+    base[0] = EVAL_ARG_UNWRAP(c, recv);
+    base[1] = EVAL_ARG_UNWRAP(c, idx);
     VALUE v = EVAL_ARG_UNWRAP(c, val);
-    VALUE r = sp[0];
-    VALUE i = sp[1];
+    VALUE r = base[0];
+    VALUE i = base[1];
     c->sp_top = sp;
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {

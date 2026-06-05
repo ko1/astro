@@ -1,28 +1,41 @@
-# Regression target for the `obj[i] = <Array/Hash literal>` writeback bug.
+# Regression target for the `obj[i] = <Array/Hash literal>` / nested-index
+# writeback bug (FIXED 2026-06-05).
 #
-# When the RHS of an index assignment is an Array/Hash LITERAL (not a variable),
-# the assignment is silently dropped: node_aset reserves sp[0]/sp[1] for
-# recv/idx, but the literal's node_ary_new/node_hash_new stages its result at
-# sp[0] of the same sp, clobbering recv. See docs/spec_port_pending.md.
-#
-# This file PINS the current (buggy) behavior so the suite stays green, and
-# flips to FAIL once the bug is fixed (signalling: remove the pins, restore the
-# correct expectations shown in comments).  The variable-RHS / nested-scalar
-# cases assert CORRECT behavior and guard against a fix regressing them.
+# node_aref / node_aset / node_ary_new used to stage recv/idx/elements at the
+# frame-top sp[0]/sp[1].  When an index expression was nested inside another
+# (e.g. `arr[brr[0]]`, `h[k] = opt[:default]`, `h[1] = [9]`), the inner node
+# staged at the SAME slots and clobbered the outer recv/idx, so the []= hit the
+# wrong receiver (silently dropped, or NoMethodError).  Fix: stage at
+# base = max(sp, c->sp_top) so a nested node (which bumps c->sp_top) lands
+# above the enclosing node's slots.  See docs/spec_port_pending.md.
 require_relative "test_helper"
 
-def test_aset_array_literal_pinned
+def test_aset_array_literal
   h = {}
   h[1] = [9]
-  assert_equal({}, h, "PIN aset array-literal dropped; fixed expects 1=>[9]")
+  assert_equal({ 1 => [9] }, h)
   a = [0]
   a[0] = [9]
-  assert_equal([0], a, "PIN aset array-literal dropped; fixed expects [[9]]")
+  assert_equal([[9]], a)
 end
 
-def test_group_by_pinned
+def test_group_by
   g = [1, 2, 3].group_by { |x| x.odd? }
-  assert_equal({}, g, "PIN group_by empty via aset bug; fixed expects grouped")
+  assert_equal({ true => [1, 3], false => [2] }, g)
+end
+
+def test_nested_index_read
+  arr = [10, 20, 30]
+  idx = [2]
+  assert_equal(30, arr[idx[0]])
+end
+
+def test_nested_index_write
+  arr = [10, 20, 30]
+  idx = [2]
+  h = {}
+  h[idx[0]] = arr[0]
+  assert_equal({ 2 => 10 }, h)
 end
 
 def test_aset_variable_rhs_correct
@@ -37,7 +50,8 @@ def test_aset_variable_rhs_correct
 end
 
 TESTS = %i[
-  test_aset_array_literal_pinned test_group_by_pinned
+  test_aset_array_literal test_group_by
+  test_nested_index_read test_nested_index_write
   test_aset_variable_rhs_correct
 ]
 TESTS.each { |t| run_test(t) }
