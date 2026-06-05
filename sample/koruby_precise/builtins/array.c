@@ -837,25 +837,24 @@ static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
  * returning a negative/zero/positive long like a C sort comparator.
  * On incomparable (`<=>` returns nil) or raised exception, sets *err
  * to the propagating RESULT and returns 0. */
-static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *err) {
+static long ary_sort_compare(CTX *c, VALUE *sp, VALUE x, VALUE y, bool has_block, RESULT *err) {
     /* Park x/y across the comparator (yield / <=> funcall = GC points) so the
      * nil-result error path can build its message from live (forwarded)
-     * handles rather than stale C-locals. */
-    VALUE *const root = c->sp_top;
+     * handles rather than stale C-locals.  The caller passes a 2-slot staging
+     * base `sp`; the sp+2-framed yield/funcall publish that park themselves. */
+    VALUE *const root = sp;
     root[0] = x; root[1] = y;
-    c->sp_top = root + 2;
     VALUE r;
     if (has_block) {
         VALUE pair[2] = { root[0], root[1] };
-        RESULT _r = korb_yield(c, c->sp_top, 2, pair);
-        if (_r.state != KORB_NORMAL) { c->sp_top = root; *err = _r; return 0; }
+        RESULT _r = korb_yield(c, sp + 2, 2, pair);
+        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
         r = _r.value;
     } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
-        c->sp_top = root;
         return (intptr_t)x < (intptr_t)y ? -1 : (intptr_t)x > (intptr_t)y ? 1 : 0;
     } else {
-        RESULT _r = korb_funcall(c, c->sp_top, root[0], korb_intern("<=>"), 1, &root[1]);
-        if (_r.state != KORB_NORMAL) { c->sp_top = root; *err = _r; return 0; }
+        RESULT _r = korb_funcall(c, sp + 2, root[0], korb_intern("<=>"), 1, &root[1]);
+        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
         r = _r.value;
     }
     /* CRuby: sort block return is used by sign — Fixnum sign extracted
@@ -875,7 +874,6 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *e
                    korb_id_name(korb_class_of_class(root[0])->name),
                    korb_id_name(korb_class_of_class(root[1])->name));
     }
-    c->sp_top = root;
     return ret;
 }
 
@@ -889,14 +887,13 @@ static RESULT ary_sort_in_place(CTX *c, VALUE *sp, VALUE av, bool has_block) {
     long n = korb_ary_len(av);
     KORB_ARY_YIELD_FRAME(c, fr, av);   /* the array */
     sp[0] = 0;
-    c->sp_top = sp + 1;                /* protect the parked probe across compares */
     RESULT _ret = RESULT_OK(Qnil);
     for (long i = 1; i < n; i++) {
         sp[0] = korb_ary_items((struct korb_array *)fr.last_line)[i];   /* probe */
         long j = i - 1;
         while (j >= 0) {
             VALUE xj = korb_ary_items((struct korb_array *)fr.last_line)[j];
-            long cmp = ary_sort_compare(c, xj, sp[0], has_block, &_ret);
+            long cmp = ary_sort_compare(c, sp + 1, xj, sp[0], has_block, &_ret);
             if (_ret.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ret; }
             if (cmp <= 0) break;
             struct korb_array *ra = (struct korb_array *)fr.last_line;
@@ -910,7 +907,6 @@ static RESULT ary_sort_in_place(CTX *c, VALUE *sp, VALUE av, bool has_block) {
 }
 
 static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -918,11 +914,9 @@ static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
     /* Park the copy at sp[0] while building it; ary_sort_in_place re-parks
      * it in its own frame and stages the probe at sp+1. */
     sp[0] = korb_ary_new_capa(c, sp + 1, n);
-    c->sp_top = sp + 1;
     for (long i = 0; i < n; i++) korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(sp[-argc - 1], i));
     CHECK(ary_sort_in_place(c, sp + 1, sp[0], korb_block_given(c)));
     VALUE result = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(result);
 }
 
@@ -939,7 +933,6 @@ static RESULT ary_sort_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -950,21 +943,19 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
      * body's sp would be collected).  The current pair / yielded key are
      * transient and re-read from the framed pairs each iteration. */
     long n = korb_ary_len(self);
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, n));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, n));
     fr.last_match = sp[-argc - 1];
     /* Re-read length each step so the block may grow the array (CRuby
      * "tolerates increasing size during iteration"); n is only the capa hint. */
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elem = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &elem);
+        RESULT _y = korb_yield(c, sp, 1, &elem);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         sp[0] = _y.value;                 /* yielded key (transient) */
-        c->sp_top = sp + 1;
         sp[1] = korb_ary_new_capa(c, sp + 2, 2);   /* the pair */
         korb_ary_push(c, sp + 2, sp[1], sp[0]);
         korb_ary_push(c, sp + 2, sp[1], korb_ary_aref(fr.last_match, i));
         korb_ary_push(c, sp + 2, fr.last_line, sp[1]);
-        c->sp_top = sp;
     }
     /* insertion sort the pairs by [0].  pairs stay in fr.last_line; the
      * lifted-out pair `pi` is parked in fr.last_match (the receiver is no
@@ -977,7 +968,7 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
             VALUE pj = korb_ary_aref(fr.last_line, j);
             VALUE kj = korb_ary_aref(pj, 0);
             VALUE ki = korb_ary_aref(fr.last_match, 0);
-            RESULT _c = korb_funcall(c, c->sp_top, kj, korb_intern("<=>"), 1, &ki);
+            RESULT _c = korb_funcall(c, sp, kj, korb_intern("<=>"), 1, &ki);
             if (_c.state != KORB_NORMAL) { c->current_frame = fr.prev; return _c; }
             VALUE cmp = _c.value;
             if (FIXNUM_P(cmp) && FIX2LONG(cmp) <= 0) break;
@@ -989,11 +980,9 @@ static RESULT ary_sort_by(CTX *c, int argc, VALUE *sp) {
     }
     /* extract [1] of each pair into the result (pre-sized; park at sp[0]). */
     sp[0] = korb_ary_new_capa(c, sp + 1, n);
-    c->sp_top = sp + 1;
     for (long i = 0; i < n; i++)
         korb_ary_push(c, sp + 1, sp[0], korb_ary_aref(korb_ary_aref(fr.last_line, i), 1));
     VALUE result = sp[0];
-    c->sp_top = sp;
     c->current_frame = fr.prev;
     return RESULT_OK(result);
 }
@@ -1410,7 +1399,7 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
     RESULT _ret = RESULT_OK(Qnil);
     for (long i = 1; i < alen; i++) {
         VALUE probe = korb_ary_items((struct korb_array *)fr.last_match)[i];
-        long cmp = ary_sort_compare(c, probe, fr.last_line, has_block, &_ret);
+        long cmp = ary_sort_compare(c, sp, probe, fr.last_line, has_block, &_ret);
         if (_ret.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ret; }
         if (cmp < 0) fr.last_line = korb_ary_items((struct korb_array *)fr.last_match)[i];
     }
@@ -1436,7 +1425,7 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
     RESULT _ret = RESULT_OK(Qnil);
     for (long i = 1; i < alen; i++) {
         VALUE probe = korb_ary_items((struct korb_array *)fr.last_match)[i];
-        long cmp = ary_sort_compare(c, probe, fr.last_line, has_block, &_ret);
+        long cmp = ary_sort_compare(c, sp, probe, fr.last_line, has_block, &_ret);
         if (_ret.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ret; }
         if (cmp > 0) fr.last_line = korb_ary_items((struct korb_array *)fr.last_match)[i];
     }
