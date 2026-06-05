@@ -1780,8 +1780,12 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
      * here: AROH_ROOT_STACK_TOP is c->sp_top). */
     VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
     base[0] = 0; base[1] = 0;
+    /* Re-publish c->sp_top = base+2 before each child eval so a staging child
+     * that reads c->sp_top directly (e.g. node_splat_to_ary) lands above
+     * base[0]/base[1] rather than clobbering recv. */
     c->sp_top = base + 2;
     base[0] = EVAL_ARG_UNWRAP(c, recv);
+    c->sp_top = base + 2;
     base[1] = EVAL_ARG_UNWRAP(c, idx);
     VALUE r = base[0];
     VALUE i = base[1];
@@ -1839,9 +1843,15 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
      * the slots clear of the frame locals when c->sp_top sits below sp. */
     VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
     base[0] = 0; base[1] = 0;
+    /* Re-publish c->sp_top = base+2 before EACH child eval: a child may leave
+     * c->sp_top below base+2 (some nodes restore it to their own frame top),
+     * and a staging child that reads c->sp_top directly (e.g. node_splat_to_ary
+     * for `[*var]`) would then land on base[0]/base[1] and clobber recv/idx. */
     c->sp_top = base + 2;
     base[0] = EVAL_ARG_UNWRAP(c, recv);
+    c->sp_top = base + 2;
     base[1] = EVAL_ARG_UNWRAP(c, idx);
+    c->sp_top = base + 2;
     VALUE v = EVAL_ARG_UNWRAP(c, val);
     VALUE r = base[0];
     VALUE i = base[1];
@@ -2181,9 +2191,16 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
 NODE_DEF
 node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
 {
+    /* base = max(sp, c->sp_top) captured at ENTRY.  expr's eval below may
+     * lower c->sp_top to its own frame top, but an enclosing aref/aset has
+     * bumped c->sp_top above its recv/idx slots and we must stage above THOSE,
+     * not at the lowered c->sp_top — else `h[k] = [*var]` clobbers recv.  Park
+     * v at base[0] (above the caller's slots, GC-scanned via c->sp_top=base+1)
+     * across the to_a funcalls. */
+    VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
     VALUE v = EVAL_ARG_UNWRAP(c, expr);
     /* CRuby splat: nil → [] (no elements). */
-    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, base));
     if (BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     if (BUILTIN_TYPE(v) == T_RANGE) {
         /* convert Range to Array for splat */
@@ -2191,61 +2208,54 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
             long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
             if (r->exclude_end) e--;
-            if (e < b) return RESULT_OK(korb_ary_new(c, c->sp_top));
-            sp[0] = korb_ary_new_capa(c, sp + 1, e - b + 1);
-            for (long i = b; i <= e; i++) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
-            return RESULT_OK(sp[0]);
+            if (e < b) return RESULT_OK(korb_ary_new(c, base));
+            base[0] = korb_ary_new_capa(c, base + 1, e - b + 1);
+            for (long i = b; i <= e; i++) korb_ary_push(c, base + 1, base[0], INT2FIX(i));
+            return RESULT_OK(base[0]);
         }
     }
     /* CRuby: if value responds to to_a, call it.  to_a must return Array.
      * For BasicObject (which has no #respond_to?) and similar minimal
      * classes, fall back to a direct method-table lookup so a singleton
-     * `def obj.to_a` is still detected.
-     *
-     * v must survive the respond_to?/to_a funcalls and korb_ary_new_capa
-     * (all GC points) but this node shares `sp` with its caller (EVAL_ARG
-     * passes the same sp), so we can't park v in an sp slot without
-     * clobbering the caller's recv/args.  Use the dedicated GC root stack
-     * (same mechanism as proc_call / korb_yield_slow); pop on every exit. */
-    VALUE *const vroot = AROH_ROOT_STACK_TOP(c);
-    vroot[0] = v;
-    AROH_ROOT_STACK_SET_TOP(c, vroot + 1);
+     * `def obj.to_a` is still detected. */
+    base[0] = v;
+    c->sp_top = base + 1;
     {
         const ID id_to_a = korb_intern("to_a");
         bool has_to_a = false;
-        if (!SPECIAL_CONST_P(vroot[0])) {
-            struct korb_class *vk = (struct korb_class *)((struct RBasic *)vroot[0])->klass;
+        if (!SPECIAL_CONST_P(base[0])) {
+            struct korb_class *vk = (struct korb_class *)((struct RBasic *)base[0])->klass;
             has_to_a = vk && korb_class_find_method(vk, id_to_a) != NULL;
         }
         VALUE rt = Qfalse;
         if (!has_to_a) {
             VALUE to_a_sym = korb_id2sym(id_to_a);
-            RESULT _rt_a = korb_funcall(c, c->sp_top, vroot[0], korb_intern("respond_to?"), 1, &to_a_sym);
+            RESULT _rt_a = korb_funcall(c, base + 1, base[0], korb_intern("respond_to?"), 1, &to_a_sym);
             rt = (_rt_a.state == KORB_NORMAL) ? _rt_a.value : Qfalse;
         }
         if (has_to_a || RTEST(rt)) {
-            RESULT _tr = korb_funcall(c, c->sp_top, vroot[0], id_to_a, 0, NULL);
-            if (_tr.state != KORB_NORMAL) { AROH_ROOT_STACK_SET_TOP(c, vroot); return _tr; }
+            RESULT _tr = korb_funcall(c, base + 1, base[0], id_to_a, 0, NULL);
+            if (_tr.state != KORB_NORMAL) { c->sp_top = base; return _tr; }
             VALUE r = _tr.value;
-            if (BUILTIN_TYPE(r) == T_ARRAY) { AROH_ROOT_STACK_SET_TOP(c, vroot); return RESULT_OK(r); }
+            if (BUILTIN_TYPE(r) == T_ARRAY) { c->sp_top = base; return RESULT_OK(r); }
             /* CRuby: if to_a returns nil, treat the value as a single
              * element array.  Other non-Array results are TypeError. */
             if (NIL_P(r)) {
-                VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-                korb_ary_push(c, c->sp_top, a, vroot[0]);
-                AROH_ROOT_STACK_SET_TOP(c, vroot);
+                VALUE a = korb_ary_new_capa(c, base + 1, 1);
+                korb_ary_push(c, base + 1, a, base[0]);
+                c->sp_top = base;
                 return RESULT_OK(a);
             }
-            AROH_ROOT_STACK_SET_TOP(c, vroot);
+            c->sp_top = base;
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "can't convert to Array (returned non-Array)");
         }
     }
     {
-        VALUE a = korb_ary_new_capa(c, c->sp_top, 1);
-        korb_ary_push(c, c->sp_top, a, vroot[0]);
-        AROH_ROOT_STACK_SET_TOP(c, vroot);
+        VALUE a = korb_ary_new_capa(c, base + 1, 1);
+        korb_ary_push(c, base + 1, a, base[0]);
+        c->sp_top = base;
         return RESULT_OK(a);
     }
 }
@@ -3112,6 +3122,11 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 NODE_DEF
 node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {
+    /* base = max(sp, c->sp_top): stage the result above an enclosing aref/aset's
+     * recv/idx slots (e.g. `h[k] = [*args]` lowers to node_ary_concat as the
+     * RHS).  Staging the result at the bare sp[0] would clobber the caller's
+     * recv.  Captured at entry; lhs/rhs evals may move c->sp_top but base is fixed. */
+    VALUE * restrict base = (c->sp_top > sp) ? c->sp_top : sp;
     VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     /* Park l across rhs's eval (building rhs — e.g. a nested `[..]` literal
      * or splat — fires GC that moves the lhs array).  Use a synthetic
@@ -3139,16 +3154,16 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
     /* la/ra are struct handles held across korb_ary_new_capa + the push
      * loop's GC points; park lhs/rhs/out in sp slots and re-read each
      * iteration so moving GC can't stale the handles. */
-    sp[1] = l;
-    sp[2] = r;
+    base[1] = l;
+    base[2] = r;
     long la_len = ((struct korb_array *)l)->len;
     long ra_len = ((struct korb_array *)r)->len;
-    sp[0] = korb_ary_new_capa(c, sp + 3, la_len + ra_len);
+    base[0] = korb_ary_new_capa(c, base + 3, la_len + ra_len);
     for (long i = 0; i < la_len; i++)
-        korb_ary_push(c, sp + 3, sp[0], korb_ary_items((struct korb_array *)sp[1])[i]);
+        korb_ary_push(c, base + 3, base[0], korb_ary_items((struct korb_array *)base[1])[i]);
     for (long i = 0; i < ra_len; i++)
-        korb_ary_push(c, sp + 3, sp[0], korb_ary_items((struct korb_array *)sp[2])[i]);
-    return RESULT_OK(sp[0]);
+        korb_ary_push(c, base + 3, base[0], korb_ary_items((struct korb_array *)base[2])[i]);
+    return RESULT_OK(base[0]);
 }
 
 NODE_DEF

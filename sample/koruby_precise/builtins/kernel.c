@@ -871,7 +871,12 @@ static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
     const char *cf = caller_current_file(c);
     char *resolved = korb_resolve_relative(cf, name);
     if (!resolved) {
-        return korb_raise(c, NULL, "cannot load such file -- %s", name);
+        /* Missing file must raise LoadError (not the default RuntimeError):
+         * Ruby code rescues LoadError to probe optional features (e.g.
+         * optcarrot's driver.rb tries each driver and `rescue LoadError`s
+         * the unavailable ones).  A RuntimeError there propagates as fatal. */
+        VALUE eLE = korb_const_get(KORB_VM(c)->object_class, korb_intern("LoadError"));
+        return korb_raise(c, (struct korb_class *)eLE, "cannot load such file -- %s", name);
     }
     extern RESULT korb_require_file(CTX *c, const char *path);
     return korb_require_file(c, resolved);
