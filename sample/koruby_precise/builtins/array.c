@@ -439,13 +439,12 @@ static RESULT ary_last(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_ary_aref(self, len - 1));
 }
 static RESULT ary_each(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE arg = korb_id2sym(korb_intern("each"));
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &arg);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), 1, &arg);
     }
     /* CRuby semantics: re-read length each iteration so the block can grow /
      * shrink the array.  Moving GC: the receiver is a moving array handle
@@ -456,7 +455,7 @@ static RESULT ary_each(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE recv = fr.last_match;
@@ -500,7 +499,6 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(recv);
 }
 static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -516,7 +514,7 @@ static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
      * idiom as node_plus.  (last_match doubles as $~ for the block body;
      * iterator blocks rarely read $~, and koruby Regexp is astrorge-
      * pending, so reusing it here is acceptable.) */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, len));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, len));
     /* Re-read the receiver from its GC slot — `self` is a stale C-local
      * after the korb_ary_new_capa above moved it. */
     fr.last_match = sp[-argc - 1]; /* park source receiver */
@@ -524,16 +522,15 @@ static RESULT ary_map(CTX *c, int argc, VALUE *sp) {
      * "tolerates increasing size"); len is only the capa hint. */
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-        korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
+        korb_ary_push(c, sp, fr.last_line, _y.value);
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
     return RESULT_OK(result);
 }
 static RESULT ary_select(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -541,20 +538,19 @@ static RESULT ary_select(CTX *c, int argc, VALUE *sp) {
     /* Park result (fr.last_line) + source receiver (fr.last_match) across
      * the per-element korb_yield via the frame chain (see ary_map).  Re-read
      * length each step so the block may grow the array (CRuby semantics). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-        if (RTEST(_y.value)) korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
+        if (RTEST(_y.value)) korb_ary_push(c, sp, fr.last_line, korb_ary_aref(fr.last_match, i));
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
     return RESULT_OK(result);
 }
 static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -589,7 +585,7 @@ static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
         fr.last_match = sp[-argc - 1];
         for (; i < len; i++) {
             VALUE other = korb_ary_aref(fr.last_match, i);
-            RESULT _r = korb_funcall(c, c->sp_top, fr.last_line, op, 1, &other);
+            RESULT _r = korb_funcall(c, sp, fr.last_line, op, 1, &other);
             if (_r.state != KORB_NORMAL) { c->current_frame = fr.prev; return _r; }
             fr.last_line = _r.value;
         }
@@ -604,7 +600,7 @@ static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
     i = argc > 0 ? 0 : 1;
     for (; i < len; i++) {
         VALUE args[2] = { fr.last_line, korb_ary_aref(fr.last_match, i) };
-        RESULT _y = korb_yield(c, c->sp_top, 2, args);
+        RESULT _y = korb_yield(c, sp, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         fr.last_line = _y.value;
     }
@@ -683,7 +679,6 @@ static RESULT ary_inspect(CTX *c, int argc, VALUE *sp) {
  * VALUE/c->state cfunc as part of Phase 8 staged migration.  Uses
  * korb_funcall_r + UNWRAP for in-band exception propagation. */
 static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     if (argc > 0) {
         return korb_raise_argument_error(c,
                    "wrong number of arguments (given %d, expected 0)", argc);
@@ -701,7 +696,7 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         if (has_block) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield_r(c, c->sp_top, 1, &v);
+            RESULT _y = korb_yield_r(c, sp, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             fr.last_line = _y.value;
         } else {
@@ -711,10 +706,10 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
         if (SPECIAL_CONST_P(fr.last_line) || BUILTIN_TYPE(fr.last_line) != T_ARRAY) {
             if (!SPECIAL_CONST_P(fr.last_line)) {
                 VALUE arg = korb_id2sym(korb_intern("to_ary"));
-                RESULT _rt = korb_funcall_r(c, c->sp_top, fr.last_line, korb_intern("respond_to?"), 1, &arg);
+                RESULT _rt = korb_funcall_r(c, sp, fr.last_line, korb_intern("respond_to?"), 1, &arg);
                 if (_rt.state != KORB_NORMAL) { c->current_frame = fr.prev; return _rt; }
                 if (RTEST(_rt.value)) {
-                    RESULT _ta = korb_funcall_r(c, c->sp_top, fr.last_line, korb_intern("to_ary"), 0, NULL);
+                    RESULT _ta = korb_funcall_r(c, sp, fr.last_line, korb_intern("to_ary"), 0, NULL);
                     if (_ta.state != KORB_NORMAL) { c->current_frame = fr.prev; return _ta; }
                     fr.last_line = _ta.value;
                 }
@@ -936,7 +931,6 @@ static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
  * registration aliases sort! to ary_sort which would build a copy and
  * return it; for the bang form we need to sort the receiver directly. */
 static RESULT ary_sort_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1406,7 +1400,6 @@ static RESULT ary_one_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1419,7 +1412,7 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
      * cmp variable here is interpreted with the probe as the LHS. */
     /* Park self (fr.last_match) + running min (fr.last_line) in a synthetic
      * frame: with a block, ary_sort_compare yields and korb_yield lowers
-     * c->sp_top below the receiver/accumulator sp slots, so a moving GC would
+     * sp below the receiver/accumulator sp slots, so a moving GC would
      * not forward them (sp[]-only parking went stale → SEGV in range/max).
      * The frame chain is always scanned regardless of sp. */
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_items((struct korb_array *)sp[-argc - 1])[0]);
@@ -1437,7 +1430,6 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1446,7 +1438,7 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
     bool has_block = korb_block_given(c);
     /* Park self (fr.last_match) + running max (fr.last_line) in a synthetic
      * frame: with a block, ary_sort_compare yields and korb_yield lowers
-     * c->sp_top below the receiver/accumulator sp slots, so a moving GC would
+     * sp below the receiver/accumulator sp slots, so a moving GC would
      * not forward them (sp[]-only parking went stale → SEGV in range/max).
      * The frame chain is always scanned regardless of sp. */
     KORB_ARY_YIELD_FRAME(c, fr, korb_ary_items((struct korb_array *)sp[-argc - 1])[0]);
@@ -1464,7 +1456,6 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1487,7 +1478,7 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE elt = korb_ary_aref(fr.last_match, i);
         if (has_block) {
-            RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
+            RESULT _y = korb_yield(c, sp, 1, &elt);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             elt = _y.value;
         }
@@ -1516,12 +1507,12 @@ static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
                 fr.last_line = INT2FIX(s);
             else fr.last_line = korb_int_plus(fr.last_line, elt);
         } else {
-            RESULT _p = korb_funcall(c, c->sp_top, fr.last_line, korb_intern("+"), 1, &elt);
+            RESULT _p = korb_funcall(c, sp, fr.last_line, korb_intern("+"), 1, &elt);
             if (_p.state != KORB_NORMAL) { c->current_frame = fr.prev; return _p; }
             fr.last_line = _p.value;
         }
     }
-    if (kahan_active) { VALUE f = korb_float_new(c, c->sp_top, kahan_sum); c->current_frame = fr.prev; return RESULT_OK(f); }
+    if (kahan_active) { VALUE f = korb_float_new(c, sp, kahan_sum); c->current_frame = fr.prev; return RESULT_OK(f); }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
     return RESULT_OK(result);
@@ -2012,7 +2003,6 @@ static RESULT ary_minus(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2025,7 +2015,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
         /* Re-read length each step (block may grow the array, CRuby). */
         for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+            RESULT _y = korb_yield(c, sp, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             if (!NIL_P(_y.value) && _y.value != Qfalse) { c->current_frame = fr.prev; return RESULT_OK(INT2FIX(i)); }
         }
@@ -2035,7 +2025,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) {
         /* No block, no arg: return Enumerator. */
         VALUE method_sym = korb_id2sym(korb_intern("index"));
-        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, sp, self, korb_intern("to_enum"), 1, &method_sym);
     }
     /* Arg form: park receiver (fr.last_match) + the target (fr.last_line)
      * across the per-element #== funcall. */
@@ -2044,7 +2034,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < alen; i++) {
         VALUE elt = korb_ary_aref(fr.last_match, i);
         if (elt == fr.last_line) { c->current_frame = fr.prev; return RESULT_OK(INT2FIX(i)); }
-        RESULT er = korb_funcall_r(c, c->sp_top, elt, korb_intern("=="), 1, &fr.last_line);
+        RESULT er = korb_funcall_r(c, sp, elt, korb_intern("=="), 1, &fr.last_line);
         if (er.state != KORB_NORMAL) { c->current_frame = fr.prev; return er; }
         if (RTEST(er.value)) { c->current_frame = fr.prev; return RESULT_OK(INT2FIX(i)); }
     }
@@ -2283,7 +2273,6 @@ static RESULT ary_transpose(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2300,7 +2289,7 @@ static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
          * (shared "tolerates increasing size during iteration" spec). */
         for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+            RESULT _y = korb_yield(c, sp, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
             if (!NIL_P(_y.value) && _y.value != Qfalse) n++;
         }
@@ -2367,7 +2356,6 @@ static RESULT ary_take(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2422,14 +2410,14 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
         } else if (FIXNUM_P(rbeg)) {
             b = FIX2LONG(rbeg);
         } else if (!SPECIAL_CONST_P(rbeg)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, rbeg, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, rbeg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion into Integer");
             }
-            VALUE iv = UNWRAP(korb_funcall(c, c->sp_top, RNG->begin, korb_intern("to_int"), 0, NULL));
+            VALUE iv = UNWRAP(korb_funcall(c, sp, RNG->begin, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             b = FIX2LONG(iv);
         } else {
@@ -2445,14 +2433,14 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
             e = FIX2LONG(rend);
             if (excl) e -= 1;
         } else if (!SPECIAL_CONST_P(rend)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, rend, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, rend, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion into Integer");
             }
-            VALUE iv = UNWRAP(korb_funcall(c, c->sp_top, RNG->end, korb_intern("to_int"), 0, NULL));
+            VALUE iv = UNWRAP(korb_funcall(c, sp, RNG->end, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(iv)) return RESULT_OK(Qnil);
             e = FIX2LONG(iv);
             if (RNG->exclude_end) e -= 1;
@@ -2482,7 +2470,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
              * push to the re-read handle (the `self` C-local is stale once
              * a prior push moved the array). */
             while ((a = (struct korb_array *)sp[-argc - 1])->len <= e)
-                korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
+                korb_ary_push(c, sp, sp[-argc - 1], Qnil);
         }
         start = b;
         len = e - b + 1;
@@ -2512,7 +2500,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
              * push to the re-read handle (the `self` C-local is stale once
              * a prior push moved the array). */
             while ((a = (struct korb_array *)sp[-argc - 1])->len < start + len)
-                korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
+                korb_ary_push(c, sp, sp[-argc - 1], Qnil);
         }
     }
     /* R5: re-derive a after any growth above. */
@@ -2527,7 +2515,7 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
     if (has_block) {
         for (long i = start; i < end; i++) {
             VALUE iv = INT2FIX(i);
-            VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &iv));
+            VALUE r = UNWRAP(korb_yield(c, sp, 1, &iv));
             /* R5: re-derive a after the yield GC point. */
             a = (struct korb_array *)sp[-argc - 1];
             korb_ary_items(a)[i] = r;
@@ -2598,7 +2586,6 @@ static RESULT ary_empty_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_find(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2608,7 +2595,7 @@ static RESULT ary_find(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (RTEST(_y.value)) { VALUE r = korb_ary_aref(fr.last_match, i); c->current_frame = fr.prev; return RESULT_OK(r); }
     }
@@ -2617,7 +2604,6 @@ static RESULT ary_find(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2632,15 +2618,15 @@ static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
      * snapshot at the funcall call site) and live in sp slots. */
     KORB_ARY_YIELD_FRAME(c, fm, korb_ary_aref(sp[-argc - 1], 0));   /* m */
     KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);                     /* receiver */
-    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fm.last_line);
+    RESULT _y0 = korb_yield(c, sp, 1, &fm.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y0; }
     fm.last_match = _y0.value;     /* mk */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_line, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y; }
         fr.last_match = _y.value;   /* k: candidate key, park across funcall */
-        RESULT _cmp = korb_funcall(c, c->sp_top, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
+        RESULT _cmp = korb_funcall(c, sp, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
         if (_cmp.state != KORB_NORMAL) { c->current_frame = fm.prev; return _cmp; }
         VALUE cmp = _cmp.value;
         long sign = 0;
@@ -2749,7 +2735,6 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2759,15 +2744,15 @@ static RESULT ary_max_by(CTX *c, int argc, VALUE *sp) {
      * candidate key all span the yield + <=> funcall GC points). */
     KORB_ARY_YIELD_FRAME(c, fm, korb_ary_aref(sp[-argc - 1], 0));   /* m */
     KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);                     /* receiver */
-    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fm.last_line);
+    RESULT _y0 = korb_yield(c, sp, 1, &fm.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y0; }
     fm.last_match = _y0.value;     /* mk */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(fr.last_line, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fm.prev; return _y; }
         fr.last_match = _y.value;   /* k: candidate key, park across funcall */
-        RESULT _cmp = korb_funcall(c, c->sp_top, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
+        RESULT _cmp = korb_funcall(c, sp, fm.last_match, korb_intern("<=>"), 1, &fr.last_match);
         if (_cmp.state != KORB_NORMAL) { c->current_frame = fm.prev; return _cmp; }
         VALUE cmp = _cmp.value;
         long sign = 0;
@@ -2956,7 +2941,6 @@ static RESULT ary_slice(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_each_with_object(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2968,7 +2952,7 @@ static RESULT ary_each_with_object(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];                  /* receiver */
     for (long i = 0; i < alen; i++) {
         VALUE args[2] = { korb_ary_aref(fr.last_match, i), fr.last_line };
-        RESULT _y = korb_yield(c, c->sp_top, 2, args);
+        RESULT _y = korb_yield(c, sp, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_line;
@@ -3076,7 +3060,6 @@ static RESULT ary_at(CTX *c, int argc, VALUE *sp) {
  *    else returns the explicit default arg (if given);
  *    else raises IndexError. */
 static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3095,7 +3078,7 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
     if (norm >= 0 && norm < a->len) return RESULT_OK(korb_ary_items(a)[norm]);
     if (korb_block_given(c)) {
         VALUE arg[1] = { argv[0] };
-        return korb_yield(c, c->sp_top, 1, arg);
+        return korb_yield(c, sp, 1, arg);
     }
     if (argc == 2) return RESULT_OK(argv[1]);
     VALUE eI = korb_const_get(KORB_VM(c)->object_class, korb_intern("IndexError"));
@@ -3108,7 +3091,6 @@ static RESULT ary_fetch(CTX *c, int argc, VALUE *sp) {
  * at once.  Returns an array.  Without a block, raises IndexError on the
  * first missing index. */
 static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3118,7 +3100,7 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
      * args (argv[k]) are typically fixnums; re-derive the source from
      * fr.last_match each iteration.  Restore c->current_frame on all exits. */
     bool block_p = korb_block_given(c);
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];   /* source receiver (re-read post-alloc) */
     for (int k = 0; k < argc; k++) {
         RESULT _ivr = korb_to_int_or_raise(c, argv[k]);
@@ -3128,12 +3110,12 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
         struct korb_array *a = (struct korb_array *)fr.last_match;
         long norm = i < 0 ? i + a->len : i;
         if (norm >= 0 && norm < a->len) {
-            korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_items(a)[norm]);
+            korb_ary_push(c, sp, fr.last_line, korb_ary_items(a)[norm]);
         } else if (block_p) {
             VALUE arg[1] = { argv[k] };
-            RESULT _yr = korb_yield(c, c->sp_top, 1, arg);
+            RESULT _yr = korb_yield(c, sp, 1, arg);
             if (_yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return _yr; }
-            korb_ary_push(c, c->sp_top, fr.last_line, _yr.value);
+            korb_ary_push(c, sp, fr.last_line, _yr.value);
         } else {
             a = (struct korb_array *)fr.last_match;
             long alen = a->len;
@@ -3151,7 +3133,6 @@ static RESULT ary_fetch_values(CTX *c, int argc, VALUE *sp) {
 
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
 static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3167,7 +3148,7 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
     for (long r = 0; r < alen; r++) {
         struct korb_array *a = (struct korb_array *)sp[-argc - 1];
         VALUE eq_args[1] = { argv[0] };
-        VALUE r_eq = UNWRAP(korb_funcall(c, c->sp_top, korb_ary_items(a)[r], korb_intern("=="), 1, eq_args));
+        VALUE r_eq = UNWRAP(korb_funcall(c, sp, korb_ary_items(a)[r], korb_intern("=="), 1, eq_args));
         if (RTEST(r_eq)) matches++;
     }
     if (matches == 0) {
@@ -3175,7 +3156,7 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
          * if a block is given, else nil).  Don't raise FrozenError. */
         if (korb_block_given(c)) {
             VALUE blk_args[1] = { argv[0] };
-            return korb_yield(c, c->sp_top, 1, blk_args);
+            return korb_yield(c, sp, 1, blk_args);
         }
         return RESULT_OK(Qnil);
     }
@@ -3186,7 +3167,7 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
     for (long r = 0; r < alen; r++) {
         struct korb_array *a = (struct korb_array *)sp[-argc - 1];
         VALUE eq_args[1] = { argv[0] };
-        VALUE r_eq = UNWRAP(korb_funcall(c, c->sp_top, korb_ary_items(a)[r], korb_intern("=="), 1, eq_args));
+        VALUE r_eq = UNWRAP(korb_funcall(c, sp, korb_ary_items(a)[r], korb_intern("=="), 1, eq_args));
         if (!RTEST(r_eq)) korb_ary_items(a)[w++] = korb_ary_items(a)[r];
     }
     {
@@ -3246,13 +3227,12 @@ static RESULT ary_delete_at(CTX *c, int argc, VALUE *sp) {
 
 /* Array#delete_if { |x| ... } — remove where block returns truthy. */
 static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE arg = korb_id2sym(korb_intern("delete_if"));
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &arg);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), 1, &arg);
     }
     CHECK_FROZEN_R(c, self);
     /* Park the receiver (fr.last_match) across the per-element korb_yield;
@@ -3265,7 +3245,7 @@ static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
+        RESULT _y = korb_yield(c, sp, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
             korb_ary_items((struct korb_array *)fr.last_match)[w++] = korb_ary_aref(fr.last_match, r);
@@ -3280,13 +3260,12 @@ static RESULT ary_delete_if(CTX *c, int argc, VALUE *sp) {
 /* Array#reject! — like delete_if, but returns nil when nothing was
  * removed (CRuby semantic for the bang).  No block → Enumerator. */
 static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE arg = korb_id2sym(korb_intern("reject!"));
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &arg);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), 1, &arg);
     }
     CHECK_FROZEN_R(c, self);
     /* Park the receiver (fr.last_match) across the per-element korb_yield;
@@ -3299,7 +3278,7 @@ static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
     /* Re-read length each step so a block may grow the array (CRuby). */
     for (long r = 0; r < korb_ary_len(fr.last_match); r++) {
         VALUE elt = korb_ary_aref(fr.last_match, r);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &elt);
+        RESULT _y = korb_yield(c, sp, 1, &elt);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
             korb_ary_items((struct korb_array *)fr.last_match)[w++] = korb_ary_aref(fr.last_match, r);
@@ -3318,20 +3297,19 @@ static RESULT ary_reject_bang(CTX *c, int argc, VALUE *sp) {
 /* Array#reverse_each — yields elements in reverse order; no block →
  * Array (Enumerator stand-in). */
 static RESULT ary_reverse_each(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("reverse_each"));
-        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, sp, self, korb_intern("to_enum"), 1, &method_sym);
     }
     /* Park the receiver (fr.last_match) across the per-element korb_yield. */
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
     fr.last_match = sp[-argc - 1];
     for (long i = korb_ary_len(fr.last_match) - 1; i >= 0; i--) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -3340,7 +3318,6 @@ static RESULT ary_reverse_each(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3350,14 +3327,14 @@ static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
     /* Park result (fr.last_line) + receiver (fr.last_match) across the
      * per-element korb_yield via the frame chain (see ary_map).  Re-read
      * length each step so the block may grow the array (CRuby semantics). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (NIL_P(_y.value) || _y.value == Qfalse) {
-            korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
+            korb_ary_push(c, sp, fr.last_line, korb_ary_aref(fr.last_match, i));
         }
     }
     VALUE result = fr.last_line;
@@ -3453,13 +3430,12 @@ static RESULT ary_replace(CTX *c, int argc, VALUE *sp) {
 
 /* Array#each_index { |i| ... } — yields successive indices. */
 static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("each_index"));
-        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, sp, self, korb_intern("to_enum"), 1, &method_sym);
     }
     /* Park the receiver (fr.last_match) across the per-element korb_yield so
      * its length stays readable (indices themselves are immediates). */
@@ -3467,7 +3443,7 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE iv = INT2FIX(i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &iv);
+        RESULT _y = korb_yield(c, sp, 1, &iv);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -3731,7 +3707,6 @@ static RESULT ary_permutation(CTX *c, int argc, VALUE *sp) {
  * nested loops (the bootstrap-Ruby version has nested blk.call inside
  * each{} inside loop{} and break doesn't propagate out reliably). */
 static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3742,7 +3717,7 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        VALUE e = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), argc + 1, call_argv));
+        VALUE e = UNWRAP(korb_funcall(c, sp, self, korb_intern("to_enum"), argc + 1, call_argv));
         /* Cycle size: ary.len * n for positive n, 0 for <=0, Infinity for nil arg. */
         VALUE size_val;
         if (argc < 1 || NIL_P(argv[0])) {
@@ -3768,10 +3743,10 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
         } else if (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_BIGNUM) {
             n = LONG_MAX;
         } else if (!SPECIAL_CONST_P(nv)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, nv, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (RTEST(rt)) {
-                VALUE iv = UNWRAP(korb_funcall(c, c->sp_top, nv, korb_intern("to_int"), 0, NULL));
+                VALUE iv = UNWRAP(korb_funcall(c, sp, nv, korb_intern("to_int"), 0, NULL));
                 if (FIXNUM_P(iv)) n = FIX2LONG(iv);
                 else {
                     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -3803,7 +3778,7 @@ static RESULT ary_cycle(CTX *c, int argc, VALUE *sp) {
         if (alen == 0) { c->current_frame = fr.prev; return RESULT_OK(Qnil); }  /* cleared mid-iter */
         for (long i = 0; i < alen; i++) {
             VALUE v = korb_ary_aref(fr.last_match, i);
-            RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+            RESULT _y = korb_yield(c, sp, 1, &v);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         }
         iter++;
@@ -3835,7 +3810,6 @@ static RESULT ary_rcombine(CTX *c, struct korb_frame *fr, long r, long start,
 }
 
 static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3848,12 +3822,12 @@ static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), argc + 1, call_argv);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), argc + 1, call_argv);
     }
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
-        VALUE empty = korb_ary_new(c, c->sp_top);
-        CHECK(korb_yield(c, c->sp_top, 1, &empty));
+        VALUE empty = korb_ary_new(c, sp);
+        CHECK(korb_yield(c, sp, 1, &empty));
         /* Re-read self: korb_yield moved the receiver array; the C-local
          * `self` is stale and returning it left the enumerator generator
          * block's send-result dangling (SEGV via .to_a under STRESS). */
@@ -3861,7 +3835,7 @@ static RESULT ary_repeated_combination(CTX *c, int argc, VALUE *sp) {
     }
     if (a->len == 0) return RESULT_OK(self);
     /* Park source (fr.last_match) + working tuple buf (fr.last_line). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, r));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, r));
     fr.last_match = sp[-argc - 1];
     RESULT _rc = ary_rcombine(c, &fr, r, 0, Qnil);
     c->current_frame = fr.prev;
@@ -3892,7 +3866,6 @@ static RESULT ary_rperm(CTX *c, struct korb_frame *fr, long r,
 }
 
 static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3905,12 +3878,12 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), argc + 1, call_argv);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), argc + 1, call_argv);
     }
     if (r < 0) return RESULT_OK(self);
     if (r == 0) {
-        VALUE empty = korb_ary_new(c, c->sp_top);
-        CHECK(korb_yield(c, c->sp_top, 1, &empty));
+        VALUE empty = korb_ary_new(c, sp);
+        CHECK(korb_yield(c, sp, 1, &empty));
         /* Re-read self: korb_yield moved the receiver array; the C-local
          * `self` is stale and returning it left the enumerator generator
          * block's send-result dangling (SEGV via .to_a under STRESS). */
@@ -3918,7 +3891,7 @@ static RESULT ary_repeated_permutation(CTX *c, int argc, VALUE *sp) {
     }
     if (a->len == 0) return RESULT_OK(self);
     /* Park source (fr.last_match) + working tuple buf (fr.last_line). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, r));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, r));
     fr.last_match = sp[-argc - 1];
     RESULT _rp = ary_rperm(c, &fr, r, Qnil);
     c->current_frame = fr.prev;
@@ -4020,7 +3993,6 @@ RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp) {
  * via `Array.allocate.send(:initialize, ...)` or as part of `Array.new`
  * after the allocation step (CRuby semantic).  Returns self. */
 static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4043,7 +4015,7 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
         long srclen = korb_ary_len(argv[0]);
         for (long i = 0; i < srclen; i++) {
             struct korb_array *src = (struct korb_array *)argv[0];
-            korb_ary_push(c, c->sp_top, sp[-argc - 1], korb_ary_items(src)[i]);
+            korb_ary_push(c, sp, sp[-argc - 1], korb_ary_items(src)[i]);
         }
         return RESULT_OK(sp[-argc - 1]);
     }
@@ -4051,11 +4023,11 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
      * Use respond_to?(:to_ary, true) so private to_ary is also seen. */
     if (argc == 1 && !SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) != T_BIGNUM) {
         if (!FIXNUM_P(first)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, first, korb_intern("respond_to?"), 2,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, first, korb_intern("respond_to?"), 2,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")), Qtrue }));
             if (RTEST(rt)) {
                 /* R5: park the coerced source at sp[0] — push-grows move it. */
-                sp[0] = UNWRAP(korb_funcall(c, c->sp_top, first, korb_intern("__send__"), 1,
+                sp[0] = UNWRAP(korb_funcall(c, sp, first, korb_intern("__send__"), 1,
                                               (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
                 if (!SPECIAL_CONST_P(sp[0]) && BUILTIN_TYPE(sp[0]) == T_ARRAY) {
                     long srclen = korb_ary_len(sp[0]);
@@ -4080,13 +4052,13 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
         VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA, "array size too big");
     } else if (!SPECIAL_CONST_P(first)) {
-        VALUE iv = UNWRAP(korb_funcall(c, c->sp_top, first, korb_intern("respond_to?"), 1,
+        VALUE iv = UNWRAP(korb_funcall(c, sp, first, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
         /* respond_to? is a GC point — re-read first from its arg slot before
          * dispatching to_int (and for the error message below). */
         first = argv[0];
         if (RTEST(iv)) {
-            VALUE n = UNWRAP(korb_funcall(c, c->sp_top, first, korb_intern("to_int"), 0, NULL));
+            VALUE n = UNWRAP(korb_funcall(c, sp, first, korb_intern("to_int"), 0, NULL));
             if (!FIXNUM_P(n)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
@@ -4124,9 +4096,9 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
         KORB_ARY_YIELD_FRAME(c, fr, sp[-argc - 1]);
         for (long i = 0; i < size; i++) {
             VALUE iv = INT2FIX(i);
-            RESULT _y = korb_yield(c, c->sp_top, 1, &iv);
+            RESULT _y = korb_yield(c, sp, 1, &iv);
             if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
-            korb_ary_push(c, c->sp_top, fr.last_line, _y.value);
+            korb_ary_push(c, sp, fr.last_line, _y.value);
         }
         VALUE result = fr.last_line;
         c->current_frame = fr.prev;
@@ -4136,7 +4108,7 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
          * can move it if it's a heap object), and re-read self (the receiver)
          * from its GC-scanned staging slot — the C-local goes stale too. */
         for (long i = 0; i < size; i++)
-            korb_ary_push(c, c->sp_top, sp[-argc - 1], argc >= 2 ? argv[1] : Qnil);
+            korb_ary_push(c, sp, sp[-argc - 1], argc >= 2 ? argv[1] : Qnil);
     }
     return RESULT_OK(sp[-argc - 1]);
 }
@@ -4250,21 +4222,20 @@ static RESULT ary_dig(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Array#take_while / drop_while ---------- */
 static RESULT ary_take_while(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Park result (fr.last_line) + receiver (fr.last_match) across the
      * per-element korb_yield via the frame chain (see ary_map).  Re-read the
      * length each step so the block may grow the array (CRuby semantics). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     fr.last_match = sp[-argc - 1];
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (!RTEST(_y.value)) break;
-        korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
+        korb_ary_push(c, sp, fr.last_line, korb_ary_aref(fr.last_match, i));
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
@@ -4272,7 +4243,6 @@ static RESULT ary_take_while(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4284,13 +4254,13 @@ static RESULT ary_drop_while(CTX *c, int argc, VALUE *sp) {
     fr.last_match = sp[-argc - 1];
     for (; i < korb_ary_len(fr.last_match); i++) {
         VALUE v = korb_ary_aref(fr.last_match, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         if (!RTEST(_y.value)) break;
     }
-    fr.last_line = korb_ary_new(c, c->sp_top);
+    fr.last_line = korb_ary_new(c, sp);
     for (; i < korb_ary_len(fr.last_match); i++) {
-        korb_ary_push(c, c->sp_top, fr.last_line, korb_ary_aref(fr.last_match, i));
+        korb_ary_push(c, sp, fr.last_line, korb_ary_aref(fr.last_match, i));
     }
     VALUE result = fr.last_line;
     c->current_frame = fr.prev;
@@ -4555,15 +4525,14 @@ static RESULT ary_each_cons(CTX *c, int argc, VALUE *sp) {
  * Returns [min_elem, max_elem] keyed by the block's return value;
  * [nil, nil] for an empty array. */
 static RESULT ary_minmax_by(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     long alen = korb_ary_len(self);
     if (alen == 0) {
-        VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(c, c->sp_top, r, Qnil);
-        korb_ary_push(c, c->sp_top, r, Qnil);
+        VALUE r = korb_ary_new_capa(c, sp, 2);
+        korb_ary_push(c, sp, r, Qnil);
+        korb_ary_push(c, sp, r, Qnil);
         return RESULT_OK(r);
     }
     /* Six roots span the per-element korb_yield + <=> funcalls: running
@@ -4573,29 +4542,29 @@ static RESULT ary_minmax_by(CTX *c, int argc, VALUE *sp) {
     KORB_ARY_YIELD_FRAME(c, fmin, korb_ary_aref(sp[-argc - 1], 0));  /* min_e */
     KORB_ARY_YIELD_FRAME(c, fmax, korb_ary_aref(sp[-argc - 1], 0));  /* max_e */
     KORB_ARY_YIELD_FRAME(c, frcv, sp[-argc - 1]);                    /* receiver */
-    RESULT _y0 = korb_yield(c, c->sp_top, 1, &fmin.last_line);
+    RESULT _y0 = korb_yield(c, sp, 1, &fmin.last_line);
     if (_y0.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _y0; }
     fmin.last_match = _y0.value;   /* min_k */
     fmax.last_match = _y0.value;   /* max_k */
     for (long i = 1; i < alen; i++) {
         VALUE v = korb_ary_aref(frcv.last_line, i);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &v);
+        RESULT _y = korb_yield(c, sp, 1, &v);
         if (_y.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _y; }
         frcv.last_match = _y.value;   /* k, parked across the funcalls */
-        RESULT _cmin = korb_funcall(c, c->sp_top, frcv.last_match, korb_intern("<=>"), 1, &fmin.last_match);
+        RESULT _cmin = korb_funcall(c, sp, frcv.last_match, korb_intern("<=>"), 1, &fmin.last_match);
         if (_cmin.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _cmin; }
         if (FIXNUM_P(_cmin.value) && FIX2LONG(_cmin.value) < 0) {
             fmin.last_line = korb_ary_aref(frcv.last_line, i); fmin.last_match = frcv.last_match;
         }
-        RESULT _cmax = korb_funcall(c, c->sp_top, frcv.last_match, korb_intern("<=>"), 1, &fmax.last_match);
+        RESULT _cmax = korb_funcall(c, sp, frcv.last_match, korb_intern("<=>"), 1, &fmax.last_match);
         if (_cmax.state != KORB_NORMAL) { c->current_frame = fmin.prev; return _cmax; }
         if (FIXNUM_P(_cmax.value) && FIX2LONG(_cmax.value) > 0) {
             fmax.last_line = korb_ary_aref(frcv.last_line, i); fmax.last_match = frcv.last_match;
         }
     }
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
-    korb_ary_push(c, c->sp_top, r, fmin.last_line);
-    korb_ary_push(c, c->sp_top, r, fmax.last_line);
+    VALUE r = korb_ary_new_capa(c, sp, 2);
+    korb_ary_push(c, sp, r, fmin.last_line);
+    korb_ary_push(c, sp, r, fmax.last_line);
     c->current_frame = fmin.prev;
     return RESULT_OK(r);
 }
@@ -4605,13 +4574,12 @@ static RESULT ary_minmax_by(CTX *c, int argc, VALUE *sp) {
  * sorted and the block result transitions from false to true exactly
  * once; returns the first true element, nil if all are false. */
 static RESULT ary_bsearch(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE arg = korb_id2sym(korb_intern("bsearch"));
-        VALUE e = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &arg));
+        VALUE e = UNWRAP(korb_funcall(c, sp, self, korb_intern("to_enum"), 1, &arg));
         /* bsearch's returned Enumerator has unknown size (CRuby semantics). */
         korb_ivar_set(e, korb_intern("@__size"), Qnil);
         return RESULT_OK(e);
@@ -4625,7 +4593,7 @@ static RESULT ary_bsearch(CTX *c, int argc, VALUE *sp) {
     while (lo < hi) {
         long mid = lo + (hi - lo) / 2;
         VALUE probe = korb_ary_aref(fr.last_match, mid);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &probe);
+        RESULT _y = korb_yield(c, sp, 1, &probe);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
         VALUE r = _y.value;
         if (TRUE_P(r) || FALSE_P(r) || NIL_P(r)) {
