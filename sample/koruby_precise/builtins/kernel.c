@@ -7,7 +7,6 @@ static struct {
 } g_at_exit = {0};
 
 static RESULT kernel_at_exit(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -46,7 +45,6 @@ void korb_run_at_exit_hooks(CTX *c) {
 #include "precise_gc/gc.h"  /* sp staging slot helpers */
 
 static RESULT kernel_srand(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -69,7 +67,6 @@ static void korb_srand_lazy(void) {
 }
 
 static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -79,18 +76,18 @@ static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
      * rand(F)        → Float in [0, F)
      * rand(a..b)     → Integer in [a, b]  (or [a, b) for exclusive) */
     if (argc < 1) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(korb_float_new(c, sp, (double)rand() / ((double)RAND_MAX + 1.0)));
     }
     VALUE a = argv[0];
     if (FIXNUM_P(a)) {
         long n = FIX2LONG(a);
-        if (n <= 0) return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
+        if (n <= 0) return RESULT_OK(korb_float_new(c, sp, (double)rand() / ((double)RAND_MAX + 1.0)));
         return RESULT_OK(INT2FIX((long)(rand() % n)));
     }
     if (KORB_IS_FLOAT(a)) {
         double d = korb_num2dbl(a);
-        if (d <= 0) return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
-        return RESULT_OK(korb_float_new(c, c->sp_top, ((double)rand() / ((double)RAND_MAX + 1.0)) * d));
+        if (d <= 0) return RESULT_OK(korb_float_new(c, sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(korb_float_new(c, sp, ((double)rand() / ((double)RAND_MAX + 1.0)) * d));
     }
     if (!SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)a;
@@ -102,7 +99,7 @@ static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
             return RESULT_OK(INT2FIX(lo + (rand() % span)));
         }
     }
-    return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
+    return RESULT_OK(korb_float_new(c, sp, (double)rand() / ((double)RAND_MAX + 1.0)));
 }
 
 /* ---------- Kernel ---------- */
@@ -148,7 +145,6 @@ static RESULT kwsplat_convert(CTX *c, VALUE v) {
 /* `case x; in [...]` array pattern coerce step: if obj.deconstruct
  * returns non-Array, raise TypeError ("deconstruct must return Array"). */
 RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -161,7 +157,6 @@ RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp) {
 }
 /* Same shape for deconstruct_keys: must return Hash else TypeError. */
 RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -176,7 +171,6 @@ RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp) {
 /* `case x; when *arr` lowering: iterate arr at runtime and return true
  * iff any element ===s x.  Mirrors rescue *list. */
 RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -184,16 +178,16 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
     VALUE list = argv[0];
     VALUE x    = argv[1];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (RTEST(rt)) {
-            list = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("to_a"), 0, NULL));
+            list = UNWRAP(korb_funcall(c, sp, list, korb_intern("to_a"), 0, NULL));
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, korb_ary_items(a)[i], korb_intern("==="), 1, &x));
+        VALUE r = UNWRAP(korb_funcall(c, sp, korb_ary_items(a)[i], korb_intern("==="), 1, &x));
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -202,17 +196,16 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
 /* `case; when *arr; ... end` (no target) — return true iff any element
  * of arr is truthy (`when *[false, true]` → true). */
 RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
     VALUE list = argv[0];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (RTEST(rt)) {
-            list = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("to_a"), 0, NULL));
+            list = UNWRAP(korb_funcall(c, sp, list, korb_intern("to_a"), 0, NULL));
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
@@ -230,7 +223,6 @@ RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
  * `rescue 42` raises TypeError "class or module required for rescue
  * clause".  Returns the value unchanged on success. */
 RESULT kernel_rescue_class_check(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -246,7 +238,6 @@ RESULT kernel_rescue_class_check(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -258,13 +249,13 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
          * one-element list. */
         if (!SPECIAL_CONST_P(list) &&
             (BUILTIN_TYPE(list) == T_CLASS || BUILTIN_TYPE(list) == T_MODULE)) {
-            VALUE r = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("==="), 1, &exc));
+            VALUE r = UNWRAP(korb_funcall(c, sp, list, korb_intern("==="), 1, &exc));
             return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
         }
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
         if (RTEST(rt)) {
-            list = UNWRAP(korb_funcall(c, c->sp_top, list, korb_intern("to_a"), 0, NULL));
+            list = UNWRAP(korb_funcall(c, sp, list, korb_intern("to_a"), 0, NULL));
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -280,7 +271,7 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eT,
                        "class or module required for rescue clause");
         }
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, el, korb_intern("==="), 1, &exc));
+        VALUE r = UNWRAP(korb_funcall(c, sp, el, korb_intern("==="), 1, &exc));
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -289,40 +280,36 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
 /* `&expr` block-pass: nil → no block (Qnil); else expr.to_proc.
  * CRuby allows `m(&nil)` to mean "no block". */
 RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(Qnil);
     VALUE v = argv[0];
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return RESULT_OK(v);
-    VALUE r = UNWRAP(korb_funcall(c, c->sp_top, v, korb_intern("to_proc"), 0, NULL));
+    VALUE r = UNWRAP(korb_funcall(c, sp, v, korb_intern("to_proc"), 0, NULL));
     return RESULT_OK(r);
 }
 
 /* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
 RESULT kernel_kwsplat_to_hash_lenient(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp_top));
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, sp));
     return kwsplat_convert(c, argv[0]);
 }
 
 RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
      * TypeError; we follow current CRuby (≥ 3.4). */
-    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp_top));
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, sp));
     return kwsplat_convert(c, argv[0]);
 }
 
 static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -334,7 +321,7 @@ static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {
     }
     if (argc == 0) return RESULT_OK(Qnil);
     if (argc == 1) return RESULT_OK(argv[0]);
-    return RESULT_OK(korb_ary_new_from_values(c, c->sp_top, argc, argv));
+    return RESULT_OK(korb_ary_new_from_values(c, sp, argc, argv));
 }
 
 /* Pick the FILE * for IO-method writes.  When the receiver carries
@@ -351,7 +338,6 @@ static FILE *io_stream(VALUE self) {
 }
 
 static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -377,7 +363,6 @@ static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_print(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1095,9 +1080,9 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eT, "can't convert nil into Float");
     }
     if (KORB_IS_FLOAT(argv[0])) return RESULT_OK(argv[0]);
-    if (FIXNUM_P(argv[0])) return RESULT_OK(korb_float_new(c, c->sp_top, (double)FIX2LONG(argv[0])));
+    if (FIXNUM_P(argv[0])) return RESULT_OK(korb_float_new(c, sp, (double)FIX2LONG(argv[0])));
     if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(argv[0])));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -1116,7 +1101,7 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eA,
                        "invalid value for Float(): %s", s);
         }
-        return RESULT_OK(korb_float_new(c, c->sp_top, d));
+        return RESULT_OK(korb_float_new(c, sp, d));
     }
     if (!exception_ok) return RESULT_OK(Qnil);
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
