@@ -986,7 +986,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
      * dispatch directly into the SD body, so a hot self-call (e.g.
      * `render_pixel` from the per-frame loop) avoids a function-pointer
      * jump per call. */
-    return korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, NULL, mc);
+    return korb_dispatch_call_cached(c, sp, n, c->current_frame->self, name, argc, arg_index, NULL, mc);
 }
 
 NODE_DEF
@@ -997,7 +997,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
      * forwarded — no further GC fires between assignment and the
      * dispatch call's recv argument. */
     VALUE r = EVAL_ARG_UNWRAP(c, recv);
-    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
+    return korb_dispatch_call_cached(c, sp, n, r, name, argc, arg_index, NULL, mc);
 }
 
 /* Case/when's `===` dispatch: bypass visibility because CRuby calls
@@ -1022,7 +1022,9 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
     sp[1] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
     VALUE r = sp[0];
     VALUE block = sp[1];
-    RESULT _ret = korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    /* [sp-1本 A6] sp[0]=r, sp[1]=block を staging 済みなので callee の top は
+     * sp + 2(sp を渡すと block obj を上書きする)。 */
+    RESULT _ret = korb_dispatch_call_cached(c, sp + 2, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp_top = sp;
     return _ret;
 }
@@ -1041,7 +1043,8 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, I
     sp[1] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
     VALUE recv = sp[0];
     VALUE block = sp[1];
-    RESULT _ret = korb_dispatch_call_cached(c, n, recv, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    /* [sp-1本 A6] sp[0]=recv, sp[1]=block を staging 済みなので callee の top は sp + 2。 */
+    RESULT _ret = korb_dispatch_call_cached(c, sp + 2, n, recv, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp_top = sp;
     return _ret;
 }

@@ -891,7 +891,8 @@ extern RESULT korb_dispatch_visibility_raise(CTX *c, struct korb_method *m,
                                              VALUE recv);
 
 static inline __attribute__((always_inline)) RESULT
-korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
+korb_dispatch_call_cached(CTX * restrict c, VALUE * restrict sp,
+                          struct Node * restrict callsite,
                           VALUE recv, ID name, uint32_t argc,
                           uint32_t arg_index, struct korb_proc *block,
                           struct method_cache *mc)
@@ -916,17 +917,18 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
             }
         }
         korb_prologue_t p = mc->prologue;
-        if (p == prologue_ast_simple_0) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 0);
-        if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 1);
-        if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 2);
-        if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
+        /* [sp-1本 A6] threaded sp(= caller の真の top)を prologue / cfunc
+         * staging に渡す。dispatch 地点では sp == c->sp_top(全 body top-frame)
+         * なので、fn-ptr 経由の一般 prologue(p(c,...))は従来通り c->sp_top を
+         * 読んで等価。 */
+        if (p == prologue_ast_simple_0) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 0);
+        if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 1);
+        if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 2);
+        if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc) {
-            /* sp-based RESULT ABI: stage self + args at the top of the
-             * value stack and call prologue_cfunc_r_inl.  c->sp_top is NOT
-             * touched here — the cfunc itself syncs `c->sp_top = sp` just
-             * before any alloc (see runtime.md §12.3).  All cfuncs use
-             * the func_r ABI now; legacy prologue_cfunc_inl is gone. */
-            VALUE *sp = c->sp_top;
+            /* func_r ABI: stage self + args at the threaded top and call
+             * prologue_cfunc_r_inl.  c->sp_top is NOT touched here — the
+             * cfunc itself syncs `c->sp_top = sp` before any alloc. */
             sp[0] = recv;
             for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
             return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);

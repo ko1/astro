@@ -80,7 +80,7 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
  * save/restore, cref save/restore, and frame chain setup — about 10
  * stores per call on tight recursive paths (fib / ack / tak / incr). */
 static inline __attribute__((always_inline)) RESULT
-prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
+prologue_ast_simple_inl(CTX *c, VALUE * restrict sp, struct Node *callsite, VALUE recv,
                         uint32_t argc, uint32_t arg_index,
                         struct korb_proc *block, struct method_cache *mc,
                         int PARAMS_KNOWN)
@@ -111,14 +111,14 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * (visit_roots walks &outer_frame->self).  Writing back a C-local
      * "prev_self" after body would overwrite the freshly-updated outer
      * frame.self with a stale pointer that GC has long since moved. */
-    VALUE *prev_sp = c->sp_top;
+    VALUE *prev_sp = sp;   /* [sp-1本 A6] threaded top */
     VALUE *prev_fp = c->current_frame->fp;
     /* COPY-based frame placement (sp-1本 移行): callee frame は overlay
      * (prev_fp + arg_index) ではなく、現在の top(c->sp_top, = 全 live data の
      * 上)に積み、引数を caller scratch からコピーする。これにより新 frame は
      * 必ず top に居て、body の sp(= new_fp + locals)がそのまま「真の top」に
      * なる(block / nested scope で node-sp < high-water になる divergence を解消)。 */
-    VALUE *new_fp = c->sp_top;
+    VALUE *new_fp = sp;   /* [sp-1本 A6] callee frame は threaded top に積む */
     for (uint32_t i = 0; i < argc; i++) new_fp[i] = prev_fp[arg_index + i];
     /* args を [new_fp, new_fp+argc) にコピー済み。[new_fp+argc, new_sp) を
      * zero-fill してから c->sp_top を bump(GC が初期化済み slot だけ見るように)。 */

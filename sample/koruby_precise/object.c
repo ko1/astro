@@ -3569,23 +3569,23 @@ RESULT prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
 
 RESULT prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                              uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 0); }
+{ return prologue_ast_simple_inl(c, c->sp_top, cs, recv, argc, ai, bl, mc, 0); }
 
 RESULT prologue_ast_simple_1(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                              uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 1); }
+{ return prologue_ast_simple_inl(c, c->sp_top, cs, recv, argc, ai, bl, mc, 1); }
 
 RESULT prologue_ast_simple_2(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                              uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 2); }
+{ return prologue_ast_simple_inl(c, c->sp_top, cs, recv, argc, ai, bl, mc, 2); }
 
 RESULT prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                              uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 3); }
+{ return prologue_ast_simple_inl(c, c->sp_top, cs, recv, argc, ai, bl, mc, 3); }
 
 static RESULT prologue_ast_simple(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                                   uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, -1); }
+{ return prologue_ast_simple_inl(c, c->sp_top, cs, recv, argc, ai, bl, mc, -1); }
 
 /* AST general: handles opt args, rest_slot, all the trimmings.  Same body
  * as the legacy korb_dispatch_call AST hot path. */
