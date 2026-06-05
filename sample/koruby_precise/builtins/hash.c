@@ -1051,23 +1051,23 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
      * (fr.last_line) so it survives the per-key korb_yield (which lowers
      * sp_top below any sp[] slot).  sp[0]/sp[1] stage the hash_delete call
      * (self/key) — reserved only around that call, not across the yield. */
-    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        korb_ary_push(c, c->sp_top, fr.last_line, e->key);
+        korb_ary_push(c, sp, fr.last_line, e->key);
     }
     long klen = ((struct korb_array *)fr.last_line)->len;
     for (long i = 0; i < klen; i++) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, c->sp_top, 2, args);
+        RESULT yr = korb_yield(c, sp, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (RTEST(yr.value)) {
+            /* hash_delete(c, 1, sp+2) — its own entry publishes sp+2, covering
+             * the staged self=sp[0]/key=sp[1] across the sp-less hash remove. */
             sp[0] = self;
             sp[1] = korb_ary_items((struct korb_array *)fr.last_line)[i];
-            c->sp_top = sp + 2;
             DROP_RESULT(hash_delete(c, 1, sp + 2));
-            c->sp_top = sp;
         }
     }
     c->current_frame = fr.prev;
@@ -1077,7 +1077,6 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
 /* Hash#reject! — like delete_if but returns nil if no entries were
  * removed (CRuby bang semantics). */
 static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1085,15 +1084,15 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
      * order: enumerator first, frozen check on iteration). */
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("reject!"));
-        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, sp, self, korb_intern("to_enum"), 1, &method_sym);
     }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
-    /* keys snapshot parked in fr.last_line (survives korb_yield); sp[0]/sp[1]
-     * stage the hash_delete call (self/key) reserved only around that call. */
-    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    /* keys snapshot parked in fr.last_line (survives korb_yield); hash_delete
+     * (c, 1, sp+2)'s own entry publishes sp+2 over the staged self/key. */
+    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        korb_ary_push(c, c->sp_top, fr.last_line, e->key);
+        korb_ary_push(c, sp, fr.last_line, e->key);
     }
     long klen = ((struct korb_array *)fr.last_line)->len;
     bool any_deleted = false;
@@ -1101,14 +1100,12 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, c->sp_top, 2, args);
+        RESULT yr = korb_yield(c, sp, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (RTEST(yr.value)) {
             sp[0] = self;
             sp[1] = korb_ary_items((struct korb_array *)fr.last_line)[i];
-            c->sp_top = sp + 2;
             DROP_RESULT(hash_delete(c, 1, sp + 2));
-            c->sp_top = sp;
             any_deleted = true;
         }
     }
@@ -1118,35 +1115,32 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
 
 /* Hash#keep_if { |k, v| ... } — opposite of delete_if. */
 static RESULT hash_keep_if(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!korb_block_given(c)) {
         VALUE method_sym = korb_id2sym(korb_intern("keep_if"));
-        return korb_funcall_r(c, c->sp_top, self, korb_intern("to_enum"), 1, &method_sym);
+        return korb_funcall_r(c, sp, self, korb_intern("to_enum"), 1, &method_sym);
     }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
-    /* keys snapshot parked in fr.last_line (survives korb_yield); sp[0]/sp[1]
-     * stage the hash_delete call (self/key) reserved only around that call. */
-    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, c->sp_top));
+    /* keys snapshot parked in fr.last_line (survives korb_yield); hash_delete
+     * (c, 1, sp+2)'s own entry publishes sp+2 over the staged self/key. */
+    KORB_HASH_YIELD_FRAME(c, fr, korb_ary_new(c, sp));
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        korb_ary_push(c, c->sp_top, fr.last_line, e->key);
+        korb_ary_push(c, sp, fr.last_line, e->key);
     }
     long klen = ((struct korb_array *)fr.last_line)->len;
     for (long i = 0; i < klen; i++) {
         VALUE k = korb_ary_items((struct korb_array *)fr.last_line)[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        RESULT yr = korb_yield(c, c->sp_top, 2, args);
+        RESULT yr = korb_yield(c, sp, 2, args);
         if (yr.state != KORB_NORMAL) { c->current_frame = fr.prev; return yr; }
         if (!RTEST(yr.value)) {
             sp[0] = self;
             sp[1] = korb_ary_items((struct korb_array *)fr.last_line)[i];
-            c->sp_top = sp + 2;
             DROP_RESULT(hash_delete(c, 1, sp + 2));
-            c->sp_top = sp;
         }
     }
     c->current_frame = fr.prev;
