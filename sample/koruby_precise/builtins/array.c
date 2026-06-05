@@ -1064,7 +1064,6 @@ static bool ary_flatten_stack_contains(VALUE stack_ary, VALUE v) {
  * c->sp_top must already cover [stack_base, sp+1) on entry. */
 static RESULT ary_flatten_into(CTX *c, VALUE *result, VALUE *stack,
                                VALUE *sp, long depth) {
-    c->sp_top = sp + 1;
     for (long i = 0; i < korb_ary_len(sp[0]); i++) {
         VALUE el = korb_ary_aref(sp[0], i);
         VALUE coerced = el;
@@ -1074,11 +1073,10 @@ static RESULT ary_flatten_into(CTX *c, VALUE *result, VALUE *stack,
              * via #to_ary, not method_missing).  Park el at sp[1] across
              * the funcalls (it may be non-Array but still moving). */
             sp[1] = el;
-            c->sp_top = sp + 2;
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, sp[1], korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp + 2, sp[1], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (RTEST(rt)) {
-                VALUE ar = UNWRAP(korb_funcall(c, c->sp_top, sp[1], korb_intern("to_ary"), 0, NULL));
+                VALUE ar = UNWRAP(korb_funcall(c, sp + 2, sp[1], korb_intern("to_ary"), 0, NULL));
                 if (NIL_P(ar)) {
                     /* nil result: leave element as is. */
                 } else if (SPECIAL_CONST_P(ar) || BUILTIN_TYPE(ar) != T_ARRAY) {
@@ -1091,7 +1089,6 @@ static RESULT ary_flatten_into(CTX *c, VALUE *result, VALUE *stack,
                 }
             }
             el = sp[1];
-            c->sp_top = sp + 1;
         }
         if (depth != 0 && is_ary) {
             if (ary_flatten_stack_contains(*stack, coerced)) {
@@ -1105,7 +1102,6 @@ static RESULT ary_flatten_into(CTX *c, VALUE *result, VALUE *stack,
             korb_ary_push(c, sp + 2, *stack, sp[1]);
             CHECK(ary_flatten_into(c, result, stack, sp + 1, depth - 1));
             (void)korb_ary_pop(*stack);   /* pop the cycle marker */
-            c->sp_top = sp + 1;
         } else {
             korb_ary_push(c, sp + 1, *result, el);
         }
