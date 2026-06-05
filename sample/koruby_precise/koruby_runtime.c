@@ -762,6 +762,19 @@ koruby_run_ast(CTX *c, NODE *ast)
         }
         VALUE s = korb_inspect(c, c->sp_top, _br.value);
         fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
+        /* Print the backtrace (like CRuby) so an unhandled exception is
+         * actionable — `(file):(line):in '(method)'` per frame, capped. */
+        {
+            RESULT _bt = korb_funcall(c, c->sp_top, _br.value, korb_intern("backtrace"), 0, NULL);
+            if (_bt.state == KORB_NORMAL && !SPECIAL_CONST_P(_bt.value) && BUILTIN_TYPE(_bt.value) == T_ARRAY) {
+                struct korb_array *bt = (struct korb_array *)_bt.value;
+                for (long i = 0; i < bt->len && i < 30; i++) {
+                    VALUE ln = korb_ary_aref(_bt.value, i);
+                    if (!SPECIAL_CONST_P(ln) && BUILTIN_TYPE(ln) == T_STRING)
+                        fprintf(stderr, "  from %s\n", korb_str_cstr(ln));
+                }
+            }
+        }
         extern void korb_run_at_exit_hooks(CTX *c);
         korb_run_at_exit_hooks(c);
         return 1;
