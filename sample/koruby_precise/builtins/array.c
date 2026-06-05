@@ -1144,7 +1144,6 @@ static RESULT ary_flatten_into(CTX *c, VALUE *result, VALUE *stack,
 }
 
 static RESULT ary_flatten(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1166,13 +1165,11 @@ static RESULT ary_flatten(CTX *c, int argc, VALUE *sp) {
     sp[0] = 0;
     sp[1] = 0;
     sp[2] = sp[-argc - 1];
-    c->sp_top = sp + 3;
     sp[0] = korb_ary_new(c, sp + 3);
     sp[1] = korb_ary_new(c, sp + 3);
     /* Push self so the immediate `a << a` cycle is caught. */
     korb_ary_push(c, sp + 3, sp[1], sp[2]);
     CHECK(ary_flatten_into(c, &sp[0], &sp[1], &sp[2], depth));
-    c->sp_top = sp;
     return RESULT_OK(sp[0]);
 }
 
@@ -1181,7 +1178,6 @@ static RESULT ary_flatten(CTX *c, int argc, VALUE *sp) {
  * FrozenError unconditionally on a frozen receiver before doing any
  * argument coercion (CRuby semantic for the bang). */
 static RESULT ary_flatten_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1206,12 +1202,10 @@ static RESULT ary_flatten_bang(CTX *c, int argc, VALUE *sp) {
     sp[0] = 0;
     sp[1] = 0;
     sp[2] = sp[-argc - 1];
-    c->sp_top = sp + 3;
     sp[0] = korb_ary_new(c, sp + 3);
     sp[1] = korb_ary_new(c, sp + 3);
     korb_ary_push(c, sp + 3, sp[1], sp[2]);
     CHECK(ary_flatten_into(c, &sp[0], &sp[1], &sp[2], depth));
-    c->sp_top = sp;
     struct korb_array *me = (struct korb_array *)sp[-argc - 1];
     struct korb_array *fr = (struct korb_array *)sp[0];
     bool changed = (me->len != fr->len);
@@ -4091,7 +4085,6 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
 
     /* Allocate an empty array of self's class.  Subclass support: when
@@ -4101,7 +4094,7 @@ static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
      * through korb_funcall_r ensures Ruby method-resolution applies.
      * Re-read self from sp[-argc-1] AFTER alloc since T_CLASS is
      * arena-allocated and can move under STRESS+PURGE. */
-    VALUE arr = korb_ary_new(c, c->sp_top);
+    VALUE arr = korb_ary_new(c, sp);
     VALUE self = sp[-argc - 1];
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_array *)arr)->basic.klass = self;
@@ -4112,11 +4105,8 @@ static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
      * since GC may have moved arr (the C-local goes stale). */
     sp[0] = arr;
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
-    VALUE *prev_sp = c->sp_top;
-    c->sp_top = sp + 1 + argc;
-    UNWRAP(korb_funcall_r(c, c->sp_top, arr, korb_intern("initialize"), argc, sp + 1));
+    UNWRAP(korb_funcall_r(c, sp + 1 + argc, arr, korb_intern("initialize"), argc, sp + 1));
     arr = sp[0];
-    c->sp_top = prev_sp;
     return RESULT_OK(arr);
 }
 
