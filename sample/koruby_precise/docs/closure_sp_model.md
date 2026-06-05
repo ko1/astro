@@ -489,12 +489,21 @@ live staging を残したまま dispatch する例外パス**(class/alias body �
 | **A1** | `prologue_ast_simple_inl/_static_inl`(主経路 simple method): overlay → copy-at-top(引数 copy) | **済**(commit) |
 | **A2** | `node_super` / `node_super_block`(explicit super): overlay → copy-at-top | **済**(commit) |
 | — | `korb_dispatch_call` / `korb_dispatch_to_method`(general/funcall/operator): 元から copy(`c->sp_top+1`) | 既存 |
-| A3 | **class/module body**(`node_class_def`/`node_module_def`/`_in`/singleton): 現状 caller fp を共有し `EVAL_ARG` で評価(独自 frame 無し)。top に独自 frame を与える別種の変更が必要 | 未 |
-| A4 | **block / yield**(`korb_yield` in-place、env+env_size で実行): env を top に clone する(現状 slow path のみ clone)。closure writeback 維持 | 未 |
+| **A4** | **block / yield**: env を top(threaded sp)に clone(`korb_yield` fast-path + `korb_yield_slow` 共に fresh-env 強制)。outer slot copy-back で shared-state 維持。block body の sp == top を保証(~5-8% block コスト) | **済**(commit) |
+| **A6** | dispatch/prologue に **threaded sp を導入**(`korb_dispatch_call_cached` に sp 引数、4 node site が渡す、`prologue_ast_simple_inl` の frame base = sp、cfunc staging も sp、block 系 site は sp+2)。frame base の c->sp_top **read を除去** | **済**(commit) |
+| A3 | class/module body: **A6 が壊さず通過**(EVAL_ARG が enclosing top sp を継承、実質 top-frame)→ 優先度低 | 保留 |
 | A5 | `node_super_forward`(bare super、`prev_fp + locals_cnt`) | 未 |
-| A6 | 全 body が top に乗った後: **dispatch/EVAL の frame base を `c->sp_top` read → 渡ってきた sp に置換、frame setup の publish/restore 撤去** | 未 |
-| A7 | sp-less helper(const_get/ivar_set/inspect_inner/glob_walk)を sp 化、park 撤去 | 未 |
-| A8 | → `c->sp_top` write は `korb_alloc` だけ | 目標 |
+| **A7** | **body 内の c->sp_top READ を threaded sp に置換**(`korb_funcall(c, c->sp_top, …)` / `korb_str_new(c, c->sp_top, …)` 系 ~400 site)。publish 撤去の前提 | **未(残作業の本体)** |
+| A8 | A7 後に prologue/yield/scope の publish/restore を撤去 → `c->sp_top` write は `korb_alloc` だけ | 目標 |
+
+### 10.6 A8a 実機検証(2026-06-05): publish は read に load-bearing
+A6 完了後、prologue の `c->sp_top = new_sp`(publish)を試しに撤去 → **gate 8/28 に破綻**
+(test_integer/string/hash/block/eq 等 広範)。⇒ **body 内に c->sp_top を「現在の top」として
+read するコードが多数あり**、publish 撤去はそれらを先に sp 化(A7)しない限り不可。revert 済
+(28/28 復帰)。読み手の正体は `korb_funcall(c, c->sp_top, …)`(sub-dispatch staging)と
+`korb_str_new/float_new/bignum_new_str(c, c->sp_top, …)`(literal node alloc)。大半は関数に
+ある threaded `sp` への機械置換。**write が未だ減らないのはこの A7 が前提のため**
+(Phase 1=write 削減 928→155、A8=frame publish 撤去、A7=その前提の read 崩し、の 3 軸別)。
 
 **A1/A2 の効果**: simple method と explicit super の callee frame が必ず top に積まれ、その
 body の sp(= new_fp + locals)が high-water と一致するようになった。残る divergence 源は
