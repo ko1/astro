@@ -480,6 +480,31 @@ live staging を残したまま dispatch する例外パス**(class/alias body �
 
 → 1 を先にやらないと 2 で必ず壊れる(3 度の失敗の教訓)。
 
+### 10.5 (A) copy-based frame モデル移行 — 進捗ログ
+ユーザ選択: **(A) copy ベースへ作り直し、真の sp 一本**。各 frame を high-water に積み、
+引数を copy(block env も top に clone)。各段 gate 28/28 維持。
+
+| step | 内容 | 状態 |
+|---|---|---|
+| **A1** | `prologue_ast_simple_inl/_static_inl`(主経路 simple method): overlay → copy-at-top(引数 copy) | **済**(commit) |
+| **A2** | `node_super` / `node_super_block`(explicit super): overlay → copy-at-top | **済**(commit) |
+| — | `korb_dispatch_call` / `korb_dispatch_to_method`(general/funcall/operator): 元から copy(`c->sp_top+1`) | 既存 |
+| A3 | **class/module body**(`node_class_def`/`node_module_def`/`_in`/singleton): 現状 caller fp を共有し `EVAL_ARG` で評価(独自 frame 無し)。top に独自 frame を与える別種の変更が必要 | 未 |
+| A4 | **block / yield**(`korb_yield` in-place、env+env_size で実行): env を top に clone する(現状 slow path のみ clone)。closure writeback 維持 | 未 |
+| A5 | `node_super_forward`(bare super、`prev_fp + locals_cnt`) | 未 |
+| A6 | 全 body が top に乗った後: **dispatch/EVAL の frame base を `c->sp_top` read → 渡ってきた sp に置換、frame setup の publish/restore 撤去** | 未 |
+| A7 | sp-less helper(const_get/ivar_set/inspect_inner/glob_walk)を sp 化、park 撤去 | 未 |
+| A8 | → `c->sp_top` write は `korb_alloc` だけ | 目標 |
+
+**A1/A2 の効果**: simple method と explicit super の callee frame が必ず top に積まれ、その
+body の sp(= new_fp + locals)が high-water と一致するようになった。残る divergence 源は
+**class/module body(caller fp 共有)** と **block(env 共有)**。この 2 つを copy/clone-at-top に
+してから A6 の sp-threading に入る(A3/A4 を飛ばして A6 をやると §10.4 の上書きで必ず壊れる)。
+
+**代償(測定要)**: copy で call ごとに argc store 増 + stack 使用増(overlay の slot reuse 喪失)。
+`sp_transition_analysis.md §8` の通り reload 削減効果は ~0.1% で malloc/dispatch が支配的なので、
+本移行は「perf でなく設計(c->sp_top 撤去・per-CTX 化)」が目的。
+
 ---
 
 ## 付録: 主要 source 索引
