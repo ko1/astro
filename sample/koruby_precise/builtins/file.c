@@ -38,8 +38,8 @@ static FILE *korb_io_fp(VALUE io) {
     return (FILE *)(uintptr_t)FIX2LONG(v);
 }
 
-static VALUE korb_io_new(CTX *c, struct korb_class *klass, FILE *fp) {
-    VALUE io = (VALUE)korb_object_new(c, c->sp_top, klass);
+static VALUE korb_io_new(CTX *c, VALUE *sp, struct korb_class *klass, FILE *fp) {
+    VALUE io = (VALUE)korb_object_new(c, sp, klass);
     korb_ivar_set(io, korb_io_fp_id_(), INT2FIX((long)(uintptr_t)fp));
     return io;
 }
@@ -218,7 +218,6 @@ static RESULT io_eof_p(CTX *c, int argc, VALUE *sp) {
 
 /* IO.pipe → [reader, writer] pair of IO objects.  Mirrors CRuby. */
 RESULT io_class_pipe(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     int fds[2];
     if (pipe(fds) != 0) {
@@ -242,9 +241,8 @@ RESULT io_class_pipe(CTX *c, int argc, VALUE *sp) {
      * the passed klass on entry), and park rio/wio in sp[0..1] across the
      * later allocs. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
-    sp[0] = korb_io_new(c, (struct korb_class *)sp[-argc - 1], r);
-    sp[1] = korb_io_new(c, (struct korb_class *)sp[-argc - 1], w);
+    sp[0] = korb_io_new(c, sp, (struct korb_class *)sp[-argc - 1], r);
+    sp[1] = korb_io_new(c, sp + 1, (struct korb_class *)sp[-argc - 1], w);
     VALUE arr = korb_ary_new_capa(c, sp + 2, 2);
     korb_ary_push(c, sp + 2, arr, sp[0]);
     korb_ary_push(c, sp + 2, arr, sp[1]);
@@ -266,20 +264,19 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
     }
 }
 
-static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
+static VALUE korb_select_collect_ready(CTX *c, VALUE *sp, VALUE arr, fd_set *set) {
     /* out parked at vsp[0], source at vsp[1]; push stages at vsp+2 and the
      * source is re-read each iteration via korb_ary_aref.  Park arr at vsp[1]
      * BEFORE korb_ary_new — its GC relocates the by-value arr, so the
      * BUILTIN_TYPE check would otherwise deref a retired-plane object
      * (io/select STRESS+PURGE). */
-    VALUE *const vsp = c->sp_top;
+    VALUE *const vsp = sp;
     vsp[0] = 0;
     vsp[1] = arr;
-    c->sp_top = vsp + 2;
     vsp[0] = korb_ary_new(c, vsp + 2);
     arr = vsp[1];   /* re-read forwarded arr */
     if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
-        VALUE empty = vsp[0]; c->sp_top = vsp; return empty;
+        VALUE empty = vsp[0]; return empty;
     }
     long n = ((struct korb_array *)arr)->len;
     for (long i = 0; i < n; i++) {
@@ -291,7 +288,6 @@ static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
         if (FD_ISSET(fd, set)) korb_ary_push(c, vsp + 2, vsp[0], korb_ary_aref(vsp[1], i));
     }
     VALUE result = vsp[0];
-    c->sp_top = vsp;
     return result;
 }
 
@@ -314,7 +310,7 @@ RESULT io_class_popen(CTX *c, int argc, VALUE *sp) {
     if (!fp) {
         return korb_raise(c, NULL, "popen failed: %s", strerror(errno));
     }
-    VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
+    VALUE io = korb_io_new(c, sp, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
     VALUE r = UNWRAP(korb_yield_r(c, sp, 1, &io));
     /* Only close if the block didn't already close io: io.close fclose's the
@@ -427,7 +423,6 @@ static RESULT io_fileno(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
     VALUE rs = (argc >= 1) ? argv[0] : Qnil;
     VALUE ws = (argc >= 2) ? argv[1] : Qnil;
@@ -454,7 +449,7 @@ RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "IO.select failed: %s", strerror(errno));
     }
     if (n == 0) return RESULT_OK(Qnil);
-    /* ret parked at sp[0]; korb_ary_new_capa publishes c->sp_top = sp+1 so
+    /* ret parked at sp[0]; korb_ary_new_capa publishes the sp+1 depth so
      * the korb_select_collect_ready calls (which scratch from c->sp_top) and
      * the pushes stage above the parked result. */
     sp[0] = korb_ary_new_capa(c, sp + 1, 3);
@@ -465,11 +460,11 @@ RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
      * the push's args afterwards. */
     /* rs/ws/es (C-locals) went stale across korb_ary_new_capa above — re-read
      * the forwarded arg slots for each collect call. */
-    VALUE ready_r = korb_select_collect_ready(c, (argc >= 1) ? argv[0] : Qnil, &rset);
+    VALUE ready_r = korb_select_collect_ready(c, sp + 1, (argc >= 1) ? argv[0] : Qnil, &rset);
     korb_ary_push(c, sp + 1, sp[0], ready_r);
-    VALUE ready_w = korb_select_collect_ready(c, (argc >= 2) ? argv[1] : Qnil, &wset);
+    VALUE ready_w = korb_select_collect_ready(c, sp + 1, (argc >= 2) ? argv[1] : Qnil, &wset);
     korb_ary_push(c, sp + 1, sp[0], ready_w);
-    VALUE ready_e = korb_select_collect_ready(c, (argc >= 3) ? argv[2] : Qnil, &eset);
+    VALUE ready_e = korb_select_collect_ready(c, sp + 1, (argc >= 3) ? argv[2] : Qnil, &eset);
     korb_ary_push(c, sp + 1, sp[0], ready_e);
     return RESULT_OK(sp[0]);
 }
@@ -494,7 +489,7 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "Errno::ENOENT: no such file -- %s", path);
     }
     /* `self` here is the File class object — use it as the IO's class. */
-    VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
+    VALUE io = korb_io_new(c, sp, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return RESULT_OK(io);
     /* Park io across the block yield (which fires GC): io is a bare C-local
      * and a moving collector relocates it, so the close-time ivar_set below
@@ -878,19 +873,17 @@ static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, 
 
 static RESULT dir_glob(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_ary_new(c, sp));
     const char *pat = korb_str_cstr(argv[0]);
     /* Park the result array at sp[0] across korb_glob_walk (which fires GC):
      * a bare C-local `out` would be stale on return (the walk relocates it). */
-    VALUE *const osp = c->sp_top;
+    VALUE *const osp = sp;
     osp[0] = korb_ary_new(c, osp + 1);
-    c->sp_top = osp + 1;
     /* Detect double-star + slash + rest recursive form. */
     if (strncmp(pat, "**/", 3) == 0) {
         korb_glob_walk(c, ".", pat + 3, osp[0], true);
@@ -908,7 +901,6 @@ static RESULT dir_glob(CTX *c, int argc, VALUE *sp) {
         }
     }
     VALUE result = osp[0];
-    c->sp_top = osp;
     return RESULT_OK(result);
 }
 
