@@ -477,18 +477,14 @@ static RESULT hash_required_kwarg(CTX *c, int argc, VALUE *sp) {
  * top of the kwargs prologue so the error mentions every missing key
  * instead of just the first encountered. */
 static RESULT hash_required_kwargs_check(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) return RESULT_OK(Qnil);
     const struct korb_hash *h = (const struct korb_hash *)self;
     /* Collect missing keys preserving declared order.  `missing` is parked
-     * at sp[0] (zero-filled + reserved); the input keys array is re-read from
-     * argv[0] (value-stack tracked) each iteration since korb_ary_push is a
-     * moving-GC point. */
+     * at sp[0]; korb_ary_new(c, sp+1) publishes sp+1, covering it. */
     sp[0] = 0;
-    c->sp_top = sp + 1;
     sp[0] = korb_ary_new(c, sp + 1);
     {
         const struct korb_array *keys0 = (const struct korb_array *)argv[0];
@@ -500,10 +496,9 @@ static RESULT hash_required_kwargs_check(CTX *c, int argc, VALUE *sp) {
             for (struct korb_hash_entry *e = h->first; e; e = e->next) {
                 if (e->hash == hh && korb_eql(c, e->key, key)) { found = true; break; }
             }
-            if (!found) korb_ary_push(c, c->sp_top, sp[0], key);
+            if (!found) korb_ary_push(c, sp + 1, sp[0], key);
         }
     }
-    c->sp_top = sp;
     struct korb_array *miss_a = (struct korb_array *)sp[0];
     if (miss_a->len == 0) return RESULT_OK(Qnil);
     /* Build "missing keyword(s): :a, :b" message. */
@@ -521,7 +516,6 @@ static RESULT hash_required_kwargs_check(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -537,15 +531,15 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
     }
     /* Not found: priority is block > default arg > KeyError. */
     if (korb_block_given(c)) {
-        VALUE r = UNWRAP(korb_yield(c, c->sp_top, 1, &argv[0]));
+        VALUE r = UNWRAP(korb_yield(c, sp, 1, &argv[0]));
         return RESULT_OK(r);
     }
     if (argc >= 2) return RESULT_OK(argv[1]);
-    /* korb_inspect dispatches user #inspect (GC); park the result string and
-     * fetch the KeyError class AFTER it (a C-local fetched before would be
-     * stale).  ks->ptr stays valid via the parked, forwarded handle. */
+    /* korb_inspect dispatches user #inspect (GC); it publishes sp+1 and leaves
+     * the result parked at sp[0].  Fetch the KeyError class AFTER it (a C-local
+     * fetched before would be stale); korb_raise copies the cstr before its own
+     * alloc, so no further park is needed. */
     sp[0] = korb_inspect(c, sp + 1, argv[0]);
-    c->sp_top = sp + 1;
     VALUE eKey = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
     if (UNDEF_P(eKey) || !eKey) eKey = (VALUE)NULL;
     return korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(sp[0]));
@@ -761,10 +755,9 @@ static RESULT hash_tally(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     const struct korb_hash *h = (const struct korb_hash *)self;
-    VALUE r = korb_hash_new(c, c->sp_top);   /* libc hash — non-moving */
-    /* pair parked at sp[0]; zero-fill + reserve so it is scanned. */
+    VALUE r = korb_hash_new(c, sp);   /* libc hash — non-moving */
+    /* pair parked at sp[0]; korb_ary_new_capa(c, sp+1) publishes sp+1. */
     sp[0] = 0;
-    c->sp_top = sp + 1;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         sp[0] = korb_ary_new_capa(c, sp + 1, 2);
         korb_ary_push(c, sp + 1, sp[0], e->key);
@@ -1208,12 +1201,10 @@ static RESULT hash_compact_bang(CTX *c, int argc, VALUE *sp) {
 
 /* Hash#values_at(*keys) — array of corresponding values. */
 static RESULT hash_values_at(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     sp[0] = 0;
-    c->sp_top = sp + 1;
     sp[0] = korb_ary_new(c, sp + 1);
     for (int i = 0; i < argc; i++) korb_ary_push(c, sp + 1, sp[0], korb_hash_aref(c, self, argv[i]));
     return RESULT_OK(sp[0]);
@@ -1473,14 +1464,12 @@ static RESULT hash_max_by(CTX *c, int argc, VALUE *sp) {
 /* Hash#sort — array of [k, v] sorted by [k, v] <=>. With a block,
  * forwards the block to Array#sort so the user comparator participates. */
 static RESULT hash_sort(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_hash *h = (struct korb_hash *)self;
-    /* result=sp[0], pair=sp[1] parked; zero-fill + reserve. */
+    /* result=sp[0], pair=sp[1] parked; korb_ary_new(c, sp+2) publishes sp+2. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new(c, sp + 2);          /* result */
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         sp[1] = korb_ary_new_capa(c, sp + 2, 2);   /* pair */
@@ -1489,10 +1478,10 @@ static RESULT hash_sort(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, sp + 2, sp[0], sp[1]);
     }
     if (korb_block_given(c)) {
-        return korb_funcall_with_block(c, c->sp_top, sp[0], korb_intern("sort"), 0, NULL,
+        return korb_funcall_with_block(c, sp + 1, sp[0], korb_intern("sort"), 0, NULL,
                                         (VALUE)c->current_block);
     }
-    return korb_funcall(c, c->sp_top, sp[0], korb_intern("sort"), 0, NULL);
+    return korb_funcall(c, sp + 1, sp[0], korb_intern("sort"), 0, NULL);
 }
 
 /* Hash#deconstruct_keys — pattern-match support hook.  Spec: takes one
@@ -1739,9 +1728,8 @@ static RESULT hash_take(CTX *c, int argc, VALUE *sp) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return RESULT_OK(korb_ary_new(c, sp));
     long n = FIX2LONG(argv[0]);
     struct korb_hash *h = (struct korb_hash *)self;
-    /* out=sp[0], pair=sp[1] parked; zero-fill + reserve. */
+    /* out=sp[0], pair=sp[1] parked; korb_ary_new(c, sp+2) publishes sp+2. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new(c, sp + 2);   /* out */
     long taken = 0;
     for (struct korb_hash_entry *e = h->first; e && taken < n; e = e->next, taken++) {
