@@ -38,7 +38,6 @@
 /* Array#to_a — for a plain Array, returns self.  For subclasses,
  * returns a fresh Array with the same contents (CRuby semantics). */
 static RESULT ary_to_a(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -58,7 +57,6 @@ static RESULT ary_to_a(CTX *c, int argc, VALUE *sp) {
  * canonical "I behave as an array" hook used in argument splatting and
  * pattern matching; deconstruct is the analogous pattern-match hook. */
 static RESULT ary_self(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -385,7 +383,6 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qnil);
 }
 static RESULT ary_push(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -393,11 +390,10 @@ static RESULT ary_push(CTX *c, int argc, VALUE *sp) {
     /* Moving GC: korb_ary_push can grow the backing → GC → move the array
      * handle.  Re-read self from the GC-tracked receiver slot sp[-argc-1] each
      * iteration; argv[i] sits in scanned arg slots so it stays valid. */
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, sp[-argc - 1], argv[i]);
+    for (int i = 0; i < argc; i++) korb_ary_push(c, sp, sp[-argc - 1], argv[i]);
     return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT ary_pop(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -818,7 +814,6 @@ done_eq:
     return result;
 }
 static RESULT ary_lshift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1245,7 +1240,6 @@ static RESULT ary_flatten_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_compact(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1263,7 +1257,6 @@ static RESULT ary_compact(CTX *c, int argc, VALUE *sp) {
 /* Array#compact! — destructive: remove nil in place; return self if any
  * change, nil if no nil was removed (CRuby semantic for the bang). */
 static RESULT ary_compact_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1282,7 +1275,6 @@ static RESULT ary_compact_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_uniq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1571,7 +1563,6 @@ static RESULT ary_each_slice(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1616,11 +1607,10 @@ static void korb_pack_int_bytes(char *buf, long pos, long val, int nbytes, int b
 }
 
 static RESULT ary_pack(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, sp, "", 0));
     const char *fmt = korb_str_cstr(argv[0]);
     long fmt_len = (long)strlen(fmt);
     /* Build into a growable libc buffer (bytes only — GC-safe).  R5: the
@@ -1689,7 +1679,7 @@ static RESULT ary_pack(CTX *c, int argc, VALUE *sp) {
             break;
           }
           case 'a': case 'A': case 'Z': {
-            VALUE sv = (src_idx < a->len) ? korb_ary_items(a)[src_idx++] : korb_str_new(c, c->sp_top, "", 0);
+            VALUE sv = (src_idx < a->len) ? korb_ary_items(a)[src_idx++] : korb_str_new(c, sp, "", 0);
             const char *s = NULL; long slen = 0;
             if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
                 s = ((struct korb_string *)sv)->ptr;
@@ -1706,7 +1696,7 @@ static RESULT ary_pack(CTX *c, int argc, VALUE *sp) {
             break;
           }
           case 'H': case 'h': {
-            VALUE sv = (src_idx < a->len) ? korb_ary_items(a)[src_idx++] : korb_str_new(c, c->sp_top, "", 0);
+            VALUE sv = (src_idx < a->len) ? korb_ary_items(a)[src_idx++] : korb_str_new(c, sp, "", 0);
             const char *s = NULL; long slen = 0;
             if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
                 s = ((struct korb_string *)sv)->ptr;
@@ -1755,11 +1745,10 @@ static RESULT ary_pack(CTX *c, int argc, VALUE *sp) {
         }
     }
     #undef PACK_RESERVE
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, plen));
+    return RESULT_OK(korb_str_new(c, sp, buf, plen));
 }
 
 static RESULT str_unpack(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1956,7 +1945,6 @@ static RESULT ary_concat(CTX *c, int argc, VALUE *sp) {
 /* Array#+ — non-destructive concat (CRuby semantics).  Coerces the
  * argument via #to_ary if not already an Array. */
 RESULT ary_plus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1969,10 +1957,10 @@ RESULT ary_plus(CTX *c, int argc, VALUE *sp) {
              * to_ary raises (NoMethodError, RuntimeError, etc.)
              * propagates up unchanged — only the "to_ary returned
              * non-Array" case yields TypeError. */
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (RTEST(rt)) {
-                other = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("to_ary"), 0, NULL));
+                other = UNWRAP(korb_funcall(c, sp, other, korb_intern("to_ary"), 0, NULL));
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
@@ -1999,11 +1987,10 @@ RESULT ary_plus(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_minus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_ARRAY) return RESULT_OK(korb_ary_new(c, sp));
     long alen = korb_ary_len(self);
     /* R5: korb_eq may dispatch user #== (GC point) and push grows r; park r at
      * sp[0] and re-derive a (slot) and b (argv[0] slot) each iteration. */
@@ -2066,7 +2053,6 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_reverse(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2081,7 +2067,6 @@ static RESULT ary_reverse(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_rotate_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2127,14 +2112,13 @@ static RESULT ary_rotate_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_rotate(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     long n;
     if (argc >= 1) {
         VALUE iv = UNWRAP(korb_to_int_or_raise(c, argv[0]));
-        if (!FIXNUM_P(iv)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+        if (!FIXNUM_P(iv)) return RESULT_OK(korb_ary_new(c, sp));
         n = FIX2LONG(iv);
     } else {
         n = 1;
@@ -2143,7 +2127,7 @@ static RESULT ary_rotate(CTX *c, int argc, VALUE *sp) {
      * is pre-sized. */
     self = sp[-argc - 1];
     long alen = korb_ary_len(self);
-    if (alen == 0) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (alen == 0) return RESULT_OK(korb_ary_new(c, sp));
     n = n % alen;
     if (n < 0) n += alen;
     sp[0] = korb_ary_new_capa(c, sp + 1, alen);
@@ -2155,7 +2139,6 @@ static RESULT ary_rotate(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_reverse_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2168,7 +2151,6 @@ static RESULT ary_reverse_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_clear(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2183,7 +2165,6 @@ static RESULT ary_clear(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_unshift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2193,7 +2174,7 @@ static RESULT ary_unshift(CTX *c, int argc, VALUE *sp) {
     long oldlen = korb_ary_len(self);
     /* Push to the re-read handle: the `self` C-local goes stale once a
      * prior push grows the array (moving GC). */
-    for (int i = 0; i < argc; i++) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
+    for (int i = 0; i < argc; i++) korb_ary_push(c, sp, sp[-argc - 1], Qnil);
     struct korb_array *a = (struct korb_array *)sp[-argc - 1];
     for (long i = oldlen - 1; i >= 0; i--) korb_ary_items(a)[i + argc] = korb_ary_items(a)[i];
     for (int i = 0; i < argc; i++) korb_ary_items(a)[i] = argv[i];
@@ -2201,7 +2182,6 @@ static RESULT ary_unshift(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_shift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2341,7 +2321,6 @@ static RESULT ary_count(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_drop(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2367,7 +2346,6 @@ static RESULT ary_drop(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_take(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2561,12 +2539,11 @@ static RESULT ary_fill(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_sample(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     long alen = korb_ary_len(self);
-    if (alen == 0) return RESULT_OK(argc >= 1 ? korb_ary_new(c, c->sp_top) : Qnil);
+    if (alen == 0) return RESULT_OK(argc >= 1 ? korb_ary_new(c, sp) : Qnil);
     /* sample (no arg) → one random element.
      * sample(n) → fresh Array of n random elements without replacement. */
     if (argc < 1) {
@@ -2575,7 +2552,7 @@ static RESULT ary_sample(CTX *c, int argc, VALUE *sp) {
     }
     if (!FIXNUM_P(argv[0])) return RESULT_OK(Qnil);
     long n = FIX2LONG(argv[0]);
-    if (n <= 0) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (n <= 0) return RESULT_OK(korb_ary_new(c, sp));
     /* R5: the copy is pre-sized (no grow), but korb_ary_new_capa is a GC point —
      * park the copy at sp[0] and re-derive the source from its slot.  The
      * Fisher-Yates shuffle uses only rand() (no GC), so `out`/`tmp` stay valid. */
@@ -2843,7 +2820,6 @@ static VALUE ary_remove_range(CTX *c, struct korb_array *a, long start, long len
 }
 
 static RESULT ary_slice_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2913,7 +2889,6 @@ static RESULT ary_slice_bang(CTX *c, int argc, VALUE *sp) {
 /* Array#slice — non-destructive: same dispatch but no mutation.  This
  * shares the logic with element_reference. */
 static RESULT ary_slice(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3223,7 +3198,6 @@ static RESULT ary_delete(CTX *c, int argc, VALUE *sp) {
 
 /* Array#delete_at(i) — remove element at i, return removed or nil. */
 static RESULT ary_delete_at(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3233,7 +3207,7 @@ static RESULT ary_delete_at(CTX *c, int argc, VALUE *sp) {
     VALUE idx = argv[0];
     if (!FIXNUM_P(idx) && (SPECIAL_CONST_P(idx) || BUILTIN_TYPE(idx) != T_BIGNUM)) {
         if (!SPECIAL_CONST_P(idx)) {
-            RESULT _tr = korb_funcall(c, c->sp_top, idx, korb_intern("to_int"), 0, NULL);
+            RESULT _tr = korb_funcall(c, sp, idx, korb_intern("to_int"), 0, NULL);
             if (_tr.state == KORB_RAISE) {
                 /* Swallow only NoMethodError (so the original index sticks);
                  * other raises propagate. */
@@ -3393,7 +3367,6 @@ static RESULT ary_reject(CTX *c, int argc, VALUE *sp) {
 
 /* Array#insert(i, *elts) — splice elts into self starting at i. */
 static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3425,8 +3398,8 @@ static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
     /* R5: the padding/space pushes grow self (GC) — re-derive a each iteration
      * and push to the re-read handle (the `self` C-local goes stale once a
      * prior push moves the array), then re-derive again before the shuffle. */
-    while ((a = (struct korb_array *)sp[-argc - 1])->len < i) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
-    for (long k = 0; k < ins; k++) korb_ary_push(c, c->sp_top, sp[-argc - 1], Qnil);
+    while ((a = (struct korb_array *)sp[-argc - 1])->len < i) korb_ary_push(c, sp, sp[-argc - 1], Qnil);
+    for (long k = 0; k < ins; k++) korb_ary_push(c, sp, sp[-argc - 1], Qnil);
     a = (struct korb_array *)sp[-argc - 1];
     for (long k = a->len - 1; k >= i + ins; k--) korb_ary_items(a)[k] = korb_ary_items(a)[k - ins];
     for (long k = 0; k < ins; k++) korb_ary_items(a)[i + k] = argv[1 + k];
@@ -3435,7 +3408,6 @@ static RESULT ary_insert(CTX *c, int argc, VALUE *sp) {
 
 /* Array#replace(other) — destructive replace. */
 static RESULT ary_replace(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3445,10 +3417,10 @@ static RESULT ary_replace(CTX *c, int argc, VALUE *sp) {
      * an Array nor respond_to?(:to_ary). */
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (RTEST(rt)) {
-                RESULT tr = korb_funcall_r(c, c->sp_top, other, korb_intern("to_ary"), 0, NULL);
+                RESULT tr = korb_funcall_r(c, sp, other, korb_intern("to_ary"), 0, NULL);
                 if (tr.state != KORB_NORMAL) return tr;
                 other = tr.value;
             }
@@ -3505,7 +3477,6 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
 
 /* Array#clone — shallow copy (same as dup for our purposes). */
 static RESULT ary_clone(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3648,7 +3619,6 @@ static RESULT ary_combine(CTX *c, struct korb_frame *fr, long r, long start,
 }
 
 static RESULT ary_combination(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3664,7 +3634,7 @@ static RESULT ary_combination(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        VALUE e = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), argc + 1, call_argv));
+        VALUE e = UNWRAP(korb_funcall(c, sp, self, korb_intern("to_enum"), argc + 1, call_argv));
         if (SPECIAL_CONST_P(e)) return RESULT_OK(e);
         long n = korb_ary_len(sp[-argc - 1]);  /* R5: a stale after to_enum */
         long sz = 0;
@@ -3682,7 +3652,7 @@ static RESULT ary_combination(CTX *c, int argc, VALUE *sp) {
     if (r < 0 || r > a->len) return RESULT_OK(self);
     /* Park source (fr.last_match) + working tuple buf (fr.last_line) in a
      * synthetic frame current for the whole recursion (see ary_combine). */
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, r));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, r));
     fr.last_match = sp[-argc - 1];
     RESULT _rc = ary_combine(c, &fr, r, 0, Qnil);
     c->current_frame = fr.prev;
@@ -3718,7 +3688,6 @@ static RESULT ary_perm(CTX *c, struct korb_frame *fr, long r,
 }
 
 static RESULT ary_permutation(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -3732,7 +3701,7 @@ static RESULT ary_permutation(CTX *c, int argc, VALUE *sp) {
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
         for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
-        VALUE e = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), argc + 1, call_argv));
+        VALUE e = UNWRAP(korb_funcall(c, sp, self, korb_intern("to_enum"), argc + 1, call_argv));
         if (SPECIAL_CONST_P(e)) return RESULT_OK(e);
         long n = korb_ary_len(sp[-argc - 1]);  /* R5: a stale after to_enum */
         long sz = 0;
@@ -3749,7 +3718,7 @@ static RESULT ary_permutation(CTX *c, int argc, VALUE *sp) {
     long alen = korb_ary_len(self);
     bool *used = alen > 0 ? korb_xmalloc(sizeof(bool) * alen) : NULL;
     for (long i = 0; i < alen; i++) used[i] = false;
-    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, c->sp_top, r));
+    KORB_ARY_YIELD_FRAME(c, fr, korb_ary_new_capa(c, sp, r));
     fr.last_match = sp[-argc - 1];
     RESULT _rp = ary_perm(c, &fr, r, used, Qnil);
     c->current_frame = fr.prev;
@@ -4028,7 +3997,6 @@ static RESULT ary_product(CTX *c, int argc, VALUE *sp) {
  * return value for each index. */
 /* Array[] — class method, equivalent to an array literal of the args. */
 RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *const argv = sp - argc;   /* args stay rooted in their scanned slots */
 
     /* The new array's handle is parked at sp[0] by korb_ary_new_capa and
@@ -4522,7 +4490,6 @@ static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
  * Fisher–Yates over a copy.  Uses rand(3); good enough for tests and the
  * occasional `.sample` cousin (already implemented).  Doesn't mutate self. */
 static RESULT ary_shuffle(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
