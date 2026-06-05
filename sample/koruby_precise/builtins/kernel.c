@@ -860,7 +860,6 @@ static RESULT kernel_file(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -881,7 +880,6 @@ static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -909,7 +907,6 @@ static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -918,7 +915,6 @@ static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -942,11 +938,12 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
         (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE)) {
         exc_class = (struct korb_class *)eSE;
     }
-    VALUE e = korb_exc_new(c, c->sp_top, exc_class, "exit");
+    VALUE e = korb_exc_new(c, sp, exc_class, "exit");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-        /* Park e across the two korb_ivar_set (may grow the ivar table / GC)
-         * and the korb_intern between them (IDIOM B). */
-        VALUE *const esp = c->sp_top;
+        /* Park e at sp[0] across the two korb_ivar_set calls (sp-less GC
+         * points — grow the ivar table / may GC; no sp param to publish, so
+         * the c->sp_top=sp+1 park stays sanctioned until ivar_set is threaded). */
+        VALUE *const esp = sp;
         esp[0] = e; c->sp_top = esp + 1;
         korb_ivar_set(esp[0], korb_intern("@status"), INT2FIX(code));
         korb_ivar_set(esp[0], korb_intern("@success"), KORB_BOOL(success));
@@ -955,7 +952,6 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
     return RESULT_RAISE_R(e);
 }
 static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -965,7 +961,6 @@ static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
     exit(code);
 }
 static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -976,9 +971,10 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
     struct korb_class *exc_class = (eSE && !SPECIAL_CONST_P(eSE) &&
                                     (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE))
                                        ? (struct korb_class *)eSE : NULL;
-    VALUE e = korb_exc_new(c, c->sp_top, exc_class, "abort");
+    VALUE e = korb_exc_new(c, sp, exc_class, "abort");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-        VALUE *const esp = c->sp_top;
+        /* sp[0] park around sp-less korb_ivar_set GC points (sanctioned). */
+        VALUE *const esp = sp;
         esp[0] = e; c->sp_top = esp + 1;
         korb_ivar_set(esp[0], korb_intern("@status"), INT2FIX(1));
         korb_ivar_set(esp[0], korb_intern("@success"), Qfalse);
