@@ -711,7 +711,6 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_is_a_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -727,7 +726,6 @@ static RESULT kernel_is_a_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -846,21 +844,19 @@ static const char *caller_current_file(CTX *c) {
 }
 
 static RESULT kernel_dir(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     const char *cf = caller_current_file(c);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, korb_dirname(cf ? cf : ".")));
+    return RESULT_OK(korb_str_new_cstr(c, sp, korb_dirname(cf ? cf : ".")));
 }
 
 static RESULT kernel_file(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     const char *cf = caller_current_file(c);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, cf ? cf : "(eval)"));
+    return RESULT_OK(korb_str_new_cstr(c, sp, cf ? cf : "(eval)"));
 }
 
 static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
@@ -992,7 +988,6 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1062,7 +1057,6 @@ static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1111,32 +1105,30 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_string(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
-    return RESULT_OK(korb_to_s(c, c->sp_top, argv[0]));
+    if (argc < 1) return RESULT_OK(korb_str_new(c, sp, "", 0));
+    return RESULT_OK(korb_to_s(c, sp, argv[0]));
 }
 
 static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (argc < 1) return RESULT_OK(korb_ary_new(c, sp));
     VALUE v = argv[0];
-    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, sp));
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     /* Range / Hash / anything responding to to_a: delegate.  Only
      * wrap in a 1-element Array when the value doesn't.  CRuby uses
      * to_ary first then falls back to to_a; for koruby's coverage
      * to_a is enough. */
     if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
-        return korb_funcall(c, c->sp_top, v, korb_intern("to_a"), 0, NULL);
+        return korb_funcall(c, sp, v, korb_intern("to_a"), 0, NULL);
     }
-    VALUE r = korb_ary_new_capa(c, c->sp_top, 1);
-    korb_ary_push(c, c->sp_top, r, v);
+    VALUE r = korb_ary_new_capa(c, sp, 1);
+    korb_ary_push(c, sp, r, v);
     return RESULT_OK(r);
 }
 
