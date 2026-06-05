@@ -2637,7 +2637,11 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp_top;
-    VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
+    /* [sp-1本 A5] copy-at-top: super callee frame は overlay(prev_fp + locals)
+     * ではなく現在の top(c->sp_top)に積む。overlay は A1/A4/A6 の copy-based
+     * モデルと不整合で、caller の locals 数が小さいと super body の frame が
+     * caller scratch に近接して壊れていた(bare super が引数を落とす bug)。 */
+    VALUE *new_fp = c->sp_top;
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { return korb_raise(c, NULL, "stack overflow"); }
     /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
     VALUE peeled_kwh = Qundef;
@@ -2652,6 +2656,9 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     }
     for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    /* Publish the frame at the top before any rest/kwh staging below stages
+     * above it (rest_sp / korb_hash_new read c->sp_top). */
+    c->sp_top = new_fp + sm->u.ast.locals_cnt;
     /* If the super method itself has *rest, gather extras and shift
      * post args to their proper slots (right after rest_slot). */
     if (sm->u.ast.rest_slot >= 0) {
