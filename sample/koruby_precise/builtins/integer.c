@@ -436,7 +436,6 @@ static RESULT int_zero_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qfalse);
 }
 static RESULT int_times(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -445,16 +444,16 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     long n = FIX2LONG(self);
     if (!korb_block_given(c)) {
         /* No-block: return Array stand-in [0, 1, ..., n-1] for chains
-         * like `5.times.to_a` / `5.times.map { ... }`. */
+         * like `5.times.to_a` / `5.times.map { ... }`.  ary_new_capa(c, sp+1)
+         * publishes sp+1, covering the sp[0] result park. */
         sp[0] = 0;
-        c->sp_top = sp + 1;
         sp[0] = korb_ary_new_capa(c, sp + 1, n > 0 ? n : 0);
         for (long i = 0; i < n; i++) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
         return RESULT_OK(sp[0]);
     }
     for (long i = 0; i < n; i++) {
         VALUE arg = INT2FIX(i);
-        CHECK(korb_yield(c, c->sp_top, 1, &arg));
+        CHECK(korb_yield(c, sp, 1, &arg));
     }
     return RESULT_OK(self);
 }
@@ -1247,7 +1246,6 @@ RESULT int_invert(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1259,8 +1257,7 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     /* If no block given, return Array of values (Enumerator approximation) */
     if (!korb_block_given(c)) {
         sp[0] = 0;
-        c->sp_top = sp + 1;
-        sp[0] = korb_ary_new(c, sp + 1);
+        sp[0] = korb_ary_new(c, sp + 1);   /* publishes sp+1, covers sp[0] park */
         if (step > 0) for (long i = start; i <= stop; i += step) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
         else for (long i = start; i >= stop; i += step) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
         return RESULT_OK(sp[0]);
@@ -1268,12 +1265,12 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     if (step > 0) {
         for (long i = start; i <= stop; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, c->sp_top, 1, &v));
+            CHECK(korb_yield(c, sp, 1, &v));
         }
     } else {
         for (long i = start; i >= stop; i += step) {
             VALUE v = INT2FIX(i);
-            CHECK(korb_yield(c, c->sp_top, 1, &v));
+            CHECK(korb_yield(c, sp, 1, &v));
         }
     }
     return RESULT_OK(self);
@@ -1318,7 +1315,6 @@ static RESULT int_upto_downto_stop(CTX *c, VALUE arg, bool is_upto, long *out, b
 }
 
 static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1329,25 +1325,23 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
     long start = FIX2LONG(self);
     if (abort) {
         /* Bignum/NaN stop — empty loop. */
-        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, sp));
         return RESULT_OK(self);
     }
     if (!korb_block_given(c)) {
         sp[0] = 0;
-        c->sp_top = sp + 1;
         sp[0] = korb_ary_new(c, sp + 1);
         for (long i = start; i <= stop; i++) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
         return RESULT_OK(sp[0]);
     }
     for (long i = start; i <= stop; i++) {
         VALUE v = INT2FIX(i);
-        CHECK(korb_yield_r(c, c->sp_top, 1, &v));
+        CHECK(korb_yield_r(c, sp, 1, &v));
     }
     return RESULT_OK(self);
 }
 
 static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1357,19 +1351,18 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
     CHECK(int_upto_downto_stop(c, argv[0], false, &stop, &abort));
     long start = FIX2LONG(self);
     if (abort) {
-        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, sp));
         return RESULT_OK(self);
     }
     if (!korb_block_given(c)) {
         sp[0] = 0;
-        c->sp_top = sp + 1;
         sp[0] = korb_ary_new(c, sp + 1);
         for (long i = start; i >= stop; i--) korb_ary_push(c, sp + 1, sp[0], INT2FIX(i));
         return RESULT_OK(sp[0]);
     }
     for (long i = start; i >= stop; i--) {
         VALUE v = INT2FIX(i);
-        CHECK(korb_yield_r(c, c->sp_top, 1, &v));
+        CHECK(korb_yield_r(c, sp, 1, &v));
     }
     return RESULT_OK(self);
 }
