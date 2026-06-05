@@ -529,29 +529,26 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_inspect(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* main object: CRuby's main_object inspects/to_s as "main". */
-    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "main"));
+    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, sp, "main"));
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
-    return RESULT_OK(korb_inspect(c, c->sp_top, self));
+    return RESULT_OK(korb_inspect(c, sp, self));
 }
 
 static RESULT kernel_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "main"));
-    return RESULT_OK(korb_to_s(c, c->sp_top, self));
+    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, sp, "main"));
+    return RESULT_OK(korb_to_s(c, sp, self));
 }
 
 static RESULT kernel_class(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -581,7 +578,6 @@ static RESULT kernel_class(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -589,7 +585,6 @@ static RESULT kernel_eq(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_neq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -599,16 +594,14 @@ static RESULT kernel_neq(CTX *c, int argc, VALUE *sp) {
 /* Object#!~: inverted =~.  Default implementation returns !(self =~ arg).
  * `defined?(x !~ y)` returns "method" because every Object responds to !~. */
 static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE m = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("=~"), 1, argv));
+    VALUE m = UNWRAP(korb_funcall(c, sp, self, korb_intern("=~"), 1, argv));
     return RESULT_OK(RTEST(m) ? Qfalse : Qtrue);
 }
 
 static RESULT kernel_not(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -616,7 +609,6 @@ static RESULT kernel_not(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_nil_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -624,7 +616,6 @@ static RESULT kernel_nil_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_object_id(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -644,7 +635,6 @@ static RESULT kernel_object_id(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_freeze(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -671,7 +661,6 @@ static RESULT kernel_freeze(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_frozen_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -682,7 +671,6 @@ static RESULT kernel_frozen_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -693,10 +681,10 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
     if (!SYMBOL_P(name_arg) &&
         (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
         if (!SPECIAL_CONST_P(name_arg)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, name_arg, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, name_arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             if (RTEST(rt)) {
-                name_arg = UNWRAP(korb_funcall(c, c->sp_top, name_arg, korb_intern("to_str"), 0, NULL));
+                name_arg = UNWRAP(korb_funcall(c, sp, name_arg, korb_intern("to_str"), 0, NULL));
             }
         }
     }
@@ -731,7 +719,7 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
     struct korb_method *rtm = korb_class_find_method(klass, korb_intern("respond_to_missing?"));
     if (rtm) {
         VALUE args[2] = { korb_id2sym(name), (argc >= 2 ? argv[1] : Qfalse) };
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, self, korb_intern("respond_to_missing?"), 2, args));
+        VALUE r = UNWRAP(korb_funcall(c, sp, self, korb_intern("respond_to_missing?"), 2, args));
         return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
     }
     return RESULT_OK(Qfalse);
