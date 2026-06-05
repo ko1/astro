@@ -1336,11 +1336,10 @@ static RESULT str_reverse(CTX *c, int argc, VALUE *sp) {
         i = j;
     }
     r[s->len] = 0;
-    return RESULT_OK(korb_str_new(c, c->sp_top, r, s->len));
+    return RESULT_OK(korb_str_new(c, sp, r, s->len));
 }
 
 static RESULT str_upcase(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1352,11 +1351,10 @@ static RESULT str_upcase(CTX *c, int argc, VALUE *sp) {
         r[i] = ch;
     }
     r[s->len] = 0;
-    return RESULT_OK(korb_str_new(c, c->sp_top, r, s->len));
+    return RESULT_OK(korb_str_new(c, sp, r, s->len));
 }
 
 static RESULT str_downcase(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1368,11 +1366,10 @@ static RESULT str_downcase(CTX *c, int argc, VALUE *sp) {
         r[i] = ch;
     }
     r[s->len] = 0;
-    return RESULT_OK(korb_str_new(c, c->sp_top, r, s->len));
+    return RESULT_OK(korb_str_new(c, sp, r, s->len));
 }
 
 static RESULT str_empty_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1410,21 +1407,18 @@ static char xform_swapcase(char ch) {
 }
 
 static RESULT str_upcase_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return str_case_bang(c, self, xform_upcase);
 }
 static RESULT str_downcase_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return str_case_bang(c, self, xform_downcase);
 }
 static RESULT str_swapcase_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1434,7 +1428,6 @@ static RESULT str_swapcase_bang(CTX *c, int argc, VALUE *sp) {
 /* String#capitalize! — first char up, rest down.  Returns self if
  * anything changed, nil otherwise. */
 static RESULT str_capitalize_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1458,7 +1451,6 @@ static RESULT str_capitalize_bang(CTX *c, int argc, VALUE *sp) {
 /* String#reverse! — reverse in place.  Always returns self (CRuby
  * does too — empty/single-char strings still return self, not nil). */
 static RESULT str_reverse_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1482,19 +1474,18 @@ static RESULT str_reverse_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_mul(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!FIXNUM_P(argv[0])) return RESULT_OK(self);
     long n = FIX2LONG(argv[0]);
-    if (n <= 0) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (n <= 0) return RESULT_OK(korb_str_new(c, sp, "", 0));
     /* Park self + result across korb_str_new's GC.  Without protect,
      * self (C param) goes stale after the first alloc, and
-     * korb_str_concat(c, c->sp_top, r, stale_self) reads garbage->len → buffer
+     * korb_str_concat(c, sp, r, stale_self) reads garbage->len → buffer
      * overflow → corrupts adjacent obj's header. */
     /* Park self + result in sp[0..1].  korb_str_new publishes
-     * c->sp_top = sp+2 internally before its GC trigger. */
+     * sp = sp+2 internally before its GC trigger. */
     sp[0] = self;
     sp[1] = 0;
     sp[1] = korb_str_new(c, sp + 2, "", 0);
@@ -1503,7 +1494,6 @@ static RESULT str_mul(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_hash(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1511,7 +1501,6 @@ static RESULT str_hash(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1535,7 +1524,6 @@ static RESULT str_sum(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1544,7 +1532,6 @@ static RESULT str_eqq(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_match_op(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1554,7 +1541,6 @@ static RESULT str_match_op(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_match_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1563,7 +1549,6 @@ static RESULT str_match_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_match(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1596,11 +1581,10 @@ static int str_find_pat(VALUE pattern, struct korb_string *s, long from,
 }
 
 static RESULT str_gsub(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_str_dup(c, c->sp_top, self));
+    if (argc < 1) return RESULT_OK(korb_str_dup(c, sp, self));
 
     /* Park self / pat / repl / out / scratch in sp[0..4]. */
     sp[0] = self;
@@ -1621,7 +1605,7 @@ static RESULT str_gsub(CTX *c, int argc, VALUE *sp) {
             s = (struct korb_string *)sp[0];
         } else if (c->current_block) {
             sp[4] = korb_str_new(c, sp + 5, s->ptr + ms, ml);
-            RESULT _yr_g = korb_yield(c, c->sp_top, 1, &sp[4]);
+            RESULT _yr_g = korb_yield(c, sp + 5, 1, &sp[4]);
             if (_yr_g.state != KORB_NORMAL) return _yr_g;
             sp[4] = _yr_g.value;
             if (BUILTIN_TYPE(sp[4]) == T_STRING) korb_str_concat(c, sp + 5, sp[3], sp[4]);
@@ -1636,11 +1620,10 @@ static RESULT str_gsub(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_str_dup(c, c->sp_top, self));
+    if (argc < 1) return RESULT_OK(korb_str_dup(c, sp, self));
 
     /* Park self / pat / repl / out / scratch in sp[0..4]. */
     sp[0] = self;
@@ -1659,7 +1642,7 @@ static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
         s = (struct korb_string *)sp[0];
     } else if (c->current_block) {
         sp[4] = korb_str_new(c, sp + 5, s->ptr + ms, ml);
-        RESULT _yr_s = korb_yield(c, c->sp_top, 1, &sp[4]);
+        RESULT _yr_s = korb_yield(c, sp + 5, 1, &sp[4]);
         if (_yr_s.state != KORB_NORMAL) return _yr_s;
         sp[4] = _yr_s.value;
         if (BUILTIN_TYPE(sp[4]) == T_STRING) korb_str_concat(c, sp + 5, sp[3], sp[4]);
@@ -1674,7 +1657,6 @@ static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
  * no match).  We re-use the gsub/sub implementations to compute the
  * new content and copy it back into self's buffer. */
 static RESULT str_gsub_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1684,9 +1666,9 @@ static RESULT str_gsub_bang(CTX *c, int argc, VALUE *sp) {
     long ms, ml;
     if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return RESULT_OK(Qnil);
     /* stage [self, argv...] onto sp and call new-ABI str_gsub */
-    c->sp_top[0] = self;
-    for (int i = 0; i < argc; i++) c->sp_top[1 + i] = argv[i];
-    VALUE replaced = UNWRAP(str_gsub(c, argc, c->sp_top + 1 + argc));
+    sp[0] = self;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    VALUE replaced = UNWRAP(str_gsub(c, argc, sp + 1 + argc));
     if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
@@ -1700,7 +1682,6 @@ static RESULT str_gsub_bang(CTX *c, int argc, VALUE *sp) {
 
 static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
 
-    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -1711,9 +1692,9 @@ static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
     struct korb_string *s = (struct korb_string *)self;
     long ms, ml;
     if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return RESULT_OK(Qnil);
-    c->sp_top[0] = self;
-    for (int i = 0; i < argc; i++) c->sp_top[1 + i] = argv[i];
-    VALUE replaced = UNWRAP(str_sub(c, argc, c->sp_top + 1 + argc));
+    sp[0] = self;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    VALUE replaced = UNWRAP(str_sub(c, argc, sp + 1 + argc));
     if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
@@ -1730,11 +1711,10 @@ static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
  * Treats pattern as a literal string when given a String, mirroring
  * koruby's gsub/sub behavior (no regex without astrorge). */
 static RESULT str_scan(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(korb_ary_new(c, sp));
     /* Park self (sp[0]) and result (sp[1]) across the per-match korb_str_new
      * GC points; re-derive the C-local string from sp[0] each iteration. */
     sp[0] = self;
@@ -1820,7 +1800,6 @@ static VALUE str_tr_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze
 }
 
 static RESULT str_tr(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1828,7 +1807,6 @@ static RESULT str_tr(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_tr_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1855,7 +1833,6 @@ static RESULT str_tr_bang_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool s
 }
 
 static RESULT str_tr_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1863,7 +1840,6 @@ static RESULT str_tr_bang(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_tr_s_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1872,11 +1848,10 @@ static RESULT str_tr_s_bang(CTX *c, int argc, VALUE *sp) {
 
 /* sprintf — limited; supports %d %s %x %o %X %b %f %g %% %c, with width/0pad */
 static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, sp, "", 0));
     /* Pin fmt (= argv[0]) and out across korb_str_new / korb_str_concat
      * GC fires.  Without this, under STRESS the C-local `fmt` goes
      * stale on every alloc inside the loop and fmt->ptr / fmt->len
@@ -2051,7 +2026,6 @@ kf_done: ;
 
 /* printf — format then write to stdout */
 static RESULT kernel_printf(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2063,7 +2037,6 @@ static RESULT kernel_printf(CTX *c, int argc, VALUE *sp) {
 
 /* String#center(width, padstr=" ") — center self within `width` cols. */
 static RESULT str_center(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2083,12 +2056,11 @@ static RESULT str_center(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < left;  i++) buf[i] = pad[i % padlen];
     memcpy(buf + left, s->ptr, s->len);
     for (long i = 0; i < right; i++) buf[left + s->len + i] = pad[i % padlen];
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, width));
+    return RESULT_OK(korb_str_new(c, sp, buf, width));
 }
 
 /* String#ljust / rjust */
 static RESULT str_ljust(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2106,10 +2078,9 @@ static RESULT str_ljust(CTX *c, int argc, VALUE *sp) {
     char *buf = korb_xmalloc_atomic(width);
     memcpy(buf, s->ptr, s->len);
     for (long i = 0; i < extra; i++) buf[s->len + i] = pad[i % padlen];
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, width));
+    return RESULT_OK(korb_str_new(c, sp, buf, width));
 }
 static RESULT str_rjust(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2127,7 +2098,7 @@ static RESULT str_rjust(CTX *c, int argc, VALUE *sp) {
     char *buf = korb_xmalloc_atomic(width);
     for (long i = 0; i < extra; i++) buf[i] = pad[i % padlen];
     memcpy(buf + extra, s->ptr, s->len);
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, width));
+    return RESULT_OK(korb_str_new(c, sp, buf, width));
 }
 
 /* String#chop / chop! */
@@ -2142,19 +2113,17 @@ static long str_prev_char_offset(const char *p, long len) {
 }
 
 static RESULT str_chop(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_string *s = (struct korb_string *)self;
-    if (s->len == 0) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (s->len == 0) return RESULT_OK(korb_str_new(c, sp, "", 0));
     long n = str_prev_char_offset(s->ptr, s->len);
     /* CRLF treated as one character. */
     if (n > 0 && s->ptr[n] == '\n' && s->ptr[n - 1] == '\r') n--;
-    return RESULT_OK(korb_str_new(c, c->sp_top, s->ptr, n));
+    return RESULT_OK(korb_str_new(c, sp, s->ptr, n));
 }
 static RESULT str_chop_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2191,7 +2160,6 @@ static void str_charclass_build(const char *spec, long len, unsigned char *bits)
 }
 
 static RESULT str_count_chars(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2210,7 +2178,6 @@ static RESULT str_count_chars(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_delete_chars(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2228,11 +2195,10 @@ static RESULT str_delete_chars(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < s->len; i++) {
         if (!bits[(unsigned char)s->ptr[i]]) buf[w++] = s->ptr[i];
     }
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, w));
+    return RESULT_OK(korb_str_new(c, sp, buf, w));
 }
 
 static RESULT str_squeeze(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2252,11 +2218,10 @@ static RESULT str_squeeze(CTX *c, int argc, VALUE *sp) {
         buf[w++] = ch;
         prev = ch;
     }
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, w));
+    return RESULT_OK(korb_str_new(c, sp, buf, w));
 }
 
 static RESULT str_swapcase(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2268,16 +2233,15 @@ static RESULT str_swapcase(CTX *c, int argc, VALUE *sp) {
         else if (ch >= 'A' && ch <= 'Z') buf[i] = ch + 32;
         else                              buf[i] = ch;
     }
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, s->len));
+    return RESULT_OK(korb_str_new(c, sp, buf, s->len));
 }
 
 static RESULT str_capitalize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_string *s = (struct korb_string *)self;
-    if (s->len == 0) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (s->len == 0) return RESULT_OK(korb_str_new(c, sp, "", 0));
     char *buf = korb_xmalloc_atomic(s->len);
     unsigned char first = s->ptr[0];
     buf[0] = (first >= 'a' && first <= 'z') ? first - 32 : first;
@@ -2285,12 +2249,11 @@ static RESULT str_capitalize(CTX *c, int argc, VALUE *sp) {
         unsigned char ch = s->ptr[i];
         buf[i] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
     }
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, s->len));
+    return RESULT_OK(korb_str_new(c, sp, buf, s->len));
 }
 
 /* String#lines(sep = "\n", chomp: false) — split on separator. */
 static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2366,7 +2329,6 @@ static RESULT str_lines(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_partition(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2402,7 +2364,6 @@ static RESULT str_partition(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT str_rpartition(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2440,12 +2401,11 @@ static RESULT str_rpartition(CTX *c, int argc, VALUE *sp) {
 
 /* String#succ — alphabetic increment; ASCII-only, simplified rules. */
 static RESULT str_succ(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_string *s = (struct korb_string *)self;
-    if (s->len == 0) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (s->len == 0) return RESULT_OK(korb_str_new(c, sp, "", 0));
     char *buf = korb_xmalloc_atomic(s->len);
     memcpy(buf, s->ptr, s->len);
     long i = s->len - 1;
@@ -2466,14 +2426,13 @@ static RESULT str_succ(CTX *c, int argc, VALUE *sp) {
         grown[0] = (first >= '0' && first <= '9') ? '1'
                  : (first >= 'a' && first <= 'z') ? 'a' : 'A';
         memcpy(grown + 1, buf, s->len);
-        return RESULT_OK(korb_str_new(c, c->sp_top, grown, s->len + 1));
+        return RESULT_OK(korb_str_new(c, sp, grown, s->len + 1));
     }
-    return RESULT_OK(korb_str_new(c, c->sp_top, buf, s->len));
+    return RESULT_OK(korb_str_new(c, sp, buf, s->len));
 }
 
 /* String#each_byte — yields each byte as Integer. */
 static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2482,7 +2441,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
          * with the source method captured so #size works and chained
          * each(&blk) re-dispatches with the user's block. */
         VALUE arg = korb_id2sym(korb_intern("each_byte"));
-        return korb_funcall(c, c->sp_top, self, korb_intern("to_enum"), 1, &arg);
+        return korb_funcall(c, sp, self, korb_intern("to_enum"), 1, &arg);
     }
     /* Park self in a synthetic frame's last_match across the per-byte
      * korb_yield: yield lowers sp_top below sp[-argc-1] AND restores a stale
@@ -2504,7 +2463,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
     const long len = s->len;
     for (long i = 0; i < len; i++) {
         VALUE b = INT2FIX((unsigned char)ptr[i]);
-        RESULT _y = korb_yield(c, c->sp_top, 1, &b);
+        RESULT _y = korb_yield(c, sp, 1, &b);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE result = fr.last_match;
@@ -2514,7 +2473,6 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
 
 /* String#ord */
 static RESULT str_ord(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2548,7 +2506,6 @@ static RESULT str_ord(CTX *c, int argc, VALUE *sp) {
 
 /* String#eql? — content equality; rejects non-strings. */
 static RESULT str_eql(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2559,12 +2516,11 @@ static RESULT str_eql(CTX *c, int argc, VALUE *sp) {
 /* String#clone — fresh independent copy.  Preserves frozen state
  * (clone does, dup doesn't — matching CRuby). */
 static RESULT str_clone(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     const struct korb_string *s = (const struct korb_string *)self;
-    VALUE r = korb_str_new(c, c->sp_top, s->ptr, s->len);
+    VALUE r = korb_str_new(c, sp, s->ptr, s->len);
     /* self moved across korb_str_new (strings are moving) — re-read from the
      * GC-scanned staging slot before the frozen check. */
     self = sp[-argc - 1];
