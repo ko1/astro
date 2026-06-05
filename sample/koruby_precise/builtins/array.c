@@ -609,12 +609,11 @@ static RESULT ary_reduce(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(result);
 }
 static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* CRuby short-circuit: empty array returns "" without touching sep. */
-    if (korb_ary_len(self) == 0) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    if (korb_ary_len(self) == 0) return RESULT_OK(korb_str_new(c, sp, "", 0));
     /* Resolve the separator:
      *  - no arg or explicit nil: use $, (CRuby default), else "".
      *  - String: use as is.
@@ -626,12 +625,12 @@ static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(g) && BUILTIN_TYPE(g) == T_STRING) {
             sep = g;
         } else {
-            sep = korb_str_new_cstr(c, c->sp_top, "");
+            sep = korb_str_new_cstr(c, sp, "");
         }
     } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
         sep = argv[0];
     } else {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (!RTEST(rt)) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -640,7 +639,7 @@ static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
                        SPECIAL_CONST_P(argv[0]) ? "(special)"
                            : korb_id_name(korb_class_of_class(argv[0])->name));
         }
-        sep = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("to_str"), 0, NULL));
+        sep = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("to_str"), 0, NULL));
         if (SPECIAL_CONST_P(sep) || BUILTIN_TYPE(sep) != T_STRING) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
@@ -1887,7 +1886,6 @@ static RESULT str_unpack(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_concat(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1903,12 +1901,11 @@ static RESULT ary_concat(CTX *c, int argc, VALUE *sp) {
      * original elements (CRuby behaviour). */
     long lens[argc];
     for (int i = 0; i < argc; i++) sp[i] = Qnil;   /* zero-fill before publishing */
-    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE arg = argv[i];
         if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) {
-            RESULT tr = korb_funcall_r(c, c->sp_top, arg, korb_intern("to_ary"), 0, NULL);
-            if (tr.state != KORB_NORMAL) { c->sp_top = sp; return tr; }
+            RESULT tr = korb_funcall_r(c, sp + argc, arg, korb_intern("to_ary"), 0, NULL);
+            if (tr.state != KORB_NORMAL) { return tr; }
             arg = tr.value;
             if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) { lens[i] = 0; continue; }
         }
@@ -1920,10 +1917,9 @@ static RESULT ary_concat(CTX *c, int argc, VALUE *sp) {
     for (int i = 0; i < argc; i++) {
         for (long j = 0; j < lens[i]; j++) {
             const struct korb_array *o = (const struct korb_array *)sp[i];
-            korb_ary_push(c, c->sp_top, sp[-argc - 1], korb_ary_items(o)[j]);
+            korb_ary_push(c, sp + argc, sp[-argc - 1], korb_ary_items(o)[j]);
         }
     }
-    c->sp_top = sp;
     return RESULT_OK(sp[-argc - 1]);
 }
 
@@ -2204,11 +2200,10 @@ static RESULT ary_shift(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_transpose(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (korb_ary_len(self) == 0) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (korb_ary_len(self) == 0) return RESULT_OK(korb_ary_new(c, sp));
     long n_outer = korb_ary_len(self);
     /* Normalize each inner element via to_ary if it isn't already an Array
      * (CRuby semantics).  The coerced inner-array handles move under STRESS,
@@ -2218,7 +2213,6 @@ static RESULT ary_transpose(CTX *c, int argc, VALUE *sp) {
     sp[0] = 0;
     sp[1] = 0;
     sp[2] = 0;
-    c->sp_top = sp + 3;
     sp[0] = korb_ary_new_capa(c, sp + 3, n_outer);
     for (long j = 0; j < n_outer; j++) {
         VALUE inner = korb_ary_aref(sp[-argc - 1], j);
@@ -2227,10 +2221,10 @@ static RESULT ary_transpose(CTX *c, int argc, VALUE *sp) {
             continue;
         }
         if (!SPECIAL_CONST_P(inner)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, inner, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp + 3, inner, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             if (RTEST(rt)) {
-                VALUE r = UNWRAP(korb_funcall(c, c->sp_top, inner, korb_intern("to_ary"), 0, NULL));
+                VALUE r = UNWRAP(korb_funcall(c, sp + 3, inner, korb_intern("to_ary"), 0, NULL));
                 if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_ARRAY) {
                     korb_ary_push(c, sp + 3, sp[0], r);
                     continue;
@@ -2262,7 +2256,6 @@ static RESULT ary_transpose(CTX *c, int argc, VALUE *sp) {
         }
         korb_ary_push(c, sp + 3, sp[1], sp[2]);
     }
-    c->sp_top = sp;
     return RESULT_OK(sp[1]);
 }
 
@@ -2634,7 +2627,6 @@ static RESULT ary_min_by(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2658,18 +2650,18 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
      * or a fixnum immediate). */
     VALUE arg = argv[0];
     if (!FIXNUM_P(arg) && BUILTIN_TYPE(arg) != T_STRING) {
-        VALUE rt_str = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("respond_to?"), 1,
+        VALUE rt_str = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt_str)) {
-            VALUE s = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("to_str"), 0, NULL));
+            VALUE s = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("to_str"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
                 arg = s;
             }
         } else {
-            VALUE rt_int = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("respond_to?"), 1,
+            VALUE rt_int = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
             if (RTEST(rt_int)) {
-                VALUE iv = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("to_int"), 0, NULL));
+                VALUE iv = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("to_int"), 0, NULL));
                 if (FIXNUM_P(iv)) arg = iv;
             } else {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -2711,7 +2703,6 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
         sp[1] = arg;                 /* separator (pin) — first! */
         sp[0] = 0;
         sp[2] = 0;
-        c->sp_top = sp + 3;          /* keep sep/result/elem parked across the loop */
         sp[0] = korb_str_new(c, sp + 3, "", 0);
         /* self moved during korb_str_new — re-read length from the slot. */
         long alen = korb_ary_len(sp[-argc - 1]);
@@ -2722,7 +2713,6 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
             if (BUILTIN_TYPE(sp[2]) != T_STRING) sp[2] = korb_to_s(c, sp + 3, sp[2]);
             korb_str_concat(c, sp + 3, sp[0], sp[2]);
         }
-        c->sp_top = sp;
         return RESULT_OK(sp[0]);
     }
     return RESULT_OK(self);
@@ -2962,7 +2952,6 @@ static RESULT ary_each_with_object(CTX *c, int argc, VALUE *sp) {
  * enough for `[1,2].hash == [1,2].hash` to hold). */
 /* Array#assoc — find a sub-array whose first element == arg. */
 static RESULT ary_assoc(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -2972,7 +2961,6 @@ static RESULT ary_assoc(CTX *c, int argc, VALUE *sp) {
     /* R5: a (self) and the matched entry are held across korb_funcall (to_ary
      * and ==) GC points — re-derive a from its slot, park entry at sp[0]. */
     long alen = korb_ary_len(self);
-    c->sp_top = sp + 1;   /* publish: protect parked entry across the funcalls */
     for (long i = 0; i < alen; i++) {
         struct korb_array *a = (struct korb_array *)sp[-argc - 1];
         VALUE e = korb_ary_items(a)[i];
@@ -2982,7 +2970,7 @@ static RESULT ary_assoc(CTX *c, int argc, VALUE *sp) {
             /* Try to_ary; if it doesn't respond / raises, skip. */
             struct korb_class *k = korb_class_of_class(e);
             if (!k || !korb_class_find_method(k, korb_intern("to_ary"))) continue;
-            RESULT _ta = korb_funcall(c, c->sp_top, e, korb_intern("to_ary"), 0, NULL);
+            RESULT _ta = korb_funcall(c, sp + 1, e, korb_intern("to_ary"), 0, NULL);
             if (_ta.state != KORB_NORMAL) continue;
             sp[0] = _ta.value;
             if (SPECIAL_CONST_P(sp[0]) || BUILTIN_TYPE(sp[0]) != T_ARRAY) continue;
@@ -2992,7 +2980,7 @@ static RESULT ary_assoc(CTX *c, int argc, VALUE *sp) {
         struct korb_array *ea = (struct korb_array *)sp[0];
         if (ea->len == 0) continue;
         VALUE eq_args[1] = { argv[0] };
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, korb_ary_items(ea)[0], korb_intern("=="), 1, eq_args));
+        VALUE r = UNWRAP(korb_funcall(c, sp + 1, korb_ary_items(ea)[0], korb_intern("=="), 1, eq_args));
         if (RTEST(r)) return RESULT_OK(sp[0]);
     }
     return RESULT_OK(Qnil);
@@ -3000,13 +2988,11 @@ static RESULT ary_assoc(CTX *c, int argc, VALUE *sp) {
 
 /* Array#rassoc — same but matches the second element. */
 static RESULT ary_rassoc(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* R5: re-derive a from its slot; park the matched entry at sp[0]. */
     long alen = korb_ary_len(self);
-    c->sp_top = sp + 1;   /* publish: protect parked entry across the funcalls */
     for (long i = 0; i < alen; i++) {
         struct korb_array *a = (struct korb_array *)sp[-argc - 1];
         VALUE e = korb_ary_items(a)[i];
@@ -3015,7 +3001,7 @@ static RESULT ary_rassoc(CTX *c, int argc, VALUE *sp) {
         } else if (!SPECIAL_CONST_P(e)) {
             struct korb_class *k = korb_class_of_class(e);
             if (!k || !korb_class_find_method(k, korb_intern("to_ary"))) continue;
-            RESULT _ta = korb_funcall(c, c->sp_top, e, korb_intern("to_ary"), 0, NULL);
+            RESULT _ta = korb_funcall(c, sp + 1, e, korb_intern("to_ary"), 0, NULL);
             if (_ta.state != KORB_NORMAL) continue;
             sp[0] = _ta.value;
             if (SPECIAL_CONST_P(sp[0]) || BUILTIN_TYPE(sp[0]) != T_ARRAY) continue;
@@ -3025,7 +3011,7 @@ static RESULT ary_rassoc(CTX *c, int argc, VALUE *sp) {
         struct korb_array *ea = (struct korb_array *)sp[0];
         if (ea->len < 2) continue;
         VALUE eq_args[1] = { argv[0] };
-        VALUE r = UNWRAP(korb_funcall(c, c->sp_top, korb_ary_items(ea)[1], korb_intern("=="), 1, eq_args));
+        VALUE r = UNWRAP(korb_funcall(c, sp + 1, korb_ary_items(ea)[1], korb_intern("=="), 1, eq_args));
         if (RTEST(r)) return RESULT_OK(sp[0]);
     }
     return RESULT_OK(Qnil);
@@ -4299,7 +4285,6 @@ static RESULT ary_flat_map(CTX *c, int argc, VALUE *sp) {
  * one-arg form returns up to n leading / trailing elements as a new
  * array; n > size yields the whole array, n == 0 an empty array. */
 static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4314,7 +4299,7 @@ static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
     VALUE arg = argv[0];
     if (!FIXNUM_P(arg) && (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_BIGNUM)) {
         if (!SPECIAL_CONST_P(arg)) {
-            RESULT _tr = korb_funcall(c, c->sp_top, arg, korb_intern("to_int"), 0, NULL);
+            RESULT _tr = korb_funcall(c, sp, arg, korb_intern("to_int"), 0, NULL);
             if (_tr.state == KORB_RAISE) {
                 /* swallow NoMethodError, propagate other errors.  Hoist the
                  * NoMethodError intern BEFORE reading object_class (its GC
@@ -4377,7 +4362,6 @@ static RESULT ary_first_n(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -4390,7 +4374,7 @@ static RESULT ary_last_n(CTX *c, int argc, VALUE *sp) {
     VALUE arg = argv[0];
     if (!FIXNUM_P(arg) && (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_BIGNUM)) {
         if (!SPECIAL_CONST_P(arg)) {
-            RESULT _tr = korb_funcall(c, c->sp_top, arg, korb_intern("to_int"), 0, NULL);
+            RESULT _tr = korb_funcall(c, sp, arg, korb_intern("to_int"), 0, NULL);
             if (_tr.state == KORB_RAISE) {
                 /* Same intern-hoist + exception-park as ary_first_n: the
                  * NoMethodError intern's GC must not leave object_class /
