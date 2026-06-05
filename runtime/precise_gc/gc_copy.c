@@ -31,11 +31,13 @@ _Static_assert(sizeof(AroObjectHeader) == 8,
 
 #define HDR_FORWARDED  (uint16_t)0x0001u   /* small obj copied to to-space */
 #define HDR_MARKED     (uint16_t)0x0002u   /* large obj marked alive */
+#define HDR_LARGE      (uint16_t)0x0004u   /* large obj (malloc'd, non-moving) */
 #define HDR_IS_FORWARDED(h) (((h)->gc_flags & HDR_FORWARDED) != 0)
 #define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
 #define HDR_IS_MARKED(h)    (((h)->gc_flags & HDR_MARKED) != 0)
 #define HDR_SET_MARKED(h)   ((h)->gc_flags |= HDR_MARKED)
 #define HDR_CLR_MARKED(h)   ((h)->gc_flags &= (uint16_t)~HDR_MARKED)
+#define HDR_IS_LARGE(h)     (((h)->gc_flags & HDR_LARGE) != 0)
 
 static inline void *
 fwd_overlay_get(AroObjectHeader *h)
@@ -323,7 +325,7 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
     void *payload = large_payload(lo);
     AroObjectHeader *h = (AroObjectHeader *)payload;
     h->flags    = 0;
-    h->gc_flags = 0;
+    h->gc_flags = HDR_LARGE;   /* O(1) discriminator in forward_payload */
     h->gc_size  = (uint32_t)payload_size;
     gc->bytes_since_gc += payload_size;
     return payload;
@@ -510,21 +512,21 @@ forward_payload(ASTroGC *gc, void *old_payload)
              * be mistaken for a libc-immortal pointer: never marked, then
              * swept by the large_head sweep, leaving a->backing dangling
              * (reproduced by optcarrot's 256 KiB TILE_LUT Array backings).
-             * The in-to branch's large path only catches large objs that
-             * happen to land inside the reserved range.  Walk large_head
-             * (a short list) to disambiguate any out-of-range payload: mark +
-             * enqueue real large objects, leave genuine immortals as-is. */
-            if (gc->large_head) {
-                for (LargeObj *lo = gc->large_head; lo; lo = lo->next) {
-                    if (large_payload(lo) == old_payload) {
-                        if (!HDR_IS_MARKED((AroObjectHeader *)old_payload)) {
-                            HDR_SET_MARKED((AroObjectHeader *)old_payload);
-                            lo->next_gray = gc->large_gray;
-                            gc->large_gray = lo;
-                        }
-                        return old_payload;
-                    }
+             * The in-to branch only catches large objs that happen to land
+             * inside the reserved range.  We're past the purge-retired check
+             * above, so `old_payload` is mapped (libc-immortal OR a malloc'd
+             * large object) and its header is safe to read: the HDR_LARGE bit
+             * (set by large_alloc) discriminates in O(1) — no large_head walk,
+             * which was O(large_count) per out-of-range ref and pathological
+             * for AST-node-heavy programs (optcarrot 1 frame >> minutes). */
+            if (gc->large_head && HDR_IS_LARGE((AroObjectHeader *)old_payload)) {
+                if (!HDR_IS_MARKED((AroObjectHeader *)old_payload)) {
+                    HDR_SET_MARKED((AroObjectHeader *)old_payload);
+                    LargeObj *lo = large_from_payload(old_payload);
+                    lo->next_gray = gc->large_gray;
+                    gc->large_gray = lo;
                 }
+                return old_payload;
             }
             /* libc-allocated immortal. */
             return old_payload;
