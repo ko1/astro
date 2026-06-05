@@ -61,6 +61,13 @@ struct NodeHead {
  * here (after struct Node is fully defined so object.h's inline
  * functions can dereference NODE fields). */
 #include <limits.h>
+/* Forward-declare EVAL before object.h: object.h's inline functions
+ * (korb_yield) and prologues.h call EVAL, but its static-inline definition
+ * is below.  node.c includes object.h BEFORE node.h, so it sees the full
+ * def via object.h→node.h; but the AOT SD TU includes node.h FIRST, so
+ * object.h would otherwise use EVAL undeclared (implicit-int → conflicting
+ * types at the real def).  This fwd decl makes both include orders work. */
+static inline RESULT EVAL(CTX *c, NODE *n, VALUE *sp);
 #include "object.h"
 
 /* EVAL — dispatchers return RESULT (Phase 8d).  The canonical RESULT-

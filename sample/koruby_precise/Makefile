@@ -18,10 +18,13 @@ PGO_DIR = $(CURDIR)/pgo-data
 MINI_GMP ?= 0
 ifeq ($(MINI_GMP),1)
   GMP_CFLAGS = -DKORB_USE_MINI_GMP -Ivendor/mini-gmp
+  # AOT variant: include path must be absolute (the code_store Makefile runs in code_store/).
+  GMP_AOT_CFLAGS = -DKORB_USE_MINI_GMP -I$(KORUBY_SRC_DIR)/vendor/mini-gmp
   GMP_SRCS = vendor/mini-gmp/mini-gmp.c
   GMP_LIBS =
 else
   GMP_CFLAGS =
+  GMP_AOT_CFLAGS =
   GMP_SRCS =
   GMP_LIBS = -lgmp
 endif
@@ -60,10 +63,17 @@ ifneq ($(GC_MARKER),$(GC_VARIANT))
 $(shell echo "$(GC_VARIANT)" > .built_gc)
 endif
 
+# Flags handed to astro_cs_build() so the AOT-generated SD_*.c (compiled in
+# code_store/) can resolve node.h's includes.  All paths absolute because the
+# code_store Makefile runs in its own directory.  GC selector must match the
+# host build or the SD body (which #includes node_eval.c) diverges from it.
+KORUBY_AOT_CFLAGS := -I$(KORUBY_SRC_DIR) -I$(ASTRO_RUNTIME_DIR) -I$(KORUBY_SRC_DIR)/prism/include $(GMP_AOT_CFLAGS) -DBARUBY_GC=$(GC_NUM)
+
 CFLAGS = -I$(PRISM_DIR)/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Werror=unused-result $(GMP_CFLAGS) \
          -DBARUBY_GC=$(GC_NUM) \
          $(if $(ARO_GC_WB_AUDIT),-DARO_GC_WB_AUDIT -Werror=discarded-qualifiers -Werror=cast-qual) \
          -DKORUBY_SRC_DIR_DEFAULT='"$(KORUBY_SRC_DIR)"' \
+         -DKORUBY_AOT_CFLAGS_DEFAULT='"$(KORUBY_AOT_CFLAGS)"' \
          -DASTRO_RUNTIME_DIR='"$(ASTRO_RUNTIME_DIR)"'
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
 LIBS = -lprism $(GMP_LIBS) -lm

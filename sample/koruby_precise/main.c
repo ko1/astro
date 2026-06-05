@@ -20,6 +20,13 @@ NODE *koruby_parse(const char *src, size_t len, const char *filename);
 #ifndef KORUBY_SRC_DIR_DEFAULT
 #define KORUBY_SRC_DIR_DEFAULT "."
 #endif
+#ifndef KORUBY_AOT_CFLAGS_DEFAULT
+/* Include/-D flags for the AOT code_store build.  Normally injected by the
+ * Makefile (absolute paths + matching GC selector); NULL falls back to the
+ * astro_cs_build default cflags (works only if node.h's deps are on the
+ * compiler's default search path). */
+#define KORUBY_AOT_CFLAGS_DEFAULT NULL
+#endif
 #ifndef ASTRO_RUNTIME_DIR
 #define ASTRO_RUNTIME_DIR "."
 #endif
@@ -293,7 +300,7 @@ int main(int argc, char *argv[])
         }
         setenv("CCACHE_DISABLE", "1", 0);
         fprintf(stderr, "[koruby] AOT compile: building all.so\n");
-        astro_cs_build(NULL);
+        astro_cs_build(KORUBY_AOT_CFLAGS_DEFAULT);
     }
 
     /* Build mode: emit exe. */

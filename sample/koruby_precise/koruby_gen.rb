@@ -103,10 +103,10 @@ class KoRubyNodeDef < ASTroGen::NodeDef
       # Forward decls for child dispatchers (same TU).
       child_decls = []
       child_decls << <<~C if recv_f
-            if (#{recv_f}) { fprintf(fp, "static inline VALUE %s(CTX * restrict c, NODE * restrict n);\\n", #{recv_f}->head.dispatcher_name); }
+            if (#{recv_f}) { fprintf(fp, "static inline RESULT %s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp);\\n", #{recv_f}->head.dispatcher_name); }
       C
       child_decls << <<~C if blk_f
-            if (#{blk_f}) { fprintf(fp, "static inline VALUE %s(CTX * restrict c, NODE * restrict n);\\n", #{blk_f}->head.dispatcher_name); }
+            if (#{blk_f}) { fprintf(fp, "static inline RESULT %s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp);\\n", #{blk_f}->head.dispatcher_name); }
       C
 
       # ---- PG-baked SD body emission (C code that prints C code) ----
@@ -118,11 +118,12 @@ class KoRubyNodeDef < ASTroGen::NodeDef
       recv_eval = if recv_f
         <<~C
                 fprintf(fp, "    NODE *recv = #{recv_f};\\n");
-                fprintf(fp, "    VALUE recv_v = (*recv->head.dispatcher)(c, recv, sp);\\n");
-                fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
+                fprintf(fp, "    RESULT _rr = (*recv->head.dispatcher)(c, recv, sp);\\n");
+                fprintf(fp, "    if (UNLIKELY(_rr.state != KORB_NORMAL)) return _rr;\\n");
+                fprintf(fp, "    VALUE recv_v = _rr.value;\\n");
         C
       else
-        '            fprintf(fp, "    VALUE recv_v = c->self;\n");'
+        '            fprintf(fp, "    VALUE recv_v = c->current_frame->self;\n");'
       end
 
       # block evaluation in the emitted SD body
@@ -130,8 +131,9 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         <<~C
                 if (#{blk_f}) {
                     fprintf(fp, "    NODE *blk = #{blk_f};\\n");
-                    fprintf(fp, "    VALUE blkv = (*blk->head.dispatcher)(c, blk, sp);\\n");
-                    fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
+                    fprintf(fp, "    RESULT _br = (*blk->head.dispatcher)(c, blk, sp);\\n");
+                    fprintf(fp, "    if (UNLIKELY(_br.state != KORB_NORMAL)) return _br;\\n");
+                    fprintf(fp, "    VALUE blkv = _br.value;\\n");
                     fprintf(fp, "    struct korb_proc *block = (blkv == Qnil) ? NULL : (struct korb_proc *)blkv;\\n");
                 } else {
                     fprintf(fp, "    struct korb_proc *block = NULL;\\n");
@@ -144,26 +146,26 @@ class KoRubyNodeDef < ASTroGen::NodeDef
       # Fallback EVAL call args in the emitted SD (after `EVAL_<name>(c, n,`)
       fallback_eval_call = if recv_f && blk_f
         <<~C
-                fprintf(fp, "    return EVAL_#{name}(c, n, #{recv_f}, %s, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
+                fprintf(fp, "    return EVAL_#{name}(c, n, sp, #{recv_f}, %s, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
                         DISPATCHER_NAME(#{recv_f}),
                         #{argc_f}, #{argi_f},
                         #{blk_f} ? DISPATCHER_NAME(#{blk_f}) : "NULL");
         C
       elsif recv_f
         <<~C
-                fprintf(fp, "    return EVAL_#{name}(c, n, #{recv_f}, %s, #{name_f}, %u, %u, #{mc_f});\\n",
+                fprintf(fp, "    return EVAL_#{name}(c, n, sp, #{recv_f}, %s, #{name_f}, %u, %u, #{mc_f});\\n",
                         DISPATCHER_NAME(#{recv_f}),
                         #{argc_f}, #{argi_f});
         C
       elsif blk_f
         <<~C
-                fprintf(fp, "    return EVAL_#{name}(c, n, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
+                fprintf(fp, "    return EVAL_#{name}(c, n, sp, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
                         #{argc_f}, #{argi_f},
                         #{blk_f} ? DISPATCHER_NAME(#{blk_f}) : "NULL");
         C
       else
         <<~C
-                fprintf(fp, "    return EVAL_#{name}(c, n, #{name_f}, %u, %u, #{mc_f});\\n",
+                fprintf(fp, "    return EVAL_#{name}(c, n, sp, #{name_f}, %u, %u, #{mc_f});\\n",
                         #{argc_f}, #{argi_f});
         C
       end
@@ -204,11 +206,11 @@ class KoRubyNodeDef < ASTroGen::NodeDef
                * actually inline (true speculative inline), but the size
                * bloat (3.9MB→7.9MB on optcarrot) hurt icache enough to
                * regress -10 fps even with AOT-PGO trim.  Direct call wins. */
-              fprintf(fp, "extern VALUE %s(CTX *, NODE *);\\n", mc->body->head.dispatcher_name);
+              fprintf(fp, "extern RESULT %s(CTX *, NODE *, VALUE *);\\n", mc->body->head.dispatcher_name);
 
               if (!is_public) fprintf(fp, "static inline ");
-              fprintf(fp, "__attribute__((no_stack_protector)) VALUE\\n");
-              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n)\\n", dispatcher_name);
+              fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
+              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)\\n", dispatcher_name);
               fprintf(fp, "{\\n");
       #{recv_eval.chomp}
       #{block_eval.chomp}
@@ -222,8 +224,8 @@ class KoRubyNodeDef < ASTroGen::NodeDef
               fprintf(fp, "}\\n\\n");
           } else {
               if (!is_public) fprintf(fp, "static inline ");
-              fprintf(fp, "__attribute__((no_stack_protector)) VALUE\\n");
-              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n)\\n", dispatcher_name);
+              fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
+              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)\\n", dispatcher_name);
               fprintf(fp, "{\\n");
       #{orig_eval_call.chomp}
               fprintf(fp, "}\\n\\n");
