@@ -17,7 +17,6 @@ static int str_char_range_to_bytes(const char *p, long byte_len,
  * implementation used by both String.new and subclass overrides via
  * super.  encoding:/capacity: kwargs are accepted but informational. */
 RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -32,11 +31,11 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
     VALUE init = argv[0];
     if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
         if (!SPECIAL_CONST_P(init)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, init, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, init, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             init = argv[0];   /* re-read across the respond_to? GC */
             if (RTEST(rt)) {
-                init = UNWRAP(korb_funcall(c, c->sp_top, init, korb_intern("to_str"), 0, NULL));
+                init = UNWRAP(korb_funcall(c, sp, init, korb_intern("to_str"), 0, NULL));
             }
         }
         if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
@@ -63,14 +62,13 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
 
     /* Allocate an empty String of self's class, then dispatch initialize
      * so subclass overrides apply (CRuby semantics).  Re-read `self`
      * from sp[-argc-1] AFTER the alloc since GC may have moved the
      * class (T_CLASS is arena-allocated). */
-    VALUE r = korb_str_new(c, c->sp_top, "", 0);
+    VALUE r = korb_str_new(c, sp, "", 0);
     VALUE self = sp[-argc - 1];
     if (BUILTIN_TYPE(self) == T_CLASS) {
         ((struct RBasic *)r)->klass = self;
@@ -80,17 +78,13 @@ RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
      * doesn't clobber r, and read back from sp[0] (GC may have moved r). */
     sp[0] = r;
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
-    VALUE *prev_sp = c->sp_top;
-    c->sp_top = sp + 1 + argc;
-    UNWRAP(korb_funcall_r(c, c->sp_top, r, korb_intern("initialize"), argc, sp + 1));
+    UNWRAP(korb_funcall_r(c, sp + 1 + argc, r, korb_intern("initialize"), argc, sp + 1));
     r = sp[0];
-    c->sp_top = prev_sp;
     return RESULT_OK(r);
 }
 
 /* ---------- String ---------- */
 static RESULT str_plus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -102,14 +96,13 @@ static RESULT str_plus(CTX *c, int argc, VALUE *sp) {
     /* Park self + other in sp[0..1] across korb_str_dup's alloc-can-GC. */
     sp[0] = self;
     sp[1] = argv[0];
-    c->sp_top = sp + 2;
     if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
         if (!SPECIAL_CONST_P(sp[1])) {
-            RESULT _rt = korb_funcall(c, c->sp_top, sp[1], korb_intern("respond_to?"), 1,
+            RESULT _rt = korb_funcall(c, sp + 2, sp[1], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
             if (_rt.state != KORB_NORMAL) return _rt;
             if (RTEST(_rt.value)) {
-                RESULT _ts = korb_funcall(c, c->sp_top, sp[1], korb_intern("to_str"), 0, NULL);
+                RESULT _ts = korb_funcall(c, sp + 2, sp[1], korb_intern("to_str"), 0, NULL);
                 if (_ts.state != KORB_NORMAL) return _ts;
                 sp[1] = _ts.value;
             }
@@ -130,7 +123,6 @@ static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg);
 /* String#<< — accepts exactly one argument (CRuby semantics).  Variadic
  * version is `concat`. */
 static RESULT str_lshift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -155,7 +147,6 @@ static RESULT str_lshift(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[0]);
 }
 static RESULT str_concat(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -169,12 +160,11 @@ static RESULT str_concat(CTX *c, int argc, VALUE *sp) {
      * rather than a libc shadow buffer whose moving-String handles would
      * go stale.  str_concat_one runs above them at sp+argc. */
     for (int i = 0; i < argc; i++) sp[i] = Qnil;
-    c->sp_top = sp + argc;
     for (int i = 0; i < argc; i++) {
         VALUE a = argv[i];
         if (a == sp[-argc - 1] && !SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_STRING) {
             struct korb_string *as = (struct korb_string *)a;
-            sp[i] = korb_str_new(c, c->sp_top, as->ptr, as->len);
+            sp[i] = korb_str_new(c, sp + argc, as->ptr, as->len);
         } else {
             sp[i] = a;
         }
@@ -182,7 +172,6 @@ static RESULT str_concat(CTX *c, int argc, VALUE *sp) {
     for (int i = 0; i < argc; i++) {
         CHECK(str_concat_one(c, sp + argc, sp[-argc - 1], sp[i]));
     }
-    c->sp_top = sp;
     return RESULT_OK(sp[-argc - 1]);
 }
 static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg) {
@@ -194,7 +183,6 @@ static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg) {
     sp[0] = self;
     sp[1] = arg;
     sp[2] = Qnil;
-    c->sp_top = sp + 3;
     if (FIXNUM_P(sp[1])) {
         long cp = FIX2LONG(sp[1]);
         if (cp < 0) {
@@ -232,7 +220,7 @@ static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg) {
         return RESULT_OK(sp[0]);
     }
     if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
-        RESULT _ts = korb_funcall(c, c->sp_top, sp[1], korb_intern("to_s"), 0, NULL);
+        RESULT _ts = korb_funcall(c, sp + 3, sp[1], korb_intern("to_s"), 0, NULL);
         if (_ts.state != KORB_NORMAL) return _ts;
         sp[2] = _ts.value;
         if (!SPECIAL_CONST_P(sp[2]) && BUILTIN_TYPE(sp[2]) == T_STRING) {
