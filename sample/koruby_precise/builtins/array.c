@@ -220,7 +220,6 @@ static RESULT korb_ary_check_index(CTX *c, long idx) {
     return RESULT_OK(Qnil);
 }
 static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -235,7 +234,7 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
                        i, a->len);
         }
         CHECK(korb_ary_check_index(c, i));
-        korb_ary_aset(c, c->sp_top, self, i, argv[1]);
+        korb_ary_aset(c, sp, self, i, argv[1]);
         return RESULT_OK(argv[1]);
     }
     if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
@@ -283,13 +282,13 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
          * Subclasses of Array keep their identity (CRuby skips the
          * conversion for subclasses). */
         if (!SPECIAL_CONST_P(val) && BUILTIN_TYPE(val) != T_ARRAY) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, val, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, val, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
             /* respond_to? is a GC point — re-read val from its scanned arg
              * slot before dispatching to_ary on it. */
             val = argv[2];
             if (RTEST(rt)) {
-                VALUE coerced = UNWRAP(korb_funcall(c, c->sp_top, val, korb_intern("to_ary"), 0, NULL));
+                VALUE coerced = UNWRAP(korb_funcall(c, sp, val, korb_intern("to_ary"), 0, NULL));
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
                     val = coerced;
                 }
@@ -302,7 +301,6 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
              * receiver slot sp[-argc-1]; re-derive `a` from it after each
              * push loop (moving GC forwards the array object itself). */
             sp[0] = val;
-            c->sp_top = sp + 1;
             struct korb_array *src = (struct korb_array *)sp[0];
             /* Snapshot src into a fresh buffer when src aliases self,
              * otherwise the shift below will scribble over the values
@@ -347,7 +345,6 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
             for (long i = 0; i < src_len; i++) {
                 korb_ary_items(a)[start + i] = src_buf[i];
             }
-            c->sp_top = sp;
         } else {
             /* `a[start, len] = val` — when val is NOT an Array, CRuby
              * replaces the slice [start, start+len) with the SINGLE
@@ -356,7 +353,6 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
              * Park val (a possibly-coerced C-local) at sp[0] across the
              * korb_ary_push GC points; re-derive `a` from the receiver slot. */
             sp[0] = val;
-            c->sp_top = sp + 1;
             if (start > a->len) {
                 /* Re-derive `a` in the condition too: each push grows (and
                  * moves) the array, leaving the C-local stale. */
@@ -376,7 +372,6 @@ static RESULT ary_aset(CTX *c, int argc, VALUE *sp) {
                 a->len += diff;
             }
             korb_ary_items(a)[start] = sp[0];
-            c->sp_top = sp;
         }
         return RESULT_OK(argv[2]);
     }
@@ -463,7 +458,6 @@ static RESULT ary_each(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(recv);
 }
 static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -474,7 +468,6 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
          * both parked slots stay in the GC scan range across each alloc. */
         sp[0] = 0;
         sp[1] = 0;
-        c->sp_top = sp + 2;
         sp[0] = korb_ary_new_capa(c, sp + 2, len);
         for (long i = 0; i < len; i++) {
             sp[1] = korb_ary_new_capa(c, sp + 2, 2);
@@ -482,7 +475,6 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(c, sp + 2, sp[1], INT2FIX(i));
             korb_ary_push(c, sp + 2, sp[0], sp[1]);
         }
-        c->sp_top = sp;
         return RESULT_OK(sp[0]);
     }
     KORB_ARY_YIELD_FRAME(c, fr, Qnil);
@@ -491,7 +483,7 @@ static RESULT ary_each_with_index(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < korb_ary_len(fr.last_match); i++) {
         /* receiver moves across korb_yield — re-read from the frame slot. */
         VALUE args[2] = { korb_ary_aref(fr.last_match, i), INT2FIX(i) };
-        RESULT _y = korb_yield(c, c->sp_top, 2, args);
+        RESULT _y = korb_yield(c, sp, 2, args);
         if (_y.state != KORB_NORMAL) { c->current_frame = fr.prev; return _y; }
     }
     VALUE recv = fr.last_match;
@@ -819,7 +811,6 @@ static RESULT ary_lshift(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(sp[0]);
 }
 static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
