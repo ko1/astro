@@ -926,12 +926,14 @@ korb_dispatch_call_cached(CTX * restrict c, VALUE * restrict sp,
         if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 2);
         if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, sp, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc) {
-            /* func_r ABI: stage self + args at the threaded top and call
-             * prologue_cfunc_r_inl.  c->sp_top is NOT touched here — the
-             * cfunc itself syncs `c->sp_top = sp` before any alloc. */
-            sp[0] = recv;
-            for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
-            return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
+            /* func_r ABI: stage self + args at the dynamic top (c->sp_top, =
+             * above any enclosing aref/aset staging — NOT the threaded frame
+             * top `sp`, which can sit below c->sp_top and clobber a caller's
+             * recv when the call is an index-assign RHS). */
+            VALUE * restrict cfsp = c->sp_top;
+            cfsp[0] = recv;
+            for (uint32_t i = 0; i < argc; i++) cfsp[1 + i] = c->current_frame->fp[arg_index + i];
+            return prologue_cfunc_r_inl(c, callsite, (int)argc, cfsp + 1 + argc, block, mc);
         }
         return p(c, callsite, recv, argc, arg_index, block, mc);
     }
