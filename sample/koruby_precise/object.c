@@ -3348,20 +3348,19 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
 }
 
 VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v) {
-    c->sp_top = sp;
     if (BUILTIN_TYPE(v) == T_STRING) return v;
     if (FIXNUM_P(v)) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
-        return korb_str_new_cstr(c, c->sp_top, b);
+        return korb_str_new_cstr(c, sp, b);
     }
-    if (NIL_P(v)) return korb_str_new_cstr(c, c->sp_top, "");
-    if (SYMBOL_P(v)) return korb_str_new_cstr(c, c->sp_top, korb_id_name(korb_sym2id(v)));
+    if (NIL_P(v)) return korb_str_new_cstr(c, sp, "");
+    if (SYMBOL_P(v)) return korb_str_new_cstr(c, sp, korb_id_name(korb_sym2id(v)));
     if (BUILTIN_TYPE(v) == T_OBJECT) {
         /* Exception-like: prefer @message ivar if it's a String. */
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
         if (msg && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) return msg;
     }
-    return korb_inspect(c, c->sp_top, v);
+    return korb_inspect(c, sp, v);
 }
 
 void korb_p(CTX *c, VALUE v) {
