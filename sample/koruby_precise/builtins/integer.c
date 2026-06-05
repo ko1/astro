@@ -848,7 +848,6 @@ static RESULT int_remainder(CTX *c, int argc, VALUE *sp) {
  * variant: if other is Integer, both stay Integer; if Float, both
  * promote to Float; otherwise raise TypeError (CRuby). */
 static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -861,7 +860,6 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
      * points); zero-fill + reserve so both are scanned and dispatch frames
      * stage above. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[0] = korb_ary_new_capa(c, sp + 2, 2);   /* pair */
     /* korb_ary_new_capa is a GC point — re-read self (boxed receiver) and
      * other (a moving Bignum) from their scanned slots. */
@@ -870,46 +868,45 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     if (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM)) {
         korb_ary_push(c, sp + 2, sp[0], other);
         korb_ary_push(c, sp + 2, sp[0], self);
-        VALUE result = sp[0]; c->sp_top = sp; return RESULT_OK(result);
+        VALUE result = sp[0]; return RESULT_OK(result);
     }
     if (KORB_IS_FLOAT(other)) {
         korb_ary_push(c, sp + 2, sp[0], other);
         korb_ary_push(c, sp + 2, sp[0], korb_float_new(c, sp + 2, korb_num2dbl(self)));
-        VALUE result = sp[0]; c->sp_top = sp; return RESULT_OK(result);
+        VALUE result = sp[0]; return RESULT_OK(result);
     }
     /* String: parse via Float() — if it parses cleanly, return [parsed,
      * self.to_f].  Otherwise ArgumentError. */
     if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_STRING) {
         VALUE klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Kernel"));
         if (UNDEF_P(klass)) klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Float"));
-        RESULT fr = korb_funcall(c, c->sp_top, klass, korb_intern("Float"), 1, &other);
-        if (fr.state != KORB_NORMAL) { c->sp_top = sp; return fr; }
+        RESULT fr = korb_funcall(c, sp + 2, klass, korb_intern("Float"), 1, &other);
+        if (fr.state != KORB_NORMAL) { return fr; }
         sp[1] = fr.value;   /* f */
         self = sp[-argc - 1];  /* re-read after the Float() funcall GC */
         if (FLONUM_P(sp[1]) || (!SPECIAL_CONST_P(sp[1]) && BUILTIN_TYPE(sp[1]) == T_FLOAT)) {
             korb_ary_push(c, sp + 2, sp[0], sp[1]);
             korb_ary_push(c, sp + 2, sp[0], korb_float_new(c, sp + 2, korb_num2dbl(self)));
-            VALUE result = sp[0]; c->sp_top = sp; return RESULT_OK(result);
+            VALUE result = sp[0]; return RESULT_OK(result);
         }
     }
     /* Object with #to_f: coerce via to_f to Float pair. */
     if (!SPECIAL_CONST_P(other)) {
-        RESULT rtr = korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+        RESULT rtr = korb_funcall(c, sp + 2, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_f")) });
-        if (rtr.state != KORB_NORMAL) { c->sp_top = sp; return rtr; }
+        if (rtr.state != KORB_NORMAL) { return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT fr = korb_funcall(c, c->sp_top, other, korb_intern("to_f"), 0, NULL);
-            if (fr.state != KORB_NORMAL) { c->sp_top = sp; return fr; }
+            RESULT fr = korb_funcall(c, sp + 2, other, korb_intern("to_f"), 0, NULL);
+            if (fr.state != KORB_NORMAL) { return fr; }
             sp[1] = fr.value;   /* f */
             self = sp[-argc - 1];  /* re-read after the to_f funcall GC */
             if (FLONUM_P(sp[1]) || (!SPECIAL_CONST_P(sp[1]) && BUILTIN_TYPE(sp[1]) == T_FLOAT)) {
                 korb_ary_push(c, sp + 2, sp[0], sp[1]);
                 korb_ary_push(c, sp + 2, sp[0], korb_float_new(c, sp + 2, korb_num2dbl(self)));
-                VALUE result = sp[0]; c->sp_top = sp; return RESULT_OK(result);
+                VALUE result = sp[0]; return RESULT_OK(result);
             }
         }
     }
-    c->sp_top = sp;
     VALUE eTyp = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
     /* other went stale across the respond_to?/to_f funcalls — re-read the
      * forwarded arg slot for the error's class name. */
@@ -973,7 +970,7 @@ static RESULT int_abs(CTX *c, int argc, VALUE *sp) {
 /* Coerce an arg to Integer via to_int (CRuby semantics for Integer#[]).
  * Float gets truncated to Integer.  Range / nil / non-numeric not handled
  * here (caller decides). */
-static RESULT int_arg_to_int(CTX *c, VALUE arg, long *out) {
+static RESULT int_arg_to_int(CTX *c, VALUE *sp, VALUE arg, long *out) {
     if (FIXNUM_P(arg)) {
         *out = FIX2LONG(arg);
         return RESULT_OK(Qnil);
@@ -1000,25 +997,22 @@ static RESULT int_arg_to_int(CTX *c, VALUE arg, long *out) {
      * by the GC and the second funcall + error-message class lookups would
      * deref a retired-plane handle (STRESS+PURGE SEGV). */
     if (!SPECIAL_CONST_P(arg)) {
-        VALUE *const asp = c->sp_top;
+        VALUE *const asp = sp;
         asp[0] = arg; asp[1] = 0;
-        c->sp_top = asp + 2;
-        RESULT rtr = korb_funcall_r(c, c->sp_top, asp[0], korb_intern("respond_to?"), 1,
+        RESULT rtr = korb_funcall_r(c, asp + 2, asp[0], korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
-        if (rtr.state != KORB_NORMAL) { c->sp_top = asp; return rtr; }
+        if (rtr.state != KORB_NORMAL) { return rtr; }
         if (RTEST(rtr.value)) {
-            RESULT cr = korb_funcall_r(c, c->sp_top, asp[0], korb_intern("to_int"), 0, NULL);
-            if (cr.state != KORB_NORMAL) { c->sp_top = asp; return cr; }
+            RESULT cr = korb_funcall_r(c, asp + 2, asp[0], korb_intern("to_int"), 0, NULL);
+            if (cr.state != KORB_NORMAL) { return cr; }
             asp[1] = cr.value;
             if (FIXNUM_P(asp[1])) {
                 *out = FIX2LONG(asp[1]);
-                c->sp_top = asp;
                 return RESULT_OK(Qnil);
             }
             if (!SPECIAL_CONST_P(asp[1]) && BUILTIN_TYPE(asp[1]) == T_BIGNUM) {
                 VALUE conv = asp[1];
-                c->sp_top = asp;
-                return int_arg_to_int(c, conv, out);
+                return int_arg_to_int(c, sp, conv, out);
             }
             /* to_int returned non-Integer */
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1027,14 +1021,12 @@ static RESULT int_arg_to_int(CTX *c, VALUE arg, long *out) {
             RESULT rr = korb_raise(c, (struct korb_class *)eT,
                               "can't convert %s to Integer (%s#to_int gives %s)",
                               acls, acls, ccls);
-            c->sp_top = asp;
             return rr;
         }
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         const char *acls = korb_id_name(korb_class_of_class(asp[0])->name);
         RESULT rr = korb_raise(c, (struct korb_class *)eT,
                           "no implicit conversion of %s into Integer", acls);
-        c->sp_top = asp;
         return rr;
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1077,9 +1069,9 @@ static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
         VALUE last = UNWRAP(korb_funcall_r(c, sp, argv[0], korb_intern("last"), 0, NULL));
         VALUE excl = UNWRAP(korb_funcall_r(c, sp, argv[0], korb_intern("exclude_end?"), 0, NULL));
         long start = 0, end = 0;
-        if (!NIL_P(first)) { CHECK(int_arg_to_int(c, first, &start)); }
+        if (!NIL_P(first)) { CHECK(int_arg_to_int(c, sp, first, &start)); }
         if (!NIL_P(last)) {
-            CHECK(int_arg_to_int(c, last, &end));
+            CHECK(int_arg_to_int(c, sp, last, &end));
             long len = end - start + (RTEST(excl) ? 0 : 1);
             if (len < 0) len = 0;
             return int_aref_range(c, self, start, len, true);
@@ -1100,13 +1092,13 @@ static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
     /* 2-arg form: Integer#[start, len] */
     if (argc == 2) {
         long start = 0, len = 0;
-        CHECK(int_arg_to_int(c, argv[0], &start));
-        CHECK(int_arg_to_int(c, argv[1], &len));
+        CHECK(int_arg_to_int(c, sp, argv[0], &start));
+        CHECK(int_arg_to_int(c, sp, argv[1], &len));
         return int_aref_range(c, self, start, len, false);
     }
     /* Single-bit form: Integer#[i] */
     long b = 0;
-    CHECK(int_arg_to_int(c, argv[0], &b));
+    CHECK(int_arg_to_int(c, sp, argv[0], &b));
     if (!FIXNUM_P(self)) return RESULT_OK(INT2FIX(0));
     long n = FIX2LONG(self);
     if (b < 0) return RESULT_OK(INT2FIX(0));
@@ -1145,7 +1137,6 @@ static RESULT int_bit_length(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1172,8 +1163,7 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         /* r parked at sp[0] (zero-fill + reserve); korb_float_new is a
          * moving-GC point. */
         sp[0] = 0;
-        c->sp_top = sp + 1;
-        sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+        sp[0] = korb_ary_new_capa(c, sp + 1, 2);   /* publishes sp+1, covers sp[0] */
         korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, q));
         korb_ary_push(c, sp + 1, sp[0], korb_float_new(c, sp + 1, m));
         return RESULT_OK(sp[0]);
@@ -1188,8 +1178,7 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         long q = a / b, m = a % b;
         if ((a ^ b) < 0 && m != 0) { q--; m += b; }
         sp[0] = 0;
-        c->sp_top = sp + 1;
-        sp[0] = korb_ary_new_capa(c, sp + 1, 2);
+        sp[0] = korb_ary_new_capa(c, sp + 1, 2);   /* publishes sp+1, covers sp[0] */
         korb_ary_push(c, sp + 1, sp[0], INT2FIX(q));
         korb_ary_push(c, sp + 1, sp[0], INT2FIX(m));
         return RESULT_OK(sp[0]);
@@ -1205,7 +1194,10 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         }
         /* q=sp[1], m=sp[2] parked across korb_int_mod / korb_ary_new_capa
          * (bignum allocs are moving-GC points); r=sp[0].  Zero-fill then bump
-         * c->sp_top so the parked slots are scanned by visit_roots. */
+         * c->sp_top so the parked slots are scanned by visit_roots.  This
+         * c->sp_top=sp+3 park is sanctioned: korb_int_div/korb_int_mod are
+         * sp-less bignum-alloc GC points, so sp[1] (the div result) must stay
+         * scanned across korb_int_mod with no sp param to publish it. */
         sp[0] = 0; sp[1] = 0; sp[2] = 0;
         c->sp_top = sp + 3;
         sp[1] = korb_int_div(self, other);
@@ -1214,19 +1206,18 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(c, sp + 3, sp[0], sp[1]);
         korb_ary_push(c, sp + 3, sp[0], sp[2]);
         VALUE result = sp[0];
-        c->sp_top = sp;
         return RESULT_OK(result);
     }
     /* Non-numeric: try coerce protocol. */
     if (!SPECIAL_CONST_P(other)) {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
         if (RTEST(rt)) {
-            VALUE pair = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("coerce"), 1, &self));
+            VALUE pair = UNWRAP(korb_funcall(c, sp, other, korb_intern("coerce"), 1, &self));
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
-                return korb_funcall(c, c->sp_top, korb_ary_items(p)[0], korb_intern("divmod"), 1, &korb_ary_items(p)[1]);
+                return korb_funcall(c, sp, korb_ary_items(p)[0], korb_intern("divmod"), 1, &korb_ary_items(p)[1]);
             }
         }
     }
@@ -1368,7 +1359,6 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1376,7 +1366,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
     /* Float exponent: promote to Float arithmetic.  `2 ** 0.5` should
      * be 1.414, not 2 — CRuby returns a Float. */
     if (KORB_IS_FLOAT(argv[0])) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, pow(korb_num2dbl(self), korb_num2dbl(argv[0]))));
+        return RESULT_OK(korb_float_new(c, sp, pow(korb_num2dbl(self), korb_num2dbl(argv[0]))));
     }
     if (!FIXNUM_P(argv[0])) return RESULT_OK(self);
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
@@ -1424,7 +1414,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
          * return 0r — the test tolerance (assert_in_delta(0.0, …)) is
          * satisfied and we avoid SIGSEGV via stack overflow. */
         if (exp == LONG_MIN || (-exp) > FIXNUM_MAX) {
-            return RESULT_OK(korb_float_new(c, c->sp_top, 0.0));
+            return RESULT_OK(korb_float_new(c, sp, 0.0));
         }
         VALUE pos_exp = INT2FIX(-exp);
         sp[0] = self;
@@ -1432,7 +1422,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
         VALUE den = UNWRAP(int_pow(c, 1, sp + 2));
         VALUE rk = korb_const_get(KORB_VM(c)->object_class, korb_intern("Rational"));
         VALUE rargs[2] = { INT2FIX(1), den };
-        return korb_funcall_r(c, c->sp_top, rk, korb_intern("new"), 2, rargs);
+        return korb_funcall_r(c, sp, rk, korb_intern("new"), 2, rargs);
     }
     /* Fixnum-only square-and-multiply, switching to Bignum on overflow. */
     long b = base, e = exp;
@@ -1443,8 +1433,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             if (__builtin_mul_overflow(r, b, &s)) {
                 /* Promote to Bignum: finish the rest of the calculation
                  * via korb_int_mul which handles arbitrary precision. */
-                VALUE big_r = korb_bignum_new_long(c, c->sp_top, r);
-                VALUE big_b = korb_bignum_new_long(c, c->sp_top, b);
+                VALUE big_r = korb_bignum_new_long(c, sp, r);
+                VALUE big_b = korb_bignum_new_long(c, sp, b);
                 big_r = korb_int_mul(big_r, big_b);
                 e >>= 1;
                 while (e > 0) {
@@ -1454,7 +1444,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
                 }
                 if (has_mod) {
                     VALUE m = argv[1];
-                    return korb_funcall(c, c->sp_top, big_r, korb_intern("%"), 1, &m);
+                    return korb_funcall(c, sp, big_r, korb_intern("%"), 1, &m);
                 }
                 return RESULT_OK(big_r);
             }
@@ -1466,8 +1456,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             /* Same: promote and finish.  Use bignum_new_long so r and b
              * promote correctly even when they're already past FIXNUM
              * range (2^62 ≤ r ≤ 2^63-1 fits in long but not Fixnum). */
-            VALUE big_r = korb_bignum_new_long(c, c->sp_top, r);
-            VALUE big_b = korb_bignum_new_long(c, c->sp_top, b);
+            VALUE big_r = korb_bignum_new_long(c, sp, r);
+            VALUE big_b = korb_bignum_new_long(c, sp, b);
             e >>= 1;
             while (e > 0) {
                 big_b = korb_int_mul(big_b, big_b);
@@ -1476,7 +1466,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             }
             if (has_mod) {
                 VALUE m = argv[1];
-                return korb_funcall(c, c->sp_top, big_r, korb_intern("%"), 1, &m);
+                return korb_funcall(c, sp, big_r, korb_intern("%"), 1, &m);
             }
             return RESULT_OK(big_r);
         }
@@ -1488,6 +1478,6 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
      * in signed long but not the 63-bit FIXNUM payload).  Promote to
      * Bignum when needed so the encoded VALUE doesn't sign-flip. */
     if (FIXABLE(r)) return RESULT_OK(INT2FIX(r));
-    return RESULT_OK(korb_bignum_new_long(c, c->sp_top, r));
+    return RESULT_OK(korb_bignum_new_long(c, sp, r));
 }
 
