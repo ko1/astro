@@ -252,21 +252,18 @@ static RESULT str_concat_one(CTX *c, VALUE *sp, VALUE self, VALUE arg) {
     return RESULT_OK(sp[0]);
 }
 static RESULT str_bytesize(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(INT2FIX(((struct korb_string *)self)->len));
 }
 static RESULT str_size(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(INT2FIX(((struct korb_string *)self)->len));
 }
 static RESULT str_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -276,10 +273,10 @@ static RESULT str_eq(CTX *c, int argc, VALUE *sp) {
     /* Non-String other: if it responds to #to_str, defer to obj == self
      * (CRuby semantics). */
     if (!SPECIAL_CONST_P(argv[0])) {
-        VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, argv[0], korb_intern("respond_to?"), 1,
+        VALUE rt = UNWRAP(korb_funcall(c, sp, argv[0], korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt)) {
-            return korb_funcall_r(c, c->sp_top, argv[0], korb_intern("=="), 1, &self);
+            return korb_funcall_r(c, sp, argv[0], korb_intern("=="), 1, &self);
         }
     }
     return RESULT_OK(Qfalse);
@@ -289,7 +286,6 @@ static RESULT str_eq(CTX *c, int argc, VALUE *sp) {
  * String#<=> with the same pair, return nil rather than recursing. */
 static int str_cmp_inverse_depth = 0;
 static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -297,11 +293,11 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+            VALUE rt = UNWRAP(korb_funcall(c, sp, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
             other = argv[0];  /* re-read across the respond_to? GC */
             if (RTEST(rt)) {
-                VALUE r = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("to_str"), 0, NULL));
+                VALUE r = UNWRAP(korb_funcall(c, sp, other, korb_intern("to_str"), 0, NULL));
                 if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                     other = r;
                     goto compare_strings;
@@ -309,12 +305,12 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
             }
             if (str_cmp_inverse_depth > 0) return RESULT_OK(Qnil);
             other = argv[0];  /* re-read across the to_str GC above */
-            rt = UNWRAP(korb_funcall(c, c->sp_top, other, korb_intern("respond_to?"), 1,
+            rt = UNWRAP(korb_funcall(c, sp, other, korb_intern("respond_to?"), 1,
                               (VALUE[]){ korb_id2sym(korb_intern("<=>")) }));
             if (RTEST(rt)) {
                 str_cmp_inverse_depth++;
                 other = argv[0]; self = sp[-argc - 1];  /* re-read across respond_to? GC */
-                RESULT _cr = korb_funcall(c, c->sp_top, other, korb_intern("<=>"), 1, &self);
+                RESULT _cr = korb_funcall(c, sp, other, korb_intern("<=>"), 1, &self);
                 str_cmp_inverse_depth--;
                 if (_cr.state != KORB_NORMAL) return RESULT_OK(Qnil);
                 VALUE r = _cr.value;
@@ -341,12 +337,12 @@ compare_strings:;
 
 /* Raise CRuby's "comparison of String with X failed" ArgumentError when
  * <=> couldn't reach a result. */
-static RESULT str_cmp_raise(CTX *c, VALUE other) {
+static RESULT str_cmp_raise(CTX *c, VALUE *sp, VALUE other) {
     /* Capture other's class-name id up front: korb_inspect below allocates and
      * (under GC stress) moves `other` — a bare C-local — so a later
      * korb_class_of_class(other) would deref a retired page. */
     const ID other_cls_name = korb_class_of_class(other)->name;
-    VALUE oi = korb_inspect(c, c->sp_top, other);
+    VALUE oi = korb_inspect(c, sp, other);
     const char *const o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                             ? korb_str_cstr(oi)
                             : korb_id_name(other_cls_name);
@@ -360,50 +356,44 @@ static RESULT str_cmp_raise(CTX *c, VALUE other) {
                "comparison of String with %s failed", o_str);
 }
 static RESULT str_lt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
+    if (NIL_P(r)) return str_cmp_raise(c, sp, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) < 0));
 }
 static RESULT str_le(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
+    if (NIL_P(r)) return str_cmp_raise(c, sp, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) <= 0));
 }
 static RESULT str_gt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
+    if (NIL_P(r)) return str_cmp_raise(c, sp, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) > 0));
 }
 static RESULT str_ge(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
+    if (NIL_P(r)) return str_cmp_raise(c, sp, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) >= 0));
 }
 static RESULT str_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
  return RESULT_OK(self); }
 /* String#__chilled? — internal: true iff FL_CHILLED is set.  Used by
  * Ruby-level `+@` to decide whether to return a fresh mutable copy. */
 static RESULT str_chilled_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -411,7 +401,6 @@ static RESULT str_chilled_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL((RBASIC(self)->head.flags & FL_CHILLED) != 0));
 }
 static RESULT str_to_sym(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -422,7 +411,6 @@ static RESULT str_to_sym(CTX *c, int argc, VALUE *sp) {
 /* ---------- String formatting / methods (extended) ---------- */
 
 static RESULT str_split(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
