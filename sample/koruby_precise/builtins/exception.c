@@ -179,7 +179,6 @@ static RESULT exc_cause(CTX *c, int argc, VALUE *sp) {
  * formatted message + backtrace.  Simple concat: "<file:line>: <msg>
  * (Class)" + back-trace lines.  Ignore kwargs entirely. */
 static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
     (void)argv;
 
@@ -189,8 +188,7 @@ static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
      * (STRESS+PURGE SEGV).  korb_str_concat may relocate its dest, so always
      * re-capture sp[0] from its return. */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
-    sp[1] = UNWRAP(korb_funcall(c, c->sp_top, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    sp[1] = UNWRAP(korb_funcall(c, sp + 2, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
     if (SPECIAL_CONST_P(sp[1]) || BUILTIN_TYPE(sp[1]) != T_STRING) {
         sp[1] = korb_str_new_cstr(c, sp + 2, "");
     }
@@ -214,13 +212,11 @@ static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
     sp[1] = korb_str_new_cstr(c, sp + 2, "\n");
     sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
     VALUE r = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(r);
 }
 /* Exception#detailed_message — returns "message (Class)" by default,
  * or just the message if Class is RuntimeError. */
 static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE *argv = sp - argc;
     (void)argv;
 
@@ -229,13 +225,12 @@ static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
      * funcall (a bare C-local self would be moved and the klass deref below
      * would fault under STRESS+PURGE). */
     sp[0] = 0; sp[1] = 0;
-    c->sp_top = sp + 2;
-    sp[0] = UNWRAP(korb_funcall(c, c->sp_top, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
+    sp[0] = UNWRAP(korb_funcall(c, sp + 2, sp[-argc - 1], korb_intern("to_s"), 0, NULL));
     VALUE self = sp[-argc - 1];
-    if (SPECIAL_CONST_P(self)) { VALUE m = sp[0]; c->sp_top = sp; return RESULT_OK(m); }
+    if (SPECIAL_CONST_P(self)) { VALUE m = sp[0]; return RESULT_OK(m); }
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-    if (strcmp(kn, "RuntimeError") == 0) { VALUE m = sp[0]; c->sp_top = sp; return RESULT_OK(m); }
+    if (strcmp(kn, "RuntimeError") == 0) { VALUE m = sp[0]; return RESULT_OK(m); }
     sp[0] = korb_str_dup(c, sp + 2, sp[0]);
     sp[1] = korb_str_new_cstr(c, sp + 2, " (");
     sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
@@ -244,7 +239,6 @@ static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
     sp[1] = korb_str_new_cstr(c, sp + 2, ")");
     sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
     VALUE r = sp[0];
-    c->sp_top = sp;
     return RESULT_OK(r);
 }
 
