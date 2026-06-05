@@ -1013,36 +1013,38 @@ korb_yield(CTX *c, VALUE *sp, uint32_t argc, VALUE *argv) {
                blk->rest_slot < 0 && blk->kwh_save_slot < 0)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->current_frame->fp;
-        /* Save the enclosing self in a GC-walked chain (not a bare C-local):
-         * the body's GC can move the enclosing-self object, and it's reachable
-         * only via the frame slot we're about to overwrite, so a C-local would
-         * go stale and we'd restore a dangling pointer. */
         struct korb_yield_self_save _ys = { .self = c->current_frame->self,
                                             .prev = c->yield_self_chain };
         c->yield_self_chain = &_ys;
         struct korb_cref *prev_cref = c->current_frame->cref;
         struct korb_proc *prev_block = c->current_block;
-        VALUE *bfp = blk->env;
+        /* [sp-1本 A4] in-place(bfp = blk->env)ではなく env を top に clone。
+         * これで block body の sp(= bfp + env_size)が必ず high-water 上に居て、
+         * A6 で body 内の呼び出しが threaded sp を使っても callee が iterator を
+         * 上書きしない。outer slot は copy-back で shared-state を維持。 */
+        VALUE *outer_env = blk->env;
+        VALUE *bfp = c->sp_top;
+        for (uint32_t i = 0; i < blk->env_size; i++) bfp[i] = outer_env[i];
+        VALUE *saved_sp = c->sp_top;
+        c->sp_top = bfp + blk->env_size;
         bfp[blk->param_base] = arg;
         c->current_frame->self = blk->self;
         c->current_frame->fp = bfp;
         if (blk->cref) c->current_frame->cref = blk->cref;
-        /* Lexical block target: yield inside this block goes to the
-         * enclosing method's block, not back to this block itself. */
         c->current_block = blk->enclosing_block;
         struct korb_proc *prev_running = c->running_block;
         c->running_block = blk;
         RESULT _br;
     redo_yield:
-        /* sp = bfp + env_size matches the bake walker's sp_offset
-         * convention for the block body (lvar_set/lvar_get inside the
-         * block are baked relative to env_size, just as method-body
-         * dispatches pass fp + locals_cnt).  RESULT-native — body
-         * state propagates via _br.state, no c->state inside. */
         _br = EVAL(c, blk->body, bfp + blk->env_size);
         if (UNLIKELY(_br.state == KORB_REDO)) {
             goto redo_yield;
         }
+        /* copy-back outer slots(block-local slots は bfp に残し、body 内で
+         * 作られた proc が snapshot する)。 */
+        for (uint32_t i = 0; i < blk->param_base; i++) outer_env[i] = bfp[i];
+        korb_proc_snapshot_env_maybe(_br.value, bfp, bfp + blk->env_size);
+        c->sp_top = saved_sp;
         c->current_frame->fp = prev_fp;
         c->current_frame->self = _ys.self;   /* forwarded across the body GC */
         c->yield_self_chain = _ys.prev;

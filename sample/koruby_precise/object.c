@@ -2373,7 +2373,12 @@ RESULT korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv
      * `i`.  Outer slots are aliased via copy-in / copy-back.  Non-
      * creates_proc blocks share env directly (faster, and matches
      * shared-state semantics for `count += 1`-style accumulators). */
-    bool fresh_env_path = blk->creates_proc;
+    /* [sp-1本 A4] 常に env を top(c->sp_top)に clone する。in-place 実行は
+     * block body の sp(= blk->env + env_size)が iterator の high-water より
+     * 下に居るため、A6 で block body 内の呼び出しが threaded sp を使うと callee
+     * を iterator の上に積めず上書き crash になる。clone-to-top で block body の
+     * sp == top を保証する((A) 設計の代償 = yield ごとの env copy)。 */
+    bool fresh_env_path = true;
     /* Method-overlaps-env: the yielding method's frame sits above the
      * block's captured env (e.g. `def my_fi(&blk); obj.each { blk.call }; end`
      * — each runs above my_fi but the inner block's env = my_fi's fp).
