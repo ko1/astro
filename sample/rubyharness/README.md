@@ -1,0 +1,48 @@
+# rubyharness — ASTro Ruby サンプル共有テスト+ベンチ基盤
+
+CRuby を正解(オラクル)にした差分テストと、実行モード横断ベンチを、
+ASTro の Ruby 系サンプル(naruby / baruby / koruby_precise …)で**共有**する。
+
+## 構成
+
+```
+tools/   run_specs.rb         差分テストドライバ(1ファイル=1プロセス, crash recovery)
+         run_bench.rb         多モードベンチドライバ
+         gen_golden.rb        メソッド表面の golden を生成 → t/method
+         gen_syntax.rb        構文組合せの golden を生成 → t/syntax
+         gen_from_rubyspec.rb ruby/spec から自己完結な式を mining → t/spec
+t/       hand/                手書き機能テスト
+         syntax/hand_*.rb     手書き構文テスト
+         method/ syntax/ spec/  生成物(.gitignore、make gen で再生成)
+         README.md            テスト/ベンチの詳しい使い方
+bench/   *.rb                 ~1s scale のマイクロベンチ
+harness.mk                    make include(gen/test/bench を INTERP でパラメータ化)
+```
+
+## サンプルからの利用
+
+各サンプルの Makefile に3行:
+
+```makefile
+INTERP ?= ./mysample
+include ../rubyharness/harness.mk
+test bench: mysample          # バイナリをビルドしてから走らせる
+```
+
+これで:
+
+```sh
+make gen                      # コーパス生成(共有、初回のみ)
+make test                     # 全コーパスを mysample で実行・CRuby 差分
+make test CAT=array           # 領域を絞る(開発ループ)
+make test STRESS=1            # GC ストレス下(GC-safety バグ炙り出し)
+make test INTERP=ruby         # ハーネス自己チェック(全 PASS のはず)
+make bench                    # cruby/cruby+yjit/interp/aot+compile/aot+cached
+make clean-corpus             # 生成物 + code_store を消す
+```
+
+同一コーパスを各サンプルに当てれば、**サンプル横断で「Ruby のどこまで」「速度」**
+を比較できる(subset 差がそのまま PASS 率差に出る)。`code_store` は各サンプルの
+cwd に作られるので AOT は per-sample。
+
+詳細は [`t/README.md`](t/README.md)。

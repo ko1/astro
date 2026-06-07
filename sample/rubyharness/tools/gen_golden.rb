@@ -38,6 +38,8 @@ RECV = {
                  '{one: 1, two: 2, three: 3, four: 4}'],
   'range'    => ['(1..5)', '(1...5)', '(0..0)', '("a".."e")', '(1..10)', '(-3..3)', '(10..20)',
                  '(0...10)', '(1..1)', '("aa".."ad")', '(-5..-1)', '(1..100)', '(2..2)'],
+  'rational' => ['(1/2r)', '(3/4r)', '(0/1r)', '(5/3r)', '(-2/7r)', '(10/4r)', '(7/1r)'],
+  'complex'  => ['(1+2i)', '(3-4i)', '(0+0i)', '(2+0i)', '(-1-1i)', '(5+5i)'],
   'nil'      => ['nil'],
   'true'     => ['true'],
   'false'    => ['false'],
@@ -87,6 +89,7 @@ end
 def klass_of(cat)
   { 'integer' => Integer, 'float' => Float, 'string' => String, 'symbol' => Symbol,
     'array' => Array, 'hash' => Hash, 'range' => Range, 'nil' => NilClass,
+    'rational' => Rational, 'complex' => Complex,
     'true' => TrueClass, 'false' => FalseClass }[cat]
 end
 

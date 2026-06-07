@@ -49,4 +49,10 @@ BENCHMODES ?=
 bench: ; $(RUBY) $(H)tools/run_bench.rb --interp "$(GCWRAP)$(INTERP)" --ref "$(RUBY)" \
 	  --dir $(H)bench --runs $(BENCHRUNS) --timeout 180 $(if $(BENCHMODES),--modes $(BENCHMODES))
 
-.PHONY: gen test bench
+# remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
+# hand-written tests are kept.  Regenerate with `make gen`.
+clean-corpus:
+	rm -rf $(H)t/method $(H)t/spec code_store
+	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
+
+.PHONY: gen test bench clean-corpus

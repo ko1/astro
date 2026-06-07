@@ -53,11 +53,11 @@ MODES = {
   'cruby'       => { run: ->(f) { ruby + ['--yjit-disable', f] } },
   'cruby+yjit'  => { run: ->(f) { ruby + ['--yjit', f] } },
   'interp'      => { prep: ->(_f) { WIPE.call }, run: ->(f) { koruby + [f] } },
-  'aot+compile' => { prep: ->(_f) { WIPE.call }, timed_setup: ->(f) { compile.call('--aot-compile', f) },
+  'aot+compile' => { aot: true, prep: ->(_f) { WIPE.call }, timed_setup: ->(f) { compile.call('--aot-compile', f) },
                      run: ->(f) { koruby + [f] } },
-  'aot+cached'  => { prep: ->(f) { WIPE.call; compile.call('--aot-compile', f) },
+  'aot+cached'  => { aot: true, prep: ->(f) { WIPE.call; compile.call('--aot-compile', f) },
                      run: ->(f) { koruby + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
-  'pg+cached'   => { prep: ->(f) { WIPE.call; compile.call('--pg-compile', f) },
+  'pg+cached'   => { aot: true, prep: ->(f) { WIPE.call; compile.call('--pg-compile', f) },
                      run: ->(f) { koruby + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
 }.freeze
 DEFAULT = %w[cruby cruby+yjit interp aot+compile aot+cached].freeze
@@ -88,6 +88,8 @@ def measure(mode, f, runs, secs)
     mode[:timed_setup].call(f)
     extra = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
   end
+  # AOT/PG modes are N/A when the interpreter can't build a code store.
+  return [nil, nil, :na] if mode[:aot] && !File.exist?('code_store/all.so')
   t, out, code = best(mode[:env] || {}, mode[:run].call(f), runs, secs)
   [t && t + extra, out, code]
 end
@@ -104,8 +106,9 @@ benches.each do |f|
   ref_out = cells.find { |c| c[0] == 'cruby' }&.dig(2)
   base    = cells.find { |c| c[0] == 'cruby' }&.dig(1) || cells.map { |c| c[1] }.compact.min
   printed = cells.map do |mn, t, out, code|
-    cell = if code == 124 then 'TIMEOUT'
-           elsif code && code >= 128 then "CRASH#{code - 128}"
+    cell = if code == :na then 'n/a'
+           elsif code == 124 then 'TIMEOUT'
+           elsif code.is_a?(Integer) && code >= 128 then "CRASH#{code - 128}"
            elsif MODES[mn][:strict] && code == 7 then 'INTERP!' # strict: fell back to interp
            elsif ref_out && out != ref_out then 'MISMATCH'
            else
