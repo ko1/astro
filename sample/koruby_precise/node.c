@@ -243,6 +243,38 @@ koruby_bake_sp_offsets(NODE *root)
     bake_visit(root, &ctx);
 }
 
+/* ---------------- post-bake AOT re-load ----------------
+ *
+ * OPTIMIZE() (= astro_cs_load) runs once per node at ALLOC time, during
+ * parse.  But koruby_bake_sp_offsets() rewrites node_lvar_get/lvar_set
+ * `index` AFTER parse, and `index` is part of the structural hash — so a
+ * node's alloc-time hash differs from its final (baked) hash, and any
+ * ancestor's hash differs too.  The AOT code store names SDs by the FINAL
+ * (baked) hash (it is generated from the baked + warmed tree), so the
+ * alloc-time astro_cs_load looked up the wrong SD_<pre-bake> symbol and
+ * missed: 83% of method-body / call-site entries ran the generic
+ * interpreter even with all.so loaded.
+ *
+ * Fix: after baking, walk the final tree once more and re-run OPTIMIZE on
+ * every node so each is matched against its SD_<post-bake> name.  The
+ * NODE-pointer graph is a tree (recursion is by ID, not back-pointer), so
+ * the plain walker terminates.  No-op when no all.so is loaded (compile /
+ * plain runs): astro_cs_load returns early on a NULL handle. */
+static void
+reopt_visit(NODE *n, void *unused)
+{
+    (void)unused;
+    if (!n) return;
+    OPTIMIZE(n);
+    if (n->head.kind->walker) n->head.kind->walker(n, reopt_visit, NULL);
+}
+
+void
+koruby_reoptimize_tree(NODE *root)
+{
+    reopt_visit(root, NULL);
+}
+
 /* Pulled in last — uses HASH/HORG/HOPT and the static helpers from
  * astro_node.c above. */
 #include "../../runtime/astro_code_store.c"

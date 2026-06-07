@@ -5794,6 +5794,11 @@ koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
     if (r && !eval_mode && !getenv("KORUBY_DISABLE_BAKE")) {
         extern void koruby_bake_sp_offsets(NODE *root);
         koruby_bake_sp_offsets(r);
+        /* Re-run AOT SD lookup on the FINAL (baked) tree: lvar baking above
+         * changed `index` (a hashed field), so the alloc-time OPTIMIZE
+         * matched stale pre-bake SD names.  See koruby_reoptimize_tree. */
+        extern void koruby_reoptimize_tree(NODE *root);
+        koruby_reoptimize_tree(r);
     }
 
     return r;
