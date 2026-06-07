@@ -1,0 +1,6 @@
+# Generated test corpus — regenerate with `make gen`.  Only the generators
+# (tools/gen_*.rb) and hand-written tests are tracked.
+/method/
+/spec/
+/syntax/*.rb
+!/syntax/hand_*.rb

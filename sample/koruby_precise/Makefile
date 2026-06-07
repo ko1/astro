@@ -107,9 +107,44 @@ regen:
 run: koruby_precise
 	./koruby_precise test.ko.rb
 
-test: koruby_precise
-	@for f in test/test_*.rb; do \
-	    ./koruby_precise "$$f" 2>&1 | tail -1; \
-	done
+# ===== differential test harness (oracle = CRuby) — see t/README.md =====
+# Corpus dirs: t/hand (hand-written), t/method (generated method surface),
+#              t/syntax (generated + hand syntax).
+# `gen` GENERATES the corpus; every `test*` target only RUNS it.
+RUBY     ?= ruby
+INTERP   ?= ./koruby_precise
+JOBS     ?= $(shell nproc 2>/dev/null || echo 4)
+# GC stress (runtime): STRESS=1 forces a GC at every allocation + PURGE
+# (mprotect every page) so held-across-GC / stale-pointer bugs surface.
+# Build-time GC backend is the separate `GC=<backend>` build var (see top).
+STRESS   ?=
+GC_STRESS_ENV = ASTRO_GC_STRESS=1 ASTRO_GC_PURGE=1
+GCWRAP    = $(if $(STRESS),env $(GC_STRESS_ENV) ,)
+TIMEOUT  ?= $(if $(STRESS),120,15)
+# CAT=<area> focuses on one feature area across ALL corpora (hand+method+syntax),
+# e.g. CAT=array / CAT=string / CAT=operator / CAT=exception.  Empty = every file.
+CAT      ?=
+PATTERN   = $(if $(CAT),'$(CAT)*.rb','*.rb')
+RUNSPECS  = $(RUBY) tools/run_specs.rb --jobs $(JOBS) --timeout $(TIMEOUT)
+# Only the interpreter under test gets the GC wrap; the CRuby oracle stays plain.
+DIFF      = $(RUNSPECS) --pattern $(PATTERN) --interp "$(GCWRAP)$(INTERP)" --diff $(RUBY) --dir
 
-.PHONY: all clean regen run test
+# generate the auto corpus (run once / after editing the generators)
+RUBYSPEC ?= $(HOME)/ruby/src/master/spec/ruby/core
+gen:
+	$(RUBY) tools/gen_golden.rb t/method 80
+	$(RUBY) tools/gen_syntax.rb t/syntax 60
+	@if test -d "$(RUBYSPEC)"; then \
+	  $(RUBY) tools/gen_from_rubyspec.rb "$(RUBYSPEC)" t/spec 80; \
+	else echo "  (skip rubyspec mining: $(RUBYSPEC) not found — set RUBYSPEC=)"; fi
+
+# run the corpus against $(INTERP), each file diffed vs CRuby.
+#   make test                  whole corpus (commit / CI)
+#   make test CAT=array        one feature area only (fast, for dev loops)
+#   make test STRESS=1         under GC stress (forces GC every alloc + PURGE)
+#   make test INTERP=ruby      harness self-check (CRuby vs CRuby → all PASS)
+#   make test GC=mark          build with a different GC backend, then run
+# (knobs compose: e.g. make test CAT=array STRESS=1 GC=copy JOBS=4)
+test: koruby_precise ; $(DIFF) t
+
+.PHONY: all clean regen run test gen
