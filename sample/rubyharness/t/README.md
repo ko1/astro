@@ -1,5 +1,18 @@
 # テスト
 
+`sample/rubyharness/` は ASTro の **Ruby 系サンプル共有**のテスト+ベンチ基盤。
+各サンプルの Makefile から取り込み、`INTERP` だけ差し替えて使う:
+
+```makefile
+INTERP ?= ./mysample
+include ../rubyharness/harness.mk
+test bench: mysample            # バイナリをビルドしてから実行
+```
+
+同じコーパスを naruby / baruby / koruby_precise … に当てられ、サンプル横断で
+「Ruby のどこまで」「速度」を比較できる(subset 差が PASS 率差に出る)。コーパス
+生成・実行は共有、`code_store` は各サンプルの cwd に作られるので AOT は per-sample。
+
 CRuby を正解(オラクル)にした差分テスト。ドライバ `tools/run_specs.rb` は
 **1ファイル=1プロセス**で隔離実行し PASS/FAIL/ERR/CRASH/TIMEOUT を集計する
 (若いインタプリタは SEGV/ハングするので隔離が必須)。ツールは全部 CRuby で動く `.rb`。
@@ -45,6 +58,30 @@ category(`array` `string` `integer` `hash` `range` `float` `symbol` / 構文の
 
 (rubyspec モードはドライバの `--runner` で対応予定。mspec シムができたら
 `make test` の一モードとして戻します。)
+
+## ベンチマーク
+
+`bench/*.rb`(~1s scale)を**実行モード横断**で計測。`make bench`:
+
+```sh
+make bench                        # cruby / cruby+yjit / interp / aot+compile / aot+cached
+make bench BENCHRUNS=3            # best-of-3(既定 5)
+make bench BENCHMODES=interp,aot+cached
+make bench STRESS=1               # koruby 系を GC ストレス下で
+```
+
+モード:
+
+| mode | 意味 |
+|---|---|
+| `cruby` / `cruby+yjit` | 基準(`ruby --yjit-disable` / `--yjit`) |
+| `interp` | code_store 消去、純インタプリタ |
+| `aot+compile` | **コールド**: `--aot-compile` のビルド時間を**含めた**1回実行 |
+| `aot+cached` | **ウォーム**: ビルドは untimed、キャッシュ実行のみ計測 |
+| `pg+cached` | PG(`--pg-compile`)。実装サンプル用(koruby は N/A) |
+
+- best-of-N の min(ノイズ最小)、各セルは CRuby と stdout 比較(不一致は **MISMATCH**)、geomean は CRuby 比。
+- `aot+cached` は `ASTRO_AOT_STRICT=1` で実行 — **interp fallback したら非ゼロ終了でセルが `INTERP!`** になる規約(純 AOT 検査)。**koruby は本フラグ未対応**なので、現状この検査は効かず、数値に silent な interp fallback(~31%)が混じりうる点に注意(新インタプリタで対応予定)。
 
 `gen` だけが生成、`test*` は実行のみ。被テストの差し替えは `INTERP=` で:
 
