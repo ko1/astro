@@ -103,6 +103,12 @@ DISPATCH_node_add(CTX *c, NODE *n)
         n->u.node_add.lv, n->u.node_add.lv->head.dispatcher,
         n->u.node_add.rv, n->u.node_add.rv->head.dispatcher);
 }
+
+static VALUE
+DISPATCH_node_num(CTX *c, NODE *n)
+{
+    return EVAL_node_num(c, n, n->u.node_num.num);  // scalar operand もフィールドから取り出す
+}
 ```
 
 特化とは、このディスパッチャの写しを AST の各ノードについて 1 つずつ吐き出しながら、**2 種類の引数を定数に置き換える** こと:
@@ -129,6 +135,8 @@ SD_dfb75fdabb0d5ef6(CTX *c, NODE *n)
         n->u.node_add.rv, SD_fa5c4f2645bc412);
 }
 ```
+
+SD のシグネチャは汎用ディスパッチャと同一なので、ルートの SD を実行時にノードの `head.dispatcher` へ差し込むだけで、通常のディスパッチ経路からそのまま呼ばれる。インタプリタ実行と特化コード実行をノード単位で自由に混在できる（未特化の部分木だけ木巡回で動く）のはこのためである。
 
 EVAL 関数群は `static inline` として同じ `.c` に `#include` されているので、C コンパイラは名前で渡された SD → EVAL → 子 SD → … の連鎖を全段インライン展開し、リテラルを定数畳み込みする。NODE ポインタ（`n->u.node_add.lv` 等）はプロセスを跨げないため焼き込まないが、インライン展開後には誰も読まなくなり dead code として消える。結果、最外部の SD は `mov $0x7, %eax; ret` にまで縮む。
 
