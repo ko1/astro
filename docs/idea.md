@@ -69,9 +69,70 @@ ASTro の最も重要な設計判断は **ディスパッチャとエバリュ�
 - 特化ディスパッチャ（SD）は子の特化ディスパッチャを **具体的な関数名** で呼ぶため、C コンパイラがインライン展開できる
 - ユーザ定義のエバリュエータに一切手を加えずに、AST 全体が 1 つの最適化されたネイティブコードに溶け合う
 
-例: `1 + 2 * 3` の AST を特化すると、最外部のディスパッチャは `mov $0x7, %eax; ret` にまでインライン化される。
+何をどう「特化」するのかを calc の `1 + 2 * 3` で具体的に見る。ユーザが `node.def` に書くのは:
 
-もうひとつの重要なメリットとして、**ASTroGen は C パーサを持たずに部分評価器を作れる**。EVAL body は不透明なテキストとして `node_eval.c` にそのまま転写されるだけで、ASTroGen が解析するのは `NODE_DEF` のシグネチャ 1 行だけ。specializer が生成するのも「オペランドを定数化し、子を具体的な関数名で呼ぶディスパッチャ」という定型コードに過ぎない。C コードの意味解析・インライン展開・定数畳み込みはすべて C コンパイラの仕事であり、ASTroGen 自身は C を理解しないまま「C で書かれたインタプリタの部分評価」が成立する。「EVAL body を一切書き換えない（C パーサを書かない）」はフレームワークの根本方針として拡張時にも貫かれている（[idea_variadic.md](./idea_variadic.md) §2）。ただし絶対の原則ではなく、CPS 変換や対象言語変数の C 変数化など、将来 C の意味論に踏み込まないと届かない変換も視野にある（[idea_future.md](./idea_future.md) §2）。
+```c
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) + EVAL_ARG(c, rv);
+}
+```
+
+ASTroGen はここから、`NODE *` オペランドごとに **相棒の関数ポインタ引数** `<name>_dispatcher` を追加した EVAL 関数を生成する。`EVAL_ARG` はトークン連結でその引数を呼ぶだけのマクロ:
+
+```c
+#define EVAL_ARG(c, n) ((*n##_dispatcher)(c, n))   // lv → lv_dispatcher
+
+static inline VALUE
+EVAL_node_add(CTX *c, NODE *n,
+              NODE *lv, node_dispatcher_func_t lv_dispatcher,
+              NODE *rv, node_dispatcher_func_t rv_dispatcher)
+{
+    return EVAL_ARG(c, lv) + EVAL_ARG(c, rv);      // node.def の body がそのまま入る
+}
+```
+
+汎用ディスパッチャ（= 素のインタプリタ）は、この引数に **実行時の値** `head.dispatcher` を渡す。つまり間接呼び出しになる:
+
+```c
+static VALUE
+DISPATCH_node_add(CTX *c, NODE *n)
+{
+    return EVAL_node_add(c, n,
+        n->u.node_add.lv, n->u.node_add.lv->head.dispatcher,
+        n->u.node_add.rv, n->u.node_add.rv->head.dispatcher);
+}
+```
+
+特化とは、このディスパッチャの写しを AST の各ノードについて 1 つずつ吐き出しながら、**2 種類の引数を定数に置き換える** こと:
+
+1. scalar オペランド → **リテラル**（`node_num` の `num` が `1` になる）
+2. 子の dispatcher 引数 → 子 SD の **関数名**（リンク時定数）
+
+`1 + 2 * 3` から実際に生成される特化 C ソース（抜粋、attribute は省略）:
+
+```c
+// (node_num 1)
+static inline VALUE
+SD_ef2d3a2c467c98a6(CTX *c, NODE *n)
+{
+    return EVAL_node_num(c, n, 1);                 // ← operand がリテラルに
+}
+// ...
+// (node_add (node_num 1) (node_mul (node_num 2) (node_num 3)))
+VALUE
+SD_dfb75fdabb0d5ef6(CTX *c, NODE *n)
+{
+    return EVAL_node_add(c, n,
+        n->u.node_add.lv, SD_ef2d3a2c467c98a6,     // ← dispatcher が関数名に
+        n->u.node_add.rv, SD_fa5c4f2645bc412);
+}
+```
+
+EVAL 関数群は `static inline` として同じ `.c` に `#include` されているので、C コンパイラは名前で渡された SD → EVAL → 子 SD → … の連鎖を全段インライン展開し、リテラルを定数畳み込みする。NODE ポインタ（`n->u.node_add.lv` 等）はプロセスを跨げないため焼き込まないが、インライン展開後には誰も読まなくなり dead code として消える。結果、最外部の SD は `mov $0x7, %eax; ret` にまで縮む。
+
+もうひとつの重要なメリットとして、**ASTroGen は C パーサを持たずに部分評価器を作れる**。EVAL body は不透明なテキストとして `node_eval.c` にそのまま転写されるだけで、ASTroGen が解析するのは `NODE_DEF` のシグネチャ 1 行だけ。上で見たとおり、specializer (SPECIALIZE_xxx) の実体も「定型の写しを吐く fprintf の列」に過ぎない。C コードの意味解析・インライン展開・定数畳み込みはすべて C コンパイラの仕事であり、ASTroGen 自身は C を理解しないまま「C で書かれたインタプリタの部分評価」が成立する。「EVAL body を一切書き換えない（C パーサを書かない）」はフレームワークの根本方針として拡張時にも貫かれている（[idea_variadic.md](./idea_variadic.md) §2）。ただし絶対の原則ではなく、CPS 変換や対象言語変数の C 変数化など、将来 C の意味論に踏み込まないと届かない変換も視野にある（[idea_future.md](./idea_future.md) §2）。
 
 ### 2.4 Merkle ツリーハッシュ — 構造がコードの ID になる
 
