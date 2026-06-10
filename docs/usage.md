@@ -412,7 +412,7 @@ void astro_cs_disasm(NODE *n);
 
 The full design rationale (entry-as-public, hash-keyed dedup, the
 PGC vs AOT split, the JIT/AOT/PG mode matrix) is in
-[`idea.md` §7](./idea.md).  Known traps with the dlopen-based loader
+[`idea_code_store.md`](./idea_code_store.md).  Known traps with the dlopen-based loader
 (path-name caching, mid-run library replacement, etc.) are in
 [`code_store_quirks.md`](./code_store_quirks.md).
 

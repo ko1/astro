@@ -22,7 +22,7 @@ ASTro (AST-based Reusable Optimization Framework) は、AST を辿るインタ�
   - データ処理 (2): `astr` (R サブセット, libgc + tagged VALUE + numeric/string/list), `arawk` (POSIX awk サブセット, regex 除く、 gawk 0.93× geomean、 astrogre との AST interpreter 統合実験 (Phase 2) を予定)
   - DSL / 非ソース (5): `wastro` (Wasm), `astrogre` (Ruby/Onigmo 互換 regex エンジン + `are` という grep CLI), `nuq` (jq クローン: JSON フィルタ言語 + 70+ builtin), `arjsv` (JSON Schema draft-07 validator, CRuby C 拡張, `json_schemer` 互換 API), `arcel` (CEL 互換 predicate DSL: standalone CLI, cel-go/cel-cpp の dropin 代替を狙う。conformance 100% / 808-808 で cel-go の 89.7% を上回る、bench で cel-go 比 9× / cel-cpp 比 14× geomean, realistic K8s admission policy で cel-cpp 比 22.4× = 52 ns/op)
 - `docs/`
-  - `idea.md` — 設計思想 (ASTro の核心アイデア、JIT 設計、Code Store)
+  - `idea.md` — 設計思想 (ASTro の核心アイデアのみ。各論は `idea_*.md` に分割: astrogen / code_store / jit / evaluation / variadic / future。idea.md 末尾のドキュメントマップ参照)
   - `usage.md` — ASTroGen + runtime の利用ガイド (新サンプルを書くとき読む)
   - `perf.md` — クロスサンプル性能向上知見集
   - `code_store_quirks.md` — Code Store 利用時の罠メモ (dlopen キャッシュ等)

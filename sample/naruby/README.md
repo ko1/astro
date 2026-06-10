@@ -18,8 +18,9 @@ For details:
   switching, ASTroGen / runtime/ integration
 - [docs/perf.md](docs/perf.md) — benchmark numbers and observations
 
-ASTro paper: see [../../docs/idea.md](../../docs/idea.md) §6 for the
-naruby evaluation, §5 for the L0/L1/L2 JIT tier description.
+ASTro paper: see [../../docs/idea_evaluation.md](../../docs/idea_evaluation.md)
+for the naruby evaluation, [../../docs/idea_jit.md](../../docs/idea_jit.md)
+for the L0/L1/L2 JIT tier description.
 
 ## Install
 

@@ -4,7 +4,7 @@ ASTro framework が precise GC についてどんな抽象を提供し、 sample
 側が何を差し込むかをまとめた設計ドキュメント。 実装は `runtime/precise_gc/`
 配下に 16 backend、 reference sample は `sample/baruby_precise/`。
 
-関連: `idea.md` §8.2、 `code_store_quirks.md` (AST NODE 不動制約)、
+関連: `idea_future.md` §2 (統一 GC 基盤)、 `code_store_quirks.md` (AST NODE 不動制約)、
 `sample/baruby/` (conservative libgc 比較対象)、
 `sample/baruby_precise/docs/runtime.md` (実装詳細)。
 
