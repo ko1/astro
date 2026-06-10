@@ -43,6 +43,33 @@
 - ハッシュ関数のカスタマイズ (`@ref` で副情報をハッシュから外す等) で制御可能。
 - 静的型サンプル (pascalast / wastro) は per-type 分裂でノード数が増えやすく、ここの管理が今後も課題。
 
+### C 意味論への踏み込み
+
+現方針は「EVAL body は不透明テキスト、ASTroGen は C パーサを持たない」([idea.md](./idea.md) §2.3)。
+ただしこれは絶対の原則ではなく、将来的には C の意味論に踏み込まないと届かない変換・最適化が
+あるという認識。動機の例:
+
+- **継続渡し (CPS) 変換** — first-class continuation や generator 等のサポートには
+  EVAL body 自体の変形が必要になる
+- **対象言語変数の C 変数化** — lvar をフレーム slot ではなく C ローカル変数に載せ、
+  C コンパイラの register allocation に乗せる。body 中のどこで変数が read/write
+  されるかの解析が要る
+- 実行時 VALUE の literal 焼き込み — body 中のどの式が定数化できるかの特定
+- ノード横断の guard 除去や escape analysis — gcc に外注できるのは 1 つの SD に
+  インライン化された範囲内だけ
+
+「C パーサをフルに書く」前の中間地点の候補:
+
+1. **アノテーション方式** — `@pure` / `@no_gc` 等、意味論的事実をユーザに宣言してもらう。
+   解析なしで semantic facts だけ得る。`@ref` / `@child` の延長線上で現設計と整合的
+2. **libclang / tree-sitter の借用** — パーサを書かずに借りる。限定的な解析は可能だが、
+   build 依存が重くなり ASTro の軽量性と相性が悪い
+3. **body を C サブセット (DSL) に制限** — 新規には現実的だが、既存サンプルの
+   node.def 資産が障壁
+
+いずれもコスト大。まず 1 のアノテーション方式で意味論なしにどこまで粘れるかを
+見極めてから、が現実的な順序か。
+
 ### 統一 GC 基盤
 - 現状は libgc (Boehm) ベースが多数派 (koruby / asom / astr / astocaml 等)、自前 mark-sweep が一部 (luastro)、CRuby GC 流用 (abruby) と分かれている。
 - pluggable GC (例: Bartlett mostly-copying) を `value.def` + frame iterator + AST 不動を前提に共通化する設計が [gc_design.md](./gc_design.md) で成文化済み (実装は `runtime/precise_gc/` 配下、reference sample は `sample/baruby_precise/`)。
