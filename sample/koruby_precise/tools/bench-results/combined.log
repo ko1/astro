@@ -1,5 +1,0 @@
-==== AOT-PGO bench 2026-05-03T05:41:44+00:00 RUNS=10 FRAMES=300 PGO_FRAMES=120 ====
-rule: -fno-lto on all.so link; -fprofile-{generate,use}= on AOT compile
-COMB_g15_baseline                                  size=2709336 best=110.92618071511906 median=109.75205814465556 mean=109.856 gcda=722 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O2 a=-O2\ -march=native
-COMB_g15_kO3                                       size=2709336 best=110.87789930139229 median=109.61346638981978 mean=109.765 gcda=722 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native
-COMB_g16_baseline                                  size=2949632 best=113.5052693535953 median=111.53311388471852 mean=111.546 gcda=722 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O2 a=-O2\ -march=native
