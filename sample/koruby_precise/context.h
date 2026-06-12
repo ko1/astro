@@ -1,0 +1,480 @@
+#ifndef KORUBY_CONTEXT_H
+#define KORUBY_CONTEXT_H 1
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+
+// koruby_precise is a testbed for the precise GC framework, so ASTRO_DEBUG
+// defaults on.  Override with -DASTRO_DEBUG=0 for a release-shape build.
+#ifndef ASTRO_DEBUG
+#  define ASTRO_DEBUG 1
+#endif
+#include "astro_debug.h"
+// Pull AroObjectHeader — sample's heap structs embed `head` as first
+// field.  gc_types.h is the types-only slice of gc.h (no CTX-dependent
+// static inlines) so it can be included before CTX_struct is defined.
+#include "precise_gc/gc_types.h"
+
+// Option model — see naruby parent for the rationale.  koruby keeps the
+// orthogonal AOT / PG flags.  JIT (-j) is currently unwired post-fork.
+struct koruby_option {
+    bool static_lang;
+
+    bool plain;            // -i / --plain
+    bool compile_first;    // -c / --aot
+    bool pg_at_exit;       // -p / --pg
+    bool skip_bake;        // -b
+    bool compile_only;     // --aot-compile
+    bool clear_store;      // --ccs
+    bool jit;              // -j   (unwired post-fork)
+
+    // Referenced by framework-generated ALLOC_ helpers (lib/astrogen.rb).
+    bool record_all;
+
+    bool quiet;
+};
+
+extern struct koruby_option OPTION;
+
+// -----------------------------------------------------------------------------
+// Tagged VALUE.
+//
+//   LSB == 1                  -> fixnum (signed int63, sign-extends on shift)
+//   raw == 0                  -> false singleton
+//   raw == 2                  -> true singleton
+//   raw == 4                  -> nil singleton
+//   LSB == 0, v not in {0,2,4}
+//                             -> heap object pointer (8-byte aligned)
+//
+// `false` and `nil` are now distinct (Ruby `nil != false`).  They are
+// the only **falsy** values; everything else (including INT2VAL(0),
+// `[]`, `""`, `true`) is truthy.  Because `nil = 4` is non-zero in C,
+// node_if / node_while can NOT use a plain `if (UNWRAP(...))` — they
+// test through the IS_FALSY macro.
+//
+// Sub-page singleton values (0, 2, 4) are guaranteed not to collide
+// with libgc-returned heap pointers because libgc never hands out
+// addresses below the first heap page.
+//
+// Arithmetic on fixnums goes through VAL2INT / INT2VAL.  The shift pair
+// folds away under -O3 along most call paths; tag-preserving tricks
+// like `(a + b - 1)` are skipped in favour of clarity for now.
+// -----------------------------------------------------------------------------
+typedef intptr_t VALUE;
+typedef uint64_t state_serial_t;
+
+#define INT2VAL(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | (uintptr_t)1))
+#define VAL2INT(v)    (((intptr_t)(v)) >> 1)
+#define VAL_FALSE     ((VALUE)0)
+#define VAL_TRUE      ((VALUE)2)
+#define VAL_NIL       ((VALUE)4)
+#define IS_INT(v)     (((uintptr_t)(v) & (uintptr_t)1) != 0)
+#define IS_FALSY(v)   ((v) == VAL_FALSE || (v) == VAL_NIL)
+#define IS_TRUTHY(v)  (!IS_FALSY(v))
+// 8-byte aligned heap pointer (koruby_precise: semispace allocations are
+// always 8-byte aligned payloads).  Singletons (true=2, nil=4) have non-zero
+// low bits so they're auto-excluded.  False=0 is excluded explicitly.
+// Strict 8-byte check filters out garbage values that happen to have LSB=0
+// but aren't actual heap pointers (= GC mis-trace bugs).
+#define AROH_IS_GC_OBJECT(v)     ((v) != VAL_FALSE \
+                       && ((uintptr_t)(v) & (uintptr_t)7) == 0)
+
+// Type tag — stored in head.flags low 3 bits.  Distinct OBJ_BYTE_DATA
+// tag for raw byte buffers (= KoString.bytes wrapped in KoByteData)
+// so the framework's SCAN_EDGES can dispatch uniformly via head.flags
+// (no separate framework "category" needed).
+enum obj_type {
+    OBJ_ARRAY       = 1,
+    OBJ_STRING      = 2,
+    OBJ_VALUE_ARRAY = 3,    // raw VALUE[] payload (= KoArrayItems)
+    OBJ_BYTE_DATA   = 4,    // raw char[] payload (= KoByteData)
+};
+#define OBJ_TYPE_MASK   0x07u   /* low 3 bits of head.flags */
+#define OBJ_FLAG_SSO    0x08u   /* bit 3: SSO inline (KoString only) */
+
+// Heap object holding a VALUE[] payload.  Allocated separately from the
+// owning KoArray so realloc can grow it without moving the KoArray itself.
+// The AroObjectHeader.flags is set to OBJ_VALUE_ARRAY so SCAN_EDGES
+// scans each data slot.
+typedef struct KoArrayItems {
+    AroObjectHeader head;
+    VALUE ARO_GC_EDGE data[];   // flex array; capa is tracked in the owning KoArray
+} KoArrayItems;
+
+// Heap object holding raw bytes (= KoString.bytes after iter 75 Step C).
+// head.flags = OBJ_BYTE_DATA, SCAN_EDGES is a no-op for these.
+typedef struct KoByteData {
+    AroObjectHeader head;
+    char data[];            // flex array; size is in head.gc_size
+} KoByteData;
+
+typedef struct KoArray {
+    AroObjectHeader head;
+    uint32_t len;
+    uint32_t capa;
+    KoArrayItems *ARO_GC_EDGE items;
+} KoArray;
+
+// iter 53: SSO (small-string optimization).  Strings with `len <=
+// BSTR_SSO_MAX` (7) are stored inline in the `small[8]` arm of the
+// union; longer strings allocate a separate KoByteData payload.
+// The discriminator is OBJ_FLAG_SSO bit in head.flags.  Layout total
+// stays 24 B — the union overlays the 8-byte pointer slot.
+//
+// Read sites must go through `BSTR_BYTES(s)` (or `bstr_bytes(s)`) —
+// reading `s->bytes->data` directly is UB for SSO strings (the bytes
+// alias to inline char data interpreted as a pointer).  The GC mark /
+// scan paths must skip the bytes pointer when `BSTR_IS_SSO(s)`.
+#define BSTR_SSO_MAX   7u    /* 7 chars + NUL fits in the 8-byte union */
+
+typedef struct KoString {
+    AroObjectHeader head;
+    uint32_t len;            // byte length (not counting NUL)
+    uint32_t capa;           // SSO: sizeof(small).  heap: len + 1.
+    union {
+        KoByteData *ARO_GC_EDGE bytes;   // heap: pointer to NUL-terminated payload (separate alloc)
+        char        small[8];            // SSO: inline chars, NUL at small[len]
+    };
+} KoString;
+
+#define BSTR_IS_SSO(s)  (((s)->head.flags & OBJ_FLAG_SSO) != 0u)
+
+static inline const char *
+bstr_bytes(const KoString * const s)
+{
+    return BSTR_IS_SSO(s) ? s->small : s->bytes->data;
+}
+static inline char *
+bstr_bytes_mut(KoString * const s)
+{
+    return BSTR_IS_SSO(s) ? s->small : s->bytes->data;
+}
+#define BSTR_BYTES(s)  bstr_bytes(s)
+
+/* OBJ_TYPE / VAL2ARY / VAL2STR / IS_ARY / IS_STR — VALUE→object deref
+ * macros.  Take CTX so a future read-barrier hook (= forwarding follow /
+ * color check / handle-table lookup) can be injected uniformly without
+ * touching call sites.  Plain pointer cast under the current
+ * round-robin PURGE backend (= no encoding). */
+#define OBJ_TYPE(c, v)   ((void)(c), ((AroObjectHeader *)(uintptr_t)(v))->flags & OBJ_TYPE_MASK)
+#define IS_ARY(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_ARRAY)
+#define IS_STR(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_STRING)
+#define VAL2ARY(c, v)    ((void)(c), (KoArray *)(uintptr_t)(v))
+#define VAL2STR(c, v)    ((void)(c), (KoString *)(uintptr_t)(v))
+
+// RESULT: 2-register return type for non-local exit support (`return`).
+// Same shape as castro / naruby's RESULT — fits in rax:rdx so the
+// function return ABI carries both VALUE and a state bit without
+// needing setjmp.
+//
+// On the fast path (no `return`), `state == RESULT_NORMAL == 0` lets
+// the `if (r.state)` test fold to a single branch the predictor handles
+// for free.  Within an inlined SD chain `state` is a compile-time
+// constant 0 almost everywhere, so gcc DCE's the propagation tests
+// entirely.
+
+#define RESULT_NORMAL 0u
+#define RESULT_RETURN 1u   /* node_return — caught at function-call boundary */
+#define RESULT_RAISE  2u   /* exception — propagates to main (or rescue, M1) */
+
+typedef struct {
+    VALUE        value;
+    unsigned int state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v), RESULT_NORMAL})
+#define RESULT_RETURN_(v)   ((RESULT){(v), RESULT_RETURN})
+#define RESULT_RAISE_(v)    ((RESULT){(v), RESULT_RAISE})
+
+// UNWRAP: extract VALUE from RESULT, or propagate non-NORMAL state by
+// returning from the *caller* function (statement expression).  Use
+// this at every internal EVAL_ARG site so e.g. `return` inside a
+// deeply nested if/while bubbles up to the enclosing function-call
+// boundary without setjmp.  Borrowed from castro / abruby.
+#define UNWRAP(r) ({ RESULT _r = (r); if (UNLIKELY(_r.state != RESULT_NORMAL)) return _r; _r.value; })
+/* CHECK: same as UNWRAP but discards the value (for side-effect calls). */
+#define CHECK(r)  do { RESULT _r = (r); if (UNLIKELY(_r.state != RESULT_NORMAL)) return _r; } while (0)
+
+// -----------------------------------------------------------------------------
+// VALUE_REF / VALUE_SLICE — typed rooted references (docs/v2_design.md §5).
+//
+// A VALUE_REF wraps a pointer to a GC-scanned, address-stable cell
+// (in practice: a slot in the value stack).  Raw `VALUE *` is banned
+// from helper ABIs; wrapping in a 1-member struct makes every deref go
+// through the accessor macros (audit hooks live there) and keeps
+// register passing (SysV: 8-byte struct in one register).
+//
+// Invariant: .p points into the slots stack (or is passed through from
+// another VALUE_REF).  Never wrap &c_local or &heap_obj->field.
+// -----------------------------------------------------------------------------
+typedef struct { VALUE *p; } VALUE_REF;
+typedef struct { VALUE *p; uint32_t cnt; } VALUE_SLICE;
+
+#define VALUE_REF_AT(ptr)        ((VALUE_REF){ (ptr) })
+#define VALUE_REF_GET(r)         (*(r).p)
+#define VALUE_REF_SET(r, v)      (*(r).p = (v))
+#define VALUE_SLICE_AT(ptr, n)   ((VALUE_SLICE){ (ptr), (uint32_t)(n) })
+#define VALUE_SLICE_GET(s, i)    ((s).p[(i)])
+#define VALUE_SLICE_SET(s, i, v) ((s).p[(i)] = (v))
+#define VALUE_SLICE_LEN(s)       ((s).cnt)
+#define VALUE_SLICE_REF(s, i)    ((VALUE_REF){ &(s).p[(i)] })
+
+/* Push v at the slots cursor (a local variable), advance the cursor,
+ * and return a rooted ref to the cell.  Pass the advanced cursor down
+ * so the pushed cell stays below the published top at the next GC. */
+#define SLOTS_PUSH(slots, v) \
+    ({ VALUE *_p = (slots)++; *_p = (v); (VALUE_REF){ _p }; })
+
+struct function_entry {
+    const char *name;
+    struct Node *body;
+    unsigned int params_cnt;
+    unsigned int locals_cnt;
+};
+
+struct callcache {
+    state_serial_t serial;
+    struct Node *body;
+};
+
+/* Builtin functions take CTX as the first argument so they can access
+ * the framework state (allocator, root scan, future read-barrier hooks)
+ * uniformly, and otherwise for symmetry.  Currently the CTX argument
+ * is unused by many builtins (= optimizer drops it). */
+struct CTX_struct;
+typedef struct CTX_struct CTX;
+typedef VALUE (*builtin_func_ptr)(CTX *);
+typedef VALUE (*builtin_func1_ptr)(CTX *, VALUE);
+typedef VALUE (*builtin_func2_ptr)(CTX *, VALUE, VALUE);
+typedef VALUE (*builtin_func3_ptr)(CTX *, VALUE, VALUE, VALUE);
+typedef VALUE (*builtin_func4_ptr)(CTX *, VALUE, VALUE, VALUE, VALUE);
+
+typedef struct builtin_func {
+    builtin_func_ptr func;
+    const char *name;
+    const char *func_name;
+    bool have_src;
+} builtin_func_t;
+
+#ifndef DEBUG_EVAL
+#define DEBUG_EVAL 0
+#endif
+
+/* iter 62: process-scope GC instance への pointer。 sample 全体で唯一の
+ * GC instance を CTX 経由でアクセスする (contract: ARO_GC_INSTANCE(c)
+ * = (c)->astro_gc)。 multi-instance 拡張なら CTX 1 つに 1 instance を
+ * bind するだけで対応可能。 struct ASTroGC の中身は各 backend (gc_*.c)
+ * が定義 — sample 視点では opaque pointer。
+ *
+ * stats / stress / timer は per-instance なので ASTroGC 内に保持する
+ * (= 「共通ヘッダ」 pattern: 各 backend の `struct ASTroGC` の先頭に
+ * `AroGcCommonState common` を置く約束。 gc.h 側で
+ * `(AroGcCommonState *)c->astro_gc` で安全に取り出せる)。 */
+struct ASTroGC;
+
+typedef struct CTX_struct {
+    VALUE *env;                  // bottom of VALUE stack (= start of mark range)
+    VALUE *sp;                   // current scratch top — updated by alloc API before mark
+    struct ASTroGC *astro_gc;    // process-scope GC instance (backend が中身定義)
+    unsigned int func_set_cnt;
+    struct function_entry *func_set;
+    state_serial_t serial;
+
+#if DEBUG_EVAL
+    unsigned int frame_cnt;
+    unsigned int rec_cnt;
+#endif
+} CTX;
+
+#define LIKELY(expr) __builtin_expect((expr), 1)
+#define UNLIKELY(expr) __builtin_expect((expr), 0)
+
+// ============================================================================
+// GC contract macros (iter 62) — sample が framework に提供する「contract」。
+//
+// 各 backend (gc_*.c) はこれらを compile-time に展開して使う。
+// 詳細は docs/gc_design.md §2 を参照。
+// ============================================================================
+
+/* Instance accessor: CTX → ASTroGC *.  各 backend は自分の ASTroGC
+ * struct を typedef して、 process 起動時 1 つ (or 複数) allocate +
+ * `(c)->astro_gc` に bind する。 framework 関数は引数 CTX 経由で
+ * ASTroGC を取り出して操作する (= module-static なし)。 */
+#define ARO_GC_INSTANCE(c)  ((c)->astro_gc)
+
+/* Root visitor: framework CTX-opaque contract。 koruby_precise は roots を
+ * c->env .. c->sp の linear range で持つので macro 直書きで inline 展開
+ * できる (= zero indirect-call overhead)。 framework backend の GC entry
+ * から呼ばれる。
+ *
+ * iter 76: framework から c->sp / c->env への直接 access を全廃。 すべて
+ * sample 側のこの macro 経由にする。 stale slot の zero-clear (= 旧
+ * sp_high_water logic) は sample が必要なら macro 内で行う ── 現状は
+ * backend 側でやっていたが、 framework は sample stack 構造を知らない
+ * 方が clean。
+ *
+ * Args:
+ *   c          : CTX *
+ *   ctx        : opaque backend handle (= ASTroGC *)
+ *   edge_visit : void (void *ctx, void **slot) callback
+ */
+extern VALUE *koruby_gc_sp_high_water;
+/* Root-stack contract for ARO_ROOT_SCOPE_* in runtime/precise_gc/gc.h.
+ * koruby_precise uses a single linear VALUE stack `c->env..c->sp` (= 8 GiB
+ * mmap'd in main.c) where the same range serves as eval stack AND precise
+ * root spill stack.  `koruby_gc_sp_limit` is set once at startup to
+ * `c->env + stack_bytes/sizeof(VALUE)`; ASTRO_ASSERT in SCOPE_START uses
+ * it to catch reservation overflow (= debug-only). */
+extern VALUE *koruby_gc_sp_limit;
+#define AROH_ROOT_STACK_TOP(c)        ((c)->sp)
+#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp = (p))
+#define AROH_ROOT_STACK_LIMIT(c)      (koruby_gc_sp_limit)
+
+#define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                       \
+    VALUE *_aro_sp_top = (c)->sp;                                            \
+    /* Zero stale slots above sp_top up to high-water mark (= pop-only       \
+     * sample side: 値を残したまま sp を戻す convention のため、 古い        \
+     * heap ptr が再 alloc 後 stale で GC scan に混入するのを防ぐ)。 */     \
+    if (koruby_gc_sp_high_water == NULL ||                                   \
+        _aro_sp_top > koruby_gc_sp_high_water) {                             \
+        koruby_gc_sp_high_water = _aro_sp_top;                               \
+    } else {                                                                 \
+        for (VALUE *_p = _aro_sp_top; _p < koruby_gc_sp_high_water; _p++)    \
+            *_p = 0;                                                         \
+    }                                                                        \
+    for (VALUE *_p = (c)->env; _p < _aro_sp_top; _p++) {                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                      \
+    }                                                                        \
+} while (0)
+
+/* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
+ * `void (void *ctx, void **slot)`、 同じ macro で mark / forward / update 全
+ * phase 共有。 `ctx` は backend が好きに使える explicit closure
+ * (典型的には `ASTroGC *gc`)。 GCHeader は forward 宣言 (各 backend が
+ * typedef する)。 module-static を global として使わないために ctx 経由
+ * を必須にしている。 */
+/* Sample が提供する shape macro。 framework が CAT_OBJECT category の
+ * payload に対してのみ呼び出す (= VALS / BYTE / FREE は framework が
+ * 直接 dispatch、 sample に届かない)。 sample 側は自分の object header
+ * (KoArray / KoString) の type tag を見て edge を visit。
+ *
+ * Args:
+ *   payload    : void * — GCHeader 直後の object payload pointer
+ *   payload_size : size_t — payload バイト数 (= 通常 ObjectHeader だけ
+ *                  なので使わないが、 framework が一律で渡す)
+ *   ctx, edge_visit : 各 slot を visit する callback (= 通常 ASTroGC *)
+ */
+#define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
+    AroObjectHeader *_h = (AroObjectHeader *)(payload);                 \
+    switch (_h->flags & OBJ_TYPE_MASK) {                                    \
+      case OBJ_ARRAY: {                                                     \
+          /* `items` is a typed-ptr (= KoArrayItems *) — raw slot. */       \
+          KoArray *_a = (KoArray *)(payload);                               \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);            \
+          (void)(payload_size);                                              \
+          break;                                                             \
+      }                                                                      \
+      case OBJ_STRING: {                                                    \
+          /* `bytes` is a typed-ptr (= KoByteData *) — raw slot. */         \
+          KoString *_s = (KoString *)(payload);                             \
+          if (!BSTR_IS_SSO(_s))                                              \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->bytes);        \
+          break;                                                             \
+      }                                                                      \
+      case OBJ_VALUE_ARRAY: {                                               \
+          /* `data[i]` is a VALUE slot — scrambled in scramble backend. */  \
+          KoArrayItems *_ai = (KoArrayItems *)(payload);                    \
+          size_t _n = ((payload_size) - sizeof(KoArrayItems)) / sizeof(VALUE); \
+          for (size_t _i = 0; _i < _n; _i++)                                \
+              ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ai->data[_i]);    \
+          break;                                                             \
+      }                                                                      \
+      case OBJ_BYTE_DATA:                                                   \
+          /* raw bytes — no edges to scan */                                \
+          break;                                                             \
+      default:                                                               \
+          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown head.flags type");         \
+    }                                                                        \
+} while (0)
+
+/* Scan-safe init: payload slots may be scanned right after alloc (before
+ * caller writes anything).  koruby's VAL_FALSE == 0 so zero-fill is GC-safe.
+ * iter 75 Step C: head is at payload offset 0 — backend has already
+ * initialized it.  We zero ONLY the post-head region so the head's
+ * gc_size / gc_flags / gc_fwd survive. */
+#define AROH_INIT_PAYLOAD(payload, size_bytes)                              \
+    memset((char *)(payload) + sizeof(AroObjectHeader), 0,                     \
+           (size_bytes) - sizeof(AroObjectHeader))
+
+/* Byte payload init: GC never scans these so skip memset.  Caller fills
+ * the bytes before any further alloc. */
+#define AROH_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+
+/* No sample-managed external resources (= no GMP, no FILE *).  koruby
+ * never calls aro_gc_finalize_register so the macro body is never
+ * actually evaluated, but the framework's `#error` guard requires the
+ * macro to be defined. */
+#define AROH_FINALIZE(payload) ((void)(payload))
+
+/* Header layout accessors (framework default).  Each backend's GCHeader
+ * has `size` (uint32_t) at the canonical offset; `fwd` is moving-only.  */
+#define AROH_HEADER_SIZE(h)         ((h)->size)
+#define AROH_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
+#define AROH_HEADER_GET_FWD(h)      ((h)->fwd)
+#define AROH_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
+
+// Heap allocators (defined in node.c).  All take `sp` as the last
+// argument: the caller's current scratch top.  Each helper sets
+// c->sp = sp (or sp+N) internally before alloc.
+VALUE koruby_ary_new(CTX *c, uint32_t capa);
+VALUE koruby_ary_new_from(CTX *c, VALUE_SLICE items);
+// Both av_ref and x_ref are pointers to caller's sp slots; we re-read
+// through them after any internal alloc so post-move addresses are
+// picked up.  fast-path (= no realloc) is inlined in node.h (after
+// gc.h is visible so ARO_STORE is in scope); the realloc grow path
+// stays in node.c.  See iter 73 sieve perf note.
+void  koruby_ary_push_grow(CTX *c, VALUE_REF av_ref, VALUE_REF x_ref);
+// av/bv are pointers to caller sp slots; reloaded after alloc.
+VALUE koruby_ary_plus(CTX *c, VALUE_REF av_ref, VALUE_REF bv_ref);
+VALUE koruby_str_new(CTX *c, const char *bytes, uint32_t len);
+VALUE koruby_str_new_cstr(CTX *c, const char *cstr);
+// Slice from a heap source: src_ref is a caller sp slot, re-deref'd post-GC.
+VALUE koruby_str_slice(CTX *c, VALUE_REF src_ref, uint32_t offset, uint32_t len);
+VALUE koruby_ary_slice(CTX *c, VALUE_REF src_ref, uint32_t offset, uint32_t take);
+VALUE koruby_str_concat(CTX *c, VALUE_REF av_ref, VALUE_REF bv_ref);
+
+// Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
+// identity).  Otherwise: same type → recursive byte / element compare;
+// different types → false.  Mixed (int vs ptr) → false.
+bool  koruby_value_eq(CTX *c, VALUE a, VALUE b);
+
+// Strict-3-way string compare: <0 / 0 / >0, like memcmp + length tiebreak.
+int   koruby_str_cmp(CTX *c, VALUE a, VALUE b);
+
+// `s * n` / `a * n` — Ruby-style repeat into a fresh object.  Negative
+// `n` returns an empty result (Ruby raises but we just clamp).
+VALUE koruby_str_repeat(CTX *c, VALUE_REF sv_ref, intptr_t n);
+VALUE koruby_ary_repeat(CTX *c, VALUE_REF av_ref, intptr_t n);
+
+// In-place append (`s << t`) — grows `dst`'s buffer and returns `dst`.
+// dst_ref / src_ref are caller sp slots reloaded after realloc.
+void  koruby_str_append(CTX *c, VALUE_REF dst_ref, VALUE_REF src_ref);
+
+// Stringification (Ruby `to_s`).  Heap-alloc'd in all cases except when
+// `v` is already a String (returns self).
+VALUE koruby_to_s(CTX *c, VALUE v);
+
+void  koruby_print_value(CTX *c, FILE *fp, VALUE v);       /* inspect format */
+void  koruby_print_value_tos(CTX *c, FILE *fp, VALUE v);   /* to_s format */
+void  koruby_puts_value(CTX *c, FILE *fp, VALUE v);        /* CRuby puts semantics */
+
+/* Raise (M0 minimal): builds "msg (Klass)" as a String VALUE and returns
+ * RESULT_RAISE.  Real exception objects arrive with rescue support (M1).
+ * `sp` is the caller's slots cursor (publish-before-alloc). */
+RESULT koruby_raise(CTX *c, VALUE *sp, const char *klass, const char *msg);
+
+#endif

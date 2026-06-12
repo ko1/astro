@@ -3,6 +3,38 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## v2 M0 状況 (2026-06-12 開始)
+
+ベース = baruby_precise fork (iter 60-61 で slots=top / 負 offset @child /
+RESULT / copy GC 済みのため)。block / Proc は対象外 (user 指定)。
+
+### 済み (M0 初回 commit)
+
+- VALUE_REF / VALUE_SLICE 型強制 (helper ABI から生 `VALUE *` を排除)。
+  変換中に **ary slice の interior-pointer GC バグを型が検出** → 修正
+- RESULT_RAISE + koruby_raise: ZeroDivisionError、未定義メソッドは
+  NoMethodError 形式 stderr + exit 1。CRuby 形式の uncaught 表示
+- 整数 div/mod を CRuby floored semantics に (-7/2 == -4)
+- puts / p / print builtin (CRuby 互換: puts の配列再帰・nil 空行・
+  末尾改行抑止、p は inspect)。stdout から bench 用ノイズ除去
+- CLI: framework canonical flags。**--aot-compile が何も bake しない
+  v1 由来バグを修正** (koruby pattern: 常に bake + run)
+- gate 確認: fib / 算術 / 文字列 churn が CRuby と diff 一致、
+  STRESS / STRESS+PURGE green、AOT bake → cached → plain 完動
+- rubyharness 接続 (make gen/test/bench)
+
+### M0 残 / M1 へ
+
+- rubyharness PASS 0 (コーパスは kwargs/block/class が大半 → カバレッジ
+  拡大で伸ばす。block は対象外なので block 系は恒久 SKIP 扱いの仕組みが要る)
+- Float / Symbol リテラル
+- `-e` / `--dump-ast` flag (今は KORUBY_DUMP_AST env)
+- publish 集約 (`c->sp = sp` の site 書き込みが node.def に残存 →
+  korb_alloc 系へ集約。v2_design §3.3)
+- 識別子 sp → slots rename (substitute_sp_slots の cursor 名 hook 化込み)
+- slots overflow の limit check + SystemStackError (今は 8 GiB mmap 任せ)
+- method call (recv.m) / Range / 文字列 interpolation など parse 拡大
+
 ## 共有 runtime への koruby 専用コード漏れ (2026-06-12 発覚 → 同日解決)
 
 `runtime/precise_gc/gc_copy.c` の forward_edge 診断 (commit ae983279,
