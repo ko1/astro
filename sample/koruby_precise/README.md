@@ -1,9 +1,6 @@
-# koruby_precise — v2 (再構築中、M0 コア動作)
+# koruby_precise — v2 再構築中
 
-v1 実装は削除し (2026-06-12)、同日 v2 M0 コアを実装開始。
-ベースは baruby_precise fork + v2 ABI (VALUE_REF / RAISE / CRuby 互換出力)。
-ビルドは `cp -r ../baruby_precise/prism .` で prism を持ってきてから `make`。
-block / Proc は対象外。
+v1 の実装は削除した (2026-06-12)。**v2 として全面再構築する**ため。
 
 - 設計: [docs/v2_design.md](./docs/v2_design.md)
 - 仕様 (CLI / AOT / スコープ / gate): [docs/v2_spec.md](./docs/v2_spec.md)
