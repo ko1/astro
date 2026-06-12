@@ -35,8 +35,6 @@ gdb: koruby_precise
 	gdb -ex run --args ./koruby_precise $(KORUBY_OPT) test.ba.rb
 
 # GC testbed bench suite — same as koruby for comparison.
-bench: koruby_precise
-	KORUBY_BIN=./koruby_precise ruby bench/run.rb
 
 # Tests: current binary で全 T_*.ba.rb を実行、 test/expected/*.expected と
 # 比較。 expected が無ければ初回実行時に生成する (= oracle generation mode)。
@@ -46,8 +44,6 @@ bench: koruby_precise
 #   make test_all                全 16 backend で rebuild + test
 #   make test_stress             KORUBY_GC_STRESS=1 で全 T_*.ba.rb
 #   make test_all_stress         16 backend × stress mode
-test: koruby_precise
-	ruby test/run.rb
 
 test_stress: koruby_precise
 	ruby test/run.rb --stress
@@ -136,7 +132,7 @@ koruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o koruby_precise main.c node.c node_slowpath.c parse.c astro_jit.c $(GC_COMMON_SRC) $(GC_SRC) -lprism -ldl
 
-node_eval.c: ../../lib/* node.def koruby_gen.rb
+$(NODE_GENFILES) node_head.h &: ../../lib/* node.def koruby_gen.rb
 	ruby -I ../../lib -r ./koruby_gen -e 'ASTroGen.start([], node_def_class: KoRubyNodeDef)'
 
 

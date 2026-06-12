@@ -8,7 +8,6 @@ node_replace.c
 node_alloc.c
 node_hash.c
 node_hopt.c
-node_slowpath.c
 code_store/
 .built_gc
 prism/
