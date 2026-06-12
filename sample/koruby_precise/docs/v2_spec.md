@@ -122,7 +122,9 @@ app.rb:3:in 'foo': msg (RuntimeError)
 | `ASTRO_BUILD_OPTS` | AOT bake 時の C ツールチェインオプション |
 
 GC backend は実行時ではなく **build-time switch** (`make GC=<backend>`、
-baruby_precise と同じ流儀。default は段階に応じて §M1: mark → §M3: copy)。
+baruby_precise と同じ流儀)。**default は初日から copy (moving)** —
+non-moving は rooting 漏れを発火させないため gate に使えない
+(v2_design.md §9.1)。mark 等は比較・デバッグ用。
 
 ## 5. ビルド
 
@@ -139,9 +141,11 @@ glob 依存罠を踏まない)。
 
 ## 6. 受け入れ基準 (マイルストーンの出口)
 
+全段階で **copy (moving) backend + STRESS+PURGE を gate に含める**
+(GC 強度の段階導入はしない。v2_design.md §9.1):
+
 | 段階 | gate |
 |---|---|
-| M0 | `make test CAT=basic` green + `bench` の interp/aot 両モードが動く (AOT は M0 から契約に入れる) |
-| M1 | 主要 CAT green、STRESS=1 green |
-| M2 | buffer-moving backend で同 gate |
-| M3 | full moving + STRESS+PURGE green、bench で v1 (git 履歴の基準値) / CRuby と比較 |
+| M0 | `make test CAT=basic` green (STRESS+PURGE 含む) + `bench` の interp/aot 両モードが動く (AOT は M0 から契約に入れる) |
+| M1 | 主要 CAT green (STRESS+PURGE 含む)、bench で v1 (git 履歴の基準値) / CRuby と比較 |
+| M2+ | スコープ拡大ごとに同 gate 維持。最終目標 rubyspec 広範 PASS + optcarrot |

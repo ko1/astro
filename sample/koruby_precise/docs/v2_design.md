@@ -652,19 +652,21 @@ v1 は AOT を後回しにした結果、dispatcher swap が hash 不一致で�
 
 ## 9. GC 戦略
 
-### 9.1 最初から moving 契約で書く ✅
+### 9.1 最初から moving で動かす ✅
 
-コードは全部 §2-5 の規約 (= full moving で正しい形) で書く。backend を
-non-moving にしても正しさは変わらないので、GC 本体は段階導入できる:
+コードは §2-5 の規約 (= full moving で正しい形) で書き、**default backend
+も初日から copy (moving)**。GC 強度の段階導入はしない:
 
-| 段階 | backend | 何を検証するか |
-|---|---|---|
-| M1 | precise non-moving (mark&sweep) | rooting 規約・RESULT・ABI 全体 |
-| M2 | buffer-only moving (struct 固定、payload buffer のみ move) | buffer 系の ref 規約 |
-| M3 | full moving (copy) + PURGE | 全部。STRESS+PURGE を常用 gate に |
+- non-moving では rooting 漏れが**発火しない** (root し忘れても誰も move
+  しない)。後から moving に上げると違反が一斉に出る — v1 の struct-moving
+  移行が頓挫したパターンの再演になる
+- 検出器 (copy + STRESS + PURGE) は node が 1 個の時点から回す。
+  gc_copy backend は runtime/precise_gc に存在し稼働中 (baruby_precise /
+  ascheme_precise) なので待つ理由がない
+- マイルストーンは GC 強度ではなく**言語スコープ**で刻む (v2_spec.md §6)
 
-backend は runtime/precise_gc の build-time switch (baruby_precise の 14-backend
-testbed と同じ流儀) を使う。
+non-moving backend (mark 等) は比較・デバッグ用の build-time switch
+(`make GC=<backend>`、baruby_precise の testbed と同じ流儀) として残す。
 
 ### 9.2 検証モード ✅
 
@@ -762,12 +764,13 @@ make bench               # cruby / cruby+yjit / interp / aot+compile / aot+cache
 
 ### 12.2 マイルストーン 🤔
 
+GC は全段階で copy (moving) + STRESS/PURGE gate (§9.1)。刻みは言語スコープ:
+
 | | 内容 | 出口条件 |
 |---|---|---|
-| M0 | spike: コア eval loop + lvar 一本/二本の実測比較 (§7.8, §8.2) + AOT 経路疎通 | 設計判断の確定。calc 級 subset が rubyharness CAT=basic green |
-| M1 | precise non-moving で builtins 拡大 | make test の主要 CAT green (STRESS 含む) |
-| M2 | buffer-moving | 同上 + buffer ref 規約の検証 |
-| M3 | full moving + PURGE 常用 | STRESS+PURGE green、bench で v1 比較 |
+| M0 | spike: コア eval loop + lvar 一本/二本の実測比較 (§7.8, §8.2) + AOT 経路疎通 | 設計判断の確定。calc 級 subset が rubyharness CAT=basic green (STRESS+PURGE 含む) |
+| M1 | コレクション / block / class / 例外 / builtins 拡大 | 主要 CAT green (STRESS+PURGE 含む)、bench で v1 (git 履歴の基準値) / CRuby と比較開始 |
+| M2+ | スコープ拡大 (Module / 特異メソッド / …) | 同 gate 維持。最終目標は rubyspec 広範 PASS + optcarrot (v1 同等以上) |
 
 builtins の C コードは v1 から**機械移植しない** (互換性不要の方針)。
 v1 はロジックの参考資料とし、v2 ABI で書き下ろす。
