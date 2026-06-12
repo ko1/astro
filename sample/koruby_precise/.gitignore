@@ -12,3 +12,5 @@ node_slowpath.c
 code_store/
 .built_gc
 prism/
+prism
+node_head.h
