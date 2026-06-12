@@ -3,6 +3,7 @@
 v1 の実装は削除した (2026-06-12)。**v2 として全面再構築する**ため。
 
 - 設計: [docs/v2_design.md](./docs/v2_design.md)
+- 仕様 (CLI / AOT / スコープ / gate): [docs/v2_spec.md](./docs/v2_spec.md)
 - v1 の実装・履歴: git 履歴を参照 (削除 commit の親まで遡る)
 - v1 時代の分析・記録 (`docs/closure_sp_model.md`,
   `docs/sp_transition_analysis.md`, `docs/done.md`, `docs/todo.md` 等) は

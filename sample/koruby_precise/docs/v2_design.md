@@ -772,10 +772,11 @@ make bench               # cruby / cruby+yjit / interp / aot+compile / aot+cache
 builtins の C コードは v1 から**機械移植しない** (互換性不要の方針)。
 v1 はロジックの参考資料とし、v2 ABI で書き下ろす。
 
-### 12.3 場所 ❓
+### 12.3 場所 ✅
 
-🤔 推奨: 新ディレクトリ (例 `sample/koruby2/`、名称は user 決定)。
-koruby_precise は基準線・オラクルとして凍結。
+`sample/koruby_precise/` に in-place で再構築 (user 決定。v1 実装は
+2026-06-12 に削除済み、基準線は git 履歴で参照)。CLI 等の外形仕様は
+[v2_spec.md](./v2_spec.md)。
 
 ---
 
@@ -789,6 +790,6 @@ koruby_precise は基準線・オラクルとして凍結。
 | 4 | VALUE_SLICE の詳細 (splat / kwargs との接続) | M1 で builtins を書きながら |
 | 5 | AOT の VALUE literal 埋め込み (v1 からの framework gap: c->consts 経由) | AOT gate 整備時 |
 | 6 | callback 系 iterator (each 等) と ref 規約の詳細 | M1 |
-| 7 | ディレクトリ名 | user |
+| 7 | ~~ディレクトリ名~~ → `sample/koruby_precise/` in-place で確定 (§12.3) | 解決済み |
 | 8 | 可変長の「上に返す」(splat 展開等、§3.4)。候補: (a) cursor を `VALUE **` で渡す例外 ABI (b) Array で返す (c) 生成コード側 (cursor 所有者) に寄せる | M1 (splat 実装時) |
 | 9 | moving Class への inline cache 防衛 (§9.3): gen tag (v1 実証) vs IC slot を GC edge 化 | M1 (IC 実装時) |
