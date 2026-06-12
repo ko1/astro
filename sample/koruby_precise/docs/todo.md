@@ -3,6 +3,20 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 共有 runtime への koruby 専用コード漏れ (2026-06-12 発覚 → 同日解決)
+
+`runtime/precise_gc/gc_copy.c` の forward_edge 診断 (commit ae983279,
+「途中経過 + 診断」) が `koruby_bootstrap_ctx` / `korb_vm` extern と
+`cc->stack_base` / `cc->stack_end` (koruby 専用 CTX field) を直書きして
+おり、 baruby_precise / ascheme_precise が HEAD でビルド不能だった。
+
+**解決**: 診断ブロックは koruby の bump 移行デバッグ作業 (v2 再構築で放棄)
+の持ち物なので、 weak hook 化ではなく**丸ごと撤去**。 診断専用だった
+`g_scan_owner` / `g_in_root_scan` グローバルも削除。 forward_edge の
+ロジック (idempotent skip + forward_payload) は不変。 baruby_precise /
+ascheme_precise / koruby_precise ビルド + smoke (STRESS / STRESS+PURGE
+含む) 確認済み。
+
 ## Phase 8 進捗 — RESULT 化 & per-CTX 機械化 (2026-05-29)
 
 user 指摘: 「ctx->state 消せた？」「VALUE を返す関数を RESULT にする / 呼び側
