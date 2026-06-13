@@ -264,7 +264,7 @@ module ASTroGen
 
         def build_specializer name
           # @child operand: arg in the EVAL call is whatever the owner Node's
-          # `child_storage_expr(slot)` returns (default `sp[slot]`).  The
+          # `child_storage_expr(slot)` returns (default: a C local).  The
           # spill statement is emitted by Node#build_specializer as a
           # "setup" statement BEFORE the return EVAL_xxx(...) call.  Here we
           # return cn (recurse SPECIALIZE into child) + the bare arg expr.
@@ -330,12 +330,14 @@ module ASTroGen
       # WHERE to keep that value between the dispatcher call and the EVAL
       # call.
       #
-      #   Default (precise-GC samples): spill to caller's sp[slot] so the
-      #   GC's root scan can see the value across sibling-eval GC points.
+      #   Default (language-neutral): a plain C local.  Correct for samples
+      #   with no GC or a conservative GC (the C stack is scanned), and for
+      #   any sample whose dispatcher has no scratch-area parameter.
       #
-      #   Conservative-GC samples (e.g. libgc): override to return a plain
-      #   C-local declaration; the C stack is scanned conservatively, so
-      #   no explicit sp[] root is needed.
+      #   Precise-GC samples MUST override: spill into a root-scanned slot
+      #   area instead, so the value survives a sibling-eval GC.  See
+      #   sample/baruby_precise/baruby_gen.rb for the "sp = top, negative
+      #   offsets" convention used by the precise family.
       #
       # `child_storage_decl(slot)` is emitted ONCE at the top of the
       # DISPATCH / SD body (or empty if the storage doesn't need a decl).
@@ -343,31 +345,38 @@ module ASTroGen
       # assignment AND as the arg expression passed to EVAL.
       # --------------------------------------------------------------------
       def child_storage_decl(slot)
-        ""   # sp[] is already in scope; no decl needed by default.
+        "VALUE _c#{slot};"
       end
 
-      # New "sp = top" convention (Phase 1):
-      #   - sp arg received by a NODE_DEF is positioned at the top of its
-      #     own slot area; slots are accessed via NEGATIVE offsets below sp
-      #   - This NODE's slots layout (low→high address):
-      #       [ $e0, $e1, ..., $e_{K-1}, $tmp1, $tmp2, ..., $tmpM ] sp
-      #     where K = @child operand count, M = author-declared $name count
-      #   - slot_count = K + M is per-NODE static metadata baked into NodeKind
-      #   - Parent invokes child with `sp + child.slot_count` so child also
-      #     receives sp at top of its own area (recursive convention)
-      #   - @child snapshot at index `slot` (0-based) → sp[slot - slot_count]
-      #     so slot 0 (first @child) → sp[-slot_count] (lowest address, base
-      #     of [e0, e1, ...] array)
       def child_storage_expr(slot)
-        offset = slot - slot_count
-        "sp[#{offset}]"
+        "_c#{slot}"
       end
 
       def child_dispatch_args(slot, field)
-        # iter 60: pass parent's `sp` unchanged.  The child's DISPATCH/SD
-        # prologue does `sp = sp_in + self.slot_count` to position its own
-        # area top.  No runtime slot_count load on the dispatch path.
-        "c, #{field}, fp, sp"
+        # Language-neutral dispatcher call: `(*dispatcher)(c, node)`.
+        # Samples whose dispatchers take extra args (fp / sp / slots ...)
+        # override this to append them.
+        "c, #{field}"
+      end
+
+      # C statement emitted at the top of DISPATCH / SD bodies to claim
+      # this NODE's slot area (or "" for none).  Languages that thread a
+      # slot-area cursor (sp / slots) through their dispatchers override
+      # this to advance it by slot_count — see baruby_precise's
+      # "sp = top" convention.  Neutral default: nothing; samples whose
+      # @child storage is C locals need no prologue.
+      def slot_area_prologue
+        ""
+      end
+
+      # Identifier of the slot-area cursor parameter that `$name` slot
+      # references in NODE_DEF bodies substitute against (and that the
+      # default child_storage_expr of slot-threading samples indexes).
+      # Neutral default is "sp"; a sample whose dispatcher names the
+      # cursor differently (e.g. koruby_precise v2's `slots`) overrides
+      # this in its lang_gen.rb.
+      def cursor_name
+        "sp"
       end
 
       # Slot count for this NODE_DEF = @child operand count + max tmp slot
@@ -492,7 +501,7 @@ module ASTroGen
             slot = slot_map[name]
             raise "unknown slot $#{name} in #{@name}" unless slot
             offset = slot - total_slots
-            "sp[#{offset}]"
+            "#{cursor_name}[#{offset}]"
           else
             m
           end
@@ -674,9 +683,9 @@ module ASTroGen
         child_ops = @operands.select(&:child?)
         if child_ops.empty?
           # Backward-compatible fast path: no @child operands, emit the
-          # forwarder DISPATCH.  iter 60: still need sp advance if this
+          # forwarder DISPATCH.  Still need the slot-area prologue if this
           # NODE_DEF declared $tmp slots (M > 0).
-          sp_advance = slot_count > 0 ? "    sp += #{slot_count};\n" : ""
+          sp_advance = slot_area_prologue.empty? ? "" : "    #{slot_area_prologue}\n"
           <<~C
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
@@ -699,14 +708,14 @@ module ASTroGen
         else
           # v2 strict-arg DISPATCH:
           #   1. Pre-evaluate each @child by calling its dispatcher.
-          #   2. Spill the result to sp[i] (snapshot) before evaluating
-          #      the next @child — protects against GC moving the value
-          #      during a sibling's evaluation.
-          #   3. Pass sp (NOT sp + N) to EVAL.  Body sees the snapshot
-          #      at sp[0..N) and uses sp[N..] as its own scratch —
-          #      matching the existing baruby_precise convention.  This
-          #      avoids re-spilling sp[i] = lv inside the body when a
-          #      helper wants &sp[i] pointer args.
+          #   2. Spill the result to its storage slot (snapshot) before
+          #      evaluating the next @child — for precise-GC samples the
+          #      slot is root-scanned, protecting against GC moving the
+          #      value during a sibling's evaluation.
+          #   3. Pass the @child storage exprs as plain VALUE args to EVAL.
+          # WHERE the snapshot lives is the per-language child_storage_*
+          # hook choice (default: C local; precise-GC samples spill into
+          # their scanned sp[] area — see baruby_precise).
           #
           # UNWRAP is the embedder's macro for extracting VALUE from the
           # dispatcher's return type (RESULT for baruby/castro, VALUE for
@@ -720,15 +729,16 @@ module ASTroGen
           child_slot = {}
           child_ops.each_with_index{|op, i| child_slot[op.name] = i }
 
-          # Per-language storage decls (default: empty — sp[] is in scope).
+          # Per-language storage decls (default: `VALUE _c<i>;` C locals;
+          # empty for samples whose storage needs no decl, e.g. sp[] slots).
           decl_stmts = child_ops.map{|op|
             child_storage_decl(child_slot[op.name])
           }.reject(&:empty?).map{|s| "    #{s}" }.join("\n")
 
           # Pre-eval + spill statements.  The LHS is whatever the language
-          # picks via child_storage_expr (default sp[i]).  The dispatcher
-          # call args come from child_dispatch_args so 3-arg-dispatcher
-          # languages (no sp param) can drop the trailing scratch arg.
+          # picks via child_storage_expr (default: C local).  The dispatcher
+          # call args come from child_dispatch_args so languages with extra
+          # dispatcher params (fp / sp) can append them.
           spill_stmts = child_ops.map{|op|
             slot = child_slot[op.name]
             field = "n->u.#{name}.#{op.name}"
@@ -750,11 +760,9 @@ module ASTroGen
             end
           })
 
-          # iter 60 child-self-advance: sp param received from parent is
-          # "parent's top".  Advance by self.slot_count to get our own
-          # top.  All subsequent slot accesses and child dispatches use
-          # this advanced sp.  Skip if slot_count == 0 (transparent NODE).
-          sp_advance = slot_count > 0 ? "    sp += #{slot_count};\n" : ""
+          # Slot-area prologue (e.g. cursor advance for sp-threading
+          # samples; "" for the neutral C-local default).
+          sp_advance = slot_area_prologue.empty? ? "" : "    #{slot_area_prologue}\n"
           <<~C
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
@@ -804,9 +812,9 @@ module ASTroGen
           "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
         end
 
-        # iter 60: emit `sp += <slot_count>` prologue at top of SD body.
-        if slot_count > 0
-          setup_emitters.unshift("    fprintf(fp, \"    sp += #{slot_count};\\n\");")
+        # Slot-area prologue at top of SD body (per-language hook).
+        unless slot_area_prologue.empty?
+          setup_emitters.unshift("    fprintf(fp, \"    #{slot_area_prologue}\\n\");")
         end
 
         # Pass sp unchanged.  Body sees @child snapshot at sp[0..N) and

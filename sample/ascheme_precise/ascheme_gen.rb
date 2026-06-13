@@ -27,6 +27,13 @@ class AschemeNodeDef < ASTroGen::NodeDef
       "c, #{field}, sp"
     end
 
+    # sp-threading sample: claim the slot area on entry (currently always
+    # a no-op — no @child / $tmp users — but keeps the convention correct
+    # if they appear).  Framework default is "".
+    def slot_area_prologue
+      slot_count > 0 ? "sp += #{slot_count};" : ""
+    end
+
     class Operand < ASTroGen::NodeDef::Node::Operand
       def hash_call(val, kind: :horg)
         return "0" if ref?

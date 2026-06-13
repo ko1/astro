@@ -37,7 +37,7 @@ iter 35 で固定した比較契約 (= 過去の不公平な測定を再発さ�
 - **GC timer**: `aro_gc_time_begin/_end` で全 backend の collect / minor /
   major を計測
 - **Runner**: `bench/matrix.rb` が canonical。 backend ごと rebuild、
-  `strings` で `baruby_gc=<name>` stamp を検証、 result を `oracle.json` に
+  `strings` で `aro_gc=<name>` stamp を検証、 result を `oracle.json` に
   対して checksum、 CSV + JSON + Markdown 出力
 
 ## 1. 計測環境

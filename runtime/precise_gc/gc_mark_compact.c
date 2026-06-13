@@ -112,7 +112,7 @@ aro_gc_init(CTX *c)
     region_end = region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
-        fprintf(stderr, "[baruby_gc=mark_compact] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=mark_compact] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
@@ -129,7 +129,7 @@ bump_cold(CTX *c, size_t total)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     gc_collect_internal(c);
     if (region_top + total > region_end) {
-        fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
+        fprintf(stderr, "aro_gc=mark_compact: OOM (need %zu)\n", total);
         abort();
     }
 }
@@ -162,7 +162,7 @@ static AroObjectHeader *large_alloc(CTX *c, size_t payload_size, size_t aligned)
         gc_collect_internal(c);
     }
     LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);
-    if (!lo) { fprintf(stderr, "baruby_gc=mark_compact: large OOM (%zu)\n", payload_size); abort(); }
+    if (!lo) { fprintf(stderr, "aro_gc=mark_compact: large OOM (%zu)\n", payload_size); abort(); }
     lo->next = large_head;
     large_head = lo;
     AroObjectHeader *h = (AroObjectHeader *)large_payload(lo);
@@ -227,7 +227,7 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     size_t old_aligned = ALIGN8(old_size);
     size_t new_aligned = ALIGN8(new_size);
     LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
-    if (!new_lo) { perror("baruby_gc=mark_compact: realloc large"); abort(); }
+    if (!new_lo) { perror("aro_gc=mark_compact: realloc large"); abort(); }
     *link = new_lo;
     ((AroObjectHeader *)large_payload(new_lo))->gc_size = (uint32_t)new_size;
 

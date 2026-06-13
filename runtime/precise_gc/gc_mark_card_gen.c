@@ -195,7 +195,7 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
         old_major_threshold = 0;
-        fprintf(stderr, "[baruby_gc=mark_card_gen] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=mark_card_gen] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }

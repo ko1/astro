@@ -201,7 +201,7 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
         major_threshold = 0;
-        fprintf(stderr, "[baruby_gc=immix_gen] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=immix_gen] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
@@ -367,7 +367,7 @@ nursery_collect_cold(CTX *c, size_t total)
     if (young_top + total > young_active_base + NURSERY_BYTES) {
         major_gc(c);
         if (young_top + total > young_active_base + NURSERY_BYTES) {
-            fprintf(stderr, "baruby_gc=immix_gen: OOM young (need %zu)\n", total);
+            fprintf(stderr, "aro_gc=immix_gen: OOM young (need %zu)\n", total);
             abort();
         }
     }
@@ -451,7 +451,7 @@ remset_push(ASTroGC *gc, AroObjectHeader *h)
 {
     if (__builtin_expect(remset_cnt >= MAX_REMSET_ENTRIES, 0)) {
         fprintf(stderr,
-            "baruby_gc=immix_gen: remset hard-cap (%u) hit between alloc "
+            "aro_gc=immix_gen: remset hard-cap (%u) hit between alloc "
             "safepoints — alloc-less adversarial workload.\n",
             MAX_REMSET_ENTRIES);
         abort();
@@ -516,7 +516,7 @@ forward_payload_nursery(ASTroGC *gc, void *p)
     if (force_promote || age >= PROMOTE_AGE) {
         newh = hole_alloc_header(gc, size);
         if (!newh) {
-            fprintf(stderr, "baruby_gc=immix_gen: tenured arena OOM during promotion\n");
+            fprintf(stderr, "aro_gc=immix_gen: tenured arena OOM during promotion\n");
             abort();
         }
         memcpy((void *)newh, p, bytes);

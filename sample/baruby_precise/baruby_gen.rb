@@ -28,10 +28,41 @@ class BaRubyNodeDef < ASTroGen::NodeDef
       3
     end
 
-    # Drop fp from child dispatcher invocation args.  Framework default
-    # emits "c, field, fp, sp"; here only sp survives.
+    # Pass `sp` to child dispatcher invocations (framework default is
+    # "c, field" only).  Parent's sp is passed UNCHANGED: the child's
+    # DISPATCH/SD prologue does `sp = sp_in + self.slot_count` to position
+    # its own area top (iter 60 child-self-advance) — no runtime
+    # slot_count load on the dispatch path.
     def child_dispatch_args(slot, field)
       "c, #{field}, sp"
+    end
+
+    # "sp = top" convention (iter 60 Phase 1) — precise-GC @child storage:
+    #   - sp arg received by a NODE_DEF is positioned at the top of its
+    #     own slot area; slots are accessed via NEGATIVE offsets below sp
+    #   - This NODE's slots layout (low→high address):
+    #       [ $e0, $e1, ..., $e_{K-1}, $tmp1, $tmp2, ..., $tmpM ] sp
+    #     where K = @child operand count, M = author-declared $name count
+    #   - slot_count = K + M is per-NODE static metadata baked into NodeKind
+    #   - @child snapshot at index `slot` (0-based) → sp[slot - slot_count]
+    #     so slot 0 (first @child) → sp[-slot_count] (lowest address, base
+    #     of [e0, e1, ...] array)
+    # Spilling into sp[] (NOT a C local) is what lets the precise GC's
+    # root scan (c->env..c->sp) see the value across sibling-eval GC points.
+    def child_storage_decl(slot)
+      ""   # sp[] is already in scope; no decl needed.
+    end
+
+    def child_storage_expr(slot)
+      offset = slot - slot_count
+      "sp[#{offset}]"
+    end
+
+    # Claim our slot area on entry (iter 60 child-self-advance): sp from
+    # the parent is "parent's top"; advance by slot_count to position our
+    # own top.  Skip if slot_count == 0 (transparent NODE).
+    def slot_area_prologue
+      slot_count > 0 ? "sp += #{slot_count};" : ""
     end
 
     # Override the framework's per-NODE-operand forward-decl emission.
@@ -84,7 +115,7 @@ class BaRubyNodeDef < ASTroGen::NodeDef
         "    fprintf(fp, \"    #{d}\\n\");"
       end
       # iter 60: child-self-advance — `sp` passed to children is parent's top
-      # (= our advanced sp).  child_dispatch_args returns "c, field, fp, sp"
+      # (= our advanced sp).  child_dispatch_args returns "c, field, sp"
       # (no advance).  Each child's DISPATCH/SD prologue advances internally.
       setup_emitters = setup_decl_emitters + child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"

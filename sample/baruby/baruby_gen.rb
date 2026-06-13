@@ -27,26 +27,19 @@ class BaRubyNodeDef < ASTroGen::NodeDef
     end
 
     # @child snapshot storage: libgc is conservative, so we don't need
-    # to spill children to caller's sp[] — the C stack is scanned by
-    # libgc automatically.  Use plain C locals (`VALUE _c0;`) declared
-    # at the top of the DISPATCH / SD body.
+    # to spill children into a root-scanned slot area — the C stack is
+    # scanned by libgc automatically.  The framework-default C locals
+    # (`VALUE _c0;` via child_storage_decl / child_storage_expr) are
+    # exactly right, so no override here.
     #
     # Net effect vs precise (baruby_precise):
     #   - no `sp[i] = ...` stores in the hot path (one MOV saved per
     #     @child)
     #   - the spill flows through register allocation; gcc may keep
     #     the value entirely in a register
-    def child_storage_decl(slot)
-      "VALUE _c#{slot};"
-    end
 
-    def child_storage_expr(slot)
-      "_c#{slot}"
-    end
-
-    # baruby's dispatcher has no sp parameter — drop the framework
-    # default's `sp + slot` arg.  Spilling is via the C-local declared
-    # by child_storage_decl above (libgc scans the C stack).
+    # Append fp to child dispatcher invocation args (framework default
+    # is "c, field" only) — baruby's 3-arg dispatcher threads fp.
     def child_dispatch_args(slot, field)
       "c, #{field}, fp"
     end

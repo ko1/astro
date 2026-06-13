@@ -46,7 +46,7 @@ aro_gc_init(CTX *c)
     gc->region_top = gc->region_base;
     gc->region_end = gc->region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
-        fprintf(stderr, "[baruby_gc=bump] STRESS mode requested but ignored — "
+        fprintf(stderr, "[aro_gc=bump] STRESS mode requested but ignored — "
                         "no collector to stress\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
@@ -58,7 +58,7 @@ bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (gc->region_top + aligned > gc->region_end) {
-        fprintf(stderr, "baruby_gc=bump: OOM (need %zu, virtual %p..%p)\n",
+        fprintf(stderr, "aro_gc=bump: OOM (need %zu, virtual %p..%p)\n",
                 aligned, (void *)gc->region_base, (void *)gc->region_end);
         abort();
     }

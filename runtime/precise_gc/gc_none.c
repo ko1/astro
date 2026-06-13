@@ -33,7 +33,7 @@ aro_gc_init(CTX *c)
     if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     if (getenv("BARUBY_GC_STRESS")) {
-        fprintf(stderr, "[baruby_gc=none] STRESS mode requested but "
+        fprintf(stderr, "[aro_gc=none] STRESS mode requested but "
                         "ignored — no collector to stress\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
@@ -43,7 +43,7 @@ void *
 aro_gc_alloc_raw(CTX *c, size_t payload_size)
 {
     void *p = calloc(1, payload_size ? payload_size : 1);
-    if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    if (!p) { fprintf(stderr, "aro_gc=none: OOM\n"); abort(); }
     ((AroObjectHeader *)p)->gc_size = (uint32_t)payload_size;
     ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
@@ -54,7 +54,7 @@ void *
 aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 {
     void *p = malloc(payload_size ? payload_size : 1);
-    if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    if (!p) { fprintf(stderr, "aro_gc=none: OOM\n"); abort(); }
     /* malloc doesn't zero — but we need a valid head.gc_size.  Sample
      * writes head.flags immediately after return. */
     AroObjectHeader *h = (AroObjectHeader *)p;
@@ -74,7 +74,7 @@ void *
 aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
 {
     void *p = realloc(old, new_size ? new_size : 1);
-    if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    if (!p) { fprintf(stderr, "aro_gc=none: OOM\n"); abort(); }
     ((AroObjectHeader *)p)->gc_size = (uint32_t)new_size;
     ARO_GC_COMMON(c)->stats.total_bytes += new_size;
     return p;

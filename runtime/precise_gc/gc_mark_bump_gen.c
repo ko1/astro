@@ -175,7 +175,7 @@ aro_gc_init(CTX *c)
     tenured_end  = tenured_base + TENURED_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
-        fprintf(stderr, "[baruby_gc=mark_bump_gen] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=mark_bump_gen] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
@@ -192,7 +192,7 @@ old_alloc(ASTroGC *gc, size_t payload_size, size_t aligned)
 {
     size_t total = aligned;
     if (tenured_top + total > tenured_end) {
-        fprintf(stderr, "baruby_gc=mark_bump_gen: tenured OOM (%zu / %zu)\n",
+        fprintf(stderr, "aro_gc=mark_bump_gen: tenured OOM (%zu / %zu)\n",
                 (size_t)(tenured_top - tenured_base), (size_t)TENURED_BYTES);
         abort();
     }
@@ -219,7 +219,7 @@ nursery_collect_cold(CTX *c, size_t total)
     if (young_top + total > young_active_base + YOUNG_BYTES) {
         major_gc(c);
         if (young_top + total > young_active_base + YOUNG_BYTES) {
-            fprintf(stderr, "baruby_gc=mark_bump_gen: OOM young (need %zu)\n", total);
+            fprintf(stderr, "aro_gc=mark_bump_gen: OOM young (need %zu)\n", total);
             abort();
         }
     }

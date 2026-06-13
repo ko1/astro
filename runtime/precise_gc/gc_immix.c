@@ -156,7 +156,7 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
         gc_threshold = 0;
-        fprintf(stderr, "[baruby_gc=immix] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=immix] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
@@ -291,7 +291,7 @@ hole_alloc_cold(CTX *c, size_t payload_size)
     gc_collect_internal(c);
     void *payload = hole_alloc(gc, payload_size);
     if (!payload) {
-        fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
+        fprintf(stderr, "aro_gc=immix: OOM (need %zu)\n",
                 ALIGN8(payload_size));
         abort();
     }

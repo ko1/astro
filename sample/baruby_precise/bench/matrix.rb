@@ -209,10 +209,10 @@ opts[:backends].each do |gc|
   bin = File.join(ROOT, "baruby_precise")
   # Verify the binary's backend stamp via `strings`.  If it doesn't match
   # we know the Makefile bug from iter 32 has resurfaced.
-  stamp = `strings #{bin} | grep -oE 'baruby_gc=[a-z_]+' | sort -u | head -1`.strip
-  expected = "baruby_gc=#{gc}"
-  unless stamp.include?("baruby_gc=#{gc}") || stamp.empty?
-    # `bump` / `none` don't emit `baruby_gc=`; skip the warning for them
+  stamp = `strings #{bin} | grep -oE 'aro_gc=[a-z_]+' | sort -u | head -1`.strip
+  expected = "aro_gc=#{gc}"
+  unless stamp.include?("aro_gc=#{gc}") || stamp.empty?
+    # `bump` / `none` don't emit `aro_gc=`; skip the warning for them
     warn "  ⚠ stamp mismatch: expected #{expected}, got #{stamp.inspect}"
   end
 

@@ -207,7 +207,7 @@ aro_gc_init(CTX *c)
 
     if (getenv("BARUBY_GC_STRESS")) {
         gc->common.stress = true;
-        fprintf(stderr, "[baruby_gc=copy_gen] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[aro_gc=copy_gen] STRESS mode: collect on every alloc\n");
     }
     if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
@@ -226,7 +226,7 @@ pretenure_alloc(CTX *c, size_t payload_size, size_t total)
     if (tenured_top + total > tenured_end) {
         major_gc(c);
         if (tenured_top + total > tenured_end) {
-            fprintf(stderr, "baruby_gc=copy_gen: OOM tenured (need %zu)\n", total);
+            fprintf(stderr, "aro_gc=copy_gen: OOM tenured (need %zu)\n", total);
             abort();
         }
     }
@@ -262,7 +262,7 @@ nursery_collect_cold(CTX *c, size_t total)
     if (young_top + total > young_active_base + YOUNG_BYTES) {
         major_gc(c);
         if (young_top + total > young_active_base + YOUNG_BYTES) {
-            fprintf(stderr, "baruby_gc=copy_gen: OOM young (need %zu)\n", total);
+            fprintf(stderr, "aro_gc=copy_gen: OOM young (need %zu)\n", total);
             abort();
         }
     }

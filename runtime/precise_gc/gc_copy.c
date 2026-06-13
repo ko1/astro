@@ -250,7 +250,7 @@ aro_gc_init(CTX *c)
             if (iv <= 1) snprintf(stress_buf, sizeof(stress_buf), " STRESS (GC every alloc)");
             else snprintf(stress_buf, sizeof(stress_buf), " STRESS (GC every %llu allocs)", (unsigned long long)iv);
         }
-        fprintf(stderr, "[baruby_gc=copy]%s%s\n",
+        fprintf(stderr, "[aro_gc=copy]%s%s\n",
                 stress_buf,
                 purge  ? " PURGE (round-robin mprotect)" : "");
     }
@@ -268,7 +268,7 @@ gc_bump_cold(CTX *c, size_t total)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     gc_collect_internal(c);
     if (gc->active_top + total > gc->active_end) {
-        fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
+        fprintf(stderr, "aro_gc: OOM (need %zu, have %zu)\n",
                 total, (size_t)(gc->active_end - gc->active_top));
         abort();
     }
@@ -318,7 +318,7 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
         gc_collect_internal(c);
     }
     LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);
-    if (!lo) { fprintf(stderr, "baruby_gc=copy: large OOM (%zu)\n", payload_size); abort(); }
+    if (!lo) { fprintf(stderr, "aro_gc=copy: large OOM (%zu)\n", payload_size); abort(); }
     lo->next = gc->large_head;
     gc->large_head = lo;
     lo->next_gray = NULL;
@@ -422,7 +422,7 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     size_t old_aligned = ALIGN8(old_size);
     size_t new_aligned = ALIGN8(new_size);
     LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
-    if (!new_lo) { perror("baruby_gc=copy: realloc large"); abort(); }
+    if (!new_lo) { perror("aro_gc=copy: realloc large"); abort(); }
     *link = new_lo;
     AroObjectHeader *newh = large_head(new_lo);
     newh->gc_size = (uint32_t)new_size;
@@ -462,9 +462,6 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
  *   (3) Large obj (outside from-space arena), not yet marked → mark by
  *       setting fwd=self-payload, enqueue on large_gray for content scan,
  *       return same payload (non-moving). */
-void *g_scan_owner = NULL;
-int g_in_root_scan = 0;
-
 /* True iff p points into a RETIRED (mprotect(PROT_NONE)'d) purge plane — a
  * pointer from a past cycle whose object has moved, so dereferencing p would
  * SEGV.  Lets sample code defensively skip a slot that escaped root-forwarding
@@ -603,41 +600,6 @@ forward_edge(void *ctx, void **slot)
      * class tables in koruby) gets memcpy'd a second time at to_top,
      * producing a phantom obj and runaway scan. */
     if ((char *)v >= gc->to_base && (char *)v < gc->to_top) return;
-    /* Diag: if v lies in current to-space arena past to_top, it's a
-     * stale ptr from a prior cycle's allocation in this same plane.
-     * forward_payload will hit either FORWARDED (= return fwd target)
-     * or ABORT (= ptr to dead position).  Print slot location for the
-     * ABORT case so we know which obj's interior held the stale ref. */
-    if ((char *)v >= gc->to_base &&
-        (char *)v < gc->to_base + gc->region_bytes) {
-        AroObjectHeader *oldh = (AroObjectHeader *)v;
-        if (!(oldh->gc_flags & HDR_FORWARDED)) {
-            extern struct CTX_struct koruby_bootstrap_ctx;
-            extern void *g_scan_owner;
-            CTX *cc = &koruby_bootstrap_ctx;
-            const char *kind = "?";
-            if ((char*)slot >= (char*)cc->stack_base &&
-                (char*)slot < (char*)cc->stack_end) kind = "STACK";
-            ptrdiff_t off = (char*)slot - (char*)cc->stack_base;
-            unsigned owner_flags = 0;
-            if (g_scan_owner) {
-                AroObjectHeader *oh = (AroObjectHeader *)g_scan_owner;
-                owner_flags = oh->flags;
-            }
-            extern int g_in_root_scan;
-            extern void *korb_vm;
-            void *current_ctx_ptr = NULL;
-            if (korb_vm) {
-                /* korb_vm is `struct korb_vm *` — current_ctx field offset known
-                 * via the layout; safer: just print korb_vm pointer too. */
-                current_ctx_ptr = *(void **)((char *)korb_vm + 8 * 0); /* placeholder */
-            }
-            fprintf(stderr, "BAD SLOT abort-imminent: slot=%p *slot=%p to_top=%p kind=%s stack_off=%td bootstrap_ctx=%p in_root=%d\n",
-                    slot, (void*)v, (void*)gc->to_top, kind, off / (ptrdiff_t)sizeof(VALUE),
-                    (void*)cc, g_in_root_scan);
-            (void)current_ctx_ptr;
-        }
-    }
     *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
 }
 
@@ -687,20 +649,15 @@ gc_collect_internal(CTX *c)
      * sample's AROH_VISIT_ROOTS macro handles any high-water /
      * dead-slot zeroing it cares about. */
     struct timespec tcheney = aro_gc_phase_begin();
-    extern int g_in_root_scan;
-    g_in_root_scan = 1;
     AROH_VISIT_ROOTS(c, gc, forward_edge);
-    g_in_root_scan = 0;
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via
      * ObjectHeader.type (OBJ_ARRAY / OBJ_STRING / OBJ_VALUE_ARRAY).
      * BYTE / FREE skip.  forward_edge uses AROH_IS_GC_OBJECT to filter values. */
     char *scan = gc->to_base;
-    extern void *g_scan_owner;
     while (scan < gc->to_top) {
         AroObjectHeader *h = (AroObjectHeader *)scan;
-        g_scan_owner = h;
         /* Sanity: gc_size should be a reasonable sample object size (= a few
          * dozen to a few hundred bytes for typical structs).  If it's
          * gigantic, scan would advance to garbage memory next iteration —
@@ -714,7 +671,6 @@ gc_collect_internal(CTX *c)
         ARO_GC_COMMON(c)->stats.heap_bytes += h->gc_size;
         scan += ALIGN8(h->gc_size);
     }
-    g_scan_owner = NULL;
 
     /* (2b) Large-gray drain (only if large objs exist).  Each large gray
      * scan can produce new to-space objs (which need cheney drain) or
