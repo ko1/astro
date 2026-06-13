@@ -10,6 +10,8 @@ Status: **設計ドラフト** (2026-06-12)。実装未着手。手直し前提�
 
 関連ドキュメント:
 
+- [v2_blocks_design.md](./v2_blocks_design.md) — M1 の block / Proc / closure 設計
+  (§7.8 の「blk->env 別系統」注記はこちらで具体化: captured 変数は heap KorbEnv)
 - [closure_sp_model.md](./closure_sp_model.md) — v1 の sp 二本問題の総括 (特に §10.7)
 - [sp_transition_analysis.md](./sp_transition_analysis.md) — v1 sp 契約の全経路監査
 - `../../../docs/idea.md` — ASTro の核心 (EVAL / DISPATCH / SD / 部分評価)
