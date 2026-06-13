@@ -290,6 +290,14 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_specializer(name)
+        # Staged (VALUE_REF) @child: the EVAL arg is a VALUE_REF to the
+        # staging cell, mirroring the DISPATCH glue (the base default
+        # would pass the bare cell expression).
+        if child? && @type == 'VALUE_REF'
+          cn = "    SPECIALIZE(fp, n->u.#{name}.#{self.name});"
+          arg = "    fprintf(fp, \"        VALUE_REF_AT(&#{owner.child_storage_expr(sp_slot)})\");"
+          return cn, arg
+        end
         case @type
         when 'struct korb_callcache *'
           # @ref operand stored inline in the union; pass its address.

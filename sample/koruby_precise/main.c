@@ -195,6 +195,13 @@ main(int argc, char *argv[])
             fprintf(stderr, "koruby_precise: aot: swapped %u dispatchers "
                     "(program + %u method bodies)\n", swaps, code_repo_count());
         }
+        /* rubyharness aot+cached contract: a cached run must actually run on
+         * SDs.  Silent interpreter fallback was the v1 failure mode. */
+        if (getenv("ASTRO_AOT_STRICT") && swaps == 0) {
+            fprintf(stderr, "koruby_precise: ASTRO_AOT_STRICT: no cached SD matched "
+                    "(hash mismatch or empty code store)\n");
+            return 3;
+        }
     }
 
     /* Run.  Toplevel frame: locals at c->slots[0..L); cursor starts at L. */

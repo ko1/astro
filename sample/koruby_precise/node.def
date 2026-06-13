@@ -32,6 +32,17 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// Parse-time-unsupported construct (M0 subset boundary): the file still
+// parses and runs up to this point, then raises NotImplementedError —
+// rubyharness then scores every line before it (a parse-time exit would
+// zero the whole file).
+NODE_DEF
+node_unsupported(CTX *c, NODE *n, VALUE *slots, const char *what, uint32_t line)
+{
+    (void)n;
+    return korb_raise(c, slots, KORB_E_NOTIMPL, line, "M0 unsupported: %s", what);
+}
+
 // ---- sequencing ------------------------------------------------------------
 
 NODE_DEF
