@@ -85,7 +85,7 @@ $(NODE_GENFILES) &: node.def koruby_gen.rb $(LIB)/astrogen.rb
 	ruby -I $(LIB) -r ./koruby_gen -e 'ASTroGen.start([], node_def_class: KorubyNodeDef)'
 
 run: koruby_precise
-	./koruby_precise test.rb
+	./koruby_precise -e 'def fib(n) = n < 2 ? n : fib(n-1) + fib(n-2); puts fib(25)'
 
 clean:
 	rm -f koruby_precise $(NODE_GENFILES) .built_gc
