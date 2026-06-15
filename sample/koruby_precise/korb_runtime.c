@@ -4080,6 +4080,9 @@ static RESULT korb_m_ary_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_str_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_mul_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);   /* String * n → repeat */
 }
+static RESULT korb_m_str_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_plus_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);  /* String + String → concat */
+}
 #undef SELF_ARY
 
 /* ---- yielding methods (drive a block) ------------------------------------ */
@@ -8004,6 +8007,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
     korb_def_cmethod(c, KORB_C_STRING, "*", korb_m_str_mul, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "+", korb_m_str_plus, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp", korb_m_str_casecmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);
