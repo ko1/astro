@@ -1847,6 +1847,106 @@ korb_str_slice_new(CTX *c, VALUE *slots, VALUE_REF sref, uint32_t start, uint32_
     return RESULT_OK((VALUE)r);
 }
 
+/* ---- mutable String operations (in place; header never moves) ------------ */
+
+static uint32_t korb_utf8_encode(uint32_t cp, char *out) {
+    if (cp < 0x80)    { out[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (char)(0xC0|(cp>>6)); out[1] = (char)(0x80|(cp&0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0|(cp>>12)); out[1] = (char)(0x80|((cp>>6)&0x3F)); out[2] = (char)(0x80|(cp&0x3F)); return 3; }
+    out[0] = (char)(0xF0|(cp>>18)); out[1] = (char)(0x80|((cp>>12)&0x3F)); out[2] = (char)(0x80|((cp>>6)&0x3F)); out[3] = (char)(0x80|(cp&0x3F)); return 4;
+}
+/* append other (a rooted String) onto self in place */
+static RESULT korb_str_append_str(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF other) {
+    uint32_t on = VAL2STR(VALUE_REF_GET(other))->len;
+    KorbString *s = korb_str_ensure(c, slots, self, VAL2STR(VALUE_REF_GET(self))->len + on);
+    const KorbString *o = VAL2STR(VALUE_REF_GET(other));   /* re-read after grow */
+    memcpy(s->buf->data + s->len, o->buf->data, on);
+    s->len += on; s->buf->data[s->len] = '\0';
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* append one element (String or Integer codepoint) onto self */
+static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF oref) {
+    VALUE o = VALUE_REF_GET(oref);
+    if (KORB_STRING_P(o)) return korb_str_append_str(c, slots, self, oref);
+    if (FIXNUM_P(o)) {
+        intptr_t cp = FIX2LONG(o);
+        if (cp < 0 || cp > 0x10FFFF) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%ld out of char range", (long)cp);
+        char buf[4]; uint32_t n = korb_utf8_encode((uint32_t)cp, buf);   /* stable C buffer */
+        return korb_str_cat(c, slots, self, buf, n);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
+}
+static RESULT korb_m_str_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, 0)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++)
+        CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, j)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
+    VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
+    return korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, 0));
+}
+static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t pn = 0;
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        VALUE o = VALUE_SLICE_GET(a, j);
+        if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
+        pn += VAL2STR(o)->len;
+    }
+    uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
+    KorbString *s = korb_str_ensure(c, slots, self, slen + pn);   /* single grow; args rooted */
+    s = VAL2STR(VALUE_REF_GET(self));
+    memmove(s->buf->data + pn, s->buf->data, slen);
+    uint32_t off = 0;
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const KorbString *o = VAL2STR(VALUE_SLICE_GET(a, j));
+        memcpy(s->buf->data + off, o->buf->data, o->len); off += o->len;
+    }
+    s->len = slen + pn; s->buf->data[s->len] = '\0';
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    s->len = 0; s->buf->data[0] = '\0';
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* in-place case/reverse (op: 0 upcase 1 downcase 2 capitalize 3 swapcase 4 reverse);
+ * returns self if changed, else nil (Ruby bang convention) — reverse! always self. */
+static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int op) {
+    (void)c;(void)slots;
+    KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t len = s->len; bool changed = false;
+    if (op == 4) {                                     /* reverse! (byte reverse) */
+        for (uint32_t i = 0; i < len / 2; i++) { char t = s->buf->data[i]; s->buf->data[i] = s->buf->data[len-1-i]; s->buf->data[len-1-i] = t; }
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i], out = ch;
+        switch (op) {
+          case 0: if (ch >= 'a' && ch <= 'z') out = (unsigned char)(ch - 32); break;
+          case 1: if (ch >= 'A' && ch <= 'Z') out = (unsigned char)(ch + 32); break;
+          case 2:
+            if (i == 0) { if (ch >= 'a' && ch <= 'z') out = (unsigned char)(ch - 32); }
+            else { if (ch >= 'A' && ch <= 'Z') out = (unsigned char)(ch + 32); }
+            break;
+          default: out = (unsigned char)(isupper(ch) ? tolower(ch) : islower(ch) ? toupper(ch) : ch); break;
+        }
+        if (out != ch) { s->buf->data[i] = (char)out; changed = true; }
+    }
+    return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
+}
+static RESULT korb_m_str_upcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_str_transform_bang(c, slots, self, 0); }
+static RESULT korb_m_str_downcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform_bang(c, slots, self, 1); }
+static RESULT korb_m_str_capitalize_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform_bang(c, slots, self, 2); }
+static RESULT korb_m_str_swapcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform_bang(c, slots, self, 3); }
+static RESULT korb_m_str_reverse_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)a; return korb_str_transform_bang(c, slots, self, 4); }
+
 static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
@@ -4834,6 +4934,16 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "downcase", korb_m_str_downcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "capitalize", korb_m_str_capitalize, 0);
     korb_def_cmethod(c, KORB_C_STRING, "reverse", korb_m_str_reverse, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "<<", korb_m_str_ltlt, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "concat", korb_m_str_concat, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "replace", korb_m_str_replace, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "prepend", korb_m_str_prepend, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "clear", korb_m_str_clear, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "upcase!", korb_m_str_upcase_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "downcase!", korb_m_str_downcase_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "capitalize!", korb_m_str_capitalize_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "swapcase!", korb_m_str_swapcase_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "reverse!", korb_m_str_reverse_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
     korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
     korb_def_cmethod(c, KORB_C_STRING, "end_with?", korb_m_str_end_with, -1);
