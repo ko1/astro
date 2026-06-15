@@ -4427,14 +4427,34 @@ static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t acc = VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    VALUE init = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);
     const KorbArray *ary = SELF_ARY;
-    for (uint32_t i = 0; i < ary->len; i++) {
+    bool any_float = KORB_FLOAT_P(init), all_num = FIXNUM_P(init) || KORB_FLOAT_P(init);
+    for (uint32_t i = 0; all_num && i < ary->len; i++) {
         VALUE e = ary->items->data[i];
-        if (UNLIKELY(!FIXNUM_P(e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(e));
-        acc += FIX2LONG(e);
+        if (KORB_FLOAT_P(e)) any_float = true; else if (!FIXNUM_P(e)) all_num = false;
     }
-    return RESULT_OK(LONG2FIX(acc));
+    if (all_num) {                                   /* numeric fast path */
+        if (any_float) {
+            double acc; korb_num_to_d(init, &acc);
+            const KorbArray *ar = SELF_ARY;
+            for (uint32_t i = 0; i < ar->len; i++) { double d; korb_num_to_d(ar->items->data[i], &d); acc += d; }
+            return korb_float_new(c, slots, acc);
+        }
+        intptr_t acc = FIX2LONG(init);
+        for (uint32_t i = 0; i < ary->len; i++) acc += FIX2LONG(ary->items->data[i]);
+        return RESULT_OK(LONG2FIX(acc));
+    }
+    slots[0] = init;                                 /* general fold: init + e0 + e1 + ... via + operator */
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ar = SELF_ARY;
+        if (i >= ar->len) break;
+        slots[1] = ar->items->data[i];
+        RESULT r = korb_plus_slow(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1], 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    return RESULT_OK(slots[0]);
 }
 
 /* min (want=-1) / max (want=1) by <=> */
@@ -4754,6 +4774,16 @@ static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(h));
 }
 
+/* recursively join leaves of nested arrays with `sep` (no koruby alloc; all reads). */
+static void korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbString *sep, bool *first) {
+    for (uint32_t i = 0; i < ary->len; i++) {
+        VALUE e = ary->items->data[i];
+        if (KORB_ARRAY_P(e)) { korb_join_rec(c, ms, VAL2ARY(e), sep, first); continue; }
+        if (!*first && sep) fwrite(sep->buf->data, 1, sep->len, ms);
+        korb_fprint_to_s(c, ms, e);
+        *first = false;
+    }
+}
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* sep at slots scratch so it survives the per-element to_s allocs */
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
@@ -4765,10 +4795,8 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbArray *ary = SELF_ARY;
     const KorbString *sep = (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) ? VAL2STR(VALUE_SLICE_GET(a, 0)) : NULL;
-    for (uint32_t i = 0; i < ary->len; i++) {
-        if (i && sep) fwrite(sep->buf->data, 1, sep->len, ms);
-        korb_fprint_to_s(c, ms, ary->items->data[i]);   /* no GC inside fprint */
-    }
+    bool first = true;
+    korb_join_rec(c, ms, ary, sep, &first);             /* recurse into nested arrays (no GC) */
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
@@ -5277,6 +5305,12 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* include?/member?: membership of a single value (a Range/other container is not an element). */
+static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE x = VALUE_SLICE_GET(a, 0);
+    if (KORB_RANGE_P(x) || KORB_ARRAY_P(x) || KORB_HASH_P(x)) return RESULT_OK(KORB_FALSE);
+    return korb_m_range_cover(c, slots, self, a);
+}
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
 static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
@@ -5982,6 +6016,20 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, k)));
     for (uint32_t j = 0; j < k; j++) {
         VALUE iv = VALUE_SLICE_GET(a, j);
+        if (KORB_RANGE_P(iv)) {                       /* values_at(range): each index in the range */
+            const KorbRange *r = VAL2RANGE(iv);
+            intptr_t b, e2;
+            if (!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e2)) continue;
+            intptr_t len0 = VAL2ARY(VALUE_REF_GET(self))->len;
+            if (b < 0) b += len0;
+            if (e2 < 0) e2 += len0;
+            intptr_t last = r->exclude_end ? e2 - 1 : e2;
+            for (intptr_t i = b; i <= last; i++) {
+                const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+                CHECK(korb_ary_push_val(c, slots + 1, dst, (i >= 0 && (uint32_t)i < ary->len) ? ary->items->data[i] : KORB_NIL));
+            }
+            continue;
+        }
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         VALUE e = KORB_NIL;
         intptr_t i; if (korb_to_index(iv, &i)) { if (i < 0) i += ary->len; if (i >= 0 && (uint32_t)i < ary->len) e = ary->items->data[i]; }
@@ -7044,13 +7092,15 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_obj_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 
 static RESULT korb_m_ary_difference(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++)    /* difference(*arrays) */
+        if (UNLIKELY(!KORB_ARRAY_P(VALUE_SLICE_GET(a, k)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
     uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
-        if (!korb_ary_has(VAL2ARY(VALUE_SLICE_GET(a, 0)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+        bool removed = false;
+        for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) if (korb_ary_has(VAL2ARY(VALUE_SLICE_GET(a, k)), e)) { removed = true; break; }
+        if (!removed) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -7923,7 +7973,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "dig", korb_m_ary_dig, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "take", korb_m_ary_take, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "drop", korb_m_ary_drop, 1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "difference", korb_m_ary_difference, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "difference", korb_m_ary_difference, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "-", korb_m_ary_difference, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "replace", korb_m_ary_replace, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
@@ -8060,8 +8110,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "exclude_end?", korb_m_range_exclude, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "size", korb_m_range_size, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "count", korb_m_range_count, -1);
-    korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_cover, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_cover, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_include, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, -1);
