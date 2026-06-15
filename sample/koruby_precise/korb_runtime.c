@@ -3500,6 +3500,18 @@ static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_SLICE_GET(a, 1));        /* []= yields the value (rooted re-read) */
 }
 
+static RESULT korb_m_hash_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int32_t idx = korb_hash_find(SELF_HASH, VALUE_SLICE_GET(a, 0));
+    if (idx < 0) return RESULT_OK(KORB_NIL);
+    slots[0] = SELF_HASH->items->data[2 * idx];        /* root k,v across the array alloc */
+    slots[1] = SELF_HASH->items->data[2 * idx + 1];
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF arr = VALUE_REF_AT(slots + 2);
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
 static RESULT korb_m_hash_key_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     return RESULT_OK(korb_hash_find(SELF_HASH, VALUE_SLICE_GET(a, 0)) >= 0 ? KORB_TRUE : KORB_FALSE);
@@ -6041,6 +6053,21 @@ static RESULT korb_m_sym_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (!SYMBOL_P(o)) return RESULT_OK(KORB_NIL);
     return RESULT_OK(strcasecmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o))) == 0 ? KORB_TRUE : KORB_FALSE);
 }
+static RESULT korb_m_sym_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!SYMBOL_P(lo) || !SYMBOL_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Symbol failed");
+    const char *s = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    bool t = strcmp(s, korb_sym_name(c->vm, SYM2ID(lo))) >= 0 && strcmp(s, korb_sym_name(c->vm, SYM2ID(hi))) <= 0;
+    return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_sym_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
+    const char *s = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    if (SYMBOL_P(lo) && strcmp(s, korb_sym_name(c->vm, SYM2ID(lo))) < 0) return RESULT_OK(lo);
+    if (SYMBOL_P(hi) && strcmp(s, korb_sym_name(c->vm, SYM2ID(hi))) > 0) return RESULT_OK(hi);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_sym_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_sym_case(c, slots, self, 0); }
 static RESULT korb_m_sym_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_sym_case(c, slots, self, 1); }
 static RESULT korb_m_sym_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_sym_case(c, slots, self, 2); }
@@ -6325,6 +6352,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, ">=", korb_m_sym_ge, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp", korb_m_sym_casecmp, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp?", korb_m_sym_casecmp_p, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "between?", korb_m_sym_between, 2);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "clamp", korb_m_sym_clamp, 2);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
@@ -6475,6 +6504,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "value?", korb_m_hash_value_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "has_value?", korb_m_hash_value_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
+    korb_def_cmethod(c, KORB_C_HASH, "assoc", korb_m_hash_assoc, 1);
     korb_def_cmethod(c, KORB_C_HASH, "keys", korb_m_hash_keys, 0);
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
     korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
