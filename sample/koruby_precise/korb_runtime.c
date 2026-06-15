@@ -2896,9 +2896,20 @@ static RESULT korb_m_str_lstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_str_rstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_strip(c, slots, self, 2); }
 
 static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t len = s->len;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp(sep) */
+        VALUE sv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        const KorbString *sep = VAL2STR(sv);
+        if (sep->len == 0) {                          /* "" → strip all trailing \n / \r\n */
+            while (len >= 2 && s->buf->data[len-2] == '\r' && s->buf->data[len-1] == '\n') len -= 2;
+            while (len >= 1 && s->buf->data[len-1] == '\n') len -= 1;
+        } else if (len >= sep->len && memcmp(s->buf->data + len - sep->len, sep->buf->data, sep->len) == 0) {
+            len -= sep->len;                          /* one trailing occurrence */
+        }
+        return korb_str_slice_new(c, slots, self, 0, len);
+    }
     if (len >= 2 && s->buf->data[len-2] == '\r' && s->buf->data[len-1] == '\n') len -= 2;
     else if (len >= 1 && (s->buf->data[len-1] == '\n' || s->buf->data[len-1] == '\r')) len -= 1;
     return korb_str_slice_new(c, slots, self, 0, len);
@@ -4203,7 +4214,14 @@ static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#find_index");
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */
+        VALUE needle = VALUE_SLICE_GET(a, 0);
+        const KorbArray *ary = SELF_ARY;
+        for (uint32_t i = 0; i < ary->len; i++)
+            if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(LONG2FIX(i));
+        return RESULT_OK(KORB_NIL);
+    }
+    ARY_REQUIRE_BLOCK("Array#find_index");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
@@ -4920,7 +4938,21 @@ static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;(void)a;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* shift(n): remove & return first n as array */
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+        uint32_t take = (uint32_t)n; if (take > VAL2ARY(VALUE_REF_GET(self))->len) take = VAL2ARY(VALUE_REF_GET(self))->len;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
+        for (uint32_t i = 0; i < take; i++)
+            CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        KorbArray *ary2 = VAL2ARY(VALUE_REF_GET(self));   /* now compact self in place */
+        KorbArrayItems *it2 = ary2->items;
+        for (uint32_t i = take; i < ary2->len; i++) ARO_STORE(c, it2, &it2->data[i - take], it2->data[i]);
+        for (uint32_t i = ary2->len - take; i < ary2->len; i++) it2->data[i] = KORB_NIL;
+        ary2->len -= take;
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     if (ary->len == 0) return RESULT_OK(KORB_NIL);
     KorbArrayItems *it = ary->items;
@@ -6570,7 +6602,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "strip", korb_m_str_strip, 0);
     korb_def_cmethod(c, KORB_C_STRING, "lstrip", korb_m_str_lstrip, 0);
     korb_def_cmethod(c, KORB_C_STRING, "rstrip", korb_m_str_rstrip, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "chomp", korb_m_str_chomp, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "chomp", korb_m_str_chomp, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chop", korb_m_str_chop, 0);
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
@@ -6726,7 +6758,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "unshift", korb_m_ary_unshift, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "prepend", korb_m_ary_unshift, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "shift", korb_m_ary_shift, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "shift", korb_m_ary_shift, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "assoc", korb_m_ary_assoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch", korb_m_ary_fetch, -1);
@@ -6759,7 +6791,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find", korb_m_ary_find, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "rfind", korb_m_ary_rfind, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_index", korb_m_ary_find_index, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_index", korb_m_ary_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "any?", korb_m_ary_any, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "all?", korb_m_ary_all, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "none?", korb_m_ary_none, -1);
