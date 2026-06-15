@@ -4455,7 +4455,21 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (r->exclude_end) return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
     return RESULT_OK(r->rend);
 }
-static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rbegin); }
+static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
+    intptr_t end = lo + n; if (end > hi) end = hi;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(end > lo ? end - lo : 0))));
+    for (intptr_t i = lo; i < end; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1) return korb_m_range_take(c, slots, self, a);
+    return RESULT_OK(SELF_RANGE->rbegin);
+}
 static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rend); }
 
 static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -4997,6 +5011,39 @@ static RESULT korb_hash_pick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* build an array of the first `limit` pairs ([k,v]) of the hash. */
+static RESULT korb_hash_first_n(CTX *c, VALUE *slots, VALUE_REF self, uint32_t limit) {
+    uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    if (n > limit) n = limit;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        slots[0] = h->items->data[2 * i];
+        slots[1] = h->items->data[2 * i + 1];
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_hash_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
+    return korb_hash_first_n(c, slots, self, (uint32_t)n);
+}
+static RESULT korb_m_hash_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1) return korb_m_hash_take(c, slots, self, a);
+    const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));   /* no arg → first pair or nil */
+    if (h->len == 0) return RESULT_OK(KORB_NIL);
+    slots[0] = h->items->data[0];
+    slots[1] = h->items->data[1];
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -6559,6 +6606,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
+    korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
     korb_def_cmethod(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
     korb_def_cmethod(c, KORB_C_HASH, "fetch_values", korb_m_hash_fetch_values, -1);
     korb_def_cmethod(c, KORB_C_HASH, "dig", korb_m_hash_dig, -1);
@@ -6606,7 +6655,8 @@ korb_register_core_methods(CTX *c)
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "first", korb_m_range_first, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "first", korb_m_range_first, -1);
+    korb_def_cmethod(c, KORB_C_RANGE, "take", korb_m_range_take, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "end", korb_m_range_end, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "last", korb_m_range_last, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "exclude_end?", korb_m_range_exclude, 0);
