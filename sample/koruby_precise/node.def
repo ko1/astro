@@ -597,6 +597,13 @@ node_send_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32
     return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off], slots[self_off]);
 }
 
+NODE_DEF @noinline
+node_send_blk2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child)
+{
+    (void)n; (void)block_dispatcher; (void)recv; (void)a0; (void)a1;
+    return korb_send_blk(c, slots, mid, line, 2, block, &slots[def_env_off], slots[self_off]);
+}
+
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
 // `cself_off` read the frame's reserved block cells (odd-tagged); korb_yield
 // masks and sets up the block frame (incl. its captured self).

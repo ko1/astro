@@ -574,8 +574,8 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (cn->block) {
         if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE))
             return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");
-        if (argc > 1)
-            return kp_unsupported(tc, (const pm_node_t *)cn, "receiver call with block and >1 arg");
+        if (argc > 2)
+            return kp_unsupported(tc, (const pm_node_t *)cn, "receiver call with block and >2 args");
         NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
          * = recv(1) + argc.  bake_add fixes up by the caller's frame_size. */
@@ -589,12 +589,22 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             bake_add(tc, &call->u.node_send_blk0.def_env_off);
             return call;
         }
-        uint32_t sc = 2;
-        NODE *recv, *a0;
+        if (argc == 1) {
+            uint32_t sc = 2;
+            NODE *recv, *a0;
+            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                                a0   = transduce(tc, cn->arguments->arguments.nodes[0])));
+            NODE *call = ALLOC_node_send_blk1(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0);
+            bake_add(tc, &call->u.node_send_blk1.def_env_off);
+            return call;
+        }
+        uint32_t sc = 3;
+        NODE *recv, *a0, *a1;
         WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                            a0   = transduce(tc, cn->arguments->arguments.nodes[0])));
-        NODE *call = ALLOC_node_send_blk1(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0);
-        bake_add(tc, &call->u.node_send_blk1.def_env_off);
+                            a0   = transduce(tc, cn->arguments->arguments.nodes[0]),
+                            a1   = transduce(tc, cn->arguments->arguments.nodes[1])));
+        NODE *call = ALLOC_node_send_blk2(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0, a1);
+        bake_add(tc, &call->u.node_send_blk2.def_env_off);
         return call;
     }
     if (argc > 3) {

@@ -2721,6 +2721,73 @@ static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(have ? found : KORB_NIL);
 }
 
+static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#bsearch_index");
+    uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
+    uint32_t found = 0; bool have = false;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[mid];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        VALUE rv = r.value;
+        if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {
+            if (KORB_TRUTHY(rv)) { found = mid; have = true; hi = mid; } else lo = mid + 1;
+        } else if (FIXNUM_P(rv)) {
+            intptr_t cmp = FIX2LONG(rv);
+            if (cmp == 0) return RESULT_OK(LONG2FIX(mid));
+            else if (cmp < 0) hi = mid; else lo = mid + 1;
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (must be numeric, true, false or nil)", korb_type_name(rv));
+        }
+    }
+    return RESULT_OK(have ? LONG2FIX(found) : KORB_NIL);
+}
+static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#map!");
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[0] = ary->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        KorbArray *a2 = VAL2ARY(VALUE_REF_GET(self));
+        ARO_STORE(c, a2->items, &a2->items->data[i], r.value);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Integer#step / Float#step (generic over numeric self) */
+static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Numeric#step without a block is not supported");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE selfv = VALUE_REF_GET(self);
+    VALUE limv = VALUE_SLICE_GET(a, 0);
+    VALUE stepv = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(1);
+    bool use_float = KORB_FLOAT_P(selfv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
+    if (use_float) {
+        double s, lim, st;
+        if (!korb_num_to_d(selfv, &s) || !korb_num_to_d(limv, &lim) || !korb_num_to_d(stepv, &st))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        if (st == 0.0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+        for (long i = 0; ; i++) {
+            double d = s + (double)i * st;
+            if (st > 0 ? d > lim : d < lim) break;
+            slots[0] = UNWRAP(korb_float_new(c, slots, d));
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    } else {
+        intptr_t s = FIX2LONG(selfv), lim = FIX2LONG(limv), st = FIX2LONG(stepv);
+        if (st == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+        for (intptr_t i = s; st > 0 ? i <= lim : i >= lim; i += st) {
+            slots[0] = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 /* any? (mode 0) / all? (1) / none? (2), with a block */
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#any?/all?/none? without a block is not supported");
@@ -3902,6 +3969,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_int_modulo, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
+    korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "fdiv", korb_m_int_fdiv, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "ceildiv", korb_m_int_ceildiv, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "coerce", korb_m_int_coerce, 1);
@@ -4022,6 +4090,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "take_while", korb_m_ary_take_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "drop_while", korb_m_ary_drop_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "bsearch", korb_m_ary_bsearch, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "bsearch_index", korb_m_ary_bsearch_index, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "map!", korb_m_ary_map_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect!", korb_m_ary_map_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_entry", korb_m_ary_each, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "clear", korb_m_ary_clear, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "intersect?", korb_m_ary_intersect_q, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
@@ -4214,6 +4286,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "infinite?", korb_m_flt_inf, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "<=>", korb_m_flt_cmp, 1);
+    korb_def_cmethod_blk(c, KORB_C_FLOAT, "step", korb_m_num_step, -1);
     korb_def_cmethod(c, KORB_C_FLOAT, "fdiv", korb_m_flt_fdiv, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "quo", korb_m_flt_fdiv, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "div", korb_m_flt_div, 1);
