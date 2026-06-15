@@ -408,6 +408,17 @@ node_hash_set(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE_REF key
     return korb_hash_set(c, slots, hash, key, val);
 }
 
+// ---- range literals --------------------------------------------------------
+//
+// `b..e` / `b...e`.  begin staged (VALUE_REF), end in a register.
+
+NODE_DEF
+node_range_new(CTX *c, NODE *n, VALUE *slots, uint32_t exclude_end, VALUE_REF rbegin@child, VALUE rend@child)
+{
+    (void)n;
+    return korb_range_new(c, slots, rbegin, rend, exclude_end);
+}
+
 // ---- string interpolation --------------------------------------------------
 //
 // `"a#{x}b"` lowers to a concat chain over the parts (same inside-out shape as

@@ -252,6 +252,21 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
 }
 
 /* ---------------------------------------------------------------------------
+ * Range — {begin, end, exclude_end}.
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude_end)
+{
+    VALUE_REF eref = SLOTS_PUSH(slots, end);          /* root end across the alloc */
+    KorbRange *r = korb_alloc(c, slots, sizeof(KorbRange), KORB_OBJ_RANGE);
+    r->exclude_end = exclude_end;
+    ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->rbegin, VALUE_REF_GET(bref));
+    ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->rend,   VALUE_REF_GET(eref));
+    return RESULT_OK((VALUE)r);
+}
+
+/* ---------------------------------------------------------------------------
  * Type names for messages.
  * ------------------------------------------------------------------------- */
 
@@ -268,6 +283,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_EXCEPTION: return "Exception";
       case KORB_OBJ_ARRAY:     return "Array";
       case KORB_OBJ_HASH:      return "Hash";
+      case KORB_OBJ_RANGE:     return "Range";
     }
     return "Object";
 }
@@ -285,6 +301,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_STRING: return "an instance of String";
       case KORB_OBJ_ARRAY:  return "an instance of Array";
       case KORB_OBJ_HASH:   return "an instance of Hash";
+      case KORB_OBJ_RANGE:  return "an instance of Range";
     }
     return "an instance of Object";
 }
@@ -749,6 +766,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_STRING: return KORB_C_STRING;
           case KORB_OBJ_ARRAY:  return KORB_C_ARRAY;
           case KORB_OBJ_HASH:   return KORB_C_HASH;
+          case KORB_OBJ_RANGE:  return KORB_C_RANGE;
         }
     }
     return KORB_C_OBJECT;
@@ -763,6 +781,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_SYMBOL:  return "Symbol";
       case KORB_C_ARRAY:   return "Array";
       case KORB_C_HASH:    return "Hash";
+      case KORB_C_RANGE:   return "Range";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -1845,6 +1864,194 @@ static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, 
 #undef ARY_REQUIRE_BLOCK
 #undef SELF_ARY
 
+/* ---- Range methods ------------------------------------------------------- */
+
+#define SELF_RANGE  VAL2RANGE(VALUE_REF_GET(self))
+
+/* integer iteration bounds [lo, hi) ; false if endpoints aren't both Integer */
+static bool korb_range_int_bounds(const KorbRange *r, intptr_t *lo, intptr_t *hi) {
+    if (!FIXNUM_P(r->rbegin) || !FIXNUM_P(r->rend)) return false;
+    intptr_t e = FIX2LONG(r->rend);
+    *lo = FIX2LONG(r->rbegin);
+    *hi = r->exclude_end ? e : e + 1;
+    return true;
+}
+
+static RESULT korb_m_range_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rbegin); }
+static RESULT korb_m_range_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rend); }
+static RESULT korb_m_range_exclude(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a){ (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->exclude_end ? KORB_TRUE : KORB_FALSE); }
+
+static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
+}
+
+static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbRange *r = SELF_RANGE;
+    VALUE x = VALUE_SLICE_GET(a, 0);
+    int lc = korb_cmp_values(r->rbegin, x);     /* begin <=> x */
+    int uc = korb_cmp_values(x, r->rend);       /* x <=> end */
+    if (lc == 2 || uc == 2) return RESULT_OK(KORB_FALSE);
+    bool lower = (lc <= 0);
+    bool upper = r->exclude_end ? (uc < 0) : (uc <= 0);
+    return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbRange *r = SELF_RANGE;
+    intptr_t lo, hi;
+    if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(lo) : KORB_NIL);
+    return RESULT_OK(r->rbegin);
+}
+static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const KorbRange *r = SELF_RANGE;
+    intptr_t lo, hi;
+    if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(hi - 1) : KORB_NIL);
+    if (r->exclude_end) return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
+    return RESULT_OK(r->rend);
+}
+static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rbegin); }
+static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rend); }
+
+static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t init = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    intptr_t acc = init;
+    for (intptr_t i = lo; i < hi; i++) acc += i;   /* small ranges; Bignum unneeded here */
+    return RESULT_OK(LONG2FIX(acc));
+}
+
+static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#each without a block (Enumerator) is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    for (intptr_t i = lo; i < hi; i++) {           /* bounds are plain ints — GC-safe */
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
+    for (intptr_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#map without a block (Enumerator) is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reduce without a block (symbol form) is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    intptr_t i = lo;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        slots[0] = VALUE_SLICE_GET(a, 0);
+    } else {
+        if (lo >= hi) return RESULT_OK(KORB_NIL);
+        slots[0] = LONG2FIX(lo); i = lo + 1;
+    }
+    for (; i < hi; i++) {
+        VALUE argv[2] = { slots[0], LONG2FIX(i) };
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    return RESULT_OK(slots[0]);
+}
+
+/* select (keep==true) / reject (keep==false) over an integer range */
+static RESULT korb_range_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, bool keep) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#select/reject without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value) == keep) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_filter(c, slots, self, block, def_env, true); }
+static RESULT korb_m_range_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_filter(c, slots, self, block, def_env, false); }
+
+static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#find without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+/* any? (0) / all? (1) / none? (2) over an integer range, with block */
+static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, int mode) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#any?/all?/none? without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        bool t = KORB_TRUTHY(r.value);
+        if (mode == 0 && t) return RESULT_OK(KORB_TRUE);
+        if (mode == 1 && !t) return RESULT_OK(KORB_FALSE);
+        if (mode == 2 && t) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
+}
+static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, 0); }
+static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, 1); }
+static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_quant(c, slots, self, block, def_env, 2); }
+
+static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#step without a block (Enumerator) is not supported");
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
+    intptr_t st = FIX2LONG(sv);
+    if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    for (intptr_t i = lo; i < hi; i += st) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+#undef SELF_RANGE
+
 static void
 korb_register_core_methods(CTX *c)
 {
@@ -1996,6 +2203,37 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
 
+    /* Range */
+    korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "first", korb_m_range_first, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "end", korb_m_range_end, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "last", korb_m_range_last, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "exclude_end?", korb_m_range_exclude, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "size", korb_m_range_size, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "count", korb_m_range_size, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_cover, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_cover, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
+    korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "reduce", korb_m_range_reduce, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "inject", korb_m_range_reduce, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "select", korb_m_range_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "filter", korb_m_range_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "reject", korb_m_range_reject, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "any?", korb_m_range_any, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "all?", korb_m_range_all, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "none?", korb_m_range_none, 0);
+
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
@@ -2056,6 +2294,16 @@ korb_sym_label_bare(const char *nm)
     return *p == '\0';
 }
 
+/* Range: "1..5" / "1...5"; endpoints to_s for to_s, inspect for inspect. */
+static void
+korb_fprint_range(CTX *c, FILE *fp, VALUE v, bool insp)
+{
+    const KorbRange *r = VAL2RANGE(v);
+    if (insp) korb_fprint_inspect(c, fp, r->rbegin); else korb_fprint_to_s(c, fp, r->rbegin);
+    fputs(r->exclude_end ? "..." : "..", fp);
+    if (insp) korb_fprint_inspect(c, fp, r->rend); else korb_fprint_to_s(c, fp, r->rend);
+}
+
 /* Array renders identically for to_s and inspect: "[1, 2, \"x\"]" — elements
  * always use inspect form. */
 static void
@@ -2114,6 +2362,9 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_HASH:
         korb_fprint_hash(c, fp, v);
         return;
+      case KORB_OBJ_RANGE:
+        korb_fprint_range(c, fp, v, false);
+        return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->bytes, 1, VAL2STR(e->msg)->len, fp);
@@ -2138,6 +2389,9 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         korb_fprint_quoted(fp, s->bytes, s->len);
         return;
       }
+      case KORB_OBJ_RANGE:
+        korb_fprint_range(c, fp, v, true);   /* inspect endpoints */
+        return;
     }
     korb_fprint_to_s(c, fp, v);
 }

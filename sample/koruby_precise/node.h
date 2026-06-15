@@ -75,6 +75,9 @@ RESULT korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem);
 RESULT korb_hash_new(CTX *c, VALUE *slots, uint32_t capa);
 RESULT korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val);
 
+/* Range (korb_runtime.c) — begin staged (rooted), end by value */
+RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude_end);
+
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);

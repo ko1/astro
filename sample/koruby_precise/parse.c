@@ -294,6 +294,7 @@ extern const struct NodeKind kind_node_plus;         /* all binops share slot_co
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
+extern const struct NodeKind kind_node_range_new;    /* range literal */
 
 enum kp_binop {
     KP_BINOP_NONE = 0,
@@ -714,6 +715,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             if (PM_NODE_TYPE(an->elements.nodes[i]) == PM_SPLAT_NODE)
                 return kp_unsupported(tc, node, "array literal with splat (*)");
         return build_array(tc, an->elements.nodes, cnt, (uint32_t)cnt);
+      }
+
+      case PM_RANGE_NODE: {
+        const pm_range_node_t *rn = (const pm_range_node_t *)node;
+        if (!rn->left || !rn->right)
+            return kp_unsupported(tc, node, "beginless/endless range");
+        uint32_t excl = (rn->base.flags & PM_RANGE_FLAGS_EXCLUDE_END) ? 1u : 0u;
+        NODE *b, *e;
+        uint32_t sc = kind_node_range_new.slot_count;
+        WITH_CHAIN(tc, sc, (b = transduce(tc, rn->left),
+                            e = transduce(tc, rn->right)));
+        return ALLOC_node_range_new(excl, b, e);
       }
 
       case PM_HASH_NODE: {
