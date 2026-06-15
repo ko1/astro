@@ -5618,6 +5618,35 @@ static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(hi - 1) : KORB_NIL));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Range#sort/min/max/minmax with a comparator block: materialize to_a (ascending)
+ * then delegate to the block-aware Array method.  No block → the integer-range
+ * fast paths.  A count arg on min/max (e.g. min(2)) also keeps the fast path. */
+static RESULT korb_m_range_sort_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                    NODE *block, VALUE *def_env, VALUE cself) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
+    if (block == NULL) return RESULT_OK(slots[0]);
+    return korb_m_ary_sort(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
+}
+static RESULT korb_m_range_min_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                   NODE *block, VALUE *def_env, VALUE cself) {
+    if (block == NULL || (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL))
+        return korb_m_range_min(c, slots, self, a);
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
+}
+static RESULT korb_m_range_max_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                   NODE *block, VALUE *def_env, VALUE cself) {
+    if (block == NULL || (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL))
+        return korb_m_range_max(c, slots, self, a);
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
+}
+static RESULT korb_m_range_minmax_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                      NODE *block, VALUE *def_env, VALUE cself) {
+    if (block == NULL) return korb_m_range_minmax(c, slots, self, a);
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
+}
 static RESULT korb_m_range_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     slots[0] = UNWRAP(korb_range_by(c, slots, self, block, def_env, cself, -1));   /* min_by */
@@ -8207,8 +8236,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "===", korb_m_range_include, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, -1);
-    korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "min", korb_m_range_min_cmp, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "max", korb_m_range_max_cmp, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
@@ -8223,8 +8252,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_object", korb_m_range_each_with_object, -1);
-    korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "sort", korb_m_range_to_a, 0);   /* int range already ascending */
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax", korb_m_range_minmax_cmp, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "sort", korb_m_range_sort_cmp, 0);   /* int range already ascending */
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reverse_each", korb_m_range_reverse_each, 0);
