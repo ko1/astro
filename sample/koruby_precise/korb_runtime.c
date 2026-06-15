@@ -840,6 +840,16 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 2, line);
     if (KORB_STRING_P(l) && FIXNUM_P(rhs))
         return korb_str_repeat_ref(c, slots, lhs, FIX2LONG(rhs), line);
+    if (KORB_ARRAY_P(l) && FIXNUM_P(rhs)) {          /* Array * n → repeated array */
+        intptr_t cnt = FIX2LONG(rhs);
+        if (cnt < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
+        uint32_t len = VAL2ARY(l)->len;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)cnt * len)));
+        for (intptr_t r = 0; r < cnt; r++)
+            for (uint32_t i = 0; i < len; i++)
+                CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2ARY(VALUE_REF_GET(lhs))->items->data[i]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "%s can't be coerced into Integer", korb_type_name(rhs));
@@ -3004,6 +3014,91 @@ static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 #undef HASH_REQ_BLOCK
 
+/* ---- more Array methods -------------------------------------------------- */
+
+static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    intptr_t n = FIX2LONG(nv);
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    if ((uint32_t)n > len) n = len;
+    return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
+}
+static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    intptr_t n = FIX2LONG(nv);
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    if ((uint32_t)n > len) n = len;
+    return korb_ary_subseq(c, slots, self, (uint32_t)n, len - (uint32_t)n);
+}
+static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE v = VALUE_SLICE_GET(a, 0);
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *it = ary->items;
+    uint32_t w = 0; bool found = false;
+    for (uint32_t r = 0; r < ary->len; r++) {
+        if (korb_value_eq(it->data[r], v)) found = true;
+        else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
+    }
+    for (uint32_t r = w; r < ary->len; r++) it->data[r] = KORB_NIL;
+    ary->len = w;
+    return RESULT_OK(found ? v : KORB_NIL);
+}
+static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (!FIXNUM_P(iv)) return RESULT_OK(KORB_NIL);
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    intptr_t i = FIX2LONG(iv); if (i < 0) i += ary->len;
+    if (i < 0 || (uint32_t)i >= ary->len) return RESULT_OK(KORB_NIL);
+    KorbArrayItems *it = ary->items;
+    VALUE removed = it->data[i];
+    for (uint32_t r = (uint32_t)i; r + 1 < ary->len; r++) ARO_STORE(c, it, &it->data[r], it->data[r + 1]);
+    ary->len--; it->data[ary->len] = KORB_NIL;
+    return RESULT_OK(removed);
+}
+static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    VALUE needle = VALUE_SLICE_GET(a, 0);
+    for (int32_t i = (int32_t)ary->len - 1; i >= 0; i--)
+        if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(LONG2FIX(i));
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    intptr_t sh = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 1;
+    if (len == 0) return korb_ary_subseq(c, slots, self, 0, 0);
+    intptr_t s = ((sh % (intptr_t)len) + (intptr_t)len) % (intptr_t)len;   /* normalized left rotation */
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, len)));
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[(s + i) % len];
+        CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t k = VALUE_SLICE_LEN(a);
+    uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));   /* dst at slots[-1] */
+    for (uint32_t i = 0; i < n; i++) {
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k + 1));               /* row, rooted at slots[0] */
+        VALUE_REF row = VALUE_REF_AT(&slots[0]);
+        CHECK(korb_ary_push_val(c, slots + 1, row, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        for (uint32_t j = 0; j < k; j++) {
+            VALUE ov = VALUE_SLICE_GET(a, j);
+            VALUE e = (KORB_ARRAY_P(ov) && i < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[i] : KORB_NIL;
+            CHECK(korb_ary_push_val(c, slots + 1, row, e));
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
 /* ---- more String methods ------------------------------------------------- */
 
 static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
@@ -3260,6 +3355,15 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch", korb_m_ary_fetch, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "dig", korb_m_ary_dig, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "take", korb_m_ary_take, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "drop", korb_m_ary_drop, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "delete_at", korb_m_ary_delete_at, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "member?", korb_m_ary_include, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "rotate", korb_m_ary_rotate, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "deconstruct", korb_m_ary_self, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each", korb_m_ary_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_index", korb_m_ary_each_wi, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
