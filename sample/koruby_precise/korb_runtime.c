@@ -1923,6 +1923,30 @@ static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
 
+/* generic to_s / inspect — render via the printer into a fresh String.
+ * Specific types (Integer#to_s, String#to_s, ...) override via their own table. */
+static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    korb_fprint_to_s(c, ms, VALUE_REF_GET(self));   /* no GC inside */
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    korb_fprint_inspect(c, ms, VALUE_REF_GET(self));
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
 static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)));
 }
@@ -3174,6 +3198,38 @@ static RESULT korb_m_flt_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a; double d = VAL2FLT(VALUE_REF_GET(self))->val;
     return d < 0 ? korb_float_new(c, slots, M_PI) : RESULT_OK(LONG2FIX(0));   /* arg: 0 (Integer) or PI */
 }
+static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double lo, hi, s = VAL2FLT(VALUE_REF_GET(self))->val;
+    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &lo) || !korb_num_to_d(VALUE_SLICE_GET(a, 1), &hi)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+    return RESULT_OK((s >= lo && s <= hi) ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    uint32_t k = VALUE_SLICE_LEN(a) - 1;
+    if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
+    intptr_t idx = FIX2LONG(iv);
+    uint32_t oldlen = VAL2ARY(VALUE_REF_GET(self))->len;
+    if (idx < 0) idx += (intptr_t)oldlen + 1;
+    if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array", (long)FIX2LONG(iv));
+    uint32_t at = (uint32_t)idx;
+    uint32_t pad = at > oldlen ? at - oldlen : 0;
+    CHECK(korb_ary_ensure(c, slots, self, pad + k));
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *it = ary->items;
+    if (at <= oldlen) {
+        for (int32_t r = (int32_t)oldlen - 1; r >= (int32_t)at; r--) ARO_STORE(c, it, &it->data[r + k], it->data[r]);
+        for (uint32_t j = 0; j < k; j++) ARO_STORE(c, it, &it->data[at + j], VALUE_SLICE_GET(a, 1 + j));
+        ary->len = oldlen + k;
+    } else {
+        for (uint32_t r = oldlen; r < at; r++) it->data[r] = KORB_NIL;
+        for (uint32_t j = 0; j < k; j++) ARO_STORE(c, it, &it->data[at + j], VALUE_SLICE_GET(a, 1 + j));
+        ary->len = at + k;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 
 /* Hash#sort → array of [k,v] pairs sorted by key; fetch_values(*keys) */
 static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -3367,6 +3423,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "anybits?", korb_m_int_anybits, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "allbits?", korb_m_int_allbits, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcdlcm", korb_m_int_gcdlcm, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "+@", korb_m_int_self2, 0);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "times", korb_m_int_times, 0);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "upto", korb_m_int_upto, 1);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "downto", korb_m_int_downto, 1);
@@ -3478,6 +3535,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate", korb_m_ary_rotate, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "deconstruct", korb_m_ary_self, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "insert", korb_m_ary_insert, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "|", korb_m_ary_union, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "union", korb_m_ary_union, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "&", korb_m_ary_intersect, 1);
@@ -3581,6 +3639,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
@@ -3607,6 +3667,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "angle", korb_m_flt_angle, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "arg", korb_m_flt_angle, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "dup", korb_m_flt_to_f, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "+@", korb_m_flt_to_f, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "between?", korb_m_flt_between, 2);
     korb_def_cmethod(c, KORB_C_FLOAT, "zero?", korb_m_flt_zero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "infinite?", korb_m_flt_inf, 0);
