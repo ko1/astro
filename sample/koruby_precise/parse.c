@@ -355,6 +355,7 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
     push_frame(tc, &blk->locals);
 
     uint32_t bparams = 0;
+    uint32_t destructure_n = 0;     /* >0 for a single |(a,b,...)| destructuring param */
     if (blk->parameters) {
         if (!PM_NODE_TYPE_P(blk->parameters, PM_BLOCK_PARAMETERS_NODE)) {
             pop_frame(tc);
@@ -374,17 +375,42 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
                 return kp_unsupported(tc, (const pm_node_t *)ps,
                                       "non-positional block parameters");
             }
-            bparams = (uint32_t)ps->requireds.size;
-            for (uint32_t i = 0; i < bparams; i++) {
-                const pm_node_t *p = ps->requireds.nodes[i];
-                if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
+            /* single |(a, b, ...)| → destructure the one array arg into N locals */
+            if (ps->requireds.size == 1 && PM_NODE_TYPE_P(ps->requireds.nodes[0], PM_MULTI_TARGET_NODE)) {
+                const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)ps->requireds.nodes[0];
+                if (mt->rest || mt->rights.size) {
                     pop_frame(tc);
-                    return kp_unsupported(tc, p, "destructuring block parameter");
+                    return kp_unsupported(tc, ps->requireds.nodes[0], "block param with splat/post destructure");
                 }
-                pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                if (lvar_index(tc, p, cid) != i) {
-                    kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]",
-                             kp_cid_cstr(tc, cid), i);
+                for (uint32_t i = 0; i < mt->lefts.size; i++) {
+                    const pm_node_t *t = mt->lefts.nodes[i];
+                    pm_constant_id_t cid;
+                    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE))
+                        cid = ((const pm_local_variable_target_node_t *)t)->name;
+                    else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE))
+                        cid = ((const pm_required_parameter_node_t *)t)->name;
+                    else {
+                        pop_frame(tc);
+                        return kp_unsupported(tc, t, "nested destructuring block parameter");
+                    }
+                    if (lvar_index(tc, t, cid) != i)
+                        kp_failf(tc, t, "koruby_precise: destructure target '%s' is not locals[%u]", kp_cid_cstr(tc, cid), i);
+                }
+                bparams = 1;
+                destructure_n = (uint32_t)mt->lefts.size;
+            } else {
+                bparams = (uint32_t)ps->requireds.size;
+                for (uint32_t i = 0; i < bparams; i++) {
+                    const pm_node_t *p = ps->requireds.nodes[i];
+                    if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
+                        pop_frame(tc);
+                        return kp_unsupported(tc, p, "destructuring block parameter");
+                    }
+                    pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
+                    if (lvar_index(tc, p, cid) != i) {
+                        kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]",
+                                 kp_cid_cstr(tc, cid), i);
+                    }
                 }
             }
         }
@@ -402,7 +428,7 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
     }
 
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n);
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -686,7 +712,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     return ALLOC_node_class(name_sym, entry, super_node);
 }

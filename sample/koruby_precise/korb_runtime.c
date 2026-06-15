@@ -1125,6 +1125,7 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
+static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
 /* Core block invocation: lay out the block frame at cursor `slots` and
@@ -1146,9 +1147,22 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
     bf[0] = (VALUE)((uintptr_t)def_env | 1u);
-    const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
-    for (uint32_t i = 0; i < np; i++)      bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
-    for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    uint32_t dn = korb_entry_destructure_n(block);
+    if (dn > 0) {                                       /* |(a, b, ...)| — splat the array arg */
+        VALUE arr = (argc >= 1) ? argv[0] : KORB_NIL;
+        if (KORB_ARRAY_P(arr)) {
+            const KorbArray *ar = VAL2ARY(arr);
+            for (uint32_t i = 0; i < dn; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
+        } else {
+            bf[1] = arr;                               /* non-array → first target, rest nil */
+            for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
+        }
+        for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else {
+        const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
+        for (uint32_t i = 0; i < np; i++)      bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+        for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    }
     bf[blocals] = captured_self;                        /* block's lexical self */
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
@@ -2863,6 +2877,22 @@ static RESULT korb_hash_pick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        slots[0] = h->items->data[2 * i];      /* k */
+        slots[1] = h->items->data[2 * i + 1];  /* v */
+        VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));
+        slots[2] = pair;
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_hash_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_pick(c, slots, self, a, true); }
 static RESULT korb_m_hash_except(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_hash_pick(c, slots, self, a, false); }
 
@@ -3148,6 +3178,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
     korb_def_cmethod(c, KORB_C_HASH, "merge", korb_m_hash_merge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "dig", korb_m_hash_dig, -1);
     korb_def_cmethod(c, KORB_C_HASH, "values_at", korb_m_hash_values_at, -1);
     korb_def_cmethod(c, KORB_C_HASH, "slice", korb_m_hash_slice, -1);
