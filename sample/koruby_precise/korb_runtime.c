@@ -3577,6 +3577,18 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(KORB_NIL);
 }
 
+static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#rfind");
+    for (int64_t i = (int64_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if ((uint64_t)i >= ary->len) continue;
+        slots[0] = ary->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]);
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#find_index");
     for (uint32_t i = 0; ; i++) {
@@ -5799,6 +5811,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_all", korb_m_ary_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reject", korb_m_ary_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find", korb_m_ary_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "rfind", korb_m_ary_rfind, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_index", korb_m_ary_find_index, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "any?", korb_m_ary_any, 0);
