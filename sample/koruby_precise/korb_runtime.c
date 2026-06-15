@@ -4549,12 +4549,44 @@ static RESULT korb_m_ary_transpose(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(out));
 }
+/* minmax via comparator block — replicates CRuby's pairwise scan: seed min/max
+ * from the first pair, then for each subsequent pair route the smaller against
+ * min and the larger against max.  This reproduces CRuby's exact behaviour even
+ * for a non-antisymmetric comparator (e.g. the degenerate `{|x| x}`).  min/max
+ * land in slots[0]/slots[1]; A(i) re-reads the (possibly moved) element. */
+static RESULT korb_ary_minmax_pair_blk(CTX *c, VALUE *slots, VALUE_REF self,
+                                       NODE *block, VALUE *def_env, VALUE cself) {
+#define A(idx) (VAL2ARY(VALUE_REF_GET(self))->items->data[(idx)])
+    uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    if (n == 0) { slots[0] = KORB_NIL; slots[1] = KORB_NIL; return RESULT_OK(KORB_NIL); }
+    if (n == 1) { slots[0] = A(0); slots[1] = A(0); return RESULT_OK(KORB_NIL); }
+    int cmp;
+    CHECK(korb_cmp_block(c, slots + 2, A(0), A(1), block, def_env, cself, &cmp));
+    if (cmp <= 0) { slots[0] = A(0); slots[1] = A(1); } else { slots[0] = A(1); slots[1] = A(0); }
+    uint32_t i = 2;
+    while (i + 1 < n) {
+        CHECK(korb_cmp_block(c, slots + 2, A(i), A(i + 1), block, def_env, cself, &cmp));
+        uint32_t lo = (cmp <= 0) ? i : i + 1, hi = (cmp <= 0) ? i + 1 : i;
+        CHECK(korb_cmp_block(c, slots + 2, A(lo), slots[0], block, def_env, cself, &cmp));
+        if (cmp < 0) slots[0] = A(lo);
+        CHECK(korb_cmp_block(c, slots + 2, A(hi), slots[1], block, def_env, cself, &cmp));
+        if (cmp > 0) slots[1] = A(hi);
+        i += 2;
+    }
+    if (i < n) {                                              /* odd leftover element */
+        CHECK(korb_cmp_block(c, slots + 2, A(i), slots[0], block, def_env, cself, &cmp));
+        if (cmp < 0) slots[0] = A(i);
+        CHECK(korb_cmp_block(c, slots + 2, A(i), slots[1], block, def_env, cself, &cmp));
+        if (cmp > 0) slots[1] = A(i);
+    }
+    return RESULT_OK(KORB_NIL);
+#undef A
+}
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                 NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     if (block != NULL) {
-        slots[0] = UNWRAP(korb_ary_minmax_blk(c, slots, self, -1, block, def_env, cself));
-        slots[1] = UNWRAP(korb_ary_minmax_blk(c, slots + 1, self, 1, block, def_env, cself));
+        CHECK(korb_ary_minmax_pair_blk(c, slots, self, block, def_env, cself));  /* fills slots[0..1] */
     } else {
         slots[0] = UNWRAP(korb_ary_minmax(c, slots, self, -1));        /* min (nil if empty) */
         slots[1] = UNWRAP(korb_ary_minmax(c, slots + 1, self, 1));     /* max */
