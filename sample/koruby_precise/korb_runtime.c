@@ -2590,6 +2590,82 @@ static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(KORB_NIL);
 }
 
+static bool korb_ary_has(const KorbArray *ar, VALUE v);
+static RESULT korb_m_ary_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#take_while");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[0] = ary->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!KORB_TRUTHY(r.value)) break;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#drop_while");
+    uint32_t start = 0; bool dropping = true;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[0] = ary->items->data[i];
+        if (dropping) {
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) { start = i + 1; continue; }
+            dropping = false;
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    }
+    (void)start;
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < ary->len; i++) ary->items->data[i] = KORB_NIL;
+    ary->len = 0;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_ary_intersect_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    const KorbArray *me = VAL2ARY(VALUE_REF_GET(self)), *other = VAL2ARY(ov);
+    for (uint32_t i = 0; i < me->len; i++)
+        if (korb_ary_has(other, me->items->data[i])) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
+}
+/* bsearch: find-minimum (boolean block) or find-any (Integer block). Returns the
+ * matching element, or nil. Array must be sorted for meaningful results. */
+static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#bsearch");
+    uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
+    VALUE found = KORB_NIL; bool have = false;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[mid];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        VALUE rv = r.value;
+        if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {   /* find-minimum */
+            if (KORB_TRUTHY(rv)) { found = slots[0]; have = true; hi = mid; }
+            else lo = mid + 1;
+        } else if (FIXNUM_P(rv)) {                                     /* find-any */
+            intptr_t cmp = FIX2LONG(rv);
+            if (cmp == 0) return RESULT_OK(slots[0]);
+            else if (cmp < 0) hi = mid;
+            else lo = mid + 1;
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (must be numeric, true, false or nil)", korb_type_name(rv));
+        }
+    }
+    return RESULT_OK(have ? found : KORB_NIL);
+}
+
 /* any? (mode 0) / all? (1) / none? (2), with a block */
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#any?/all?/none? without a block is not supported");
@@ -2964,7 +3040,7 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         VALUE iv = VALUE_SLICE_GET(a, j);
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         VALUE e = KORB_NIL;
-        if (FIXNUM_P(iv)) { intptr_t i = FIX2LONG(iv); if (i < 0) i += ary->len; if (i >= 0 && (uint32_t)i < ary->len) e = ary->items->data[i]; }
+        intptr_t i; if (korb_to_index(iv, &i)) { if (i < 0) i += ary->len; if (i >= 0 && (uint32_t)i < ary->len) e = ary->items->data[i]; }
         CHECK(korb_ary_push_val(c, slots + 1, dst, e));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -3885,6 +3961,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "take_while", korb_m_ary_take_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "drop_while", korb_m_ary_drop_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "bsearch", korb_m_ary_bsearch, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "clear", korb_m_ary_clear, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "intersect?", korb_m_ary_intersect_q, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "*", korb_m_ary_mul, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "index", korb_m_ary_index, 1);
