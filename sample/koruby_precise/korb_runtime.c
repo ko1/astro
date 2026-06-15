@@ -4358,14 +4358,17 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-/* any? (mode 0) / all? (1) / none? (2), with a block */
-static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
+/* any? (mode 0) / all? (1) / none? (2). A pattern arg (case ===) wins over a block. */
+static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
+    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = ary->items->data[i];
         bool t;
-        if (block != NULL) {                                 /* truthiness of block result */
+        if (has_pat) {
+            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]);    /* pattern === element */
+        } else if (block != NULL) {                                 /* truthiness of block result */
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
@@ -4378,9 +4381,9 @@ static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, 
     }
     return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 0); }
-static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 1); }
-static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 2); }
+static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 0); }
+static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 1); }
+static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
 /* Numeric binop for send/symbol dispatch (op: 0+ 1- 2* 3/ 4%). Int op int → Int
  * (overflow→error), Float involved → Float; matches the node_plus/minus/... paths. */
@@ -4755,14 +4758,16 @@ static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
-    (void)a;
+    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     uint32_t cnt = 0;
     for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
         bool t;
-        if (block != NULL) {
-            VALUE iv = LONG2FIX(i);
+        if (has_pat) {
+            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), iv);
+        } else if (block != NULL) {
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
@@ -4855,24 +4860,31 @@ static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 /* any? (0) / all? (1) / none? (2) over an integer range, with block */
-static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#any?/all?/none? without a block is not supported");
+static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
+    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        bool t = KORB_TRUTHY(r.value);
+        bool t;
+        if (has_pat) {
+            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), iv);     /* pattern === element */
+        } else if (block != NULL) {
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            t = KORB_TRUTHY(r.value);
+        } else {
+            t = KORB_TRUTHY(iv);                                /* int elements are always truthy */
+        }
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);
         if (mode == 1 && !t) return RESULT_OK(KORB_FALSE);
         if (mode == 2 && t) return RESULT_OK(KORB_FALSE);
     }
     return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 0); }
-static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 1); }
-static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 2); }
+static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 0); }
+static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 1); }
+static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
 static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#step without a block (Enumerator) is not supported");
@@ -6070,20 +6082,21 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
 
 /* one?: exactly one truthy element (or exactly one block-truthy element). */
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    (void)a;
+    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     uint32_t cnt = 0;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
-        VALUE e = ary->items->data[i];
+        slots[0] = ary->items->data[i];
         bool t;
-        if (block != NULL) {
-            slots[0] = e;
+        if (has_pat) {
+            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]);
+        } else if (block != NULL) {
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
         } else {
-            t = KORB_TRUTHY(e);
+            t = KORB_TRUTHY(slots[0]);
         }
         if (t && ++cnt > 1) return RESULT_OK(KORB_FALSE);
     }
@@ -6670,7 +6683,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "take_while", korb_m_ary_take_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "drop_while", korb_m_ary_drop_while, 0);
@@ -6747,9 +6760,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "rfind", korb_m_ary_rfind, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_index", korb_m_ary_find_index, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "any?", korb_m_ary_any, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "all?", korb_m_ary_all, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "none?", korb_m_ary_none, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "any?", korb_m_ary_any, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "all?", korb_m_ary_all, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "none?", korb_m_ary_none, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reduce", korb_m_ary_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "inject", korb_m_ary_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_object", korb_m_ary_each_with_object, 1);
@@ -6878,13 +6891,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "drop", korb_m_range_drop, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "zip", korb_m_range_zip, -1);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find_index", korb_m_range_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "drop_while", korb_m_range_drop_while, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "take_while", korb_m_range_take_while, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "any?", korb_m_range_any, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "all?", korb_m_range_all, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "none?", korb_m_range_none, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "any?", korb_m_range_any, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "all?", korb_m_range_all, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "none?", korb_m_range_none, -1);
 
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
