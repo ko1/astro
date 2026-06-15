@@ -4118,6 +4118,27 @@ static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n);
     return korb_ary_minmax(c, slots, self,  1);
 }
+static RESULT korb_m_ary_transpose(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t rows = SELF_ARY->len;
+    if (rows == 0) return korb_ary_new(c, slots, 0);
+    VALUE first = SELF_ARY->items->data[0];
+    if (UNLIKELY(!KORB_ARRAY_P(first))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(first));
+    uint32_t cols = VAL2ARY(first)->len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, cols));               /* result rows */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    for (uint32_t j = 0; j < cols; j++) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, rows));       /* one output row */
+        VALUE_REF row = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < rows; i++) {
+            VALUE e = SELF_ARY->items->data[i];
+            if (UNLIKELY(!KORB_ARRAY_P(e) || VAL2ARY(e)->len != cols)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "element size differs");
+            CHECK(korb_ary_push_val(c, slots + 2, row, VAL2ARY(e)->items->data[j]));
+        }
+        CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_REF_GET(row)));
+    }
+    return RESULT_OK(VALUE_REF_GET(out));
+}
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_ary_minmax(c, slots, self, -1));        /* min (nil if empty) */
@@ -5669,6 +5690,11 @@ static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VAL
     h->len = w;
     return RESULT_OK(VALUE_REF_GET(self));
 }
+static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */
+    return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
 static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; return RESULT_OK(VALUE_SLICE_GET(a, 0)); }   /* proc defaults unsupported; accept + ignore */
 static RESULT korb_m_hash_compare_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }   /* identity-keys approximated by value-eq */
@@ -6981,6 +7007,32 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     int32_t b = korb_byte_find(s->buf->data + off, s->len - off, n->buf->data, n->len);
     return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
+static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    if (n->len > s->len) return RESULT_OK(KORB_NIL);
+    int32_t hi = (int32_t)(s->len - n->len);
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byterindex(substr, stop_byte) */
+        intptr_t stop;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        if (stop < 0) stop += s->len;
+        if (stop < 0) return RESULT_OK(KORB_NIL);
+        if (stop < hi) hi = (int32_t)stop;
+    }
+    for (int32_t i = hi; i >= 0; i--)
+        if (memcmp(s->buf->data + i, n->buf->data, n->len) == 0) return RESULT_OK(LONG2FIX(i));
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_str_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    if (s->len == 0) return korb_str_new(c, slots, "", 0);
+    uint32_t cl = 1;                                  /* one UTF-8 codepoint */
+    while (cl < s->len && ((unsigned char)s->buf->data[cl] & 0xC0) == 0x80) cl++;
+    return korb_str_slice_new(c, slots, self, 0, cl);
+}
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     VALUE sv = VALUE_SLICE_GET(a, 0);
@@ -7216,6 +7268,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "byterindex", korb_m_str_byterindex, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "chr", korb_m_str_chr, 0);
     korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "ljust", korb_m_str_ljust, -1);
@@ -7340,6 +7394,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "minmax", korb_m_ary_minmax, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "transpose", korb_m_ary_transpose, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "sort", korb_m_ary_sort, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "join", korb_m_ary_join, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact", korb_m_ary_compact, 0);
@@ -7440,6 +7495,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default=", korb_m_hash_default_set, 1);
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "minmax", korb_m_hash_minmax, 0);
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc=", korb_m_hash_default_proc_set, 1);
