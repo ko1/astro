@@ -4449,6 +4449,20 @@ static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *it = ary->items;
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < ary->len; i++) {
+        bool seen = false;
+        for (uint32_t j = 0; j < w; j++) if (korb_value_eq(it->data[j], it->data[i])) { seen = true; break; }
+        if (!seen) { if (w != i) ARO_STORE(c, it, &it->data[w], it->data[i]); w++; }
+    }
+    if (w == ary->len) return RESULT_OK(KORB_NIL);   /* unchanged */
+    ary->len = w;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     uint32_t n = SELF_ARY->len;
@@ -7427,6 +7441,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "slice!", korb_m_ary_slice_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "uniq!", korb_m_ary_uniq_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten!", korb_m_ary_flatten_b, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
