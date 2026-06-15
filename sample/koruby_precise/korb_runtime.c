@@ -3820,6 +3820,11 @@ static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)) == target ? KORB_TRUE : KORB_FALSE);
 }
+/* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
+static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    return RESULT_OK(korb_case_eq(c, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE);
+}
 
 /* Exception#message / to_s — the stored message, or the class name if none. */
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -8330,6 +8335,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);
