@@ -2173,6 +2173,20 @@ static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; REQUIRE_BLOCK("Array#reverse_each");
+    uint32_t i = VAL2ARY(VALUE_REF_GET(self))->len;
+    while (i > 0) {
+        i--;
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) continue;                           /* shrunk during iteration */
+        VALUE elem = ary->items->data[i];
+        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; REQUIRE_BLOCK("Array#each_with_index");
     for (uint32_t i = 0; ; i++) {
@@ -3073,6 +3087,51 @@ static RESULT korb_hash_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block,
 static RESULT korb_m_hash_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_hash_quant(c, slots, self, block, def_env, captured_self, 0); }
 static RESULT korb_m_hash_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_hash_quant(c, slots, self, block, def_env, captured_self, 1); }
 static RESULT korb_m_hash_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_hash_quant(c, slots, self, block, def_env, captured_self, 2); }
+/* in-place select!/filter!(keep_truthy=1) and reject!/delete_if(keep_truthy=0) */
+static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, bool keep_truthy, bool ret_nil_if_unchanged) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "in-place Hash filter without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    uint32_t w = 0; bool changed = false;
+    for (uint32_t r = 0; ; r++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (r >= h->len) break;
+        slots[0] = h->items->data[2*r];                    /* root k,v across the yield */
+        slots[1] = h->items->data[2*r+1];
+        RESULT res = korb_hash_yield(c, slots + 2, block, def_env, cself, np, slots[0], slots[1]);
+        if (UNLIKELY(res.state != KORB_NORMAL)) return res;
+        if (KORB_TRUTHY(res.value) == keep_truthy) {
+            KorbHash *h2 = VAL2HASH(VALUE_REF_GET(self));
+            if (w != r) {
+                ARO_STORE(c, h2->items, &h2->items->data[2*w],   slots[0]);
+                ARO_STORE(c, h2->items, &h2->items->data[2*w+1], slots[1]);
+            }
+            w++;
+        } else changed = true;
+    }
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+    for (uint32_t r = 2*w; r < 2*h->len; r++) h->items->data[r] = KORB_NIL;
+    h->len = w;
+    if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true); }
+static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
+static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
+static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
+static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#one? without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value) && ++cnt > 1) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(cnt == 1 ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     HASH_REQ_BLOCK("Hash#reduce");
     uint32_t np = korb_entry_params_cnt(block);   /* acc + pair: block takes |acc, (k,v)| */
@@ -3807,6 +3866,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "index", korb_m_ary_index, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
@@ -3909,6 +3969,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "inject", korb_m_hash_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_with_object", korb_m_hash_each_wo, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "sum", korb_m_hash_sum, -1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "select!", korb_m_hash_select_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "filter!", korb_m_hash_select_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "keep_if", korb_m_hash_keep_if, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "reject!", korb_m_hash_reject_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "delete_if", korb_m_hash_delete_if, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "one?", korb_m_hash_one, 0);
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
