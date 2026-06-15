@@ -206,11 +206,20 @@ main(int argc, char *argv[])
 
     /* Run.  Toplevel frame: locals at c->slots[0..L); cursor starts at L. */
     VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     RESULT r = EVAL(c, ast, toplevel_cursor);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
     fflush(stdout);
     if (r.state == KORB_RAISE) {
         korb_report_uncaught(c, r.value);
         return 1;
+    }
+
+    if (getenv("KORUBY_GC_STATS")) {
+        double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu elapsed=%.6f\n",
+                aro_gc_total_bytes(c), aro_gc_count(c), elapsed);
     }
 
     if (OPTION.aot_compile || OPTION.pg_compile) {
