@@ -4480,7 +4480,18 @@ static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (VALUE_SLICE_LEN(a) >= 1) return korb_m_range_take(c, slots, self, a);
     return RESULT_OK(SELF_RANGE->rbegin);
 }
-static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RANGE->rend); }
+static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  {
+    if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(SELF_RANGE->rend);
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    intptr_t start = hi - n; if (start < lo) start = lo;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > start ? hi - start : 0))));
+    for (intptr_t i = start; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 
 static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t init = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
@@ -5593,8 +5604,16 @@ static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     ary->len--; it->data[ary->len] = KORB_NIL;
     return RESULT_OK(removed);
 }
-static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
+static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    if (block != NULL) {                          /* block form: last index whose yield is truthy */
+        for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
+            slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value != KORB_NIL && r.value != KORB_FALSE) return RESULT_OK(LONG2FIX(i));
+        }
+        return RESULT_OK(KORB_NIL);
+    }
     const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     VALUE needle = VALUE_SLICE_GET(a, 0);
     for (int32_t i = (int32_t)ary->len - 1; i >= 0; i--)
@@ -6655,7 +6674,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "replace", korb_m_ary_replace, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete_at", korb_m_ary_delete_at, 1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "member?", korb_m_ary_include, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate", korb_m_ary_rotate, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
@@ -6772,7 +6791,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "first", korb_m_range_first, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "take", korb_m_range_take, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "end", korb_m_range_end, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "last", korb_m_range_last, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "last", korb_m_range_last, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "exclude_end?", korb_m_range_exclude, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "size", korb_m_range_size, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "count", korb_m_range_size, 0);
