@@ -806,9 +806,22 @@ korb_cmperr_operand(VALUE v, char *buf, size_t cap)
     else                      snprintf(buf, cap, "%s", korb_type_name(v));
 }
 
+static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup);
+
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
 {
+    if (KORB_HASH_P(l) && KORB_HASH_P(r)) {              /* subset/superset comparison */
+        const KorbHash *me = VAL2HASH(l), *other = VAL2HASH(r);
+        bool t;
+        switch (op) {
+          case 0:  t = me->len <  other->len && korb_hash_is_subset(me, other); break;
+          case 1:  t = me->len <= other->len && korb_hash_is_subset(me, other); break;
+          case 2:  t = me->len >  other->len && korb_hash_is_subset(other, me); break;
+          default: t = me->len >= other->len && korb_hash_is_subset(other, me); break;
+        }
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
     double ld, rd;
     if ((KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) && korb_num_to_d(l, &ld) && korb_num_to_d(r, &rd)) {
         bool t;
@@ -1643,6 +1656,8 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return korb_float_new(c, slots, r);
 }
 static RESULT korb_m_flt_finite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(isfinite(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_flt_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, nextafter(SELF_FLT, (double)INFINITY)); }
+static RESULT korb_m_flt_prev(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, nextafter(SELF_FLT, (double)-INFINITY)); }
 static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -2522,6 +2537,33 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* true if every pair of `sub` appears in `sup` with an equal value */
+static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup) {
+    for (uint32_t i = 0; i < sub->len; i++) {
+        int32_t idx = korb_hash_find(sup, sub->items->data[2*i]);
+        if (idx < 0) return false;
+        if (!korb_value_eq(sub->items->data[2*i+1], sup->items->data[2*idx+1])) return false;
+    }
+    return true;
+}
+/* op: 0 `<`  1 `<=`  2 `>`  3 `>=` (subset/superset comparison) */
+static RESULT korb_hash_cmp_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+    const KorbHash *me = VAL2HASH(VALUE_REF_GET(self)), *other = VAL2HASH(ov);
+    bool res;
+    switch (op) {
+      case 0: res = me->len <  other->len && korb_hash_is_subset(me, other); break;
+      case 1: res = me->len <= other->len && korb_hash_is_subset(me, other); break;
+      case 2: res = me->len >  other->len && korb_hash_is_subset(other, me); break;
+      default: res = me->len >= other->len && korb_hash_is_subset(other, me); break;
+    }
+    return RESULT_OK(res ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_hash_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 0); }
+static RESULT korb_m_hash_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 1); }
+static RESULT korb_m_hash_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 2); }
+static RESULT korb_m_hash_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 3); }
 #undef SELF_HASH
 #undef REQUIRE_BLOCK
 
@@ -4691,6 +4733,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "+@", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "-@", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_i", korb_m_str_to_i, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_sym", korb_m_str_to_sym, 0);
     korb_def_cmethod(c, KORB_C_STRING, "intern", korb_m_str_to_sym, 0);
@@ -4876,6 +4920,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
     korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
     korb_def_cmethod(c, KORB_C_HASH, "merge", korb_m_hash_merge, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "<", korb_m_hash_lt, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "<=", korb_m_hash_le, 1);
+    korb_def_cmethod(c, KORB_C_HASH, ">", korb_m_hash_gt, 1);
+    korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
@@ -4934,6 +4982,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each_entry", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
@@ -5009,6 +5058,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "modulo", korb_m_flt_modulo, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "coerce", korb_m_flt_coerce, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "finite?", korb_m_flt_finite, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "next_float", korb_m_flt_next, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "prev_float", korb_m_flt_prev, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "divmod", korb_m_flt_divmod, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "negative?", korb_m_flt_neg_q, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "positive?", korb_m_flt_pos_q, 0);

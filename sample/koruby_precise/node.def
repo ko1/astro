@@ -189,6 +189,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
         return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented in M0)");
     }
     if (KORB_FLOAT_P(v)) return korb_float_new(c, slots, -VAL2FLT(v)->val);
+    if (KORB_STRING_P(v)) return RESULT_OK(v);   /* -@ on a String → self (frozen dup) */
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-@' for %s", korb_a_type_name(v));
 }
 
