@@ -1843,6 +1843,12 @@ static RESULT korb_m_int_pos (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_neg (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT < 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_int_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_true_lit (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+/* boolean logical ops (true & | ^ / false&nil share & | ^). */
+static RESULT korb_m_bool_true_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_bool_true_or(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_bool_true_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_FALSE : KORB_TRUE); }
+static RESULT korb_m_bool_false_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a){ (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static RESULT korb_m_bool_false_or(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; VALUE o = VALUE_SLICE_GET(a, 0); return RESULT_OK((o != KORB_NIL && o != KORB_FALSE) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {
@@ -3134,6 +3140,10 @@ static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
 static RESULT korb_m_sym_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    return RESULT_OK(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)))[0] == '\0' ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
@@ -4518,6 +4528,27 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#flat_map without a block (Enumerator) is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_ARRAY_P(r.value)) {                 /* one level of flattening */
+            slots[1] = r.value;
+            uint32_t sublen = VAL2ARY(slots[1])->len;
+            for (uint32_t j = 0; j < sublen; j++)    /* re-read sub each push (GC may move it) */
+                CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[1])->items->data[j]));
+        } else {
+            CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_range_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
@@ -5044,6 +5075,24 @@ static RESULT korb_m_hash_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
     return RESULT_OK(slots[2]);
+}
+static RESULT korb_m_hash_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    VAL2HASH(VALUE_REF_GET(self))->len = 0;     /* drop all pairs (payload kept, becomes garbage) */
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n * 2)));
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        slots[0] = h->items->data[2 * i];
+        slots[1] = h->items->data[2 * i + 1];
+        CHECK(korb_ary_push_val(c, slots + 2, dst, slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -6449,18 +6498,28 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "intern", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "length", korb_m_sym_len, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "empty?", korb_m_sym_empty, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "size", korb_m_sym_len, 0);
 
     /* nil */
     korb_def_cmethod(c, KORB_C_NIL, "to_s", korb_m_nil_to_s, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
     korb_def_cmethod(c, KORB_C_NIL, "nil?", korb_m_nil_nil_q, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "&", korb_m_bool_false_and, 1);
+    korb_def_cmethod(c, KORB_C_NIL, "|", korb_m_bool_false_or, 1);
+    korb_def_cmethod(c, KORB_C_NIL, "^", korb_m_bool_false_or, 1);
 
     /* true / false */
     korb_def_cmethod(c, KORB_C_TRUE,  "to_s", korb_m_true_to_s, 0);
     korb_def_cmethod(c, KORB_C_TRUE,  "inspect", korb_m_true_to_s, 0);
+    korb_def_cmethod(c, KORB_C_TRUE,  "&", korb_m_bool_true_and, 1);
+    korb_def_cmethod(c, KORB_C_TRUE,  "|", korb_m_bool_true_or, 1);
+    korb_def_cmethod(c, KORB_C_TRUE,  "^", korb_m_bool_true_xor, 1);
     korb_def_cmethod(c, KORB_C_FALSE, "to_s", korb_m_false_to_s, 0);
     korb_def_cmethod(c, KORB_C_FALSE, "inspect", korb_m_false_to_s, 0);
+    korb_def_cmethod(c, KORB_C_FALSE, "&", korb_m_bool_false_and, 1);
+    korb_def_cmethod(c, KORB_C_FALSE, "|", korb_m_bool_false_or, 1);
+    korb_def_cmethod(c, KORB_C_FALSE, "^", korb_m_bool_false_or, 1);
 
     /* Array */
     korb_def_cmethod(c, KORB_C_ARRAY, "length", korb_m_ary_len, 0);
@@ -6608,6 +6667,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "clear", korb_m_hash_clear, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "flatten", korb_m_hash_flatten, -1);
     korb_def_cmethod(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
     korb_def_cmethod(c, KORB_C_HASH, "fetch_values", korb_m_hash_fetch_values, -1);
     korb_def_cmethod(c, KORB_C_HASH, "dig", korb_m_hash_dig, -1);
@@ -6679,6 +6740,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "grep_v", korb_m_range_grep_v, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "group_by", korb_m_range_group_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "flat_map", korb_m_range_flat_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "collect_concat", korb_m_range_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reduce", korb_m_range_reduce, -1);
