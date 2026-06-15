@@ -850,11 +850,11 @@ RESULT
 korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 2, line);
+    if (!KORB_ARRAY_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
     if (KORB_STRING_P(l) && FIXNUM_P(rhs))
         return korb_str_repeat_ref(c, slots, lhs, FIX2LONG(rhs), line);
-    if (KORB_ARRAY_P(l) && FIXNUM_P(rhs)) {          /* Array * n → repeated array */
-        intptr_t cnt = FIX2LONG(rhs);
+    if (KORB_ARRAY_P(l) && (FIXNUM_P(rhs) || KORB_FLOAT_P(rhs))) {   /* Array * n → repeated array (Float coerced via to_int) */
+        intptr_t cnt = FIXNUM_P(rhs) ? FIX2LONG(rhs) : (intptr_t)VAL2FLT(rhs)->val;
         if (cnt < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
         uint32_t len = VAL2ARY(l)->len;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)cnt * len)));
@@ -867,6 +867,9 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         slots[0] = rhs;
         return korb_m_ary_join(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
     }
+    if (KORB_ARRAY_P(l))                             /* Array * non-int/str */
+        return korb_raise(c, slots, KORB_E_TYPE, line,
+                          "no implicit conversion of %s into Integer", korb_type_name(rhs));
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "%s can't be coerced into Integer", korb_type_name(rhs));
@@ -2152,6 +2155,9 @@ static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!KORB_ARRAY_P(ov)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
     return korb_ary_plus_ref(c, slots, self, VALUE_SLICE_REF(a, 0));
+}
+static RESULT korb_m_ary_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_mul_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);   /* n→repeat, String→join */
 }
 #undef SELF_ARY
 
@@ -3868,6 +3874,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "*", korb_m_ary_mul, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "index", korb_m_ary_index, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sum", korb_m_ary_sum, -1);
