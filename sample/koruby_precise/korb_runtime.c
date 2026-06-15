@@ -587,6 +587,42 @@ korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
     return korb_class_le(exc_class, rescue_class);
 }
 
+/* class object of `self` (for `.class` / is_a?).  User objects → their klass;
+ * exceptions → the etype's class; else the builtin class via class_name[]. */
+static VALUE
+korb_class_obj_of(CTX *c, VALUE self)
+{
+    if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) return VAL2OBJ(self)->klass;
+    if (KORB_EXC_P(self)) {
+        uint32_t et = VAL2EXC(self)->etype;
+        if (et < 16) return korb_const_get(c->vm, c->vm->exc_name[et]);
+    }
+    return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
+}
+
+/* Build the builtin class objects (Object/Integer/String/...) + register
+ * constants + fill vm->class_name[].  Run before exception-class init. */
+void
+korb_init_builtin_classes(CTX *c, VALUE *slots)
+{
+    struct korb_vm *const vm = c->vm;
+    static const struct { const char *name; int cls; } defs[] = {
+        { "Object", KORB_C_OBJECT }, { "Integer", KORB_C_INTEGER }, { "Float", KORB_C_FLOAT },
+        { "String", KORB_C_STRING }, { "Symbol", KORB_C_SYMBOL }, { "Array", KORB_C_ARRAY },
+        { "Hash", KORB_C_HASH }, { "Range", KORB_C_RANGE }, { "NilClass", KORB_C_NIL },
+        { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
+    };
+    VALUE objc = KORB_NIL;
+    for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
+        uint32_t name_sym = korb_intern(vm, defs[i].name, strlen(defs[i].name));
+        VALUE cls = korb_class_new(c, slots, name_sym, objc).value;   /* Object first (objc=nil) */
+        korb_const_define(c, name_sym, cls);
+        vm->class_name[defs[i].cls] = name_sym;
+        if (defs[i].cls == KORB_C_OBJECT) objc = cls;                 /* rest inherit Object */
+    }
+    vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
+}
+
 /* Build the builtin Exception class hierarchy + register constants.  `slots` is
  * scratch above any live frame (classes are rooted in the const table). */
 void
@@ -594,7 +630,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
 {
     struct korb_vm *const vm = c->vm;
     static const struct { const char *name; int etype; const char *super; } defs[] = {
-        { "Exception",           -1,                NULL },
+        { "Exception",           -1,                "Object" },
         { "StandardError",       -1,                "Exception" },
         { "ScriptError",         -1,                "Exception" },
         { "NameError",           KORB_E_NAME,       "StandardError" },
@@ -1851,6 +1887,23 @@ static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
 
+static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a; return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)));
+}
+static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE target = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
+    if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_TRUE);
+    VALUE cls = korb_class_obj_of(c, VALUE_REF_GET(self));
+    while (KORB_CLASS_P(cls)) { if (cls == target) return RESULT_OK(KORB_TRUE); cls = VAL2CLASS(cls)->superclass; }
+    return RESULT_OK(KORB_FALSE);
+}
+static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE target = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
+    return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)) == target ? KORB_TRUE : KORB_FALSE);
+}
+
 /* Exception#message / to_s — the stored message, or the class name if none. */
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -2792,6 +2845,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
 
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);

@@ -108,6 +108,7 @@ RESULT korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t ar
 
 /* Exception hierarchy (korb_runtime.c) */
 void korb_init_exception_classes(CTX *c, VALUE *slots);
+void korb_init_builtin_classes(CTX *c, VALUE *slots);   /* Object/Integer/String/... class objects */
 bool korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class);   /* exc kind_of? rescue_class */
 
 /* binop slow paths (fast paths live in node.def bodies) */

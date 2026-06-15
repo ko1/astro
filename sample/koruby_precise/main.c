@@ -208,6 +208,7 @@ main(int argc, char *argv[])
      * frame top (base[fs-1] = c->slots[koruby_toplevel_locals_cnt-1]) holding
      * the `main` object; cursor starts above it. */
     VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+    korb_init_builtin_classes(c, toplevel_cursor);     /* Object/Integer/... class objects */
     korb_init_exception_classes(c, toplevel_cursor);   /* scratch above the toplevel frame */
     {
         RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
