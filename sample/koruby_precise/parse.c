@@ -1134,29 +1134,61 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return lvar_write(tc, node, lw->name, lw->depth, rval);
       }
       case PM_MULTI_WRITE_NODE: {
-        /* a, b = rhs  (local targets, no splat/post for now) */
+        /* pre..., [*splat,] post... = rhs  (depth-0 local targets) */
         const pm_multi_write_node_t *mw = (const pm_multi_write_node_t *)node;
-        if (mw->rest || mw->rights.size)
-            return kp_unsupported(tc, node, "multi-assign with splat/post target");
-        uint32_t nt = (uint32_t)mw->lefts.size;
-        for (uint32_t i = 0; i < nt; i++) {
-            const pm_node_t *t = mw->lefts.nodes[i];
-            if (!PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE))
-                return kp_unsupported(tc, t, "non-local multi-assign target");
-            if (((const pm_local_variable_target_node_t *)t)->depth != 0)
-                return kp_unsupported(tc, t, "outer-scope multi-assign target");
+        /* a depth-0 local target; returns its name cid or fails (unsupported) */
+        #define MW_LOCAL_CID(t, outcid)                                         \
+            do {                                                                \
+                if (!PM_NODE_TYPE_P((t), PM_LOCAL_VARIABLE_TARGET_NODE))        \
+                    return kp_unsupported(tc, (t), "non-local multi-assign target"); \
+                if (((const pm_local_variable_target_node_t *)(t))->depth != 0) \
+                    return kp_unsupported(tc, (t), "outer-scope multi-assign target"); \
+                (outcid) = ((const pm_local_variable_target_node_t *)(t))->name; \
+            } while (0)
+
+        const bool has_splat = mw->rest && PM_NODE_TYPE_P(mw->rest, PM_SPLAT_NODE);
+        if (mw->rest && !has_splat)
+            return kp_unsupported(tc, node, "multi-assign with implicit/anonymous rest");
+
+        if (!has_splat) {
+            uint32_t nt = (uint32_t)mw->lefts.size;
+            int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
+            if (!offs) abort();
+            pm_constant_id_t cid;
+            NODE *rhs = transduce(tc, mw->value);             /* register child */
+            for (uint32_t i = 0; i < nt; i++) {
+                MW_LOCAL_CID(mw->lefts.nodes[i], cid);
+                offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
+            }
+            NODE *mn = ALLOC_node_massign(offs, nt, rhs);
+            for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
+            return mn;
         }
-        int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
+
+        /* splat path: lefts(npre) | *splat | rights(npost) */
+        const pm_splat_node_t *sp = (const pm_splat_node_t *)mw->rest;
+        if (!sp->expression || !PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE))
+            return kp_unsupported(tc, node, "anonymous/non-local splat target");
+        uint32_t npre = (uint32_t)mw->lefts.size, npost = (uint32_t)mw->rights.size;
+        uint32_t no = npre + 1u + npost;
+        int32_t *offs = malloc(sizeof(int32_t) * no);
         if (!offs) abort();
-        NODE *rhs = transduce(tc, mw->value);                 /* register child */
-        for (uint32_t i = 0; i < nt; i++) {
-            const pm_local_variable_target_node_t *lt =
-                (const pm_local_variable_target_node_t *)mw->lefts.nodes[i];
-            offs[i] = (int32_t)lvar_index(tc, (const pm_node_t *)lt, lt->name) - tc->chain;
+        pm_constant_id_t cid;
+        NODE *rhs = transduce(tc, mw->value);
+        for (uint32_t i = 0; i < npre; i++) {
+            MW_LOCAL_CID(mw->lefts.nodes[i], cid);
+            offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
         }
-        NODE *mn = ALLOC_node_massign(offs, nt, rhs);
-        for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
+        MW_LOCAL_CID(sp->expression, cid);
+        offs[npre] = (int32_t)lvar_index(tc, sp->expression, cid) - tc->chain;
+        for (uint32_t i = 0; i < npost; i++) {
+            MW_LOCAL_CID(mw->rights.nodes[i], cid);
+            offs[npre + 1u + i] = (int32_t)lvar_index(tc, mw->rights.nodes[i], cid) - tc->chain;
+        }
+        NODE *mn = ALLOC_node_massign_splat(offs, npre, npost, rhs);
+        for (uint32_t i = 0; i < no; i++) bake_add(tc, &offs[i]);
         return mn;
+        #undef MW_LOCAL_CID
       }
       case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
         /* x op= v  →  write(x, binop(read(x), v)) */

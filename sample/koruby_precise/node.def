@@ -121,6 +121,32 @@ node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VA
     return RESULT_OK(rval);
 }
 
+// Multiple assignment with a splat target: `pre..., *splat, post... = rhs`.
+// `offsets` = npre pre-offsets, then the splat offset, then npost post-offsets.
+// The splat collects the middle elements into a fresh Array (a GC point — rhs is
+// parked in slots[0] across the alloc; ELEM treats a non-Array rhs as [rhs]).
+NODE_DEF @noinline
+node_massign_splat(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t npre, uint32_t npost, VALUE rval@child)
+{
+    (void)n;
+    const int32_t *const offs = (const int32_t *)offsets;
+    slots[0] = rval;                                       /* root rhs across the splat alloc */
+    const bool is_ary = KORB_ARRAY_P(slots[0]);
+    const uint32_t len = is_ary ? VAL2ARY(slots[0])->len : 1u;
+    const uint32_t splat_cnt = len > npre + npost ? len - npre - npost : 0u;
+#define MA_ELEM(i) (is_ary ? ((i) < VAL2ARY(slots[0])->len ? VAL2ARY(slots[0])->items->data[(i)] : KORB_NIL) \
+                            : ((i) == 0 ? slots[0] : KORB_NIL))
+    for (uint32_t i = 0; i < npre; i++) slots[offs[i]] = MA_ELEM(i);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, splat_cnt));
+    VALUE_REF sp = VALUE_REF_AT(&slots[1]);
+    for (uint32_t k = 0; k < splat_cnt; k++)
+        CHECK(korb_ary_push_val(c, slots + 2, sp, MA_ELEM(npre + k)));
+    slots[offs[npre]] = VALUE_REF_GET(sp);
+    for (uint32_t i = 0; i < npost; i++) slots[offs[npre + 1 + i]] = MA_ELEM(len - npost + i);
+#undef MA_ELEM
+    return RESULT_OK(slots[0]);
+}
+
 // ---- arithmetic ------------------------------------------------------------
 //
 // lhs is VALUE_REF (staged: rhs evaluation may GC), rhs is the last child
