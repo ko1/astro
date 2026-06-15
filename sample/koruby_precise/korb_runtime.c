@@ -538,6 +538,289 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
 }
 
 /* ---------------------------------------------------------------------------
+ * Receiver method dispatch (x.foo) — built-in methods on core types.
+ * ------------------------------------------------------------------------- */
+
+enum korb_class
+korb_class_of(VALUE v)
+{
+    if (FIXNUM_P(v))     return KORB_C_INTEGER;
+    if (v == KORB_NIL)   return KORB_C_NIL;
+    if (v == KORB_TRUE)  return KORB_C_TRUE;
+    if (v == KORB_FALSE) return KORB_C_FALSE;
+    if (SYMBOL_P(v))     return KORB_C_SYMBOL;
+    if (AROH_IS_GC_OBJECT(v)) {
+        switch (KORB_OBJ_TYPE(v)) {
+          case KORB_OBJ_STRING: return KORB_C_STRING;
+        }
+    }
+    return KORB_C_OBJECT;
+}
+
+const char *
+korb_class_name(enum korb_class cls)
+{
+    switch (cls) {
+      case KORB_C_INTEGER: return "Integer";
+      case KORB_C_STRING:  return "String";
+      case KORB_C_SYMBOL:  return "Symbol";
+      case KORB_C_NIL:     return "NilClass";
+      case KORB_C_TRUE:    return "TrueClass";
+      case KORB_C_FALSE:   return "FalseClass";
+      default:             return "Object";
+    }
+}
+
+void
+korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
+                 korb_method_fn fn, int32_t arity)
+{
+    struct korb_vm *const vm = c->vm;
+    uint32_t mid = korb_intern(vm, name, strlen(name));
+    if (vm->cmethod_cnt[cls] == vm->cmethod_capa[cls]) {
+        uint32_t nc = vm->cmethod_capa[cls] ? vm->cmethod_capa[cls] * 2 : 16;
+        vm->cmethods[cls] = realloc(vm->cmethods[cls], sizeof(*vm->cmethods[cls]) * nc);
+        if (!vm->cmethods[cls]) { fprintf(stderr, "koruby_precise: oom (cmethods)\n"); abort(); }
+        vm->cmethod_capa[cls] = nc;
+    }
+    struct korb_cmethod *m = &vm->cmethods[cls][vm->cmethod_cnt[cls]++];
+    m->mid = mid; m->fn = fn; m->arity = arity;
+}
+
+static const struct korb_cmethod *
+korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid)
+{
+    for (uint32_t i = 0; i < vm->cmethod_cnt[cls]; i++)
+        if (vm->cmethods[cls][i].mid == mid) return &vm->cmethods[cls][i];
+    /* fall back to the universal (Object) table */
+    if (cls != KORB_C_OBJECT) {
+        for (uint32_t i = 0; i < vm->cmethod_cnt[KORB_C_OBJECT]; i++)
+            if (vm->cmethods[KORB_C_OBJECT][i].mid == mid) return &vm->cmethods[KORB_C_OBJECT][i];
+    }
+    return NULL;
+}
+
+RESULT
+korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
+{
+    struct korb_vm *const vm = c->vm;
+    VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
+    VALUE self = *recv_slot;
+    enum korb_class cls = korb_class_of(self);
+    const struct korb_cmethod *m = korb_find_cmethod(vm, cls, mid);
+    if (UNLIKELY(m == NULL)) {
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line,
+                          "undefined method '%s' for %s",
+                          korb_sym_name(vm, mid), korb_a_type_name(self));
+    }
+    if (UNLIKELY(m->arity >= 0 && (uint32_t)m->arity != argc)) {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %d)", argc, m->arity);
+    }
+    RESULT r = m->fn(c, slots, VALUE_REF_AT(recv_slot),
+                     VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+    if (UNLIKELY(r.state == KORB_RAISE)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
+        e->line = line;
+    }
+    return r;
+}
+
+/* ---- integer formatting (to_s / chr helpers) ----------------------------- */
+
+static uint32_t
+korb_fmt_int(intptr_t n, int base, char *buf)
+{
+    char tmp[80];
+    int ti = 0;
+    bool neg = n < 0;
+    uintptr_t u = neg ? (uintptr_t)(-(n + 1)) + 1u : (uintptr_t)n;
+    if (u == 0) tmp[ti++] = '0';
+    while (u) { int d = (int)(u % (uintptr_t)base); tmp[ti++] = d < 10 ? (char)('0'+d) : (char)('a'+d-10); u /= (uintptr_t)base; }
+    uint32_t len = 0;
+    if (neg) buf[len++] = '-';
+    while (ti) buf[len++] = tmp[--ti];
+    return len;
+}
+
+/* ---- Integer methods ----------------------------------------------------- */
+
+#define SELF_INT  FIX2LONG(VALUE_REF_GET(self))
+static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; intptr_t n = SELF_INT;
+    if (n >= 0) return RESULT_OK(VALUE_REF_GET(self));
+    if (UNLIKELY(!FIXABLE(-n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");
+    return RESULT_OK(LONG2FIX(-n));
+}
+static RESULT korb_m_int_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; intptr_t n = SELF_INT + 1;
+    if (UNLIKELY(!FIXABLE(n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");
+    return RESULT_OK(LONG2FIX(n));
+}
+static RESULT korb_m_int_pred(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; intptr_t n = SELF_INT - 1;
+    if (UNLIKELY(!FIXABLE(n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");
+    return RESULT_OK(LONG2FIX(n));
+}
+static RESULT korb_m_int_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_even(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((SELF_INT & 1) == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_odd (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((SELF_INT & 1) != 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_pos (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT > 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_neg (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT < 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_true_lit (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int base = 10;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        VALUE b = VALUE_SLICE_GET(a, 0);
+        if (!FIXNUM_P(b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
+        base = (int)FIX2LONG(b);
+        if (base < 2 || base > 36) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
+    }
+    char buf[80];
+    uint32_t len = korb_fmt_int(SELF_INT, base, buf);
+    return korb_str_new(c, slots, buf, len);
+}
+static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; intptr_t n = SELF_INT;
+    if (n < 0 || n > 255) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%ld out of char range", (long)n);
+    char ch = (char)n;
+    return korb_str_new(c, slots, &ch, 1);
+}
+
+/* ---- String methods ------------------------------------------------------ */
+
+#define SELF_STR  VAL2STR(VALUE_REF_GET(self))
+static RESULT korb_m_str_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_STR->len)); }
+static RESULT korb_m_str_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_STR->len == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_str_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const KorbString *s = SELF_STR;
+    return RESULT_OK(ID2SYM(korb_intern(c->vm, s->bytes, s->len)));
+}
+/* transform-into-new-string helper (op: 0=upcase 1=downcase 2=capitalize 3=reverse) */
+static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op) {
+    uint32_t len = SELF_STR->len;
+    KorbString *r = korb_alloc(c, slots, sizeof(KorbString) + len + 1, KORB_OBJ_STRING);
+    const KorbString *s = SELF_STR;   /* re-read after alloc (GC may have moved it) */
+    for (uint32_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)s->bytes[i];
+        unsigned char out;
+        switch (op) {
+          case 0: out = (ch >= 'a' && ch <= 'z') ? (unsigned char)(ch - 32) : ch; break;
+          case 1: out = (ch >= 'A' && ch <= 'Z') ? (unsigned char)(ch + 32) : ch; break;
+          case 2:
+            if (i == 0) out = (ch >= 'a' && ch <= 'z') ? (unsigned char)(ch - 32) : ch;
+            else        out = (ch >= 'A' && ch <= 'Z') ? (unsigned char)(ch + 32) : ch;
+            break;
+          default: out = (unsigned char)s->bytes[len - 1 - i]; break;
+        }
+        r->bytes[i] = (char)out;
+    }
+    r->len = len; r->bytes[len] = '\0';
+    return RESULT_OK((VALUE)r);
+}
+static RESULT korb_m_str_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_str_transform(c, slots, self, 0); }
+static RESULT korb_m_str_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform(c, slots, self, 1); }
+static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform(c, slots, self, 2); }
+static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)a; return korb_str_transform(c, slots, self, 3); }
+
+/* ---- Symbol methods ------------------------------------------------------ */
+
+static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+}
+static RESULT korb_m_sym_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    return RESULT_OK(LONG2FIX((intptr_t)strlen(nm)));
+}
+
+/* ---- nil / true / false methods ------------------------------------------ */
+
+static RESULT korb_m_nil_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "", 0); }
+static RESULT korb_m_nil_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
+static RESULT korb_m_true_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "true", 4); }
+static RESULT korb_m_false_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "false", 5); }
+
+/* ---- universal (Object) methods ------------------------------------------ */
+
+static RESULT korb_m_obj_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static RESULT korb_m_nil_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_obj_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_FALSE : KORB_TRUE); }
+static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+
+static void
+korb_register_core_methods(CTX *c)
+{
+    /* Integer */
+    korb_def_cmethod(c, KORB_C_INTEGER, "abs", korb_m_int_abs, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "magnitude", korb_m_int_abs, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "succ", korb_m_int_succ, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "next", korb_m_int_succ, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "pred", korb_m_int_pred, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "zero?", korb_m_int_zero, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "even?", korb_m_int_even, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "odd?", korb_m_int_odd, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "positive?", korb_m_int_pos, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "negative?", korb_m_int_neg, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_i", korb_m_int_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_int", korb_m_int_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "ord", korb_m_int_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "integer?", korb_m_true_lit, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_s", korb_m_int_to_s, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "inspect", korb_m_int_to_s, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "chr", korb_m_int_chr, 0);
+
+    /* String */
+    korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_len, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_len, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_sym", korb_m_str_to_sym, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "intern", korb_m_str_to_sym, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "upcase", korb_m_str_upcase, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "downcase", korb_m_str_downcase, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "capitalize", korb_m_str_capitalize, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "reverse", korb_m_str_reverse, 0);
+
+    /* Symbol */
+    korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "length", korb_m_sym_len, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "size", korb_m_sym_len, 0);
+
+    /* nil */
+    korb_def_cmethod(c, KORB_C_NIL, "to_s", korb_m_nil_to_s, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "nil?", korb_m_nil_nil_q, 0);
+
+    /* true / false */
+    korb_def_cmethod(c, KORB_C_TRUE,  "to_s", korb_m_true_to_s, 0);
+    korb_def_cmethod(c, KORB_C_TRUE,  "inspect", korb_m_true_to_s, 0);
+    korb_def_cmethod(c, KORB_C_FALSE, "to_s", korb_m_false_to_s, 0);
+    korb_def_cmethod(c, KORB_C_FALSE, "inspect", korb_m_false_to_s, 0);
+
+    /* Object (universal fallback) */
+    korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * Printing (CRuby-compatible to_s / inspect, written directly — no GC).
  * ------------------------------------------------------------------------- */
 
@@ -730,6 +1013,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "puts",  korb_bi_puts,  -1);
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
+
+    korb_register_core_methods(c);
 
     return c;
 }

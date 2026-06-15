@@ -475,9 +475,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 
     const char *name = kp_cid_cstr(tc, cn->name);
+    uint32_t mid = kp_intern_cid(tc, cn->name);
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
-    if (cn->block) return kp_unsupported(tc, (const pm_node_t *)cn, "block argument");
 
     /* operator calls → dedicated binop / unary nodes */
     enum kp_binop op = kp_binop_kind(name);
@@ -495,9 +495,36 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_not(transduce(tc, cn->receiver));
     }
 
-    char what[128];
-    snprintf(what, sizeof(what), "receiver method call '%s'", name);
-    return kp_unsupported(tc, (const pm_node_t *)cn, strdup(what));
+    /* receiver method dispatch: recv.mid(args).  Block form (arr.each{}) needs
+     * yielding built-ins — not yet (next commit). */
+    if (cn->block) {
+        return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with block");
+    }
+    if (argc > 3) {
+        return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with >3 args");
+    }
+    uint32_t sc = 1u + (uint32_t)argc;     /* recv + args staging */
+    NODE *recv, *a[3];
+    switch (argc) {
+      case 0:
+        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
+        return ALLOC_node_send0(mid, line, recv);
+      case 1:
+        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0])));
+        return ALLOC_node_send1(mid, line, recv, a[0]);
+      case 2:
+        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
+                            a[1] = transduce(tc, cn->arguments->arguments.nodes[1])));
+        return ALLOC_node_send2(mid, line, recv, a[0], a[1]);
+      default:
+        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
+                            a[1] = transduce(tc, cn->arguments->arguments.nodes[1]),
+                            a[2] = transduce(tc, cn->arguments->arguments.nodes[2])));
+        return ALLOC_node_send3(mid, line, recv, a[0], a[1], a[2]);
+    }
 }
 
 /* ---- def ----------------------------------------------------------------- */

@@ -171,6 +171,16 @@ typedef struct CTX_struct CTX;
  * (the cells live in the caller's frame area, below `slots`). */
 typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
 
+/* Receiver-dispatch core classes + built-in method fn.  `self` is a VALUE_REF
+ * (the staged recv slot) so allocating methods re-read it through the ref
+ * after GC.  KORB_NCLASS must match the korb_vm.cmethods[] array size. */
+enum korb_class {
+    KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL,
+    KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_OBJECT,
+    KORB_NCLASS
+};
+typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
+
 struct korb_method {
     uint32_t mid;            /* interned name */
     uint8_t  kind;           /* enum korb_method_kind */
@@ -191,10 +201,15 @@ struct korb_vm {
     const char **sym_names;
     uint32_t sym_cnt, sym_capa;
 
-    /* global method table (M0: no classes) */
+    /* global function table (no-receiver calls: puts, p, user `def foo`) */
     struct korb_method *methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+
+    /* per-core-class built-in method tables (receiver dispatch x.foo).
+     * Each a flat {mid, fn, arity} list. */
+    struct korb_cmethod { uint32_t mid; korb_method_fn fn; int32_t arity; } *cmethods[KORB_NCLASS];
+    uint32_t cmethod_cnt[KORB_NCLASS], cmethod_capa[KORB_NCLASS];
 
     /* in-flight raise backtrace (filled during unwind; libc only — the
      * unwind path must not allocate GC memory while the exception rides

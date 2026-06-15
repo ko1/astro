@@ -70,6 +70,14 @@ RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
 RESULT korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line);
 bool   korb_value_eq(VALUE a, VALUE b);
 
+/* ---- receiver method dispatch (x.foo) — enum/fn in context.h ------------- */
+enum korb_class korb_class_of(VALUE v);
+const char *korb_class_name(enum korb_class cls);
+void   korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
+                        korb_method_fn fn, int32_t arity);
+/* Dispatch `recv.mid(args)`: recv at slots[-argc-1], args at slots[-argc..]. */
+RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
+
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
                           uint32_t params_cnt, uint32_t locals_cnt,
