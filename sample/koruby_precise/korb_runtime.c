@@ -6715,6 +6715,13 @@ static RESULT korb_m_hash_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(VALUE_REF_GET(out));
 }
+static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+/* Hash#tally — Enumerable#tally over [k,v] pairs (each unique → count 1). */
+static RESULT korb_m_hash_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_m_hash_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));   /* pairs array */
+    return korb_m_ary_tally(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
@@ -8557,6 +8564,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "tally", korb_m_hash_tally, 0);
     korb_def_cmethod(c, KORB_C_HASH, "invert", korb_m_hash_invert, 0);
     korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
     korb_def_cmethod(c, KORB_C_HASH, "replace", korb_m_hash_replace, 1);
