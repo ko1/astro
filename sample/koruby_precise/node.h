@@ -83,6 +83,15 @@ RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
 VALUE  korb_ivar_get(VALUE self, VALUE name_sym);
 RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val);
 
+/* Classes + constants (korb_runtime.c) */
+RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass);
+void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
+VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
+void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
+                             uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block);
+/* `class Name ... end`: create/find the class + run its body (self = class). */
+RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass);
+
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);

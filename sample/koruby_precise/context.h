@@ -130,6 +130,7 @@ enum korb_obj_type {
     KORB_OBJ_HASH        = 5,
     KORB_OBJ_RANGE       = 6,
     KORB_OBJ_OBJECT      = 7,   /* user object (incl. top-level `main`) */
+    KORB_OBJ_CLASS       = 8,   /* user class */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
@@ -191,6 +192,18 @@ typedef struct KorbObject {
     KorbArrayItems *ARO_GC_EDGE ivars;   /* 2*ivar_capa VALUEs, or NULL */
 } KorbObject;
 
+/* User class.  The instance-method table is a libc side-array (method bodies
+ * are immortal NODEs, names interned ints → no GC edges), so `methods` is a
+ * raw non-edge pointer; only `superclass` and `name` are GC-visible. */
+struct korb_method;
+typedef struct KorbClass {
+    AroObjectHeader head;            /* KORB_OBJ_CLASS */
+    uint32_t name_sym;               /* class name (interned), 0 = anonymous */
+    uint32_t method_cnt, method_capa;
+    struct korb_method *methods;     /* libc side-array (no GC edges) */
+    VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
+} KorbClass;
+
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
 #define KORB_STRING_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING)
 #define KORB_EXC_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION)
@@ -198,12 +211,14 @@ typedef struct KorbObject {
 #define KORB_HASH_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_HASH)
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
 #define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
+#define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
 #define VAL2HASH(v)        ((KorbHash *)(uintptr_t)(v))
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
+#define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -231,7 +246,7 @@ typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
  * after GC.  KORB_NCLASS must match the korb_vm.cmethods[] array size. */
 enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
-    KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_OBJECT,
+    KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS, KORB_C_OBJECT,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -268,6 +283,12 @@ struct korb_vm {
     struct korb_method *methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+
+    /* constants (class names): parallel name→value arrays.  `const_vals` holds
+     * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS. */
+    uint32_t *const_names;
+    VALUE    *const_vals;
+    uint32_t  const_cnt, const_capa;
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
@@ -333,6 +354,10 @@ struct CTX_struct {
     for (VALUE *_p = (c)->slots; _p < _aro_top; _p++) {                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
+    /* constants (class values) are roots too */                            \
+    for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \
+    }                                                                        \
 } while (0)
 
 #define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {         \
@@ -378,6 +403,12 @@ struct CTX_struct {
         KorbObject *_ob = (KorbObject *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_ob->ivars);             \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_CLASS: {                                                 \
+        KorbClass *_cl = (KorbClass *)(payload);                            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->superclass);            \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

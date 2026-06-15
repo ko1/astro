@@ -307,6 +307,138 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+static void korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
+
+/* ---------------------------------------------------------------------------
+ * Classes + constants.  A class's instance-method table is a libc side-array
+ * (no GC edges); constants live in vm->const_* (root-scanned).
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
+{
+    VALUE_REF sref = SLOTS_PUSH(slots, superclass);   /* root super across alloc */
+    KorbClass *k = korb_alloc(c, slots, sizeof(KorbClass), KORB_OBJ_CLASS);
+    k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
+    if (superclass != KORB_NIL) ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->superclass, VALUE_REF_GET(sref));
+    return RESULT_OK((VALUE)k);
+}
+
+VALUE
+korb_const_get(struct korb_vm *vm, uint32_t name_sym)
+{
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == name_sym) return vm->const_vals[i];
+    return KORB_NIL;
+}
+
+void
+korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
+{
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == name_sym) { vm->const_vals[i] = val; return; }
+    if (vm->const_cnt == vm->const_capa) {
+        uint32_t nc = vm->const_capa ? vm->const_capa * 2 : 16;
+        vm->const_names = realloc(vm->const_names, sizeof(uint32_t) * nc);
+        vm->const_vals  = realloc(vm->const_vals,  sizeof(VALUE) * nc);
+        if (!vm->const_names || !vm->const_vals) { fprintf(stderr, "koruby_precise: oom (consts)\n"); abort(); }
+        vm->const_capa = nc;
+    }
+    vm->const_names[vm->const_cnt] = name_sym;
+    vm->const_vals[vm->const_cnt] = val;     /* root cell (scanned); no WB needed */
+    vm->const_cnt++;
+}
+
+void
+korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
+                      uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
+{
+    KorbClass *const k = VAL2CLASS(klass);
+    struct korb_method *m = NULL;
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i].mid == mid) { m = &k->methods[i]; break; }
+    if (!m) {
+        if (k->method_cnt == k->method_capa) {
+            uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
+            k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
+            if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
+            k->method_capa = nc;
+        }
+        m = &k->methods[k->method_cnt++];
+        m->mid = mid;
+    }
+    m->kind = KORB_METHOD_ISEQ;
+    m->uses_block = (uint8_t)uses_block;
+    m->params_cnt = (int32_t)params_cnt;
+    m->locals_cnt = locals_cnt;
+    m->body = body;
+    m->bfn = NULL;
+    c->vm->method_serial++;
+}
+
+/* lookup mid up the superclass chain */
+static struct korb_method *
+korb_class_find_method(VALUE klass, uint32_t mid)
+{
+    while (KORB_CLASS_P(klass)) {
+        KorbClass *k = VAL2CLASS(klass);
+        for (uint32_t i = 0; i < k->method_cnt; i++)
+            if (k->methods[i].mid == mid) return &k->methods[i];
+        klass = k->superclass;
+    }
+    return NULL;
+}
+
+/* Set up an ISEQ frame (args at slots[-argc..]) with `self`, and dispatch.
+ * Shared by instance dispatch and Klass.new's initialize call. */
+static RESULT
+korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
+                   uint32_t line, uint32_t mid, VALUE self,
+                   NODE *block, VALUE *def_env, VALUE captured_self)
+{
+    struct korb_vm *const vm = c->vm;
+    if (UNLIKELY((uint32_t)m->params_cnt != argc)) {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+    }
+    VALUE *const base = slots - argc;
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit)) {
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    }
+    if (locals_cnt > argc) memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));
+    base[locals_cnt - 1] = self;
+    if (block != NULL && m->uses_block) {
+        base[locals_cnt - 4] = (VALUE)((uintptr_t)block   | 1u);
+        base[locals_cnt - 3] = (VALUE)((uintptr_t)def_env | 1u);
+        base[locals_cnt - 2] = captured_self;
+    }
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) r.state = KORB_NORMAL;
+    else if (UNLIKELY(r.state == KORB_RAISE)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
+        e->line = line;
+    }
+    return r;
+}
+
+RESULT
+korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass)
+{
+    VALUE cls = korb_const_get(c->vm, name_sym);
+    if (!KORB_CLASS_P(cls)) {
+        cls = UNWRAP(korb_class_new(c, slots, name_sym, superclass));
+        korb_const_define(c, name_sym, cls);    /* now rooted in the const table */
+    }
+    slots[0] = cls;                              /* root for the body run + capture */
+    return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, slots[0]);
+}
+
 /* ---------------------------------------------------------------------------
  * Range — {begin, end, exclude_end}.
  * ------------------------------------------------------------------------- */
@@ -828,6 +960,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_ARRAY:  return KORB_C_ARRAY;
           case KORB_OBJ_HASH:   return KORB_C_HASH;
           case KORB_OBJ_RANGE:  return KORB_C_RANGE;
+          case KORB_OBJ_CLASS:  return KORB_C_CLASS;
         }
     }
     return KORB_C_OBJECT;
@@ -843,6 +976,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_ARRAY:   return "Array";
       case KORB_C_HASH:    return "Hash";
       case KORB_C_RANGE:   return "Range";
+      case KORB_C_CLASS:   return "Class";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -899,6 +1033,29 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     struct korb_vm *const vm = c->vm;
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
     VALUE self = *recv_slot;
+
+    /* user instance → dispatch through its class chain (miss falls to Object). */
+    if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
+        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid);
+        if (um) return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+    }
+    /* class receiver → Klass.new (allocate + initialize). */
+    else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
+        uint32_t init_mid = korb_intern(vm, "initialize", 10);
+        struct korb_method *init = korb_class_find_method(self, init_mid);
+        VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
+        if (init) {
+            VALUE *base = slots - argc;
+            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, block, def_env, captured_self);
+            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
+        }
+        if (UNLIKELY(argc != 0))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected 0)", argc);
+        return RESULT_OK(obj);
+    }
+
     enum korb_class cls = korb_class_of(self);
     const struct korb_cmethod *m = korb_find_cmethod(vm, cls, mid);
     if (UNLIKELY(m == NULL)) {
@@ -2506,9 +2663,14 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, fp, v, false);
         return;
-      case KORB_OBJ_OBJECT:
-        if (VAL2OBJ(v)->klass == KORB_NIL) { fputs("main", fp); return; }   /* top-level self */
-        fputs("#<Object>", fp);
+      case KORB_OBJ_OBJECT: {
+        const KorbObject *o = VAL2OBJ(v);
+        if (o->klass == KORB_NIL) { fputs("main", fp); return; }       /* top-level self */
+        fprintf(fp, "#<%s>", korb_sym_name(c->vm, VAL2CLASS(o->klass)->name_sym));
+        return;
+      }
+      case KORB_OBJ_CLASS:
+        fputs(korb_sym_name(c->vm, VAL2CLASS(v)->name_sym), fp);       /* class name */
         return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);

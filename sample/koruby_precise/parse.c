@@ -611,12 +611,39 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, frame_size, uses_block);
+    /* self at the def site (enclosing frame) = the default definee */
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, frame_size, uses_block, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */
     code_repo_add(korb_sym_name(tc->c->vm, mid), body, true);
     return def;
+}
+
+/* `class Name ... end` → node_class carrying the class name + a node_entry for
+ * the body (its own scope, run with self = the class). */
+static NODE *
+transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
+{
+    if (cn->superclass)
+        return kp_unsupported(tc, (const pm_node_t *)cn, "class inheritance (< superclass)");
+    if (!PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_READ_NODE))
+        return kp_unsupported(tc, (const pm_node_t *)cn, "namespaced class name");
+    uint32_t name_sym = kp_intern_cid(tc, cn->name);
+
+    push_frame(tc, &cn->locals);
+    NODE *body;
+    if (cn->body == NULL)
+        body = lit_nil();
+    else if (PM_NODE_TYPE_P(cn->body, PM_STATEMENTS_NODE))
+        body = transduce_statements(tc, (const pm_statements_node_t *)cn->body);
+    else
+        body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
+    uint32_t frame_size = pop_frame(tc);
+
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size);
+    code_repo_add("class", entry, true);          /* its own AOT entry */
+    return ALLOC_node_class(name_sym, entry);
 }
 
 /* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is
@@ -903,6 +930,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_call(tc, (const pm_call_node_t *)node);
       case PM_DEF_NODE:
         return transduce_def(tc, (const pm_def_node_t *)node);
+      case PM_CLASS_NODE:
+        return transduce_class(tc, (const pm_class_node_t *)node);
+      case PM_CONSTANT_READ_NODE: {
+        const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
+        return ALLOC_node_const(kp_intern_cid(tc, cr->name));
+      }
 
       default: {
         char what[64];

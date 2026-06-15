@@ -298,12 +298,38 @@ node_return(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 // `def` registers the body in the per-CTX method table at eval time.  The
 // body is its own AOT entry (call sites dispatch via body->head.dispatcher
 // at runtime, which the specializer cannot constant-fold) — @noinline.
+// `self_off` reads the default definee: inside a `class` body self is the
+// class (def attaches to it); elsewhere self is main/an instance → global table.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block, int32_t self_off)
 {
-    (void)n; (void)slots; (void)body_dispatcher;
-    korb_method_define(c, mid, body, params_cnt, locals_cnt, uses_block);
+    (void)n; (void)body_dispatcher;
+    VALUE definee = slots[self_off];
+    if (KORB_CLASS_P(definee))
+        korb_class_def_method(c, definee, mid, body, params_cnt, locals_cnt, uses_block);
+    else
+        korb_method_define(c, mid, body, params_cnt, locals_cnt, uses_block);
     return RESULT_OK(ID2SYM(mid));
+}
+
+// `class Name ... end` — create/find the class + run its body with self=class.
+// @noinline: body is a per-process node_entry pointer (not bakeable).
+NODE_DEF @noinline
+node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body)
+{
+    (void)n; (void)body_dispatcher;
+    return korb_class_body(c, slots, name_sym, body, KORB_NIL);
+}
+
+// constant read (`Foo`) — classes only for now.
+NODE_DEF
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym)
+{
+    (void)n;
+    VALUE v = korb_const_get(c->vm, name_sym);
+    if (UNLIKELY(v == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(c->vm, name_sym));
+    return RESULT_OK(v);
 }
 
 // Call nodes: argc staged children sit contiguously at slots[-argc..-1],
