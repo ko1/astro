@@ -2558,6 +2558,41 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_slice_new(c, slots, self, bs, es - bs);
 }
 
+static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen) {
+    unsigned char b0 = (unsigned char)p[0]; uint32_t cp, cl;
+    if (b0 < 0x80)        { *clen = 1; return b0; }
+    else if ((b0 & 0xE0) == 0xC0) { cp = b0 & 0x1F; cl = 2; }
+    else if ((b0 & 0xF0) == 0xE0) { cp = b0 & 0x0F; cl = 3; }
+    else                  { cp = b0 & 0x07; cl = 4; }
+    for (uint32_t k = 1; k < cl && k < avail; k++) cp = (cp << 6) | ((unsigned char)p[k] & 0x3F);
+    *clen = cl; return cp;
+}
+static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_codepoint without a block (Enumerator) is not supported");
+    for (uint32_t pos = 0; ; ) {
+        const KorbString *s = SELF_STR;
+        if (pos >= s->len) break;
+        uint32_t cl; uint32_t cp = korb_utf8_decode(s->buf->data + pos, s->len - pos, &cl);
+        VALUE cv = LONG2FIX(cp);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &cv, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        pos += cl;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t pos = 0; ; ) {
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+        if (pos >= s->len) break;
+        uint32_t cl; uint32_t cp = korb_utf8_decode(s->buf->data + pos, s->len - pos, &cl);
+        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(cp)));
+        pos += cl;
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_byte without a block (Enumerator) is not supported");
@@ -5668,6 +5703,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "chop", korb_m_str_chop, 0);
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
     korb_def_cmethod(c, KORB_C_STRING, "*", korb_m_str_mul, 1);
@@ -5688,6 +5725,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
     /* Symbol */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
