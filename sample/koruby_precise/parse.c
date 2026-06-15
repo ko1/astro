@@ -360,10 +360,18 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
 
     uint32_t bparams = 0;
     uint32_t destructure_n = 0;     /* >0 for a single |(a,b,...)| destructuring param */
-    if (blk->parameters) {
+    if (blk->parameters && PM_NODE_TYPE_P(blk->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
+        /* `{ _1 * _2 }` — prism puts `_1`.._N in blk->locals[0..N-1]; the body's
+         * `_N` reads resolve as ordinary locals.  N = maximum referenced. */
+        bparams = ((const pm_numbered_parameters_node_t *)blk->parameters)->maximum;
+    } else if (blk->parameters && PM_NODE_TYPE_P(blk->parameters, PM_IT_PARAMETERS_NODE)) {
+        /* `{ it * 2 }` — one implicit param `it`; the body reads it via a
+         * PM_IT_LOCAL_VARIABLE_READ_NODE, mapped to local slot 0 in transduce. */
+        bparams = 1;
+    } else if (blk->parameters) {
         if (!PM_NODE_TYPE_P(blk->parameters, PM_BLOCK_PARAMETERS_NODE)) {
             pop_frame(tc);
-            return kp_unsupported(tc, blk->parameters, "numbered/it block parameters");
+            return kp_unsupported(tc, blk->parameters, "unsupported block parameters");
         }
         const pm_block_parameters_node_t *bp =
             (const pm_block_parameters_node_t *)blk->parameters;
@@ -1118,6 +1126,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_local_variable_read_node_t *lr = (const pm_local_variable_read_node_t *)node;
         return lvar_read(tc, node, lr->name, lr->depth);
       }
+      case PM_IT_LOCAL_VARIABLE_READ_NODE:    /* `it` — the block's single implicit param (slot 0) */
+        return bake_lget(tc, 0);
       case PM_LOCAL_VARIABLE_WRITE_NODE: {
         const pm_local_variable_write_node_t *lw = (const pm_local_variable_write_node_t *)node;
         NODE *rval = transduce(tc, lw->value);   /* register child: no staging */
