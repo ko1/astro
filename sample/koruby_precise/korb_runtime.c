@@ -1118,6 +1118,19 @@ korb_utf8_count(const char *b, uint32_t nbytes)
     return n;
 }
 
+/* byte offset of codepoint index ci (clamped to [0, len]) */
+static uint32_t
+korb_utf8_byteoff(const char *b, uint32_t len, uint32_t ci)
+{
+    uint32_t i = 0, n = 0;
+    while (i < len && n < ci) {
+        i++;
+        while (i < len && ((unsigned char)b[i] & 0xC0) == 0x80) i++;
+        n++;
+    }
+    return i;
+}
+
 /* alloc a fresh String = self->bytes[start, start+len); re-reads self after the
  * alloc-GC (source may have moved) — THE safe substring primitive. */
 static RESULT
@@ -1282,6 +1295,70 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX(korb_cmp_values(VALUE_REF_GET(self), o)));
+}
+
+/* String#[] — int index, (int,len), Range, or substring match.  Indices are
+ * codepoints; results are fresh strings (or nil). */
+static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbString *s = SELF_STR;
+    uint32_t ncp = korb_utf8_count(s->bytes, s->len);
+    VALUE i0 = VALUE_SLICE_GET(a, 0);
+
+    if (KORB_STRING_P(i0)) {                       /* s[substr] → copy of substr if present */
+        const KorbString *sub = VAL2STR(i0);
+        if (korb_byte_find(s->bytes, s->len, sub->bytes, sub->len) < 0) return RESULT_OK(KORB_NIL);
+        return korb_str_slice_new(c, slots, VALUE_SLICE_REF(a, 0), 0, sub->len);
+    }
+    if (KORB_RANGE_P(i0)) {
+        const KorbRange *r = VAL2RANGE(i0);
+        if (UNLIKELY(!FIXNUM_P(r->rbegin) || !FIXNUM_P(r->rend))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        intptr_t b = FIX2LONG(r->rbegin), e = FIX2LONG(r->rend);
+        if (b < 0) b += ncp;
+        if (e < 0) e += ncp;
+        if (b < 0 || b > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
+        intptr_t last = r->exclude_end ? e - 1 : e;
+        intptr_t cnt = last - b + 1;
+        if (cnt < 0) cnt = 0;
+        if (b + cnt > (intptr_t)ncp) cnt = (intptr_t)ncp - b;
+        uint32_t bs = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)b);
+        uint32_t es = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)(b + cnt));
+        return korb_str_slice_new(c, slots, self, bs, es - bs);
+    }
+    if (UNLIKELY(!FIXNUM_P(i0))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
+    intptr_t i = FIX2LONG(i0);
+    if (i < 0) i += ncp;
+
+    if (VALUE_SLICE_LEN(a) >= 2) {                  /* s[start, len] */
+        VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+        intptr_t len = FIX2LONG(lv);
+        if (len < 0 || i < 0 || i > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
+        if (i + len > (intptr_t)ncp) len = (intptr_t)ncp - i;
+        uint32_t bs = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)i);
+        uint32_t es = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)(i + len));
+        return korb_str_slice_new(c, slots, self, bs, es - bs);
+    }
+    if (i < 0 || i >= (intptr_t)ncp) return RESULT_OK(KORB_NIL);   /* single codepoint */
+    uint32_t bs = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)i);
+    uint32_t es = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)(i + 1));
+    return korb_str_slice_new(c, slots, self, bs, es - bs);
+}
+
+static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_char without a block (Enumerator) is not supported");
+    uint32_t pos = 0;
+    for (;;) {
+        const KorbString *s = SELF_STR;
+        if (pos >= s->len) break;
+        uint32_t cl = 1;
+        while (pos + cl < s->len && ((unsigned char)s->bytes[pos+cl] & 0xC0) == 0x80) cl++;
+        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, cl));   /* root the char */
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        pos += cl;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 
 /* ---- Symbol methods ------------------------------------------------------ */
@@ -2114,6 +2191,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "[]", korb_m_str_aref, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
 
     /* Symbol */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
