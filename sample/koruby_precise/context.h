@@ -303,6 +303,7 @@ struct korb_method {
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
     int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
     uint32_t req_cnt;        /* ISEQ: required positional count (== params_cnt if no opts) */
+    uint32_t post_cnt;       /* ISEQ: post (after-rest) required params; slots at rest_slot+1.. */
     int32_t  rest_slot;      /* ISEQ: *rest local slot (collects surplus positionals), -1 none */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */

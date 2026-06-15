@@ -703,9 +703,11 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
     if (ps) {
-        if (ps->posts.size || ps->block) {
-            return kp_unsupported(tc, (const pm_node_t *)dn,
-                                  "non-positional parameters (post/block)");
+        if (ps->block) {
+            return kp_unsupported(tc, (const pm_node_t *)dn, "block parameter (&blk)");
+        }
+        if (ps->posts.size && !ps->rest) {     /* posts only appear after a rest in Ruby */
+            return kp_unsupported(tc, (const pm_node_t *)dn, "post parameters without rest");
         }
         if (ps->rest && !(PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
                           ((const pm_rest_parameter_node_t *)ps->rest)->name))
@@ -758,6 +760,17 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         rest_slot = (int32_t)lvar_index(tc, ps->rest, rn);
     }
 
+    /* post params (after *rest): plain requireds occupying the slots right after
+     * the rest slot, bound from the tail of the positional args. */
+    uint32_t post_cnt = ps ? (uint32_t)ps->posts.size : 0;
+    for (uint32_t i = 0; i < post_cnt; i++) {
+        const pm_node_t *p = ps->posts.nodes[i];
+        if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
+        pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
+        if (lvar_index(tc, p, cid) != (uint32_t)rest_slot + 1 + i)
+            kp_failf(tc, p, "koruby_precise: post '%s' is not locals[%u]", kp_cid_cstr(tc, cid), (uint32_t)rest_slot + 1 + i);
+    }
+
     /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
      * occupying locals after the positional params; bound by name in korb_invoke_method. */
     struct korb_kw_info *kw_info = NULL;
@@ -803,7 +816,7 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */

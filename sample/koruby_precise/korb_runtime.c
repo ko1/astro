@@ -676,7 +676,7 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
-                      uint32_t params_cnt, uint32_t req_cnt, int32_t rest_slot, uint32_t locals_cnt,
+                      uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                       uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     KorbClass *const k = VAL2CLASS(klass);
@@ -697,6 +697,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
+    m->post_cnt = post_cnt;
     m->rest_slot = rest_slot;
     m->locals_cnt = locals_cnt;
     m->body = body;
@@ -773,10 +774,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     uint32_t pos_argc = argc;
     VALUE kwhash = KORB_NIL;
     if (kw && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }
-    if (UNLIKELY(pos_argc < m->req_cnt || (m->rest_slot < 0 && pos_argc > (uint32_t)m->params_cnt))) {
+    const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
+    if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > (uint32_t)m->params_cnt))) {
         if (m->rest_slot >= 0)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %u+)", pos_argc, m->req_cnt);
+                              "wrong number of arguments (given %u, expected %u+)", pos_argc, min_pos);
         if (m->req_cnt == (uint32_t)m->params_cnt)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                               "wrong number of arguments (given %u, expected %d)", pos_argc, m->params_cnt);
@@ -794,19 +796,25 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
      * A trailing kwhash sits at base[pos_argc] (= base[argc-1]); rest scratch
      * starts at base+argc to skip it, so kwhash stays rooted across these allocs. */
     VALUE rest_arr = KORB_NIL; bool have_rest = false;
+    VALUE postbuf[32]; const uint32_t npost = m->post_cnt;
+    if (UNLIKELY(npost > 32)) return korb_raise(c, slots, KORB_E_NOTIMPL, line, "too many post parameters");
+    const uint32_t avail = pos_argc - npost;           /* positionals available for front + rest */
     if (m->rest_slot >= 0) {
-        uint32_t surplus = (pos_argc > (uint32_t)m->params_cnt) ? pos_argc - (uint32_t)m->params_cnt : 0;
+        /* posts (last npost positionals) split off the tail; rest takes the middle. */
+        uint32_t surplus = (avail > (uint32_t)m->params_cnt) ? avail - (uint32_t)m->params_cnt : 0;
         VALUE *cur = base + argc;                       /* scratch above all staged args (incl. kwhash) */
         cur[0] = UNWRAP(korb_ary_new(c, cur, surplus ? surplus : 4));
         VALUE_REF arr = VALUE_REF_AT(&cur[0]);
         for (uint32_t i = 0; i < surplus; i++)
             CHECK(korb_ary_push_val(c, cur + 1, arr, base[(uint32_t)m->params_cnt + i]));
         rest_arr = VALUE_REF_GET(arr); have_rest = true;   /* C-local; no alloc until stored below */
-        for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus slots */
+        for (uint32_t i = 0; i < npost; i++) postbuf[i] = base[avail + i];   /* capture posts (no alloc until written) */
         if (kw && kwhash != KORB_NIL) kwhash = base[pos_argc];   /* re-read GC-updated kwhash (rest allocs moved it) */
+        for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus + post-source slots */
     }
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
+    for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = def_class;     /* odd-tagged not needed: class is a heap obj or nil */
     if (block != NULL && m->uses_block) {
@@ -817,7 +825,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
     /* fill missing optional params by evaluating their defaults in method scope
      * (cursor = body cursor; defaults may reference earlier params + self). */
-    for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
+    for (uint32_t pi = avail; pi < (uint32_t)m->params_cnt; pi++) {   /* optionals past the provided front get defaults */
         NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
         RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
@@ -1401,7 +1409,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
-                   uint32_t params_cnt, uint32_t req_cnt, int32_t rest_slot, uint32_t locals_cnt,
+                   uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                    uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     struct korb_method *m = korb_method_slot(c, mid);
@@ -1409,6 +1417,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
+    m->post_cnt = post_cnt;
     m->rest_slot = rest_slot;
     m->locals_cnt = locals_cnt;
     m->body = body;
