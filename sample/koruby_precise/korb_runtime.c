@@ -4948,6 +4948,43 @@ static RESULT korb_range_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, V
 }
 static RESULT korb_m_range_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, -1); }
 static RESULT korb_m_range_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, 1); }
+static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(lo) : KORB_NIL));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(hi - 1) : KORB_NIL));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    slots[0] = UNWRAP(korb_range_by(c, slots, self, block, def_env, cself, -1));   /* min_by */
+    slots[1] = UNWRAP(korb_range_by(c, slots + 1, self, block, def_env, cself, 1)); /* max_by */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
+}
+static RESULT korb_m_range_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#partition without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));         /* matching */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));     /* non-matching */
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &iv, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(KORB_TRUTHY(r.value) ? &slots[0] : &slots[1]), iv));
+    }
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
+}
 static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#flat_map without a block (Enumerator) is not supported");
@@ -5529,6 +5566,21 @@ static RESULT korb_m_hash_default_set(CTX *c, VALUE *slots, VALUE_REF self, VALU
     ARO_STORE(c, VAL2HASH(VALUE_REF_GET(self)), (VALUE *)(uintptr_t)&VAL2HASH(VALUE_REF_GET(self))->default_val, v);
     return RESULT_OK(v);
 }
+static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+    KorbArrayItems *it = h->items;
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < h->len; i++) {
+        if (it->data[2*i+1] == KORB_NIL) continue;
+        if (w != i) { ARO_STORE(c, it, &it->data[2*w], it->data[2*i]); ARO_STORE(c, it, &it->data[2*w+1], it->data[2*i+1]); }
+        w++;
+    }
+    if (w == h->len) return RESULT_OK(KORB_NIL);          /* unchanged → nil */
+    h->len = w;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
 static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
@@ -7294,6 +7346,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default=", korb_m_hash_default_set, 1);
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
@@ -7360,8 +7414,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "group_by", korb_m_range_group_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "max_by", korb_m_range_max_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax_by", korb_m_range_minmax_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "partition", korb_m_range_partition, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "flat_map", korb_m_range_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect_concat", korb_m_range_flat_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, 0);
