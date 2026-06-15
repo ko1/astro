@@ -4462,22 +4462,40 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_HASH_P(ov)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
-    uint32_t ln = SELF_HASH->len, rn = VAL2HASH(ov)->len;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, ln + rn)));  /* slots past dst */
-    for (uint32_t i = 0; i < ln; i++) {
-        slots[0] = SELF_HASH->items->data[2 * i];                 /* root key in scratch */
+/* Hash#merge(*others) [{ |key, old, new| }] — non-mutating; 0+ hash args merged
+ * left-to-right into a copy of self; a block resolves key conflicts. */
+static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    slots[0] = UNWRAP(korb_hash_new(c, slots, SELF_HASH->len));   /* dst = copy of self */
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2 * i];                        /* key (root) */
         VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
-        CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+        CHECK(korb_hash_set(c, slots + 2, dst, VALUE_REF_AT(&slots[1]), val));
     }
-    uint32_t rn2 = VAL2HASH(VALUE_SLICE_GET(a, 0))->len;          /* re-read other (rooted) */
-    for (uint32_t i = 0; i < rn2; i++) {
-        slots[0] = VAL2HASH(VALUE_SLICE_GET(a, 0))->items->data[2 * i];
-        VALUE val = VAL2HASH(VALUE_SLICE_GET(a, 0))->items->data[2 * i + 1];
-        CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+        VALUE ov = VALUE_SLICE_GET(a, k);
+        if (UNLIKELY(!KORB_HASH_P(ov)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+        slots[1] = ov;                                           /* root the arg hash */
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *oh = VAL2HASH(slots[1]);
+            if (i >= oh->len) break;
+            slots[2] = oh->items->data[2 * i];                   /* key */
+            slots[3] = VAL2HASH(slots[1])->items->data[2 * i + 1];   /* new value */
+            if (block != NULL) {
+                int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(dst)), slots[2]);
+                if (idx >= 0) {                                  /* conflict → yield(key, old, new) */
+                    slots[4] = VAL2HASH(VALUE_REF_GET(dst))->items->data[2 * idx + 1];
+                    VALUE argv[3] = { slots[2], slots[4], slots[3] };
+                    RESULT r = korb_block_yield(c, slots + 5, block, def_env, argv, 3, cself);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                    slots[3] = r.value;
+                }
+            }
+            CHECK(korb_hash_set(c, slots + 5, dst, VALUE_REF_AT(&slots[2]), slots[3]));
+        }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -8389,7 +8407,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "keys", korb_m_hash_keys, 0);
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
     korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
-    korb_def_cmethod(c, KORB_C_HASH, "merge", korb_m_hash_merge, 1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "merge", korb_m_hash_merge, -1);
     korb_def_cmethod(c, KORB_C_HASH, "key", korb_m_hash_key, 1);
     korb_def_cmethod(c, KORB_C_HASH, "rassoc", korb_m_hash_rassoc, 1);
     korb_def_cmethod(c, KORB_C_HASH, "<", korb_m_hash_lt, 1);
