@@ -2060,6 +2060,94 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* char-set membership for count/squeeze/delete: supports leading ^ negation and
+ * a-z ranges (ASCII-byte level). */
+static bool korb_charset_match(const char *set, uint32_t n, unsigned char ch) {
+    bool neg = false; uint32_t i = 0;
+    if (n > 0 && set[0] == '^') { neg = true; i = 1; }
+    bool in = false;
+    for (; i < n; i++) {
+        if (i + 2 < n && set[i+1] == '-') {
+            if ((unsigned char)set[i] <= ch && ch <= (unsigned char)set[i+2]) in = true;
+            i += 2;
+        } else if ((unsigned char)set[i] == ch) in = true;
+    }
+    return neg ? !in : in;
+}
+/* true if ch is in EVERY set arg (Ruby count/delete intersect multiple sets) */
+static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        VALUE sv = VALUE_SLICE_GET(a, j);
+        if (!KORB_STRING_P(sv)) continue;
+        const KorbString *set = VAL2STR(sv);
+        if (!korb_charset_match(set->buf->data, set->len, ch)) return false;
+    }
+    return true;
+}
+static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    intptr_t cnt = 0;
+    for (uint32_t i = 0; i < s->len; i++)
+        if (korb_str_sets_match(a, (unsigned char)s->buf->data[i])) cnt++;
+    return RESULT_OK(LONG2FIX(cnt));
+}
+static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    intptr_t bits = 16;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) bits = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    intptr_t sum = 0;
+    for (uint32_t i = 0; i < s->len; i++) sum += (unsigned char)s->buf->data[i];
+    if (bits > 0 && bits < 64) sum &= ((intptr_t)1 << bits) - 1;
+    return RESULT_OK(LONG2FIX(sum));
+}
+/* squeeze: collapse runs of identical chars (only those in the sets, if given). */
+static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t n = s->len;
+    bool has_set = VALUE_SLICE_LEN(a) > 0;
+    /* build squeezed bytes into the dst string */
+    KorbString *r = korb_str_alloc(c, slots, n);          /* capacity n (worst case) */
+    s = VAL2STR(VALUE_REF_GET(self));                      /* re-read after alloc */
+    uint32_t w = 0; int prev = -1;
+    for (uint32_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i];
+        bool squeezable = !has_set || korb_str_sets_match(a, ch);
+        if (squeezable && (int)ch == prev) continue;
+        r->buf->data[w++] = (char)ch;
+        prev = squeezable ? (int)ch : -1;
+    }
+    r->len = w; r->buf->data[w] = '\0';
+    if (!in_place) return RESULT_OK((VALUE)r);
+    /* copy back into self */
+    slots[0] = (VALUE)r;
+    bool changed = (w != n);
+    KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
+    r = VAL2STR(slots[0]);
+    memcpy(s2->buf->data, r->buf->data, w);
+    s2->len = w; s2->buf->data[w] = '\0';
+    return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
+}
+static RESULT korb_m_str_squeeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_squeeze_into(c, slots, self, a, false); }
+static RESULT korb_m_str_squeeze_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_squeeze_into(c, slots, self, a, true); }
+/* append_as_bytes(*objs): append each Integer as a byte (low 8 bits) / String bytes. */
+static RESULT korb_m_str_append_as_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        VALUE o = VALUE_SLICE_GET(a, j);
+        if (FIXNUM_P(o)) {
+            char b = (char)(FIX2LONG(o) & 0xFF);
+            CHECK(korb_str_cat(c, slots, self, &b, 1));
+        } else if (KORB_STRING_P(o)) {
+            CHECK(korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, j)));
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Integer or String)", korb_type_name(o));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
@@ -2789,6 +2877,27 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_hash_make_pair(CTX *c, VALUE *cursor, VALUE *kslot, VALUE *vslot, VALUE *out);
+static RESULT korb_m_hash_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+    VALUE needle = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 0; i < h->len; i++)
+        if (korb_value_eq(h->items->data[2*i+1], needle)) return RESULT_OK(h->items->data[2*i]);
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_hash_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE needle = VALUE_SLICE_GET(a, 0);
+    const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < h->len; i++) {
+        if (korb_value_eq(h->items->data[2*i+1], needle)) {
+            slots[0] = h->items->data[2*i]; slots[1] = h->items->data[2*i+1];
+            CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
+            return RESULT_OK(slots[2]);
+        }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 /* true if every pair of `sub` appears in `sup` with an equal value */
 static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup) {
@@ -5064,6 +5173,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "rstrip!", korb_m_str_rstrip_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "chomp!", korb_m_str_chomp_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "chop!", korb_m_str_chop_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "count", korb_m_str_count, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "sum", korb_m_str_sum, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "squeeze", korb_m_str_squeeze, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "squeeze!", korb_m_str_squeeze_b, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "append_as_bytes", korb_m_str_append_as_bytes, -1);
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
     korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
     korb_def_cmethod(c, KORB_C_STRING, "end_with?", korb_m_str_end_with, -1);
@@ -5242,6 +5356,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
     korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
     korb_def_cmethod(c, KORB_C_HASH, "merge", korb_m_hash_merge, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "key", korb_m_hash_key, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "rassoc", korb_m_hash_rassoc, 1);
     korb_def_cmethod(c, KORB_C_HASH, "<", korb_m_hash_lt, 1);
     korb_def_cmethod(c, KORB_C_HASH, "<=", korb_m_hash_le, 1);
     korb_def_cmethod(c, KORB_C_HASH, ">", korb_m_hash_gt, 1);
@@ -5304,6 +5420,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "entries", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_entry", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_index", korb_m_range_each_wi, 0);
