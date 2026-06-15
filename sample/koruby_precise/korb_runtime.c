@@ -76,6 +76,15 @@ korb_num_to_d(VALUE v, double *out)
     return false;
 }
 
+/* Index coercion: Integer as-is, Float truncated via to_int (CRuby Array#[] etc). */
+static inline bool
+korb_to_index(VALUE v, intptr_t *out)
+{
+    if (FIXNUM_P(v))     { *out = FIX2LONG(v);          return true; }
+    if (KORB_FLOAT_P(v)) { *out = (intptr_t)VAL2FLT(v)->val; return true; }
+    return false;
+}
+
 /* CRuby-style Float#to_s: shortest round-tripping decimal, always with a '.'
  * or exponent.  buf must be >= 32 bytes; returns the length. */
 static uint32_t
@@ -2074,13 +2083,13 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (b + cnt > (intptr_t)n) cnt = (intptr_t)n - b;
         return korb_ary_subseq(c, slots, self, (uint32_t)b, (uint32_t)cnt);
     }
-    if (UNLIKELY(!FIXNUM_P(i0))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
-    intptr_t i = FIX2LONG(i0);
+    intptr_t i;
+    if (UNLIKELY(!korb_to_index(i0, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
     if (i < 0) i += n;
     if (VALUE_SLICE_LEN(a) >= 2) {                          /* a[start, len] → subarray */
         VALUE lv = VALUE_SLICE_GET(a, 1);
-        if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
-        intptr_t len = FIX2LONG(lv);
+        intptr_t len;
+        if (UNLIKELY(!korb_to_index(lv, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
         if (len < 0 || i < 0 || i > (intptr_t)n) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)n) len = (intptr_t)n - i;
         return korb_ary_subseq(c, slots, self, (uint32_t)i, (uint32_t)len);
@@ -2092,10 +2101,10 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbArray *ary = SELF_ARY;
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
-    intptr_t i = FIX2LONG(iv);
+    intptr_t i;
+    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     if (i < 0) i += ary->len;
-    if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%u", (long)FIX2LONG(iv), ary->len);
+    if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%u", (long)i, ary->len);
     if ((uint32_t)i >= ary->len) {
         CHECK(korb_ary_ensure(c, slots, self, (uint32_t)i + 1 - ary->len));
         ary = SELF_ARY;                                  /* re-read after grow GC */
@@ -2872,13 +2881,14 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
-    intptr_t i = FIX2LONG(iv);
+    intptr_t i;
+    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t orig = i;
     if (i < 0) i += ary->len;
     if (i >= 0 && (uint32_t)i < ary->len) return RESULT_OK(ary->items->data[i]);
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
     return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%u...%u",
-                      (long)FIX2LONG(iv), ary->len, ary->len);
+                      (long)orig, ary->len, ary->len);
 }
 
 /* dig: recursive index into nested Array/Hash */
@@ -3183,8 +3193,8 @@ static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
-    intptr_t n = FIX2LONG(nv);
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if ((uint32_t)n > len) n = len;
@@ -3192,8 +3202,8 @@ static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
-    intptr_t n = FIX2LONG(nv);
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if ((uint32_t)n > len) n = len;
@@ -3216,9 +3226,10 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (!FIXNUM_P(iv)) return RESULT_OK(KORB_NIL);
+    intptr_t i;
+    if (!korb_to_index(iv, &i)) return RESULT_OK(KORB_NIL);
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    intptr_t i = FIX2LONG(iv); if (i < 0) i += ary->len;
+    if (i < 0) i += ary->len;
     if (i < 0 || (uint32_t)i >= ary->len) return RESULT_OK(KORB_NIL);
     KorbArrayItems *it = ary->items;
     VALUE removed = it->data[i];
@@ -3337,13 +3348,14 @@ static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t idx;
+    if (UNLIKELY(!korb_to_index(iv, &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     uint32_t k = VALUE_SLICE_LEN(a) - 1;
     if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
-    intptr_t idx = FIX2LONG(iv);
+    intptr_t orig = idx;
     uint32_t oldlen = VAL2ARY(VALUE_REF_GET(self))->len;
     if (idx < 0) idx += (intptr_t)oldlen + 1;
-    if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array", (long)FIX2LONG(iv));
+    if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array", (long)orig);
     uint32_t at = (uint32_t)idx;
     uint32_t pad = at > oldlen ? at - oldlen : 0;
     CHECK(korb_ary_ensure(c, slots, self, pad + k));
