@@ -290,7 +290,8 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 
 /* ---- operators --------------------------------------------------------- */
 
-extern const struct NodeKind kind_node_plus;   /* all binops share slot_count */
+extern const struct NodeKind kind_node_plus;       /* all binops share slot_count */
+extern const struct NodeKind kind_node_ary_push;   /* array-literal push chain */
 
 enum kp_binop {
     KP_BINOP_NONE = 0,
@@ -587,6 +588,20 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     return def;
 }
 
+/* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is
+ * unsupported).  Element i nests i pushes deep, so it transduces at the chain
+ * depth matching its runtime cursor offset. */
+static NODE *
+build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
+{
+    if (n == 0) return ALLOC_node_array_new(capa);
+    NODE *acc, *elem;
+    uint32_t sc = kind_node_ary_push.slot_count;
+    WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
+                        elem = transduce(tc, elems[n - 1])));
+    return ALLOC_node_ary_push(acc, elem);
+}
+
 /* ---- main dispatch -------------------------------------------------------- */
 
 static NODE *
@@ -640,6 +655,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_NIL_NODE:   return ALLOC_node_lit(KORB_NIL);
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
+
+      case PM_ARRAY_NODE: {
+        const pm_array_node_t *an = (const pm_array_node_t *)node;
+        size_t cnt = an->elements.size;
+        for (size_t i = 0; i < cnt; i++)             /* splat lands later */
+            if (PM_NODE_TYPE(an->elements.nodes[i]) == PM_SPLAT_NODE)
+                return kp_unsupported(tc, node, "array literal with splat (*)");
+        return build_array(tc, an->elements.nodes, cnt, (uint32_t)cnt);
+      }
 
       /* ---- locals (depth 0 = own frame, depth >= 1 = outer/closure) ---- */
       case PM_LOCAL_VARIABLE_READ_NODE: {

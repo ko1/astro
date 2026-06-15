@@ -123,8 +123,10 @@ typedef struct {
  * head.flags low bits carry the sample type tag.
  * --------------------------------------------------------------------------- */
 enum korb_obj_type {
-    KORB_OBJ_STRING    = 1,
-    KORB_OBJ_EXCEPTION = 2,
+    KORB_OBJ_STRING      = 1,
+    KORB_OBJ_EXCEPTION   = 2,
+    KORB_OBJ_ARRAY       = 3,
+    KORB_OBJ_VALUE_ARRAY = 4,   /* raw VALUE[] payload backing a KorbArray */
 };
 #define KORB_OBJ_TYPE_MASK 0x07u
 
@@ -144,11 +146,26 @@ typedef struct KorbException {
     VALUE ARO_GC_EDGE msg;   /* KorbString | nil */
 } KorbException;
 
+/* Array: a header + a separately-allocated growable VALUE[] payload, so push
+ * can grow the buffer without moving the KorbArray (moving-GC safe). */
+typedef struct KorbArrayItems {
+    AroObjectHeader head;            /* KORB_OBJ_VALUE_ARRAY */
+    VALUE ARO_GC_EDGE data[];        /* capa slots; live count is in the owner */
+} KorbArrayItems;
+
+typedef struct KorbArray {
+    AroObjectHeader head;            /* KORB_OBJ_ARRAY */
+    uint32_t len, capa;
+    KorbArrayItems *ARO_GC_EDGE items;
+} KorbArray;
+
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
 #define KORB_STRING_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING)
 #define KORB_EXC_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION)
+#define KORB_ARRAY_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARRAY)
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
+#define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -175,7 +192,7 @@ typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
  * (the staged recv slot) so allocating methods re-read it through the ref
  * after GC.  KORB_NCLASS must match the korb_vm.cmethods[] array size. */
 enum korb_class {
-    KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL,
+    KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY,
     KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_OBJECT,
     KORB_NCLASS
 };
@@ -279,6 +296,19 @@ struct CTX_struct {
       case KORB_OBJ_EXCEPTION: {                                             \
         KorbException *_e = (KorbException *)(payload);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->msg);                      \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_ARRAY: {                                                 \
+        KorbArray *_a = (KorbArray *)(payload);                             \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);               \
+        (void)(payload_size);                                                \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_VALUE_ARRAY: {                                          \
+        KorbArrayItems *_ai = (KorbArrayItems *)(payload);                  \
+        size_t _n = ((payload_size) - sizeof(KorbArrayItems)) / sizeof(VALUE); \
+        for (size_t _i = 0; _i < _n; _i++)                                  \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ai->data[_i]);          \
         break;                                                               \
       }                                                                      \
       default:                                                               \

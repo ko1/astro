@@ -371,6 +371,25 @@ node_send3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF
     return korb_send(c, slots, mid, line, 3);
 }
 
+// ---- array literals --------------------------------------------------------
+//
+// `[a, b, c]` lowers to a push chain: ary_push(ary_push(ary_push(new(3),a),b),c)
+// (variadic @child is unsupported, so the literal is built inside-out).
+
+NODE_DEF
+node_array_new(CTX *c, NODE *n, VALUE *slots, uint32_t capa)
+{
+    (void)n;
+    return korb_ary_new(c, slots, capa);
+}
+
+NODE_DEF
+node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@child)
+{
+    (void)n;
+    return korb_ary_push_val(c, slots, ary, elem);
+}
+
 // ---- blocks / yield / closures (M1, docs/v2_blocks_design.md) ---------------
 
 // Entry node: the dispatch root of a block (like a method body — registered

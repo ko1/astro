@@ -91,6 +91,75 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, intptr_t cnt, uint32_t 
 }
 
 /* ---------------------------------------------------------------------------
+ * Array — header + separately-allocated growable VALUE[] payload.
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_ary_new(CTX *c, VALUE *slots, uint32_t capa)
+{
+    if (capa < 4) capa = 4;
+    /* items first, rooted while the header is allocated (both may GC). */
+    KorbArrayItems *it = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)capa * sizeof(VALUE),
+                                    KORB_OBJ_VALUE_ARRAY);
+    VALUE_REF itref = SLOTS_PUSH(slots, (VALUE)it);
+    KorbArray *a = korb_alloc(c, slots, sizeof(KorbArray), KORB_OBJ_ARRAY);
+    it = (KorbArrayItems *)(uintptr_t)VALUE_REF_GET(itref);   /* re-read after GC */
+    a->len = 0;
+    a->capa = capa;
+    ARO_STORE(c, a, (VALUE *)(uintptr_t)&a->items, (VALUE)(uintptr_t)it);
+    return RESULT_OK((VALUE)a);
+}
+
+static RESULT
+korb_ary_ensure(CTX *c, VALUE *slots, VALUE_REF aref, uint32_t need)
+{
+    KorbArray *a = VAL2ARY(VALUE_REF_GET(aref));
+    if ((size_t)a->len + need <= a->capa) return RESULT_OK(VALUE_REF_GET(aref));
+    uint32_t ncapa = a->capa ? a->capa * 2 : 4;
+    while ((size_t)ncapa < (size_t)a->len + need) ncapa *= 2;
+    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(VALUE),
+                                     KORB_OBJ_VALUE_ARRAY);
+    a = VAL2ARY(VALUE_REF_GET(aref));               /* re-read after GC */
+    KorbArrayItems *oit = a->items;                 /* a fixed up → its items too */
+    memcpy(nit->data, oit->data, (size_t)a->len * sizeof(VALUE));   /* new tail is zero-init = nil */
+    ARO_STORE(c, a, (VALUE *)(uintptr_t)&a->items, (VALUE)(uintptr_t)nit);
+    a->capa = ncapa;
+    return RESULT_OK(VALUE_REF_GET(aref));
+}
+
+RESULT
+korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem)
+{
+    VALUE_REF eref = SLOTS_PUSH(slots, elem);       /* root elem across the grow GC */
+    CHECK(korb_ary_ensure(c, slots, aref, 1));
+    KorbArray *a = VAL2ARY(VALUE_REF_GET(aref));
+    KorbArrayItems *it = a->items;
+    ARO_STORE(c, it, &it->data[a->len], VALUE_REF_GET(eref));
+    a->len++;
+    return RESULT_OK(VALUE_REF_GET(aref));
+}
+
+/* Concatenate two arrays into a fresh one (Array#+ / the `+` binop).  lref/rref
+ * are rooted; the result is left on the slots cursor via push. */
+static RESULT
+korb_ary_plus_ref(CTX *c, VALUE *slots, VALUE_REF lref, VALUE_REF rref)
+{
+    uint32_t ln = VAL2ARY(VALUE_REF_GET(lref))->len;
+    uint32_t rn = VAL2ARY(VALUE_REF_GET(rref))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, ln + rn)));
+    for (uint32_t i = 0; i < ln; i++) {
+        VALUE elem = VAL2ARY(VALUE_REF_GET(lref))->items->data[i];   /* push roots elem first */
+        CHECK(korb_ary_push_val(c, slots, dst, elem));
+    }
+    rn = VAL2ARY(VALUE_REF_GET(rref))->len;                          /* re-read (rooted) */
+    for (uint32_t i = 0; i < rn; i++) {
+        VALUE elem = VAL2ARY(VALUE_REF_GET(rref))->items->data[i];
+        CHECK(korb_ary_push_val(c, slots, dst, elem));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+/* ---------------------------------------------------------------------------
  * Type names for messages.
  * ------------------------------------------------------------------------- */
 
@@ -105,6 +174,7 @@ korb_type_name(VALUE v)
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING:    return "String";
       case KORB_OBJ_EXCEPTION: return "Exception";
+      case KORB_OBJ_ARRAY:     return "Array";
     }
     return "Object";
 }
@@ -120,6 +190,7 @@ korb_a_type_name(VALUE v)
     if (SYMBOL_P(v))     return "an instance of Symbol";
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: return "an instance of String";
+      case KORB_OBJ_ARRAY:  return "an instance of Array";
     }
     return "an instance of Object";
 }
@@ -191,6 +262,13 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_str_plus_ref(c, slots, lhs, r);
+    }
+    if (KORB_ARRAY_P(l)) {
+        if (!KORB_ARRAY_P(rhs))
+            return korb_raise(c, slots, KORB_E_TYPE, line,
+                              "no implicit conversion of %s into Array", korb_type_name(rhs));
+        VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
+        return korb_ary_plus_ref(c, slots, lhs, r);
     }
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
@@ -552,6 +630,7 @@ korb_class_of(VALUE v)
     if (AROH_IS_GC_OBJECT(v)) {
         switch (KORB_OBJ_TYPE(v)) {
           case KORB_OBJ_STRING: return KORB_C_STRING;
+          case KORB_OBJ_ARRAY:  return KORB_C_ARRAY;
         }
     }
     return KORB_C_OBJECT;
@@ -564,6 +643,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_INTEGER: return "Integer";
       case KORB_C_STRING:  return "String";
       case KORB_C_SYMBOL:  return "Symbol";
+      case KORB_C_ARRAY:   return "Array";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -756,6 +836,94 @@ static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 
+/* ---- Array methods ------------------------------------------------------- */
+
+#define SELF_ARY  VAL2ARY(VALUE_REF_GET(self))
+static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
+static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_ary_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? ary->items->data[0] : KORB_NIL); }
+static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? ary->items->data[ary->len - 1] : KORB_NIL); }
+
+static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbArray *ary = SELF_ARY;
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t i = FIX2LONG(iv);
+    if (i < 0) i += ary->len;
+    if (i < 0 || (uint32_t)i >= ary->len) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(ary->items->data[i]);
+}
+
+static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbArray *ary = SELF_ARY;
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t i = FIX2LONG(iv);
+    if (i < 0) i += ary->len;
+    if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%u", (long)FIX2LONG(iv), ary->len);
+    if ((uint32_t)i >= ary->len) {
+        CHECK(korb_ary_ensure(c, slots, self, (uint32_t)i + 1 - ary->len));
+        ary = SELF_ARY;                                  /* re-read after grow GC */
+        for (uint32_t k = ary->len; k <= (uint32_t)i; k++) ary->items->data[k] = KORB_NIL;
+        ary->len = (uint32_t)i + 1;
+    }
+    VALUE val = VALUE_SLICE_GET(a, 1);                    /* re-read (rooted) after GC */
+    KorbArrayItems *it = ary->items;
+    ARO_STORE(c, it, &it->data[i], val);
+    return RESULT_OK(val);
+}
+
+static RESULT korb_m_ary_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_ary_push_val(c, slots, self, VALUE_SLICE_GET(a, 0)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_ary_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t n = VALUE_SLICE_LEN(a);
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_ary_push_val(c, slots, self, VALUE_SLICE_GET(a, i)));   /* slice rooted across grow */
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    KorbArray *ary = SELF_ARY;
+    if (ary->len == 0) return RESULT_OK(KORB_NIL);
+    ary->len--;
+    VALUE v = ary->items->data[ary->len];
+    ary->items->data[ary->len] = KORB_NIL;               /* drop the reference (nil needs no WB) */
+    return RESULT_OK(v);
+}
+
+static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbArray *ary = SELF_ARY;
+    VALUE needle = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 0; i < ary->len; i++)
+        if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
+}
+
+static RESULT korb_m_ary_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t n = SELF_ARY->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE elem = SELF_ARY->items->data[n - 1 - i];   /* push_val roots elem before any GC */
+        CHECK(korb_ary_push_val(c, slots, dst, elem));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(ov)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    return korb_ary_plus_ref(c, slots, self, VALUE_SLICE_REF(a, 0));
+}
+#undef SELF_ARY
+
 static void
 korb_register_core_methods(CTX *c)
 {
@@ -811,6 +979,24 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FALSE, "to_s", korb_m_false_to_s, 0);
     korb_def_cmethod(c, KORB_C_FALSE, "inspect", korb_m_false_to_s, 0);
 
+    /* Array */
+    korb_def_cmethod(c, KORB_C_ARRAY, "length", korb_m_ary_len, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "size", korb_m_ary_len, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "empty?", korb_m_ary_empty, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "to_a", korb_m_ary_self, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "first", korb_m_ary_first, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "last", korb_m_ary_last, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "[]", korb_m_ary_aref, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "[]=", korb_m_ary_aset, 2);
+    korb_def_cmethod(c, KORB_C_ARRAY, "<<", korb_m_ary_ltlt, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "push", korb_m_ary_push, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "append", korb_m_ary_push, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "pop", korb_m_ary_pop, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "include?", korb_m_ary_include, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
+
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
@@ -824,10 +1010,23 @@ korb_register_core_methods(CTX *c)
  * Printing (CRuby-compatible to_s / inspect, written directly — no GC).
  * ------------------------------------------------------------------------- */
 
+/* Array renders identically for to_s and inspect: "[1, 2, \"x\"]" — elements
+ * always use inspect form. */
+static void
+korb_fprint_ary(CTX *c, FILE *fp, VALUE v)
+{
+    const KorbArray *a = VAL2ARY(v);
+    fputc('[', fp);
+    for (uint32_t i = 0; i < a->len; i++) {
+        if (i) fputs(", ", fp);
+        korb_fprint_inspect(c, fp, a->items->data[i]);
+    }
+    fputc(']', fp);
+}
+
 void
 korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
 {
-    (void)c;
     if (FIXNUM_P(v))           { fprintf(fp, "%ld", (long)FIX2LONG(v)); return; }
     if (v == KORB_NIL)         { return; }                     /* "" */
     if (v == KORB_TRUE)        { fputs("true", fp); return; }
@@ -839,6 +1038,9 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         fwrite(s->bytes, 1, s->len, fp);
         return;
       }
+      case KORB_OBJ_ARRAY:
+        korb_fprint_ary(c, fp, v);
+        return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->bytes, 1, VAL2STR(e->msg)->len, fp);
@@ -901,6 +1103,26 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
  * Builtins.
  * ------------------------------------------------------------------------- */
 
+/* puts one value, newline-terminated; arrays flatten recursively (each element
+ * on its own line), matching CRuby.  An empty array prints nothing. */
+static void
+korb_puts_one(CTX *c, VALUE v)
+{
+    if (KORB_ARRAY_P(v)) {
+        const KorbArray *a = VAL2ARY(v);
+        for (uint32_t i = 0; i < a->len; i++) korb_puts_one(c, a->items->data[i]);
+        return;
+    }
+    if (KORB_STRING_P(v)) {
+        const KorbString *s = VAL2STR(v);
+        fwrite(s->bytes, 1, s->len, stdout);
+        if (s->len == 0 || s->bytes[s->len - 1] != '\n') fputc('\n', stdout);
+        return;
+    }
+    korb_fprint_to_s(c, stdout, v);
+    fputc('\n', stdout);
+}
+
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -910,18 +1132,7 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
         fputc('\n', stdout);
         return RESULT_OK(KORB_NIL);
     }
-    for (uint32_t i = 0; i < n; i++) {
-        VALUE v = VALUE_SLICE_GET(args, i);
-        if (KORB_STRING_P(v)) {
-            const KorbString *s = VAL2STR(v);
-            fwrite(s->bytes, 1, s->len, stdout);
-            if (s->len == 0 || s->bytes[s->len - 1] != '\n') fputc('\n', stdout);
-        }
-        else {
-            korb_fprint_to_s(c, stdout, v);
-            fputc('\n', stdout);
-        }
-    }
+    for (uint32_t i = 0; i < n; i++) korb_puts_one(c, VALUE_SLICE_GET(args, i));
     return RESULT_OK(KORB_NIL);
 }
 

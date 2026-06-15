@@ -64,6 +64,10 @@ void *korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type);
 
 RESULT korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len);
 
+/* Array (korb_runtime.c) */
+RESULT korb_ary_new(CTX *c, VALUE *slots, uint32_t capa);
+RESULT korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem);
+
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
