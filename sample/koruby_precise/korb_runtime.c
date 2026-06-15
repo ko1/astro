@@ -2154,6 +2154,28 @@ static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
     }
     return true;
 }
+/* delete_prefix/suffix (mode 0/1); in_place → bang (self if changed else nil). */
+static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode, bool in_place) {
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *p = VAL2STR(pv);
+    uint32_t bs = 0, be = s->len; bool match = false;
+    if (p->len <= s->len) {
+        if (mode == 0 && memcmp(s->buf->data, p->buf->data, p->len) == 0) { bs = p->len; match = true; }
+        else if (mode == 1 && memcmp(s->buf->data + s->len - p->len, p->buf->data, p->len) == 0) { be = s->len - p->len; match = true; }
+    }
+    if (!in_place) return korb_str_slice_new(c, slots, self, bs, be - bs);
+    if (!match) return RESULT_OK(KORB_NIL);
+    KorbString *m = VAL2STR(VALUE_REF_GET(self));
+    uint32_t nlen = be - bs;
+    if (bs) memmove(m->buf->data, m->buf->data + bs, nlen);
+    m->len = nlen; m->buf->data[nlen] = '\0';
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_delete_prefix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_delfix(c, slots, self, a, 0, false); }
+static RESULT korb_m_str_delete_suffix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_delfix(c, slots, self, a, 1, false); }
+static RESULT korb_m_str_delete_prefix_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_delfix(c, slots, self, a, 0, true); }
+static RESULT korb_m_str_delete_suffix_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_delfix(c, slots, self, a, 1, true); }
 static RESULT korb_m_str_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
     if (UNLIKELY(!KORB_STRING_P(lo) || !KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
@@ -3481,6 +3503,22 @@ static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     CHECK(korb_ary_flatten_into(c, slots + 1, dst, self));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    bool nested = false;
+    const KorbArray *a0 = VAL2ARY(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < a0->len; i++) if (KORB_ARRAY_P(a0->items->data[i])) { nested = true; break; }
+    RESULT fr = korb_m_ary_flatten(c, slots, self, a);   /* flattened copy */
+    if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    slots[0] = fr.value;
+    VALUE_REF flat = VALUE_REF_AT(&slots[0]);
+    VAL2ARY(VALUE_REF_GET(self))->len = 0;
+    uint32_t fn = VAL2ARY(VALUE_REF_GET(flat))->len;
+    for (uint32_t i = 0; i < fn; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(flat))->items->data[i];
+        CHECK(korb_ary_push_val(c, slots + 1, self, e));
+    }
+    return RESULT_OK(nested ? VALUE_REF_GET(self) : KORB_NIL);
+}
 
 static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ov = VALUE_SLICE_GET(a, 0);
@@ -3885,6 +3923,25 @@ static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_range_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself, bool keep) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (intptr_t i = lo; i < hi; i++) {
+        slots[0] = LONG2FIX(i);
+        if (korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]) == keep) {
+            if (block != NULL) {
+                RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+            } else CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself)   { return korb_range_grep(c, slots, self, a, block, def_env, cself, true); }
+static RESULT korb_m_range_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_range_grep(c, slots, self, a, block, def_env, cself, false); }
 static RESULT korb_m_range_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#filter_map without a block is not supported");
@@ -5401,6 +5458,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "squeeze!", korb_m_str_squeeze_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "append_as_bytes", korb_m_str_append_as_bytes, -1);
     korb_def_cmethod(c, KORB_C_STRING, "ascii_only?", korb_m_str_ascii_only, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "delete_prefix", korb_m_str_delete_prefix, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "delete_suffix", korb_m_str_delete_suffix, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "delete_prefix!", korb_m_str_delete_prefix_b, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "delete_suffix!", korb_m_str_delete_suffix_b, 1);
     korb_def_cmethod(c, KORB_C_STRING, "between?", korb_m_str_between, 2);
     korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, 2);
     korb_def_cmethod(c, KORB_C_STRING, "delete", korb_m_str_delete, -1);
@@ -5530,6 +5591,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "flatten!", korb_m_ary_flatten_b, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "unshift", korb_m_ary_unshift, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "prepend", korb_m_ary_unshift, -1);
@@ -5666,6 +5728,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_entry", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_index", korb_m_range_each_wi, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "filter_map", korb_m_range_filter_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "grep", korb_m_range_grep, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "grep_v", korb_m_range_grep_v, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
