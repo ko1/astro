@@ -1014,6 +1014,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return ALLOC_node_const(kp_intern_cid(tc, cr->name));
       }
 
+      case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
+        const pm_rescue_modifier_node_t *rm = (const pm_rescue_modifier_node_t *)node;
+        NODE *body = transduce(tc, rm->expression);
+        NODE *resc = transduce(tc, rm->rescue_expression);
+        return ALLOC_node_begin(body, resc, lit_nil(), 0, 1u);   /* has_rescue */
+      }
+
       case PM_SUPER_NODE: {           /* super(...) — explicit args */
         const pm_super_node_t *sn = (const pm_super_node_t *)node;
         if (sn->block) return kp_unsupported(tc, node, "super with a block");
