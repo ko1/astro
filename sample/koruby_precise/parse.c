@@ -710,8 +710,6 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         if (ps->rest && !(PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
                           ((const pm_rest_parameter_node_t *)ps->rest)->name))
             return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding rest parameter");
-        if (ps->rest && (ps->keywords.size || ps->keyword_rest))
-            return kp_unsupported(tc, (const pm_node_t *)dn, "rest + keyword parameters combined");
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
         params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */

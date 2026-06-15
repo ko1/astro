@@ -791,17 +791,19 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     /* *rest: collect surplus positionals BEFORE memset / writing the self+def_class
      * frame-top cells, which would clobber high arg slots when argc is large.
-     * (rest + keyword params are rejected at parse, so here kwhash is nil.) */
+     * A trailing kwhash sits at base[pos_argc] (= base[argc-1]); rest scratch
+     * starts at base+argc to skip it, so kwhash stays rooted across these allocs. */
     VALUE rest_arr = KORB_NIL; bool have_rest = false;
     if (m->rest_slot >= 0) {
         uint32_t surplus = (pos_argc > (uint32_t)m->params_cnt) ? pos_argc - (uint32_t)m->params_cnt : 0;
-        VALUE *cur = base + pos_argc;                  /* scratch above all staged args */
+        VALUE *cur = base + argc;                       /* scratch above all staged args (incl. kwhash) */
         cur[0] = UNWRAP(korb_ary_new(c, cur, surplus ? surplus : 4));
         VALUE_REF arr = VALUE_REF_AT(&cur[0]);
         for (uint32_t i = 0; i < surplus; i++)
             CHECK(korb_ary_push_val(c, cur + 1, arr, base[(uint32_t)m->params_cnt + i]));
         rest_arr = VALUE_REF_GET(arr); have_rest = true;   /* C-local; no alloc until stored below */
         for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus slots */
+        if (kw && kwhash != KORB_NIL) kwhash = base[pos_argc];   /* re-read GC-updated kwhash (rest allocs moved it) */
     }
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
