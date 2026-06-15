@@ -6740,8 +6740,21 @@ static RESULT korb_m_ary_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 static RESULT korb_m_ary_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, false); }
 static RESULT korb_m_ary_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, true); }
 
+static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#sum without a block is not supported");
+    if (block == NULL) {                              /* sum(init): fold init + [k,v] over pairs via + */
+        if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no init given");
+        uint32_t plus_mid = korb_intern(c->vm, "+", 1);
+        slots[0] = VALUE_SLICE_GET(a, 0);             /* acc = init (rooted) */
+        for (uint32_t i = 0; i < VAL2HASH(VALUE_REF_GET(self))->len; i++) {
+            VALUE pair; CHECK(korb_hash_pair_at(c, slots + 1, self, i, &pair));   /* pair at slots[3] */
+            slots[4] = slots[0]; slots[5] = slots[3];                            /* recv=acc, arg=pair */
+            RESULT r = korb_send_impl(c, slots + 6, plus_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[0] = r.value;
+        }
+        return RESULT_OK(slots[0]);
+    }
     uint32_t np = korb_entry_params_cnt(block);
     intptr_t acc = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     for (uint32_t i = 0; ; i++) {
