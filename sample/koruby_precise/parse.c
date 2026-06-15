@@ -293,6 +293,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
+extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
 
 enum kp_binop {
     KP_BINOP_NONE = 0,
@@ -623,6 +624,21 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     return ALLOC_node_ary_push(acc, elem);
 }
 
+/* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
+ * build_array): hash_set(hash_set(hash_new(n), k0, v0), k1, v1)... */
+static NODE *
+build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
+{
+    if (n == 0) return ALLOC_node_hash_new(capa);
+    const pm_assoc_node_t *as = (const pm_assoc_node_t *)assocs[n - 1];
+    NODE *acc, *key, *val;
+    uint32_t sc = kind_node_hash_set.slot_count;
+    WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
+                        key = transduce(tc, as->key),
+                        val = transduce(tc, as->value)));
+    return ALLOC_node_hash_set(acc, key, val);
+}
+
 /* Interpolated string `"a#{x}b"` → inside-out concat chain (same shape as
  * build_array).  The accumulator is always a String; each part is appended
  * via its to_s inside node_dstr_concat. */
@@ -698,6 +714,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             if (PM_NODE_TYPE(an->elements.nodes[i]) == PM_SPLAT_NODE)
                 return kp_unsupported(tc, node, "array literal with splat (*)");
         return build_array(tc, an->elements.nodes, cnt, (uint32_t)cnt);
+      }
+
+      case PM_HASH_NODE: {
+        const pm_hash_node_t *hn = (const pm_hash_node_t *)node;
+        size_t cnt = hn->elements.size;
+        for (size_t i = 0; i < cnt; i++)
+            if (!PM_NODE_TYPE_P(hn->elements.nodes[i], PM_ASSOC_NODE))
+                return kp_unsupported(tc, node, "hash literal with ** splat");
+        return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 
       case PM_INTERPOLATED_STRING_NODE: {

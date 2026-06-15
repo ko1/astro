@@ -184,6 +184,74 @@ korb_ary_plus_ref(CTX *c, VALUE *slots, VALUE_REF lref, VALUE_REF rref)
 }
 
 /* ---------------------------------------------------------------------------
+ * Hash — header + growable [k0,v0,k1,v1,...] payload (insertion-ordered, linear
+ * lookup).  Same moving-GC discipline as Array (separate, relocatable items).
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_hash_new(CTX *c, VALUE *slots, uint32_t capa)
+{
+    if (capa < 4) capa = 4;
+    KorbArrayItems *it = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)capa * 2 * sizeof(VALUE),
+                                    KORB_OBJ_VALUE_ARRAY);
+    VALUE_REF itref = SLOTS_PUSH(slots, (VALUE)it);
+    KorbHash *h = korb_alloc(c, slots, sizeof(KorbHash), KORB_OBJ_HASH);
+    it = (KorbArrayItems *)(uintptr_t)VALUE_REF_GET(itref);    /* re-read after GC */
+    h->len = 0;
+    h->capa = capa;                       /* default_val already nil (zero-init) */
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->items, (VALUE)(uintptr_t)it);
+    return RESULT_OK((VALUE)h);
+}
+
+/* index of key in the pair array, or -1 */
+static int32_t
+korb_hash_find(const KorbHash *h, VALUE key)
+{
+    const VALUE *const d = h->items->data;
+    for (uint32_t i = 0; i < h->len; i++)
+        if (korb_value_eq(d[2 * i], key)) return (int32_t)i;
+    return -1;
+}
+
+static RESULT
+korb_hash_ensure(CTX *c, VALUE *slots, VALUE_REF href, uint32_t need)
+{
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));
+    if ((size_t)h->len + need <= h->capa) return RESULT_OK(VALUE_REF_GET(href));
+    uint32_t ncapa = h->capa ? h->capa * 2 : 4;
+    while ((size_t)ncapa < (size_t)h->len + need) ncapa *= 2;
+    KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * 2 * sizeof(VALUE),
+                                     KORB_OBJ_VALUE_ARRAY);
+    h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after GC */
+    KorbArrayItems *oit = h->items;
+    memcpy(nit->data, oit->data, (size_t)h->len * 2 * sizeof(VALUE));
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->items, (VALUE)(uintptr_t)nit);
+    h->capa = ncapa;
+    return RESULT_OK(VALUE_REF_GET(href));
+}
+
+RESULT
+korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
+{
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow GC */
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));
+    int32_t idx = korb_hash_find(h, VALUE_REF_GET(kref));
+    if (idx >= 0) {
+        KorbArrayItems *it = h->items;
+        ARO_STORE(c, it, &it->data[2 * idx + 1], VALUE_REF_GET(vref));
+        return RESULT_OK(VALUE_REF_GET(href));
+    }
+    CHECK(korb_hash_ensure(c, slots, href, 1));
+    h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after grow */
+    KorbArrayItems *it = h->items;
+    uint32_t i = h->len;
+    ARO_STORE(c, it, &it->data[2 * i],     VALUE_REF_GET(kref));
+    ARO_STORE(c, it, &it->data[2 * i + 1], VALUE_REF_GET(vref));
+    h->len++;
+    return RESULT_OK(VALUE_REF_GET(href));
+}
+
+/* ---------------------------------------------------------------------------
  * Type names for messages.
  * ------------------------------------------------------------------------- */
 
@@ -199,6 +267,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_STRING:    return "String";
       case KORB_OBJ_EXCEPTION: return "Exception";
       case KORB_OBJ_ARRAY:     return "Array";
+      case KORB_OBJ_HASH:      return "Hash";
     }
     return "Object";
 }
@@ -215,6 +284,7 @@ korb_a_type_name(VALUE v)
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: return "an instance of String";
       case KORB_OBJ_ARRAY:  return "an instance of Array";
+      case KORB_OBJ_HASH:   return "an instance of Hash";
     }
     return "an instance of Object";
 }
@@ -659,6 +729,7 @@ korb_class_of(VALUE v)
         switch (KORB_OBJ_TYPE(v)) {
           case KORB_OBJ_STRING: return KORB_C_STRING;
           case KORB_OBJ_ARRAY:  return KORB_C_ARRAY;
+          case KORB_OBJ_HASH:   return KORB_C_HASH;
         }
     }
     return KORB_C_OBJECT;
@@ -672,6 +743,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_STRING:  return "String";
       case KORB_C_SYMBOL:  return "Symbol";
       case KORB_C_ARRAY:   return "Array";
+      case KORB_C_HASH:    return "Hash";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -1062,6 +1134,127 @@ static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+
+/* ---- Hash methods -------------------------------------------------------- */
+
+#define SELF_HASH  VAL2HASH(VALUE_REF_GET(self))
+static RESULT korb_m_hash_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
+static RESULT korb_m_hash_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->len == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_hash_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->default_val); }
+
+static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbHash *h = SELF_HASH;
+    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(idx < 0 ? h->default_val : h->items->data[2 * idx + 1]);
+}
+
+static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    CHECK(korb_hash_set(c, slots, self, VALUE_SLICE_REF(a, 0), VALUE_SLICE_GET(a, 1)));
+    return RESULT_OK(VALUE_SLICE_GET(a, 1));        /* []= yields the value (rooted re-read) */
+}
+
+static RESULT korb_m_hash_key_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    return RESULT_OK(korb_hash_find(SELF_HASH, VALUE_SLICE_GET(a, 0)) >= 0 ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbHash *h = SELF_HASH;
+    VALUE needle = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 0; i < h->len; i++)
+        if (korb_value_eq(h->items->data[2 * i + 1], needle)) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
+}
+
+static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbHash *h = SELF_HASH;
+    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
+    if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "key not found");
+}
+
+/* collect keys (sel 0) or values (sel 1) into a new array */
+static RESULT korb_hash_collect(CTX *c, VALUE *slots, VALUE_REF self, int sel) {
+    uint32_t n = SELF_HASH->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE e = SELF_HASH->items->data[2 * i + sel];   /* push roots e first */
+        CHECK(korb_ary_push_val(c, slots, dst, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_hash_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_hash_collect(c, slots, self, 0); }
+static RESULT korb_m_hash_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_collect(c, slots, self, 1); }
+
+static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbHash *h = SELF_HASH;
+    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    if (idx < 0) return RESULT_OK(KORB_NIL);
+    KorbArrayItems *it = h->items;
+    VALUE removed = it->data[2 * idx + 1];               /* held; no GC before return */
+    for (uint32_t i = (uint32_t)idx; i + 1 < h->len; i++) {  /* shift to keep order */
+        ARO_STORE(c, it, &it->data[2 * i],     it->data[2 * (i + 1)]);
+        ARO_STORE(c, it, &it->data[2 * i + 1], it->data[2 * (i + 1) + 1]);
+    }
+    h->len--;
+    it->data[2 * h->len] = KORB_NIL;                     /* drop tail refs (nil = no WB) */
+    it->data[2 * h->len + 1] = KORB_NIL;
+    return RESULT_OK(removed);
+}
+
+static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a;
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each without a block (Enumerator) is not supported");
+    const uint32_t np = korb_entry_params_cnt(block);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = SELF_HASH;
+        if (i >= h->len) break;
+        VALUE k = h->items->data[2 * i];
+        VALUE v = h->items->data[2 * i + 1];
+        RESULT r;
+        if (np >= 2) {                       /* |k, v| — fast path, no pair alloc */
+            VALUE argv[2] = { k, v };
+            r = korb_block_yield(c, slots, block, def_env, argv, 2);
+        } else {                             /* |pair| — yield a [k, v] array */
+            slots[0] = k; slots[1] = v;                              /* root k,v in scratch */
+            VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));      /* slots[0,1] rooted */
+            slots[2] = pair;                                         /* root pair */
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+            VALUE parg = slots[2];
+            r = korb_block_yield(c, slots + 3, block, def_env, &parg, 1);
+        }
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_HASH_P(ov)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+    uint32_t ln = SELF_HASH->len, rn = VAL2HASH(ov)->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, ln + rn)));  /* slots past dst */
+    for (uint32_t i = 0; i < ln; i++) {
+        slots[0] = SELF_HASH->items->data[2 * i];                 /* root key in scratch */
+        VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+    }
+    uint32_t rn2 = VAL2HASH(VALUE_SLICE_GET(a, 0))->len;          /* re-read other (rooted) */
+    for (uint32_t i = 0; i < rn2; i++) {
+        slots[0] = VAL2HASH(VALUE_SLICE_GET(a, 0))->items->data[2 * i];
+        VALUE val = VAL2HASH(VALUE_SLICE_GET(a, 0))->items->data[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+#undef SELF_HASH
 #undef REQUIRE_BLOCK
 
 static void
@@ -1144,6 +1337,30 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
 
+    /* Hash */
+    korb_def_cmethod(c, KORB_C_HASH, "[]", korb_m_hash_aref, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "[]=", korb_m_hash_aset, 2);
+    korb_def_cmethod(c, KORB_C_HASH, "store", korb_m_hash_aset, 2);
+    korb_def_cmethod(c, KORB_C_HASH, "size", korb_m_hash_size, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "length", korb_m_hash_size, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "count", korb_m_hash_size, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "empty?", korb_m_hash_empty, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "key?", korb_m_hash_key_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "has_key?", korb_m_hash_key_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "include?", korb_m_hash_key_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "member?", korb_m_hash_key_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "value?", korb_m_hash_value_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "has_value?", korb_m_hash_value_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
+    korb_def_cmethod(c, KORB_C_HASH, "keys", korb_m_hash_keys, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "merge", korb_m_hash_merge, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
+
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
@@ -1157,6 +1374,52 @@ korb_register_core_methods(CTX *c)
  * Printing (CRuby-compatible to_s / inspect, written directly — no GC).
  * ------------------------------------------------------------------------- */
 
+/* Inspect-quote a byte run: "..." with CRuby's escape set. */
+static void
+korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
+{
+    fputc('"', fp);
+    for (uint32_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)bytes[i];
+        switch (ch) {
+          case '"':  fputs("\\\"", fp); break;
+          case '\\': fputs("\\\\", fp); break;
+          case '\n': fputs("\\n", fp); break;
+          case '\t': fputs("\\t", fp); break;
+          case '\r': fputs("\\r", fp); break;
+          case '\f': fputs("\\f", fp); break;
+          case '\v': fputs("\\v", fp); break;
+          case '\b': fputs("\\b", fp); break;
+          case '\a': fputs("\\a", fp); break;
+          case 27:   fputs("\\e", fp); break;
+          case '#':
+            if (i + 1 < len && (bytes[i+1] == '{' || bytes[i+1] == '$' || bytes[i+1] == '@'))
+                fputs("\\#", fp);
+            else
+                fputc('#', fp);
+            break;
+          default:
+            if (ch < 0x20 || ch == 0x7f) fprintf(fp, "\\u%04X", ch);
+            else fputc(ch, fp);   /* non-ASCII UTF-8 passes through */
+        }
+    }
+    fputc('"', fp);
+}
+
+/* Can a symbol name appear bare as a hash label `name:`?  CRuby 3.4+: an
+ * identifier optionally ending in ? or ! (not =, not empty, not operator). */
+static bool
+korb_sym_label_bare(const char *nm)
+{
+    if (!(*nm == '_' || (*nm >= 'a' && *nm <= 'z') || (*nm >= 'A' && *nm <= 'Z')))
+        return false;
+    const char *p = nm + 1;
+    while (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+           (*p >= '0' && *p <= '9')) p++;
+    if (*p == '?' || *p == '!') p++;
+    return *p == '\0';
+}
+
 /* Array renders identically for to_s and inspect: "[1, 2, \"x\"]" — elements
  * always use inspect form. */
 static void
@@ -1169,6 +1432,30 @@ korb_fprint_ary(CTX *c, FILE *fp, VALUE v)
         korb_fprint_inspect(c, fp, a->items->data[i]);
     }
     fputc(']', fp);
+}
+
+/* Hash inspect (== to_s), CRuby 4.0 form: symbol keys as `name: v` (quoted if
+ * not a bare label), other keys as `k => v`. */
+static void
+korb_fprint_hash(CTX *c, FILE *fp, VALUE v)
+{
+    const KorbHash *h = VAL2HASH(v);
+    fputc('{', fp);
+    for (uint32_t i = 0; i < h->len; i++) {
+        if (i) fputs(", ", fp);
+        VALUE k = h->items->data[2 * i];
+        if (SYMBOL_P(k)) {
+            const char *nm = korb_sym_name(c->vm, SYM2ID(k));
+            if (korb_sym_label_bare(nm)) fputs(nm, fp);
+            else korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm));
+            fputs(": ", fp);
+        } else {
+            korb_fprint_inspect(c, fp, k);
+            fputs(" => ", fp);
+        }
+        korb_fprint_inspect(c, fp, h->items->data[2 * i + 1]);
+    }
+    fputc('}', fp);
 }
 
 void
@@ -1188,6 +1475,9 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_ARRAY:
         korb_fprint_ary(c, fp, v);
         return;
+      case KORB_OBJ_HASH:
+        korb_fprint_hash(c, fp, v);
+        return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->bytes, 1, VAL2STR(e->msg)->len, fp);
@@ -1196,38 +1486,6 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       }
     }
     fputs("#<Object>", fp);
-}
-
-static void
-korb_fprint_str_inspect(FILE *fp, const KorbString *s)
-{
-    fputc('"', fp);
-    for (uint32_t i = 0; i < s->len; i++) {
-        unsigned char ch = (unsigned char)s->bytes[i];
-        switch (ch) {
-          case '"':  fputs("\\\"", fp); break;
-          case '\\': fputs("\\\\", fp); break;
-          case '\n': fputs("\\n", fp); break;
-          case '\t': fputs("\\t", fp); break;
-          case '\r': fputs("\\r", fp); break;
-          case '\f': fputs("\\f", fp); break;
-          case '\v': fputs("\\v", fp); break;
-          case '\b': fputs("\\b", fp); break;
-          case '\a': fputs("\\a", fp); break;
-          case 27:   fputs("\\e", fp); break;
-          case '#':
-            /* CRuby escapes # only before { $ @ */
-            if (i + 1 < s->len && (s->bytes[i+1] == '{' || s->bytes[i+1] == '$' || s->bytes[i+1] == '@'))
-                fputs("\\#", fp);
-            else
-                fputc('#', fp);
-            break;
-          default:
-            if (ch < 0x20 || ch == 0x7f) fprintf(fp, "\\u%04X", ch);
-            else fputc(ch, fp);   /* non-ASCII UTF-8 passes through */
-        }
-    }
-    fputc('"', fp);
 }
 
 void
@@ -1239,9 +1497,11 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
     if (v == KORB_FALSE) { fputs("false", fp); return; }
     if (SYMBOL_P(v))     { fprintf(fp, ":%s", korb_sym_name(c->vm, SYM2ID(v))); return; }
     switch (KORB_OBJ_TYPE(v)) {
-      case KORB_OBJ_STRING:
-        korb_fprint_str_inspect(fp, VAL2STR(v));
+      case KORB_OBJ_STRING: {
+        const KorbString *s = VAL2STR(v);
+        korb_fprint_quoted(fp, s->bytes, s->len);
         return;
+      }
     }
     korb_fprint_to_s(c, fp, v);
 }

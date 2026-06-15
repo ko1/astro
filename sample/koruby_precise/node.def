@@ -390,6 +390,24 @@ node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@chi
     return korb_ary_push_val(c, slots, ary, elem);
 }
 
+// ---- hash literals ---------------------------------------------------------
+//
+// `{k => v, ...}` lowers to a set chain: hash_set(hash_set(hash_new(n),k0,v0)...).
+
+NODE_DEF
+node_hash_new(CTX *c, NODE *n, VALUE *slots, uint32_t capa)
+{
+    (void)n;
+    return korb_hash_new(c, slots, capa);
+}
+
+NODE_DEF
+node_hash_set(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE_REF key@child, VALUE val@child)
+{
+    (void)n;
+    return korb_hash_set(c, slots, hash, key, val);
+}
+
 // ---- string interpolation --------------------------------------------------
 //
 // `"a#{x}b"` lowers to a concat chain over the parts (same inside-out shape as
