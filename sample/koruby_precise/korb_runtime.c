@@ -3297,7 +3297,19 @@ static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? ary->items->data[0] : KORB_NIL);
 }
-static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? ary->items->data[ary->len - 1] : KORB_NIL); }
+static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  {
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* last(n) → last n as array */
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+        uint32_t len = SELF_ARY->len;
+        uint32_t take = (uint32_t)n; if (take > len) take = len;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
+        for (uint32_t i = len - take; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, SELF_ARY->items->data[i]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    const KorbArray *ary = SELF_ARY; return RESULT_OK(ary->len ? ary->items->data[ary->len - 1] : KORB_NIL);
+}
 
 /* fresh array = self[start, len) */
 static RESULT korb_ary_subseq(CTX *c, VALUE *slots, VALUE_REF self, uint32_t start, uint32_t len) {
@@ -4191,13 +4203,14 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 /* recursive flatten helper: append all leaves of `src` into dst */
-static RESULT korb_ary_flatten_into(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_REF src) {
+/* depth-limited flatten: depth<0 = full, 0 = copy as-is, >0 = that many levels. */
+static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_REF src, int depth) {
     uint32_t n = VAL2ARY(VALUE_REF_GET(src))->len;
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
-        if (KORB_ARRAY_P(e)) {
-            slots[0] = e;                                  /* root nested array */
-            CHECK(korb_ary_flatten_into(c, slots + 1, dst, VALUE_REF_AT(&slots[0])));
+        if (KORB_ARRAY_P(e) && depth != 0) {
+            slots[0] = e;
+            CHECK(korb_ary_flatten_depth(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), depth < 0 ? depth : depth - 1));
         } else {
             CHECK(korb_ary_push_val(c, slots, dst, e));
         }
@@ -4205,10 +4218,11 @@ static RESULT korb_ary_flatten_into(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_R
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    int depth = -1;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) depth = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     uint32_t n = SELF_ARY->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
-    CHECK(korb_ary_flatten_into(c, slots + 1, dst, self));
+    CHECK(korb_ary_flatten_depth(c, slots + 1, dst, self, depth));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -6767,7 +6781,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "tally", korb_m_ary_tally, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "first", korb_m_ary_first, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "last", korb_m_ary_last, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "last", korb_m_ary_last, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "[]", korb_m_ary_aref, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "slice", korb_m_ary_aref, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "at", korb_m_ary_aref, 1);
@@ -6822,7 +6836,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "slice!", korb_m_ary_slice_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten!", korb_m_ary_flatten_b, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "unshift", korb_m_ary_unshift, -1);
