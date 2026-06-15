@@ -1930,6 +1930,8 @@ static RESULT korb_ary_subseq(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sta
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     uint32_t n = SELF_ARY->len;
     VALUE i0 = VALUE_SLICE_GET(a, 0);
     if (KORB_RANGE_P(i0)) {                                 /* a[b..e] → subarray */
@@ -2145,6 +2147,7 @@ static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const KorbHash *h = SELF_HASH;
     int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
     if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
@@ -2721,6 +2724,7 @@ static RESULT korb_m_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)slots; return korb_ary_assoc(c, self, VALUE_SLICE_GET(a, 0), 1); }
 
 static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
@@ -2811,6 +2815,8 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))   /* fill {block} form not supported */
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#fill with a block is not supported");
     VALUE v = VALUE_SLICE_GET(a, 0);
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     KorbArrayItems *it = ary->items;
