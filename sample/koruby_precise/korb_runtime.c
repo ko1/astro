@@ -2906,10 +2906,8 @@ static RESULT korb_m_str_delete_prefix_b(CTX *c, VALUE *slots, VALUE_REF self, V
 static RESULT korb_m_str_delete_suffix_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_delfix(c, slots, self, a, 1, true); }
 static RESULT korb_m_str_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(lo) || !KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
-    VALUE s = VALUE_REF_GET(self);
-    int lc = korb_cmp_values(s, lo), uc = korb_cmp_values(s, hi);
-    return RESULT_OK((lc >= 0 && lc != 2 && uc <= 0 && uc != 2) ? KORB_TRUE : KORB_FALSE);
+    (void)lo; (void)hi;
+    return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
@@ -6266,6 +6264,10 @@ static RESULT korb_m_int_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_inv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(~FIX2LONG(VALUE_REF_GET(self)))); }
 static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(o)) {                             /* Integer#remainder(Float) → Float, truncated */
+        double f = VAL2FLT(o)->val, s = (double)FIX2LONG(VALUE_REF_GET(self));
+        return korb_float_new(c, slots, fmod(s, f));   /* C fmod = truncated remainder (sign of dividend) */
+    }
     if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
     intptr_t b = FIX2LONG(o);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -6996,8 +6998,8 @@ static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         return RESULT_OK(have_acc ? slots[0] : KORB_NIL);
     }
     uint32_t np = korb_entry_params_cnt(block);   /* acc + pair: block takes |acc, (k,v)| */
-    if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#reduce needs an initial value");
-    slots[0] = VALUE_SLICE_GET(a, 0);             /* acc */
+    bool have_acc = (VALUE_SLICE_LEN(a) >= 1);     /* no init → first [k,v] pair seeds the accumulator */
+    if (have_acc) slots[0] = VALUE_SLICE_GET(a, 0);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
@@ -7007,12 +7009,13 @@ static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         slots[3] = pair;
         CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
         CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+        if (!have_acc) { slots[0] = slots[3]; have_acc = true; continue; }
         VALUE argv[2] = { slots[0], slots[3] };
         RESULT r = korb_block_yield(c, slots + 4, block, def_env, argv, np >= 2 ? 2 : 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(have_acc ? slots[0] : KORB_NIL);
 }
 static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     HASH_REQ_BLOCK("Hash#each_with_object");
@@ -7413,8 +7416,9 @@ static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
-    intptr_t n = FIX2LONG(nv); if (n < 0) n = 0;
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
     uint32_t len = VAL2HASH(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = (uint32_t)n; i < len; i++) {
@@ -7802,10 +7806,8 @@ static RESULT korb_m_sym_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_sym_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!SYMBOL_P(lo) || !SYMBOL_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Symbol failed");
-    const char *s = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    bool t = strcmp(s, korb_sym_name(c->vm, SYM2ID(lo))) >= 0 && strcmp(s, korb_sym_name(c->vm, SYM2ID(hi))) <= 0;
-    return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    (void)lo; (void)hi;
+    return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_sym_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
