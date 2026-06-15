@@ -1338,3 +1338,16 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   そこから wild ptr へ chain される。 method aliasing が同じ
   `struct korb_method *` を複数 entry に登録するため、 def_cref chain
   に corrupted node が混入する可能性。
+
+### 組み込み型の instance variable (cont.16 で発覚)
+
+- 現状 `@ivar` を持てるのは `KorbObject` (KORB_OBJ_OBJECT、ユーザ定義
+  クラスのインスタンス + top-level main) のみ。`node_ivar_get` は
+  `\!KORB_OBJECT_P(self)` で nil を返し、`node_ivar_set` は raise する。
+  本来 Ruby では String/Array/Hash 等の組み込みオブジェクトも ivar を
+  持てる (`"x".instance_variable_set(:@a, 1)` 等)。
+- 実装するなら ivar ストアを KorbObject 専用ペイロードから外し、
+  全 heap オブジェクト共通のサイドテーブル (obj identity → ivar hash)
+  か、各 heap struct への ivar スロット追加が要る。Fixnum/Symbol 等の
+  immediate は別扱い (CRuby は generic_ivar table)。優先度低 (corpus に
+  ほぼ無し)。
