@@ -486,6 +486,23 @@ node_call3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t s
     return korb_call(c, slots, mid, line, cc, 3, slots[self_off]);
 }
 
+// ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
+//
+// `args` is the already-built arguments Array (parser uses the array-splat
+// chain).  Spread its N elements into scratch [slots[0..N)] and dispatch with a
+// runtime-computed argc.  The slots arena has ~1M cells of headroom above the
+// cursor, so the dynamic spread is safe.
+NODE_DEF
+node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    VALUE self = slots[self_off];
+    VALUE arr = slots[-1];                              /* the staged args array */
+    uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_call(c, slots + N, mid, line, cc, N, self);
+}
+
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
 //
 // recv is staged first, then args: [recv | a0 | a1 ...] at slots[-(argc+1)..-1].
@@ -517,6 +534,20 @@ node_send3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF
 {
     (void)n; (void)recv; (void)a0; (void)a1; (void)a2;
     return korb_send(c, slots, mid, line, 3);
+}
+
+// receiver call with splat: recv.m(*arr).  Staged [recv | args_array] at
+// slots[-2..-1]; re-lay out [recv | arg0..argN) at slots[0..N] and dispatch.
+NODE_DEF
+node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF args@child)
+{
+    (void)n; (void)recv; (void)args;
+    VALUE rv = slots[-2];
+    VALUE arr = slots[-1];
+    uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
+    return korb_send(c, slots + N + 1, mid, line, N);
 }
 
 // ---- array literals --------------------------------------------------------

@@ -300,6 +300,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
+static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
 extern const struct NodeKind kind_node_range_new;    /* range literal */
@@ -551,6 +552,19 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
+    /* splat call f(*arr) / f(a, *arr, b): build the args Array, dispatch dynamically */
+    {
+        bool has_splat = false;
+        for (size_t i = 0; i < argc; i++)
+            if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+        if (has_splat) {
+            int32_t self_off = -1 - tc->chain - 1;       /* one staged child: the args array */
+            NODE *arr;
+            WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+            return ALLOC_node_call_splat(mid, line, self_off, arr);
+        }
+    }
+
     /* caller self cell (base[fs-1]); the argc staged args advance the body
      * cursor, so offset back past them too. */
     int32_t self_off = -1 - tc->chain - (int32_t)argc;
@@ -638,6 +652,18 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE *call = ALLOC_node_send_blk2(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0, a1);
         bake_add(tc, &call->u.node_send_blk2.def_env_off);
         return call;
+    }
+    /* splat receiver call recv.m(*arr): build args Array, dynamic dispatch */
+    {
+        bool has_splat = false;
+        for (size_t i = 0; i < argc; i++)
+            if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+        if (has_splat) {
+            NODE *recv, *arr;
+            WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                               arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+            return ALLOC_node_send_splat(mid, line, recv, arr);
+        }
     }
     if (argc > 3) {
         return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with >3 args");
