@@ -2133,10 +2133,29 @@ static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
     return RESULT_OK(LONG2FIX((intptr_t)t));
 }
+/* round/floor/ceil/trunc with an optional digit count.
+ * ndig>0 → Float to ndig decimals; ndig<=0 → Integer (rounded to 10^-ndig). */
+static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
+    intptr_t ndig = 0;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        if (UNLIKELY(!FIXNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        ndig = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    }
+    if (ndig == 0) return korb_flt_toint(c, slots, d, kind);
+    double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
+    double scaled = ndig > 0 ? d * f : d / f;
+    double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? round(scaled) : trunc(scaled);
+    if (ndig > 0) return korb_float_new(c, slots, t / f);
+    double res = t * f;
+    if (UNLIKELY(!isfinite(res) || res < (double)FIXNUM_MIN || res > (double)FIXNUM_MAX))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
+    return RESULT_OK(LONG2FIX((intptr_t)res));
+}
 static RESULT korb_m_flt_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 3); }
-static RESULT korb_m_flt_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 0); }
-static RESULT korb_m_flt_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 1); }
-static RESULT korb_m_flt_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 2); }
+static RESULT korb_m_flt_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 0, a); }
+static RESULT korb_m_flt_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_flt_round_to(c, slots, SELF_FLT, 1, a); }
+static RESULT korb_m_flt_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 2, a); }
+static RESULT korb_m_flt_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 3, a); }
 static RESULT korb_m_flt_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; char b[40]; uint32_t n = korb_float_to_s(SELF_FLT, b); return korb_str_new(c, slots, b, n);
 }
@@ -2200,6 +2219,38 @@ static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK((n >= FIX2LONG(lo) && n <= FIX2LONG(hi)) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* Integer round/floor/ceil/truncate(ndigits). ndig>=0 → self; ndig<0 → snap to 10^-ndig.
+ * kind: 0=floor 1=ceil 2=round 3=trunc */
+static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALUE_SLICE a) {
+    intptr_t ndig = 0;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        if (UNLIKELY(!FIXNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        ndig = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    }
+    if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
+    intptr_t f = 1;
+    for (intptr_t k = 0; k < -ndig; k++) {
+        if (UNLIKELY(f > FIXNUM_MAX / 10)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of Fixnum range (Bignum not implemented)");
+        f *= 10;
+    }
+    intptr_t q = v / f, r = v % f, res;
+    switch (kind) {
+      case 0:  res = (r != 0 && v < 0) ? (q - 1) * f : q * f; break;   /* floor */
+      case 1:  res = (r != 0 && v > 0) ? (q + 1) * f : q * f; break;   /* ceil */
+      case 3:  res = q * f; break;                                     /* truncate */
+      default: {                                                       /* round half up */
+        intptr_t ar = r < 0 ? -r : r;
+        res = q * f;
+        if (ar * 2 >= f) res += (v < 0 ? -f : f);
+        break;
+      }
+    }
+    return RESULT_OK(LONG2FIX(res));
+}
+static RESULT korb_m_int_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_int_round_to(c, slots, SELF_INT, 0, a); }
+static RESULT korb_m_int_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { return korb_int_round_to(c, slots, SELF_INT, 1, a); }
+static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_int_round_to(c, slots, SELF_INT, 2, a); }
+static RESULT korb_m_int_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_round_to(c, slots, SELF_INT, 3, a); }
 static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
     if (UNLIKELY(!FIXNUM_P(lo) || !FIXNUM_P(hi))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
@@ -6425,10 +6476,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "^", korb_m_int_xor, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "~", korb_m_int_inv, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "remainder", korb_m_int_remainder, 1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "truncate", korb_m_int_self, 0);
-    korb_def_cmethod(c, KORB_C_INTEGER, "floor", korb_m_int_self, 0);
-    korb_def_cmethod(c, KORB_C_INTEGER, "ceil", korb_m_int_self, 0);
-    korb_def_cmethod(c, KORB_C_INTEGER, "round", korb_m_int_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "truncate", korb_m_int_truncate, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "floor", korb_m_int_floor, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "ceil", korb_m_int_ceil, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "round", korb_m_int_round, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "dup", korb_m_int_self2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "clone", korb_m_int_self2, 0);
@@ -6869,10 +6920,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "denominator", korb_m_flt_denominator, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_i", korb_m_flt_to_i, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_int", korb_m_flt_to_i, 0);
-    korb_def_cmethod(c, KORB_C_FLOAT, "truncate", korb_m_flt_to_i, 0);
-    korb_def_cmethod(c, KORB_C_FLOAT, "floor", korb_m_flt_floor, 0);
-    korb_def_cmethod(c, KORB_C_FLOAT, "ceil", korb_m_flt_ceil, 0);
-    korb_def_cmethod(c, KORB_C_FLOAT, "round", korb_m_flt_round, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "truncate", korb_m_flt_truncate, -1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "floor", korb_m_flt_floor, -1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "ceil", korb_m_flt_ceil, -1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "round", korb_m_flt_round, -1);
     korb_def_cmethod(c, KORB_C_FLOAT, "abs", korb_m_flt_abs, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "magnitude", korb_m_flt_abs, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "abs2", korb_m_flt_abs2, 0);
