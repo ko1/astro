@@ -3305,6 +3305,55 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(LONG2FIX(acc));
 }
 
+static RESULT korb_m_obj_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+
+static RESULT korb_m_ary_difference(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        if (!korb_ary_has(VAL2ARY(VALUE_SLICE_GET(a, 0)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line) {
+    VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_ARRAY_P(l)) {                            /* Array - Array → set difference */
+        slots[0] = rhs;
+        return korb_m_ary_difference(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
+    }
+    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+}
+static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* clear, then copy other */
+    uint32_t on = VAL2ARY(VALUE_SLICE_GET(a, 0))->len;
+    for (uint32_t i = 0; i < on; i++)
+        CHECK(korb_ary_push_val(c, slots, self, VAL2ARY(VALUE_SLICE_GET(a, 0))->items->data[i]));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    intptr_t n = FIX2LONG(nv); if (n < 0) n = 0;
+    uint32_t len = VAL2HASH(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = (uint32_t)n; i < len; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[0] = h->items->data[2*i]; slots[1] = h->items->data[2*i+1];
+        VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));
+        slots[2] = pair;
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
 /* ---- more String methods ------------------------------------------------- */
 
 static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
@@ -3571,6 +3620,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "dig", korb_m_ary_dig, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "take", korb_m_ary_take, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "drop", korb_m_ary_drop, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "difference", korb_m_ary_difference, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "-", korb_m_ary_difference, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "replace", korb_m_ary_replace, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete_at", korb_m_ary_delete_at, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, 1);
@@ -3633,6 +3685,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "slice", korb_m_hash_slice, -1);
     korb_def_cmethod(c, KORB_C_HASH, "except", korb_m_hash_except, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "map", korb_m_hash_map, 0);
@@ -3694,6 +3747,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "frozen?", korb_m_true_lit2, 0);
+    korb_def_cmethod(c, KORB_C_NIL,    "frozen?", korb_m_true_lit2, 0);
+    korb_def_cmethod(c, KORB_C_TRUE,   "frozen?", korb_m_true_lit2, 0);
+    korb_def_cmethod(c, KORB_C_FALSE,  "frozen?", korb_m_true_lit2, 0);
 
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);

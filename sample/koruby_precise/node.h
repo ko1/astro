@@ -114,6 +114,7 @@ bool korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class);   /* exc kind_of? 
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
+RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line);
 bool   korb_value_eq(VALUE a, VALUE b);
 
