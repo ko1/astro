@@ -5065,6 +5065,20 @@ static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (i < 0 || (uint32_t)i >= s->len) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX((unsigned char)s->buf->data[i]));
 }
+static RESULT korb_m_str_setbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE iv = VALUE_SLICE_GET(a, 0), bv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!FIXNUM_P(iv) || !FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    intptr_t i = FIX2LONG(iv); if (i < 0) i += s->len;
+    if (UNLIKELY(i < 0 || (uint32_t)i >= s->len)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld out of string", (long)FIX2LONG(iv));
+    s->buf->data[i] = (char)(FIX2LONG(bv) & 0xFF);
+    return RESULT_OK(bv);
+}
+static RESULT korb_m_sym_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    return korb_m_str_aref(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     VALUE sv = VALUE_SLICE_GET(a, 0);
@@ -5250,6 +5264,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);
     korb_def_cmethod(c, KORB_C_STRING, "getbyte", korb_m_str_getbyte, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, 1);
     korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, 1);
     korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
@@ -5263,6 +5280,8 @@ korb_register_core_methods(CTX *c)
     /* Symbol */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "[]", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "length", korb_m_sym_len, 0);
@@ -5486,6 +5505,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "inject", korb_m_range_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "select", korb_m_range_select, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "filter", korb_m_range_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "find_all", korb_m_range_select, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reject", korb_m_range_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
