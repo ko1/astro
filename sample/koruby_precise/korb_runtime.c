@@ -1916,6 +1916,22 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE ev = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(ev));
     intptr_t base = SELF_INT, exp = FIX2LONG(ev);
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* pow(exp, mod): modular exponentiation */
+        VALUE mv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
+        intptr_t mod = FIX2LONG(mv);
+        if (UNLIKELY(mod == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        if (UNLIKELY(exp < 0)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "int.pow(n, m): n must be positive");
+        intptr_t am = mod < 0 ? -mod : mod;
+        __int128 bb = (((__int128)(base % am)) + am) % am, result = 1 % am;
+        for (intptr_t e = exp; e > 0; e >>= 1) {
+            if (e & 1) result = result * bb % am;
+            bb = bb * bb % am;
+        }
+        intptr_t res = (intptr_t)result;
+        if (mod < 0 && res != 0) res += mod;          /* floored result (sign of mod) */
+        return RESULT_OK(LONG2FIX(res));
+    }
     if (exp < 0) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "negative exponent (Rational is not implemented)");
     intptr_t r = 1;
     for (intptr_t i = 0; i < exp; i++) {
@@ -2890,13 +2906,31 @@ static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(KORB_FALSE);
 }
 
+/* byte offset of the cidx-th codepoint (clamped to len). */
+static uint32_t korb_str_char_to_byte(const KorbString *s, intptr_t cidx) {
+    uint32_t b = 0;
+    for (intptr_t k = 0; k < cidx && b < s->len; k++) {
+        b++;
+        while (b < s->len && ((unsigned char)s->buf->data[b] & 0xC0) == 0x80) b++;
+    }
+    return b;
+}
 static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
-    int32_t b = korb_byte_find(s->buf->data, s->len, n->buf->data, n->len);
+    uint32_t boff = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* index(substr, start) */
+        intptr_t start;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+        if (start < 0) start += ncp;
+        if (start < 0 || start > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
+        boff = korb_str_char_to_byte(s, start);
+    }
+    int32_t b = korb_byte_find(s->buf->data + boff, s->len - boff, n->buf->data, n->len);
     if (b < 0) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, (uint32_t)b)));   /* char index */
+    return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, boff + (uint32_t)b)));   /* char index */
 }
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -4652,17 +4686,35 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
+static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step) {
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
+    for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(from + step * (intptr_t)i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
     const KorbRange *r = SELF_RANGE;
     intptr_t lo, hi;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* min(n) → first n ascending */
+        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+        if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+        uint32_t take = (uint32_t)n; if ((intptr_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
+        return korb_range_seq(c, slots, lo, take, 1);
+    }
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(lo) : KORB_NIL);
     return RESULT_OK(r->rbegin);
 }
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;(void)a;
     const KorbRange *r = SELF_RANGE;
     intptr_t lo, hi;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* max(n) → last n descending */
+        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+        if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+        uint32_t take = (uint32_t)n; if ((intptr_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
+        return korb_range_seq(c, slots, hi - 1, take, -1);
+    }
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(hi - 1) : KORB_NIL);
     if (r->exclude_end) return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
     return RESULT_OK(r->rend);
@@ -6594,8 +6646,16 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
-    int32_t b = korb_byte_find(s->buf->data, s->len, n->buf->data, n->len);
-    return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(b));
+    uint32_t off = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byteindex(substr, start_byte) */
+        intptr_t start;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        if (start < 0) start += s->len;
+        if (start < 0 || start > (intptr_t)s->len) return RESULT_OK(KORB_NIL);
+        off = (uint32_t)start;
+    }
+    int32_t b = korb_byte_find(s->buf->data + off, s->len - off, n->buf->data, n->len);
+    return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
@@ -6603,7 +6663,17 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
-    for (int32_t i = (int32_t)(s->len - n->len); i >= 0; i--)
+    int32_t hi = (int32_t)(s->len - n->len);          /* last byte where a match can begin */
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* rindex(substr, stop): last match at/before stop */
+        intptr_t stop;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+        if (stop < 0) stop += ncp;
+        if (stop < 0) return RESULT_OK(KORB_NIL);
+        int32_t stopb = (int32_t)korb_str_char_to_byte(s, stop);
+        if (stopb < hi) hi = stopb;
+    }
+    for (int32_t i = hi; i >= 0; i--)
         if (memcmp(s->buf->data + i, n->buf->data, n->len) == 0)
             return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, (uint32_t)i)));
     return RESULT_OK(KORB_NIL);
@@ -6685,7 +6755,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "inspect", korb_m_int_to_s, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "chr", korb_m_int_chr, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "**", korb_m_int_pow, 1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "pow", korb_m_int_pow, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "pow", korb_m_int_pow, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "divmod", korb_m_int_divmod, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "div", korb_m_int_div, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_int_modulo, 1);
@@ -6795,7 +6865,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
     korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
     korb_def_cmethod(c, KORB_C_STRING, "end_with?", korb_m_str_end_with, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "index", korb_m_str_index, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "index", korb_m_str_index, -1);
     korb_def_cmethod(c, KORB_C_STRING, "strip", korb_m_str_strip, -1);
     korb_def_cmethod(c, KORB_C_STRING, "lstrip", korb_m_str_lstrip, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rstrip", korb_m_str_rstrip, -1);
@@ -6821,8 +6891,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, 1);
-    korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "ljust", korb_m_str_ljust, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rjust", korb_m_str_rjust, -1);
@@ -7092,8 +7162,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, -1);
+    korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
