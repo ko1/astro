@@ -1983,6 +1983,26 @@ static RESULT korb_m_num_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (d < 0) return korb_float_new(c, slots, 3.141592653589793);
     return RESULT_OK(LONG2FIX(0));
 }
+static RESULT korb_m_num_real_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
+static RESULT korb_m_lit_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static RESULT korb_m_lit_nil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
+/* to_c on a real: Complex(self, 0). */
+static RESULT korb_m_num_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_cpx_new(c, slots, VALUE_REF_GET(self), LONG2FIX(0)); }
+/* polar of a real: [magnitude, angle]. magnitude=abs(self) (same class), angle per korb_m_num_angle. */
+static RESULT korb_m_num_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; double d;
+    VALUE sv = VALUE_REF_GET(self);
+    if (!korb_num_to_d(sv, &d)) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    /* slots[0]=magnitude (abs, class-preserving), slots[1]=angle, slots[2]=result array */
+    if (FIXNUM_P(sv)) { intptr_t n = FIX2LONG(sv); slots[0] = LONG2FIX(n < 0 ? -n : n); }
+    else { slots[0] = UNWRAP(korb_float_new(c, slots, fabs(d))); }
+    slots[1] = d < 0 ? UNWRAP(korb_float_new(c, slots + 1, 3.141592653589793)) : LONG2FIX(0);
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF arr = VALUE_REF_AT(slots + 2);
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
 /* decompose a finite double into exact num/den (reduced); den>0. */
 static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
     if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "can't convert non-finite Float to Rational");
@@ -2931,6 +2951,41 @@ static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+/* length of the line starting at pos, including the trailing '\n' if present. */
+static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos) {
+    uint32_t e = pos;
+    while (e < s->len && s->buf->data[e] != '\n') e++;
+    if (e < s->len) e++;   /* include the newline in the line, MRI-style */
+    return e - pos;
+}
+static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_line without a block (Enumerator) is not supported");
+    uint32_t pos = 0;
+    for (;;) {
+        const KorbString *s = SELF_STR;
+        if (pos >= s->len) break;
+        uint32_t ll = korb_str_line_len(s, pos);
+        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, ll));   /* root the line */
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        pos += ll;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    uint32_t pos = 0;
+    for (;;) {
+        const KorbString *s = SELF_STR;
+        if (pos >= s->len) break;
+        uint32_t ll = korb_str_line_len(s, pos);
+        CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, ll))));
+        pos += ll;
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
@@ -6102,6 +6157,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "lines", korb_m_str_lines, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
@@ -6489,9 +6546,17 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "i", korb_m_int_i, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "conj", korb_m_num_conj_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "conjugate", korb_m_num_conj_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "real?", korb_m_num_real_p, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_c", korb_m_num_to_c, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "polar", korb_m_num_polar, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "infinite?", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "i", korb_m_int_i, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "conj", korb_m_num_conj_self, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "conjugate", korb_m_num_conj_self, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "real?", korb_m_num_real_p, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_c", korb_m_num_to_c, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "polar", korb_m_num_polar, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "real?", korb_m_lit_false, 0);
 }
 
 /* ---------------------------------------------------------------------------
