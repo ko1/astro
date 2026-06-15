@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "node.h"
 #include "precise_gc/gc.h"
@@ -3003,6 +3004,114 @@ static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 #undef HASH_REQ_BLOCK
 
+/* ---- more String methods ------------------------------------------------- */
+
+static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
+    uint32_t m = al < bl ? al : bl;
+    for (uint32_t i = 0; i < m; i++) {
+        int ca = tolower((unsigned char)a[i]), cb = tolower((unsigned char)b[i]);
+        if (ca != cb) return ca < cb ? -1 : 1;
+    }
+    return (al > bl) - (al < bl);
+}
+static RESULT korb_m_str_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
+    return RESULT_OK(LONG2FIX(korb_ci_cmp(s->bytes, s->len, t->bytes, t->len)));
+}
+static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
+    return RESULT_OK(korb_ci_cmp(s->bytes, s->len, t->bytes, t->len) == 0 ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t bn = s->len;
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t i = FIX2LONG(iv); if (i < 0) i += bn;
+    if (i < 0 || i > (intptr_t)bn) return RESULT_OK(KORB_NIL);
+    intptr_t len = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 1;
+    if (len < 0) return RESULT_OK(KORB_NIL);
+    if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
+    return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
+}
+static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (!FIXNUM_P(iv)) return RESULT_OK(KORB_NIL);
+    intptr_t i = FIX2LONG(iv); if (i < 0) i += s->len;
+    if (i < 0 || (uint32_t)i >= s->len) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX((unsigned char)s->bytes[i]));
+}
+static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    int32_t b = korb_byte_find(s->bytes, s->len, n->bytes, n->len);
+    return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(b));
+}
+static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    if (n->len > s->len) return RESULT_OK(KORB_NIL);
+    for (int32_t i = (int32_t)(s->len - n->len); i >= 0; i--)
+        if (memcmp(s->bytes + i, n->bytes, n->len) == 0)
+            return RESULT_OK(LONG2FIX(korb_utf8_count(s->bytes, (uint32_t)i)));
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
+    KorbString *r = korb_alloc(c, slots, sizeof(KorbString) + len + 1, KORB_OBJ_STRING);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */
+    for (uint32_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)s->bytes[i];
+        r->bytes[i] = (char)(isupper(ch) ? tolower(ch) : islower(ch) ? toupper(ch) : ch);
+    }
+    r->len = len; r->bytes[len] = '\0';
+    return RESULT_OK((VALUE)r);
+}
+/* ljust(0)/rjust(1)/center(2) — char-width padding via a transient buffer */
+static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE wv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(wv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(wv));
+    const KorbString *padstr = (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) ? VAL2STR(VALUE_SLICE_GET(a, 1)) : NULL;
+    if (padstr && padstr->len == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zero width padding");
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    intptr_t width = FIX2LONG(wv);
+    uint32_t ncp = korb_utf8_count(s->bytes, s->len);
+    if (width <= (intptr_t)ncp) return korb_str_slice_new(c, slots, self, 0, s->len);
+    uint32_t total_pad = (uint32_t)width - ncp;
+    uint32_t left = mode == 1 ? total_pad : mode == 2 ? total_pad / 2 : 0;
+    uint32_t right = total_pad - left;
+    const char *pb = padstr ? padstr->bytes : " ";
+    uint32_t pl = padstr ? padstr->len : 1;
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    for (uint32_t i = 0; i < left; i++)  fputc(pb[i % pl], ms);   /* byte-cycle pad (ASCII pad exact) */
+    fwrite(s->bytes, 1, s->len, ms);
+    for (uint32_t i = 0; i < right; i++) fputc(pb[i % pl], ms);
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+static RESULT korb_m_str_ljust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_pad(c, slots, self, a, 0); }
+static RESULT korb_m_str_rjust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_pad(c, slots, self, a, 1); }
+static RESULT korb_m_str_center(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_pad(c, slots, self, a, 2); }
+
 static void
 korb_register_core_methods(CTX *c)
 {
@@ -3079,6 +3188,16 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "casecmp", korb_m_str_casecmp, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "getbyte", korb_m_str_getbyte, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "ljust", korb_m_str_ljust, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "rjust", korb_m_str_rjust, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "center", korb_m_str_center, -1);
     korb_def_cmethod(c, KORB_C_STRING, "[]", korb_m_str_aref, -1);
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
