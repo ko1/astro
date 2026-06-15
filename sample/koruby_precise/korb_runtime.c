@@ -2651,6 +2651,106 @@ static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 #undef SELF_RANGE
 
+/* ---- more Array (query/mutate) + Integer (bit) methods ------------------- */
+
+static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t k = VALUE_SLICE_LEN(a);
+    if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
+    CHECK(korb_ary_ensure(c, slots, self, k));
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *it = ary->items;
+    for (int32_t i = (int32_t)ary->len - 1; i >= 0; i--)        /* shift right by k */
+        ARO_STORE(c, it, &it->data[i + k], it->data[i]);
+    for (uint32_t i = 0; i < k; i++)
+        ARO_STORE(c, it, &it->data[i], VALUE_SLICE_GET(a, i));
+    ary->len += k;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    if (ary->len == 0) return RESULT_OK(KORB_NIL);
+    KorbArrayItems *it = ary->items;
+    VALUE first = it->data[0];
+    for (uint32_t i = 1; i < ary->len; i++) ARO_STORE(c, it, &it->data[i - 1], it->data[i]);
+    ary->len--;
+    it->data[ary->len] = KORB_NIL;
+    return RESULT_OK(first);
+}
+
+/* assoc (idx 0) / rassoc (idx 1): find the sub-array whose [idx] == key */
+static RESULT korb_ary_assoc(CTX *c, VALUE_REF self, VALUE key, uint32_t idx) {
+    (void)c;
+    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < ary->len; i++) {
+        VALUE e = ary->items->data[i];
+        if (KORB_ARRAY_P(e) && VAL2ARY(e)->len > idx && korb_value_eq(VAL2ARY(e)->items->data[idx], key))
+            return RESULT_OK(e);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)slots; return korb_ary_assoc(c, self, VALUE_SLICE_GET(a, 0), 0); }
+static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)slots; return korb_ary_assoc(c, self, VALUE_SLICE_GET(a, 0), 1); }
+
+static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    intptr_t i = FIX2LONG(iv);
+    if (i < 0) i += ary->len;
+    if (i >= 0 && (uint32_t)i < ary->len) return RESULT_OK(ary->items->data[i]);
+    if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%u...%u",
+                      (long)FIX2LONG(iv), ary->len, ary->len);
+}
+
+/* dig: recursive index into nested Array/Hash */
+static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE cur = VALUE_REF_GET(self);
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+        VALUE key = VALUE_SLICE_GET(a, k);
+        if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
+        if (KORB_ARRAY_P(cur)) {
+            if (UNLIKELY(!FIXNUM_P(key))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
+            KorbArray *ar = VAL2ARY(cur);
+            intptr_t i = FIX2LONG(key); if (i < 0) i += ar->len;
+            cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : ar->items->data[i];
+        } else if (KORB_HASH_P(cur)) {
+            int32_t idx = korb_hash_find(VAL2HASH(cur), key);
+            cur = idx < 0 ? KORB_NIL : VAL2HASH(cur)->items->data[2 * idx + 1];
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
+        }
+    }
+    return RESULT_OK(cur);
+}
+
+static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), sh = FIX2LONG(o);
+    intptr_t r = sh >= 0 ? (sh < 62 ? (n << sh) : 0) : (n >> (-sh < 63 ? -sh : 62));
+    if (sh >= 0 && (sh >= 62 || (r >> sh) != n || !FIXABLE(r)))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+    return RESULT_OK(LONG2FIX(r));
+}
+static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), sh = FIX2LONG(o);
+    intptr_t r = sh >= 0 ? (sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)) : (sh > -62 ? (n << -sh) : 0);
+    return RESULT_OK(LONG2FIX(r));
+}
+static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!FIXNUM_P(o)) return RESULT_OK(LONG2FIX(0));
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), i = FIX2LONG(o);
+    if (i < 0 || i >= 63) return RESULT_OK(LONG2FIX(n < 0 && i >= 63 ? 1 : 0));
+    return RESULT_OK(LONG2FIX((n >> i) & 1));
+}
+
 static void
 korb_register_core_methods(CTX *c)
 {
@@ -2684,6 +2784,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "between?", korb_m_int_between, 2);
     korb_def_cmethod(c, KORB_C_INTEGER, "clamp", korb_m_int_clamp, 2);
     korb_def_cmethod(c, KORB_C_INTEGER, "digits", korb_m_int_digits, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "<<", korb_m_int_lshift, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, ">>", korb_m_int_rshift, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "[]", korb_m_int_bitref, 1);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "times", korb_m_int_times, 0);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "upto", korb_m_int_upto, 1);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "downto", korb_m_int_downto, 1);
@@ -2765,6 +2868,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "unshift", korb_m_ary_unshift, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "prepend", korb_m_ary_unshift, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "shift", korb_m_ary_shift, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "assoc", korb_m_ary_assoc, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "fetch", korb_m_ary_fetch, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "dig", korb_m_ary_dig, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each", korb_m_ary_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_index", korb_m_ary_each_wi, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
