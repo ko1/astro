@@ -337,6 +337,36 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
     return RESULT_OK(KORB_NIL);
 }
 
+// `super` — `self_off`/`dc_off` read the frame's self + def_class cells; mid is
+// the enclosing method's name (baked).  args staged like a call.
+NODE_DEF
+node_super0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off)
+{
+    (void)n;
+    return korb_super(c, slots, mid, line, 0, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
+}
+
+NODE_DEF
+node_super1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child)
+{
+    (void)n; (void)a0;
+    return korb_super(c, slots, mid, line, 1, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
+}
+
+NODE_DEF
+node_super2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child)
+{
+    (void)n; (void)a0; (void)a1;
+    return korb_super(c, slots, mid, line, 2, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
+}
+
+NODE_DEF
+node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
+{
+    (void)n; (void)a0; (void)a1; (void)a2;
+    return korb_super(c, slots, mid, line, 3, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
+}
+
 // constant read (`Foo`) — classes only for now.
 NODE_DEF
 node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym)

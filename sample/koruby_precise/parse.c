@@ -31,6 +31,8 @@ struct kp_frame {
     uint32_t bake_base;
     int32_t saved_chain;
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
+    uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
+    uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     struct kp_frame *prev;
 };
 
@@ -117,20 +119,23 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->bake_base = tc->bake_cnt;
     f->saved_chain = tc->chain;
     f->uses_block = false;
+    f->method_mid = 0;
+    f->method_params = 0;
     f->prev = tc->frame;
     tc->frame = f;
     tc->chain = 0;
 }
 
-/* Returns the frame size.  Every frame reserves a self cell on top (base[fs-1]);
- * a yielding frame also reserves the 3-cell block group {block_entry, def_env,
- * captured_self} just below it.  Layout top-down:
- *   [locals... | block_entry(fs-4) | def_env(fs-3) | captured_self(fs-2) | self(fs-1)] */
+/* Returns the frame size.  Every frame reserves self(fs-1) + def_class(fs-2)
+ * on top; a yielding frame also reserves the 3-cell block group below them.
+ * Layout top-down:
+ *   [locals... | block_entry(fs-5) | def_env(fs-4) | captured_self(fs-3)
+ *              | def_class(fs-2) | self(fs-1)] */
 static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    uint32_t frame_size = (uint32_t)f->locals->size + 1u + (f->uses_block ? 3u : 0u);
+    uint32_t frame_size = (uint32_t)f->locals->size + 2u + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
@@ -442,7 +447,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
         tc->frame->uses_block = true;
-        return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-4) */
+        return ALLOC_node_block_given(-5 - tc->chain);   /* block_entry cell (fs-5) */
     }
 
     /* attr_reader/writer/accessor :sym... → node_attr (defines getters/setters
@@ -612,6 +617,8 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     }
 
     push_frame(tc, &dn->locals);
+    tc->frame->method_mid = kp_intern_cid(tc, dn->name);   /* for `super` inside the body */
+    tc->frame->method_params = params_cnt;
 
     /* prism orders def locals with the parameters first — the staged-args
      * window doubles as the parameter slots.  Verify the assumption. */
@@ -943,14 +950,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
         if (yargc == 0) {
-            /* reserved cells: block_entry(fs-4), def_env(fs-3), captured_self(fs-2) */
-            return ALLOC_node_yield0(line, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+            /* reserved cells: block_entry(fs-5), def_env(fs-4), captured_self(fs-3) */
+            return ALLOC_node_yield0(line, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
         }
         if (yargc == 1) {
             /* yield1 slot_count 1: a0 at cursor[-1]; reserved cells below */
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            return ALLOC_node_yield1(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
+            return ALLOC_node_yield1(line, -5 - (tc->chain + 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), a0);
         }
         return kp_unsupported(tc, node, "yield with more than 1 value");
       }
@@ -973,6 +980,51 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
         return ALLOC_node_const(kp_intern_cid(tc, cr->name));
+      }
+
+      case PM_SUPER_NODE: {           /* super(...) — explicit args */
+        const pm_super_node_t *sn = (const pm_super_node_t *)node;
+        if (sn->block) return kp_unsupported(tc, node, "super with a block");
+        uint32_t m_mid = tc->frame->method_mid;
+        if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
+        uint32_t line = kp_line(tc, node);
+        const pm_arguments_node_t *args = sn->arguments;
+        size_t argc = args ? args->arguments.size : 0;
+        if (argc > 3) return kp_unsupported(tc, node, "super with more than 3 arguments");
+        int32_t soff = -1 - tc->chain - (int32_t)argc, dco = -2 - tc->chain - (int32_t)argc;
+        NODE *a[3];
+        switch (argc) {
+          case 0: return ALLOC_node_super0(m_mid, line, soff, dco);
+          case 1: WITH_CHAIN(tc, 1, (a[0] = transduce(tc, args->arguments.nodes[0])));
+                  return ALLOC_node_super1(m_mid, line, soff, dco, a[0]);
+          case 2: WITH_CHAIN(tc, 2, (a[0] = transduce(tc, args->arguments.nodes[0]),
+                                     a[1] = transduce(tc, args->arguments.nodes[1])));
+                  return ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]);
+          default: WITH_CHAIN(tc, 3, (a[0] = transduce(tc, args->arguments.nodes[0]),
+                                      a[1] = transduce(tc, args->arguments.nodes[1]),
+                                      a[2] = transduce(tc, args->arguments.nodes[2])));
+                  return ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]);
+        }
+      }
+      case PM_FORWARDING_SUPER_NODE: {   /* bare super — forward the method's params */
+        const pm_forwarding_super_node_t *fn = (const pm_forwarding_super_node_t *)node;
+        if (fn->block) return kp_unsupported(tc, node, "super with a block");
+        uint32_t m_mid = tc->frame->method_mid;
+        if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
+        uint32_t line = kp_line(tc, node);
+        uint32_t np = tc->frame->method_params;
+        if (np > 3) return kp_unsupported(tc, node, "forwarding super with more than 3 params");
+        int32_t soff = -1 - tc->chain - (int32_t)np, dco = -2 - tc->chain - (int32_t)np;
+        NODE *a[3];
+        switch (np) {
+          case 0: return ALLOC_node_super0(m_mid, line, soff, dco);
+          case 1: WITH_CHAIN(tc, 1, (a[0] = bake_lget(tc, 0)));
+                  return ALLOC_node_super1(m_mid, line, soff, dco, a[0]);
+          case 2: WITH_CHAIN(tc, 2, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1)));
+                  return ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]);
+          default: WITH_CHAIN(tc, 3, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1), a[2] = bake_lget(tc, 2)));
+                  return ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]);
+        }
       }
 
       default: {

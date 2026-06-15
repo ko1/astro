@@ -402,24 +402,28 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     c->vm->method_serial++;
 }
 
-/* lookup mid up the superclass chain */
+/* lookup mid up the superclass chain; *out_def (if non-NULL) gets the class
+ * that defines the found method (for `super`). */
 static struct korb_method *
-korb_class_find_method(VALUE klass, uint32_t mid)
+korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
 {
     while (KORB_CLASS_P(klass)) {
         KorbClass *k = VAL2CLASS(klass);
         for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i].mid == mid) return &k->methods[i];
+            if (k->methods[i].mid == mid) { if (out_def) *out_def = klass; return &k->methods[i]; }
         klass = k->superclass;
     }
     return NULL;
 }
 
-/* Set up an ISEQ frame (args at slots[-argc..]) with `self`, and dispatch.
- * Shared by instance dispatch and Klass.new's initialize call. */
+/* Set up an ISEQ frame (args at slots[-argc..]) with `self` and `def_class`
+ * (the class that defines this method — for `super`), and dispatch.  Shared by
+ * instance dispatch, implicit self-calls, global calls, super, and new's init.
+ * Frame reserved cells top-down: self(fs-1), def_class(fs-2), then the block
+ * group {block_entry(fs-5), def_env(fs-4), captured_self(fs-3)} if it yields. */
 static RESULT
 korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
-                   uint32_t line, uint32_t mid, VALUE self,
+                   uint32_t line, uint32_t mid, VALUE self, VALUE def_class,
                    NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
@@ -436,10 +440,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     if (locals_cnt > argc) memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
+    base[locals_cnt - 2] = def_class;     /* odd-tagged not needed: class is a heap obj or nil */
     if (block != NULL && m->uses_block) {
-        base[locals_cnt - 4] = (VALUE)((uintptr_t)block   | 1u);
-        base[locals_cnt - 3] = (VALUE)((uintptr_t)def_env | 1u);
-        base[locals_cnt - 2] = captured_self;
+        base[locals_cnt - 5] = (VALUE)((uintptr_t)block   | 1u);
+        base[locals_cnt - 4] = (VALUE)((uintptr_t)def_env | 1u);
+        base[locals_cnt - 3] = captured_self;
     }
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -464,6 +469,22 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     }
     slots[0] = cls;                              /* root for the body run + capture */
     return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, slots[0]);
+}
+
+/* `super` — invoke `mid` starting from def_class's superclass, keeping self. */
+RESULT
+korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+           VALUE def_class, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+{
+    VALUE sup = KORB_CLASS_P(def_class) ? VAL2CLASS(def_class)->superclass : KORB_NIL;
+    VALUE found_def = KORB_NIL;
+    struct korb_method *m = korb_class_find_method(sup, mid, &found_def);
+    if (UNLIKELY(m == NULL))
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line,
+                          "super: no superclass method '%s'", korb_sym_name(c->vm, mid));
+    if (m->kind == KORB_METHOD_ATTR_R)
+        return RESULT_OK(korb_ivar_get(self, ID2SYM(m->attr_ivar)));
+    return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
 /* ---------------------------------------------------------------------------
@@ -845,7 +866,8 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     /* implicit self-call on a user instance → dispatch through its class chain
      * (a miss falls through to the global function table). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
-        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid);
+        VALUE def_class = KORB_NIL;
+        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
                 return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
@@ -858,7 +880,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
         }
     }
 
@@ -892,41 +914,9 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         return r;
     }
 
-    if (UNLIKELY((uint32_t)m->params_cnt != argc)) {
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)",
-                          argc, m->params_cnt);
-    }
-
-    const uint32_t locals_cnt = m->locals_cnt;
-    char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit)) {
-        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
-    }
-    if (locals_cnt > argc) {
-        memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));  /* nil-init */
-    }
-    base[locals_cnt - 1] = self;          /* self cell (frame top) */
-    /* Block group just below self; only methods that yield reserve it.  No
-     * block → nil from the nil-init above (= no block). */
-    if (block != NULL && m->uses_block) {
-        base[locals_cnt - 4] = (VALUE)((uintptr_t)block         | 1u);
-        base[locals_cnt - 3] = (VALUE)((uintptr_t)def_env       | 1u);
-        base[locals_cnt - 2] = captured_self;
-    }
-
-    NODE *const body = m->body;
-    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
-    if (r.state == KORB_RETURN) {
-        r.state = KORB_NORMAL;
-    }
-    else if (UNLIKELY(r.state == KORB_RAISE)) {
-        KorbException *e = VAL2EXC(r.value);
-        korb_bt_append(vm, e->line, korb_sym_name(vm, m->mid));
-        e->line = line;
-    }
-    return r;
+    /* ISEQ global function: no defining class (super in a global fn has none). */
+    return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
+                              block, def_env, captured_self);
 }
 
 RESULT
@@ -1086,7 +1076,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
-        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid);
+        VALUE def_class = KORB_NIL;
+        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
                 return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
@@ -1098,17 +1089,20 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
         }
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
         uint32_t init_mid = korb_intern(vm, "initialize", 10);
-        struct korb_method *init = korb_class_find_method(self, init_mid);
         VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
+        /* find initialize AFTER the alloc-GC, re-reading the class from the
+         * rooted recv slot (the pre-alloc class pointer would be stale). */
+        VALUE init_def = KORB_NIL;
+        struct korb_method *init = korb_class_find_method(*recv_slot, init_mid, &init_def);
         if (init) {
             VALUE *base = slots - argc;
-            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, block, def_env, captured_self);
+            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, init_def, block, def_env, captured_self);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
             return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
         }
