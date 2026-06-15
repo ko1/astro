@@ -1079,6 +1079,15 @@ korb_cmp_full(CTX *c, VALUE a, VALUE b)
         int r = strcmp(korb_sym_name(c->vm, SYM2ID(a)), korb_sym_name(c->vm, SYM2ID(b)));
         return (r > 0) - (r < 0);
     }
+    if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {         /* Array#<=>: element-wise, shorter < longer */
+        const KorbArray *x = VAL2ARY(a), *y = VAL2ARY(b);
+        uint32_t m = x->len < y->len ? x->len : y->len;
+        for (uint32_t i = 0; i < m; i++) {
+            int r = korb_cmp_full(c, x->items->data[i], y->items->data[i]);
+            if (r != 0) return r;
+        }
+        return (x->len > y->len) - (x->len < y->len);
+    }
     return korb_cmp_values(a, b);
 }
 
@@ -3300,6 +3309,13 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 #define SELF_ARY  VAL2ARY(VALUE_REF_GET(self))
 static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
 static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_ARRAY_P(o)) return RESULT_OK(KORB_NIL);
+    int r = korb_cmp_full(c, VALUE_REF_GET(self), o);   /* element-wise <=> */
+    return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r));
+}
 static RESULT korb_m_ary_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* first(n) → first n as array */
@@ -5664,8 +5680,20 @@ static RESULT korb_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
     CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
     return RESULT_OK(slots[2]);
 }
-static RESULT korb_m_hash_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_minmax(c, slots, self,  1); }
-static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_minmax(c, slots, self, -1); }
+static RESULT korb_m_hash_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {  /* max(n) → n largest pairs */
+        slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), 1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    }
+    return korb_hash_minmax(c, slots, self,  1);
+}
+static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {  /* min(n) → n smallest pairs */
+        slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), -1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    }
+    return korb_hash_minmax(c, slots, self, -1);
+}
 /* group_by → Hash{ block_key => [[k,v], ...] } over pairs */
 static RESULT korb_m_hash_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#group_by without a block is not supported");
@@ -6846,6 +6874,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "length", korb_m_ary_len, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "size", korb_m_ary_len, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "empty?", korb_m_ary_empty, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "<=>", korb_m_ary_cmp, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_a", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
@@ -7030,8 +7059,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "group_by", korb_m_hash_group_by, 0);
-    korb_def_cmethod(c, KORB_C_HASH, "max", korb_m_hash_max, 0);
-    korb_def_cmethod(c, KORB_C_HASH, "min", korb_m_hash_min, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "max", korb_m_hash_max, -1);
+    korb_def_cmethod(c, KORB_C_HASH, "min", korb_m_hash_min, -1);
     korb_def_cmethod(c, KORB_C_HASH, "zip", korb_m_hash_zip, -1);
     korb_def_cmethod(c, KORB_C_HASH, "grep", korb_m_hash_grep, 1);
     korb_def_cmethod(c, KORB_C_HASH, "grep_v", korb_m_hash_grep_v, 1);
