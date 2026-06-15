@@ -132,16 +132,21 @@ enum korb_obj_type {
     KORB_OBJ_OBJECT      = 7,   /* user object (incl. top-level `main`) */
     KORB_OBJ_CLASS       = 8,   /* user class */
     KORB_OBJ_FLOAT       = 9,   /* heap-boxed double */
+    KORB_OBJ_STR_BUF     = 10,  /* raw char[] payload backing a (mutable) KorbString */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
 
+/* growable byte buffer for a KorbString (header never moves on grow). */
+typedef struct KorbStrBuf {
+    AroObjectHeader head;        /* KORB_OBJ_STR_BUF */
+    char data[];                 /* capa + 1 bytes, NUL-terminated; no GC edges */
+} KorbStrBuf;
+
 typedef struct KorbString {
     AroObjectHeader head;
-    uint32_t len;            /* byte length, not counting the NUL */
-    char     bytes[];        /* len + 1 bytes, NUL-terminated; inline so the
-                              * object is a single allocation (moving GC
-                              * copies it whole; no interior pointers kept) */
+    uint32_t len, capa;          /* byte length / buffer capacity (excl. NUL) */
+    KorbStrBuf *ARO_GC_EDGE buf; /* separately-alloc'd so <<,[]= can grow in place */
 } KorbString;
 
 /* heap-boxed double (no GC edges). */
@@ -383,11 +388,17 @@ struct CTX_struct {
 #define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {         \
     AroObjectHeader *_h = (AroObjectHeader *)(payload);                      \
     switch (_h->flags & KORB_OBJ_TYPE_MASK) {                                \
-      case KORB_OBJ_STRING:                                                  \
       case KORB_OBJ_FLOAT:                                                    \
-        /* inline bytes / double — no edges */                               \
+      case KORB_OBJ_STR_BUF:                                                  \
+        /* raw double / char[] — no edges */                                 \
         (void)(payload_size);                                                \
         break;                                                               \
+      case KORB_OBJ_STRING: {                                                \
+        KorbString *_s = (KorbString *)(payload);                            \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);                  \
+        (void)(payload_size);                                                \
+        break;                                                               \
+      }                                                                      \
       case KORB_OBJ_EXCEPTION: {                                             \
         KorbException *_e = (KorbException *)(payload);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->msg);                      \
