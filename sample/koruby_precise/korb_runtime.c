@@ -5929,9 +5929,14 @@ static RESULT korb_m_range_minmax_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
 }
 static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self);
+static RESULT korb_m_ary_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self);
 static RESULT korb_m_range_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
     return korb_m_ary_chunk_while(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+}
+static RESULT korb_m_range_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_slice_when(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
 }
 static RESULT korb_m_range_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
@@ -6667,6 +6672,48 @@ static RESULT korb_m_hash_invert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Hash#rehash — our hash has no cached digests, so this is a no-op returning self. */
 static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Hash#replace(other) — replace self's contents with other's, in place; returns self. */
+static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+    VAL2HASH(VALUE_REF_GET(self))->len = 0;                       /* clear, then copy other's pairs */
+    slots[0] = ov;
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *oh = VAL2HASH(slots[0]);
+        if (i >= oh->len) break;
+        slots[1] = oh->items->data[2 * i];
+        VALUE val = VAL2HASH(slots[0])->items->data[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 2, self, VALUE_REF_AT(&slots[1]), val));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Hash#drop_while { |k,v| } — drop leading pairs while the block is true, return
+ * the remaining pairs as an Array of [k,v]. */
+static RESULT korb_m_hash_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block given");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* result pairs (rooted) */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    bool dropping = true;
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2 * i];                        /* k */
+        slots[2] = h->items->data[2 * i + 1];                    /* v */
+        if (dropping) {
+            VALUE argv[2] = { slots[1], slots[2] };
+            RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) continue;                  /* still dropping */
+            dropping = false;
+        }
+        slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));        /* [k,v] pair */
+        CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 4, out, slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(out));
 }
 static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -8503,6 +8550,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "invert", korb_m_hash_invert, 0);
     korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "replace", korb_m_hash_replace, 1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "drop_while", korb_m_hash_drop_while, 0);
     korb_def_cmethod(c, KORB_C_HASH, "deconstruct_keys", korb_m_ary_self, -1);   /* pattern-match hook → self */
     korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
@@ -8595,6 +8644,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_object", korb_m_range_each_with_object, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax", korb_m_range_minmax_cmp, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "chunk_while", korb_m_range_chunk_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "slice_when", korb_m_range_slice_when, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort", korb_m_range_sort_cmp, 0);   /* int range already ascending */
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);
