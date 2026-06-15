@@ -310,32 +310,35 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t param
 // which IS the callee's parameter window (frame base = slots - argc).
 // korb_call positions the callee cursor at base + locals_cnt.
 
+// `self_off` reads the CALLER's self cell (base[fs-1], baked -1-chain); a
+// no-receiver call propagates it as the callee's self (Ruby implicit self).
+
 NODE_DEF
-node_call0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref)
+node_call0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref)
 {
     (void)n;
-    return korb_call(c, slots, mid, line, cc, 0);
+    return korb_call(c, slots, mid, line, cc, 0, slots[self_off]);
 }
 
 NODE_DEF
-node_call1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, VALUE_REF a0@child)
+node_call1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
-    return korb_call(c, slots, mid, line, cc, 1);
+    return korb_call(c, slots, mid, line, cc, 1, slots[self_off]);
 }
 
 NODE_DEF
-node_call2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, VALUE_REF a0@child, VALUE_REF a1@child)
+node_call2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF a0@child, VALUE_REF a1@child)
 {
     (void)n; (void)a0; (void)a1;
-    return korb_call(c, slots, mid, line, cc, 2);
+    return korb_call(c, slots, mid, line, cc, 2, slots[self_off]);
 }
 
 NODE_DEF
-node_call3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
+node_call3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
 {
     (void)n; (void)a0; (void)a1; (void)a2;
-    return korb_call(c, slots, mid, line, cc, 3);
+    return korb_call(c, slots, mid, line, cc, 3, slots[self_off]);
 }
 
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
@@ -450,51 +453,55 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
 // @noinline: the block operand is a per-process NODE pointer (not bakeable),
 // so this stays interpreter-dispatched; the block body (node_entry) is its
 // own AOT entry, so blocks are still specialized.
+// `self_off` reads the caller's self cell — for a no-receiver call it is both
+// the callee's self and the block's captured (lexical) self.
 NODE_DEF @noinline
-node_call_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off)
+node_call_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off)
 {
     (void)n; (void)block_dispatcher;
-    return korb_call_blk(c, slots, mid, line, cc, 0, block, &slots[def_env_off]);
+    return korb_call_blk(c, slots, mid, line, cc, 0, slots[self_off], block, &slots[def_env_off], slots[self_off]);
 }
 
 NODE_DEF @noinline
-node_call_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF a0@child)
+node_call_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF a0@child)
 {
     (void)n; (void)block_dispatcher; (void)a0;
-    return korb_call_blk(c, slots, mid, line, cc, 1, block, &slots[def_env_off]);
+    return korb_call_blk(c, slots, mid, line, cc, 1, slots[self_off], block, &slots[def_env_off], slots[self_off]);
 }
 
 // Receiver method call with a literal block (arr.each { ... }).  Like
 // node_call_blk but the receiver is staged too; korb_send_blk resolves the
 // built-in and hands it the block (node_entry) + def_env so it can yield.
+// `self_off` = the caller's self = the block's captured (lexical) self.
 NODE_DEF @noinline
-node_send_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE *block, int32_t def_env_off, VALUE_REF recv@child)
+node_send_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child)
 {
     (void)n; (void)block_dispatcher; (void)recv;
-    return korb_send_blk(c, slots, mid, line, 0, block, &slots[def_env_off]);
+    return korb_send_blk(c, slots, mid, line, 0, block, &slots[def_env_off], slots[self_off]);
 }
 
 NODE_DEF @noinline
-node_send_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child)
+node_send_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child)
 {
     (void)n; (void)block_dispatcher; (void)recv; (void)a0;
-    return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off]);
+    return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off], slots[self_off]);
 }
 
-// yield to the current method's block.  `biseq_off` / `def_env_off` read the
-// frame-top block cells (odd-tagged); korb_yield masks and sets up the frame.
+// yield to the current method's block.  `biseq_off` / `def_env_off` /
+// `cself_off` read the frame's reserved block cells (odd-tagged); korb_yield
+// masks and sets up the block frame (incl. its captured self).
 NODE_DEF
-node_yield0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off)
+node_yield0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
 {
     (void)n;
-    return korb_yield(c, slots, 0, line, slots[biseq_off], slots[def_env_off]);
+    return korb_yield(c, slots, 0, line, slots[biseq_off], slots[def_env_off], slots[cself_off]);
 }
 
 NODE_DEF
-node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, VALUE_REF a0@child)
+node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
-    return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off]);
+    return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off], slots[cself_off]);
 }
 
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was
@@ -512,6 +519,37 @@ node_next(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 {
     (void)c; (void)n; (void)slots;
     return RESULT_NEXT_(v);
+}
+
+// ---- self / instance variables ---------------------------------------------
+//
+// `self_off` is parse-baked to the frame's self cell (base[fs-1], offset
+// -1-chain).  Every frame (method, block, top-level) carries self there — the
+// caller / korb_yield populate it — so `self`/@ivar read it directly.
+
+NODE_DEF @nogc
+node_self(CTX *c, NODE *n, VALUE *slots, int32_t self_off)
+{
+    (void)c; (void)n;
+    return RESULT_OK(slots[self_off]);
+}
+
+NODE_DEF
+node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name)
+{
+    (void)n;
+    VALUE self = slots[self_off];
+    if (!KORB_OBJECT_P(self)) return RESULT_OK(KORB_NIL);   /* @x on non-object self → nil */
+    return RESULT_OK(korb_ivar_get(self, ID2SYM(name)));
+}
+
+NODE_DEF
+node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VALUE val@child)
+{
+    (void)n;
+    if (UNLIKELY(!KORB_OBJECT_P(slots[self_off])))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "instance variable set on a non-object self");
+    return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
 }
 
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------

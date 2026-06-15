@@ -78,6 +78,11 @@ RESULT korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE
 /* Range (korb_runtime.c) — begin staged (rooted), end by value */
 RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude_end);
 
+/* Object / instance variables (korb_runtime.c) */
+RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
+VALUE  korb_ivar_get(VALUE self, VALUE name_sym);
+RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val);
+
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
@@ -93,14 +98,16 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
                             korb_method_blk_fn fn, int32_t arity);
 /* Dispatch `recv.mid(args)`: recv at slots[-argc-1], args at slots[-argc..]. */
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
-/* Same, with a literal block (recv.mid(args) { ... }) handed to the method. */
+/* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
+ * `captured_self` is the caller's self (the block's lexical self). */
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-                     uint32_t argc, NODE *block, VALUE *def_env);
+                     uint32_t argc, NODE *block, VALUE *def_env, VALUE captured_self);
 
 /* Invoke a block (node_entry + def_env) with `argc` args from `argv`.  The
- * block frame is laid out at the cursor `slots`.  NEXT is folded to NORMAL. */
+ * block frame is laid out at the cursor `slots`; its self cell gets
+ * `captured_self`.  NEXT is folded to NORMAL. */
 RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                        const VALUE *argv, uint32_t argc);
+                        const VALUE *argv, uint32_t argc, VALUE captured_self);
 
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
@@ -108,21 +115,23 @@ void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
                           uint32_t uses_block);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
                            int32_t params_cnt);
+/* `self` is the callee's receiver (the caller's self for a no-receiver call);
+ * korb_call writes it into the callee frame's self cell (base[fs-1]). */
 RESULT korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-                 struct korb_callcache *cc, uint32_t argc);
+                 struct korb_callcache *cc, uint32_t argc, VALUE self);
 
-/* Call with a literal block (M1, docs/v2_blocks_design.md).  `block` is a
- * node_entry NODE carrying {body, params_cnt, locals_cnt}; `def_env` is the
- * caller's frame base (slots pointer to the block's captured outer vars).
- * The callee receives them in its frame's top 2 cells for `yield`. */
+/* Call with a literal block (docs/v2_blocks_design.md).  `block` is a
+ * node_entry NODE; `def_env` is the caller frame base (block's captured outer
+ * vars); `captured_self` is the caller's self (the block's lexical self).  All
+ * three land in the callee frame's reserved cells for `yield`. */
 RESULT korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                      struct korb_callcache *cc, uint32_t argc,
-                     NODE *block, VALUE *def_env);
+                     VALUE self, NODE *block, VALUE *def_env, VALUE captured_self);
 
-/* yield to the current method's block.  `block_entry` / `def_env` are the
- * (odd-tagged) frame-top cells, read by the node_yield body. */
+/* yield to the current method's block.  `block_entry` / `def_env` /
+ * `captured_self` are the (odd-tagged) reserved frame cells. */
 RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-                  VALUE block_entry, VALUE def_env);
+                  VALUE block_entry, VALUE def_env, VALUE captured_self);
 
 /* node_entry field accessors (block body metadata) — defined in node.def's
  * node_entry struct; korb_yield reads them off the node_entry NODE. */

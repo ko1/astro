@@ -129,8 +129,10 @@ enum korb_obj_type {
     KORB_OBJ_VALUE_ARRAY = 4,   /* raw VALUE[] payload backing a KorbArray / KorbHash */
     KORB_OBJ_HASH        = 5,
     KORB_OBJ_RANGE       = 6,
+    KORB_OBJ_OBJECT      = 7,   /* user object (incl. top-level `main`) */
 };
-#define KORB_OBJ_TYPE_MASK 0x07u
+/* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
+#define KORB_OBJ_TYPE_MASK 0x0Fu
 
 typedef struct KorbString {
     AroObjectHeader head;
@@ -180,17 +182,28 @@ typedef struct KorbRange {
     VALUE ARO_GC_EDGE rend;
 } KorbRange;
 
+/* User object: class pointer (nil for top-level `main`) + lazily-allocated
+ * instance-variable store ([name_sym, val, ...] pairs in a VALUE[] payload). */
+typedef struct KorbObject {
+    AroObjectHeader head;            /* KORB_OBJ_OBJECT */
+    uint32_t ivar_len, ivar_capa;
+    VALUE ARO_GC_EDGE klass;         /* KorbClass | nil */
+    KorbArrayItems *ARO_GC_EDGE ivars;   /* 2*ivar_capa VALUEs, or NULL */
+} KorbObject;
+
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
 #define KORB_STRING_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_STRING)
 #define KORB_EXC_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION)
 #define KORB_ARRAY_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARRAY)
 #define KORB_HASH_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_HASH)
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
+#define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
 #define VAL2HASH(v)        ((KorbHash *)(uintptr_t)(v))
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
+#define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -228,7 +241,8 @@ typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  * holding the block's captured outer vars.  The method drives the block via
  * korb_block_yield. */
 typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
-                                     VALUE_SLICE args, struct Node *block, VALUE *def_env);
+                                     VALUE_SLICE args, struct Node *block, VALUE *def_env,
+                                     VALUE captured_self);
 
 struct korb_method {
     uint32_t mid;            /* interned name */
@@ -357,6 +371,13 @@ struct CTX_struct {
         KorbRange *_rg = (KorbRange *)(payload);                            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rg->rbegin);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rg->rend);                   \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_OBJECT: {                                                \
+        KorbObject *_ob = (KorbObject *)(payload);                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \
+        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_ob->ivars);             \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

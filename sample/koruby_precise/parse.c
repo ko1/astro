@@ -122,13 +122,15 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     tc->chain = 0;
 }
 
-/* Returns the frame size (= locals + 2 block cells if the frame yields), which
- * is what callers bake into node_def / use for the toplevel cursor. */
+/* Returns the frame size.  Every frame reserves a self cell on top (base[fs-1]);
+ * a yielding frame also reserves the 3-cell block group {block_entry, def_env,
+ * captured_self} just below it.  Layout top-down:
+ *   [locals... | block_entry(fs-4) | def_env(fs-3) | captured_self(fs-2) | self(fs-1)] */
 static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    uint32_t frame_size = (uint32_t)f->locals->size + (f->uses_block ? 2u : 0u);
+    uint32_t frame_size = (uint32_t)f->locals->size + 1u + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
@@ -415,14 +417,15 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
 
     /* def_env_off: cursor → caller frame base = -(chain + slot_count); pop
      * subtracts the caller's frame_size (the slot_count = argc). */
+    int32_t self_off = -1 - tc->chain - (int32_t)argc;  /* caller self = block's captured self */
     if (argc == 0) {
-        NODE *call = ALLOC_node_call_blk0(mid, line, entry, -(tc->chain + 0));
+        NODE *call = ALLOC_node_call_blk0(mid, line, self_off, entry, -(tc->chain + 0));
         bake_add(tc, &call->u.node_call_blk0.def_env_off);
         return call;
     }
     NODE *a0;
     WITH_CHAIN(tc, 1, (a0 = transduce(tc, args->arguments.nodes[0])));
-    NODE *call = ALLOC_node_call_blk1(mid, line, entry, -(tc->chain + 1), a0);
+    NODE *call = ALLOC_node_call_blk1(mid, line, self_off, entry, -(tc->chain + 1), a0);
     bake_add(tc, &call->u.node_call_blk1.def_env_off);
     return call;
 }
@@ -439,7 +442,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
         tc->frame->uses_block = true;
-        return ALLOC_node_block_given(-2 - tc->chain);   /* frame-top biseq cell */
+        return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-4) */
     }
 
     if (cn->block) {
@@ -450,22 +453,25 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                                          (const pm_block_node_t *)cn->block);
     }
 
+    /* caller self cell (base[fs-1]); the argc staged args advance the body
+     * cursor, so offset back past them too. */
+    int32_t self_off = -1 - tc->chain - (int32_t)argc;
     NODE *a[3];
     switch (argc) {
       case 0:
-        return ALLOC_node_call0(mid, line);
+        return ALLOC_node_call0(mid, line, self_off);
       case 1:
         WITH_CHAIN(tc, 1, (a[0] = transduce(tc, args->arguments.nodes[0])));
-        return ALLOC_node_call1(mid, line, a[0]);
+        return ALLOC_node_call1(mid, line, self_off, a[0]);
       case 2:
         WITH_CHAIN(tc, 2, (a[0] = transduce(tc, args->arguments.nodes[0]),
                            a[1] = transduce(tc, args->arguments.nodes[1])));
-        return ALLOC_node_call2(mid, line, a[0], a[1]);
+        return ALLOC_node_call2(mid, line, self_off, a[0], a[1]);
       case 3:
         WITH_CHAIN(tc, 3, (a[0] = transduce(tc, args->arguments.nodes[0]),
                            a[1] = transduce(tc, args->arguments.nodes[1]),
                            a[2] = transduce(tc, args->arguments.nodes[2])));
-        return ALLOC_node_call3(mid, line, a[0], a[1], a[2]);
+        return ALLOC_node_call3(mid, line, self_off, a[0], a[1], a[2]);
       default:
         return kp_unsupported(tc, (const pm_node_t *)cn, "call with more than 3 arguments");
     }
@@ -508,11 +514,13 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
          * = recv(1) + argc.  bake_add fixes up by the caller's frame_size. */
+        /* caller self; recv(1) + argc staged children advance the body cursor */
+        int32_t self_off = -1 - tc->chain - (int32_t)(1 + argc);
         if (argc == 0) {
             uint32_t sc = 1;
             NODE *recv;
             WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
-            NODE *call = ALLOC_node_send_blk0(mid, line, entry, -(tc->chain + (int32_t)sc), recv);
+            NODE *call = ALLOC_node_send_blk0(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv);
             bake_add(tc, &call->u.node_send_blk0.def_env_off);
             return call;
         }
@@ -520,7 +528,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE *recv, *a0;
         WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
                             a0   = transduce(tc, cn->arguments->arguments.nodes[0])));
-        NODE *call = ALLOC_node_send_blk1(mid, line, entry, -(tc->chain + (int32_t)sc), recv, a0);
+        NODE *call = ALLOC_node_send_blk1(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0);
         bake_add(tc, &call->u.node_send_blk1.def_env_off);
         return call;
     }
@@ -708,6 +716,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
 
+      /* ---- self / instance variables (self cell at base[fs-1], -1-chain) ---- */
+      case PM_SELF_NODE:
+        return ALLOC_node_self(-1 - tc->chain);
+      case PM_INSTANCE_VARIABLE_READ_NODE: {
+        const pm_instance_variable_read_node_t *iv = (const pm_instance_variable_read_node_t *)node;
+        return ALLOC_node_ivar_get(-1 - tc->chain, kp_intern_cid(tc, iv->name));
+      }
+      case PM_INSTANCE_VARIABLE_WRITE_NODE: {
+        const pm_instance_variable_write_node_t *iw = (const pm_instance_variable_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, iw->name);
+        NODE *val = transduce(tc, iw->value);    /* register child, current chain */
+        return ALLOC_node_ivar_set(-1 - tc->chain, name, val);
+      }
+
       case PM_ARRAY_NODE: {
         const pm_array_node_t *an = (const pm_array_node_t *)node;
         size_t cnt = an->elements.size;
@@ -856,14 +878,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
         if (yargc == 0) {
-            /* yield0 slot_count 0: cells at cursor[-2-chain], cursor[-1-chain] */
-            return ALLOC_node_yield0(line, -2 - tc->chain, -1 - tc->chain);
+            /* reserved cells: block_entry(fs-4), def_env(fs-3), captured_self(fs-2) */
+            return ALLOC_node_yield0(line, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
         }
         if (yargc == 1) {
-            /* yield1 slot_count 1: a0 at cursor[-1]; cells below it */
+            /* yield1 slot_count 1: a0 at cursor[-1]; reserved cells below */
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            return ALLOC_node_yield1(line, -2 - (tc->chain + 1), -1 - (tc->chain + 1), a0);
+            return ALLOC_node_yield1(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
         }
         return kp_unsupported(tc, node, "yield with more than 1 value");
       }

@@ -204,8 +204,15 @@ main(int argc, char *argv[])
         }
     }
 
-    /* Run.  Toplevel frame: locals at c->slots[0..L); cursor starts at L. */
+    /* Run.  Toplevel frame: locals at c->slots[0..L); the self cell is the
+     * frame top (base[fs-1] = c->slots[koruby_toplevel_locals_cnt-1]) holding
+     * the `main` object; cursor starts above it. */
     VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+    {
+        RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
+        if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
+        c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
+    }
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     RESULT r = EVAL(c, ast, toplevel_cursor);

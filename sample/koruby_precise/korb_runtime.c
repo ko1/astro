@@ -252,6 +252,62 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
 }
 
 /* ---------------------------------------------------------------------------
+ * Object + instance variables.  ivars are a lazily-allocated [sym,val] pair
+ * payload (same shape as Hash storage); names are interned symbols compared by
+ * identity.
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_obj_new(CTX *c, VALUE *slots, VALUE klass)
+{
+    VALUE_REF kref = SLOTS_PUSH(slots, klass);        /* root klass across alloc */
+    KorbObject *o = korb_alloc(c, slots, sizeof(KorbObject), KORB_OBJ_OBJECT);
+    /* zero-init: ivar_len/capa=0, klass=nil, ivars=NULL */
+    if (klass != KORB_NIL) ARO_STORE(c, o, (VALUE *)(uintptr_t)&o->klass, VALUE_REF_GET(kref));
+    return RESULT_OK((VALUE)o);
+}
+
+VALUE
+korb_ivar_get(VALUE self, VALUE name_sym)
+{
+    const KorbObject *o = VAL2OBJ(self);
+    if (!o->ivars) return KORB_NIL;
+    for (uint32_t i = 0; i < o->ivar_len; i++)
+        if (o->ivars->data[2 * i] == name_sym) return o->ivars->data[2 * i + 1];
+    return KORB_NIL;
+}
+
+RESULT
+korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val)
+{
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow GC */
+    KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
+    if (o->ivars) {                                   /* update existing */
+        for (uint32_t i = 0; i < o->ivar_len; i++)
+            if (o->ivars->data[2 * i] == name_sym) {
+                KorbArrayItems *it = o->ivars;
+                ARO_STORE(c, it, &it->data[2 * i + 1], VALUE_REF_GET(vref));
+                return RESULT_OK(VALUE_REF_GET(vref));
+            }
+    }
+    if (!o->ivars || o->ivar_len == o->ivar_capa) {   /* grow / first alloc */
+        uint32_t ncapa = o->ivar_capa ? o->ivar_capa * 2 : 4;
+        KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * 2 * sizeof(VALUE),
+                                         KORB_OBJ_VALUE_ARRAY);
+        o = VAL2OBJ(VALUE_REF_GET(selfref));          /* re-read after GC */
+        if (o->ivars) memcpy(nit->data, o->ivars->data, (size_t)o->ivar_len * 2 * sizeof(VALUE));
+        ARO_STORE(c, o, (VALUE *)(uintptr_t)&o->ivars, (VALUE)(uintptr_t)nit);
+        o->ivar_capa = ncapa;
+    }
+    KorbArrayItems *it = o->ivars;
+    uint32_t i = o->ivar_len;
+    ARO_STORE(c, it, &it->data[2 * i],     name_sym);   /* symbol immediate, edge-qualified */
+    ARO_STORE(c, it, &it->data[2 * i + 1], VALUE_REF_GET(vref));
+    o->ivar_len++;
+    return RESULT_OK(VALUE_REF_GET(vref));
+}
+
+/* ---------------------------------------------------------------------------
  * Range — {begin, end, exclude_end}.
  * ------------------------------------------------------------------------- */
 
@@ -615,15 +671,15 @@ korb_report_uncaught(CTX *c, VALUE exc)
  * Calls.
  * ------------------------------------------------------------------------- */
 
-/* Shared call path.  `block` (a node_entry NODE) + `def_env` are NULL for an
- * ordinary call; for a call with a literal block they are written into the
- * callee frame's top 2 cells (odd-tagged so the GC root scan skips them) when
- * the callee reserves them (m->uses_block).  A block passed to a method that
- * does not yield is simply ignored. */
+/* Shared call path.  Frame reserved cells (top-down): self at base[fs-1]
+ * (always, written from `self`); when the callee yields (m->uses_block) the
+ * block group {block_entry, def_env, captured_self} sits just below at
+ * base[fs-4..fs-2], odd-tagged so the GC root scan skips the two pointers.
+ * `block` is NULL for an ordinary call (block ignored by non-yielding callees). */
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
-               NODE *block, VALUE *def_env)
+               VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
     struct korb_method *m = cc->m;
@@ -669,11 +725,13 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (locals_cnt > argc) {
         memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));  /* nil-init */
     }
-    /* Block cells at the frame top (base[fs-2], base[fs-1]); only for methods
-     * that reserve them.  No block → nil from the nil-init above (= no block). */
+    base[locals_cnt - 1] = self;          /* self cell (frame top) */
+    /* Block group just below self; only methods that yield reserve it.  No
+     * block → nil from the nil-init above (= no block). */
     if (block != NULL && m->uses_block) {
-        base[locals_cnt - 2] = (VALUE)((uintptr_t)block   | 1u);
-        base[locals_cnt - 1] = (VALUE)((uintptr_t)def_env | 1u);
+        base[locals_cnt - 4] = (VALUE)((uintptr_t)block         | 1u);
+        base[locals_cnt - 3] = (VALUE)((uintptr_t)def_env       | 1u);
+        base[locals_cnt - 2] = captured_self;
     }
 
     NODE *const body = m->body;
@@ -691,16 +749,17 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
 RESULT
 korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-          struct korb_callcache *cc, uint32_t argc)
+          struct korb_callcache *cc, uint32_t argc, VALUE self)
 {
-    return korb_call_impl(c, slots, mid, line, cc, argc, NULL, NULL);
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, KORB_NIL);
 }
 
 RESULT
 korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-              struct korb_callcache *cc, uint32_t argc, NODE *block, VALUE *def_env)
+              struct korb_callcache *cc, uint32_t argc,
+              VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
-    return korb_call_impl(c, slots, mid, line, cc, argc, block, def_env);
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
 }
 
 /* ---- node_entry accessors + yield ----------------------------------------- */
@@ -716,10 +775,11 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
 RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                 const VALUE *argv, uint32_t argc)
+                 const VALUE *argv, uint32_t argc, VALUE captured_self)
 {
-    const uint32_t blocals = korb_entry_locals_cnt(block);
-    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals. */
+    const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
+    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals,
+     * with the block's self cell at base[fs-1] = bf[blocals]. */
     VALUE *const bf = slots;
     char cstack_probe;
     if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
@@ -727,9 +787,10 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
     bf[0] = (VALUE)((uintptr_t)def_env | 1u);
-    const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals */
+    const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
     for (uint32_t i = 0; i < np; i++)      bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
     for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    bf[blocals] = captured_self;                        /* block's lexical self */
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
@@ -738,15 +799,15 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
 RESULT
 korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-           VALUE block_cell, VALUE def_env_cell)
+           VALUE block_cell, VALUE def_env_cell, VALUE captured_self)
 {
-    /* Frame-top cells are odd-tagged when a block is present; nil (0) = none. */
+    /* Frame cells are odd-tagged when a block is present; nil (0) = none. */
     if (UNLIKELY(((uintptr_t)block_cell & 1u) == 0)) {
         return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
     }
     NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell   & ~(uintptr_t)1u);
     VALUE *def_env = (VALUE *)(uintptr_t)((uintptr_t)def_env_cell & ~(uintptr_t)1u);
-    return korb_block_yield(c, slots, entry, def_env, slots - argc, argc);
+    return korb_block_yield(c, slots, entry, def_env, slots - argc, argc, captured_self);
 }
 
 /* ---------------------------------------------------------------------------
@@ -833,7 +894,7 @@ korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid)
  * ignored (CRuby); a yielding method called without a block gets NULL. */
 static RESULT
 korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-               NODE *block, VALUE *def_env)
+               NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
@@ -851,7 +912,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     const VALUE_REF recv = VALUE_REF_AT(recv_slot);
     const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
-    RESULT r = m->takes_block ? m->bfn(c, slots, recv, args, block, def_env)
+    RESULT r = m->takes_block ? m->bfn(c, slots, recv, args, block, def_env, captured_self)
                               : m->fn(c, slots, recv, args);
     if (UNLIKELY(r.state == KORB_RAISE)) {
         KorbException *e = VAL2EXC(r.value);
@@ -864,14 +925,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 RESULT
 korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
 {
-    return korb_send_impl(c, slots, mid, line, argc, NULL, NULL);
+    return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, KORB_NIL);
 }
 
 RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-              uint32_t argc, NODE *block, VALUE *def_env)
+              uint32_t argc, NODE *block, VALUE *def_env, VALUE captured_self)
 {
-    return korb_send_impl(c, slots, mid, line, argc, block, def_env);
+    return korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
@@ -1344,7 +1405,7 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_slice_new(c, slots, self, bs, es - bs);
 }
 
-static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_char without a block (Enumerator) is not supported");
     uint32_t pos = 0;
@@ -1354,7 +1415,7 @@ static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         uint32_t cl = 1;
         while (pos + cl < s->len && ((unsigned char)s->bytes[pos+cl] & 0xC0) == 0x80) cl++;
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, cl));   /* root the char */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         pos += cl;
     }
@@ -1485,31 +1546,31 @@ static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
         what " without a block (Enumerator) is not supported"); } while (0)
 
-static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; REQUIRE_BLOCK("Array#each");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read each iter (GC) */
         if (i >= ary->len) break;
         VALUE elem = ary->items->data[i];                      /* copied into bf before GC */
-        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; REQUIRE_BLOCK("Array#each_with_index");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
         VALUE argv[2] = { ary->items->data[i], LONG2FIX(i) };
-        RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2);
+        RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; REQUIRE_BLOCK("Array#map");
     uint32_t n0 = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));  /* slots now past dst */
@@ -1517,45 +1578,45 @@ static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
         VALUE elem = ary->items->data[i];
-        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots, dst, r.value));      /* push roots r.value */
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; REQUIRE_BLOCK("Integer#times");
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     for (intptr_t i = 0; i < n; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     REQUIRE_BLOCK("Integer#upto");
     VALUE lv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
     intptr_t to = FIX2LONG(lv);
     for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i <= to; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     REQUIRE_BLOCK("Integer#downto");
     VALUE lv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
     intptr_t to = FIX2LONG(lv);
     for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i >= to; i--) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -1633,7 +1694,7 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(removed);
 }
 
-static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each without a block (Enumerator) is not supported");
@@ -1646,7 +1707,7 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         RESULT r;
         if (np >= 2) {                       /* |k, v| — fast path, no pair alloc */
             VALUE argv[2] = { k, v };
-            r = korb_block_yield(c, slots, block, def_env, argv, 2);
+            r = korb_block_yield(c, slots, block, def_env, argv, 2, captured_self);
         } else {                             /* |pair| — yield a [k, v] array */
             slots[0] = k; slots[1] = v;                              /* root k,v in scratch */
             VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));      /* slots[0,1] rooted */
@@ -1654,7 +1715,7 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
             VALUE parg = slots[2];
-            r = korb_block_yield(c, slots + 3, block, def_env, &parg, 1);
+            r = korb_block_yield(c, slots + 3, block, def_env, &parg, 1, captured_self);
         }
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -1841,7 +1902,7 @@ static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 /* select (keep==true) / reject (keep==false) */
-static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, bool keep) {
+static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#select/reject without a block (Enumerator) is not supported");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -1849,35 +1910,35 @@ static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block,
         if (i >= ary->len) break;
         VALUE e = ary->items->data[i];
         slots[0] = e;                                       /* root e across the yield */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, true); }
-static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, false); }
+static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, true); }
+static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, false); }
 
-static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#find");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = ary->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]);
     }
     return RESULT_OK(KORB_NIL);
 }
 
-static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#find_index");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = ary->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
     }
@@ -1885,13 +1946,13 @@ static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 /* any? (mode 0) / all? (1) / none? (2), with a block */
-static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, int mode) {
+static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#any?/all?/none? without a block is not supported");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = ary->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         bool t = KORB_TRUTHY(r.value);
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);     /* any? */
@@ -1900,11 +1961,11 @@ static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, 
     }
     return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, 0); }
-static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, 1); }
-static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_ary_quant(c, slots, self, block, def_env, 2); }
+static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 0); }
+static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 1); }
+static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 2); }
 
-static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#reduce without a block (symbol form) is not supported");
     uint32_t i = 0;
     if (VALUE_SLICE_LEN(a) >= 1) {
@@ -1919,21 +1980,21 @@ static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         VALUE argv[2] = { slots[0], ary->items->data[i] };  /* acc, elem */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;                                /* root new acc */
     }
     return RESULT_OK(slots[0]);
 }
 
-static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     ARY_REQUIRE_BLOCK("Array#each_with_object");
     slots[0] = VALUE_SLICE_GET(a, 0);                      /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         VALUE argv[2] = { ary->items->data[i], slots[0] };  /* elem, memo */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(slots[0]);
@@ -2004,14 +2065,14 @@ static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(acc));
 }
 
-static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#each without a block (Enumerator) is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
     for (intptr_t i = lo; i < hi; i++) {           /* bounds are plain ints — GC-safe */
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -2026,7 +2087,7 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#map without a block (Enumerator) is not supported");
     intptr_t lo, hi;
@@ -2034,14 +2095,14 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reduce without a block (symbol form) is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
@@ -2054,7 +2115,7 @@ static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     for (; i < hi; i++) {
         VALUE argv[2] = { slots[0], LONG2FIX(i) };
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
@@ -2062,30 +2123,30 @@ static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* select (keep==true) / reject (keep==false) over an integer range */
-static RESULT korb_range_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, bool keep) {
+static RESULT korb_range_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#select/reject without a block is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_range_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_filter(c, slots, self, block, def_env, true); }
-static RESULT korb_m_range_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_filter(c, slots, self, block, def_env, false); }
+static RESULT korb_m_range_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_range_filter(c, slots, self, block, def_env, captured_self, true); }
+static RESULT korb_m_range_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_range_filter(c, slots, self, block, def_env, captured_self, false); }
 
-static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#find without a block is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
     }
@@ -2093,13 +2154,13 @@ static RESULT korb_m_range_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 /* any? (0) / all? (1) / none? (2) over an integer range, with block */
-static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, int mode) {
+static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#any?/all?/none? without a block is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         bool t = KORB_TRUTHY(r.value);
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);
@@ -2108,11 +2169,11 @@ static RESULT korb_range_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block
     }
     return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, 0); }
-static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, 1); }
-static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) { (void)a; return korb_range_quant(c, slots, self, block, def_env, 2); }
+static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 0); }
+static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 1); }
+static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_range_quant(c, slots, self, block, def_env, captured_self, 2); }
 
-static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#step without a block (Enumerator) is not supported");
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
@@ -2122,7 +2183,7 @@ static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     for (intptr_t i = lo; i < hi; i += st) {
         VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -2444,6 +2505,10 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         return;
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, fp, v, false);
+        return;
+      case KORB_OBJ_OBJECT:
+        if (VAL2OBJ(v)->klass == KORB_NIL) { fputs("main", fp); return; }   /* top-level self */
+        fputs("#<Object>", fp);
         return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
