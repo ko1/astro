@@ -3348,6 +3348,14 @@ static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+static RESULT korb_m_str_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t n = SELF_STR->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+    for (uint32_t i = 0; i < n; i++)                  /* re-read self each push (buf may move) */
+        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((unsigned char)SELF_STR->buf->data[i])));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* length of the line starting at pos, including the trailing '\n' if present. */
 static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos) {
     uint32_t e = pos;
@@ -5690,6 +5698,22 @@ static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VAL
     h->len = w;
     return RESULT_OK(VALUE_REF_GET(self));
 }
+static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#transform_values without a block is not supported");
+    slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2*i]; slots[2] = h->items->data[2*i+1];
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, cself);   /* yield value */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[3] = r.value;
+        CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[1]), slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */
@@ -7282,6 +7306,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, 0);
     korb_def_cmethod(c, KORB_C_STRING, "lines", korb_m_str_lines, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "bytes", korb_m_str_bytes, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
     /* Symbol */
@@ -7496,6 +7521,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "default=", korb_m_hash_default_set, 1);
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
     korb_def_cmethod(c, KORB_C_HASH, "minmax", korb_m_hash_minmax, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "transform_values", korb_m_hash_transform_values, 0);
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc=", korb_m_hash_default_proc_set, 1);
