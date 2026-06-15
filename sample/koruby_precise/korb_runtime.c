@@ -4782,22 +4782,31 @@ static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* zip rows: [ self[i], other0[i], other1[i], ... ]. With a block, yield each row
+ * and return nil; otherwise collect rows into an array. dst lives at slots[1]
+ * (block path leaves it nil/unused), rows built at slots[2]. */
+static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     uint32_t k = VALUE_SLICE_LEN(a);
     uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));   /* dst at slots[-1] */
+    slots[0] = (block == NULL) ? UNWRAP(korb_ary_new(c, slots, n)) : KORB_NIL;   /* dst */
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
-        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k + 1));               /* row, rooted at slots[0] */
-        VALUE_REF row = VALUE_REF_AT(&slots[0]);
-        CHECK(korb_ary_push_val(c, slots + 1, row, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 2, k + 1));              /* row at slots[1] */
+        VALUE_REF row = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_ary_push_val(c, slots + 2, row, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
         for (uint32_t j = 0; j < k; j++) {
             VALUE ov = VALUE_SLICE_GET(a, j);
             VALUE e = (KORB_ARRAY_P(ov) && i < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[i] : KORB_NIL;
-            CHECK(korb_ary_push_val(c, slots + 1, row, e));
+            CHECK(korb_ary_push_val(c, slots + 2, row, e));
         }
-        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        if (block != NULL) {
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        } else {
+            CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+        }
     }
-    return RESULT_OK(VALUE_REF_GET(dst));
+    return RESULT_OK(block != NULL ? KORB_NIL : VALUE_REF_GET(dst));
 }
 
 static bool korb_ary_has(const KorbArray *ar, VALUE v) {
@@ -5664,7 +5673,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "member?", korb_m_ary_include, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate", korb_m_ary_rotate, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "zip", korb_m_ary_zip, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "deconstruct", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "insert", korb_m_ary_insert, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "|", korb_m_ary_union, 1);
@@ -5923,6 +5932,22 @@ korb_sym_label_bare(const char *nm)
     if (*p == '?' || *p == '!') p++;
     return *p == '\0';
 }
+/* Symbol prints bare in inspect (`:foo`, `:+`) vs quoted (`:"a b"`, `:"123"`). */
+static bool
+korb_sym_inspect_bare(const char *nm)
+{
+    if (korb_sym_label_bare(nm)) return true;
+    if (nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z')) {
+        const char *p = nm + 1;                      /* identifier with trailing '=' (setter) */
+        while (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) p++;
+        if (*p == '=' && p[1] == '\0') return true;
+    }
+    static const char *const ops[] = {
+        "+","-","*","/","%","**","==","!=","<","<=",">",">=","<=>","<<",">>",
+        "&","|","^","~","!","[]","[]=","+@","-@","===","=~","!~", NULL };
+    for (int i = 0; ops[i]; i++) if (strcmp(nm, ops[i]) == 0) return true;
+    return false;
+}
 
 /* Range: "1..5" / "1...5"; endpoints to_s for to_s, inspect for inspect. */
 static void
@@ -6027,7 +6052,12 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
     if (v == KORB_NIL)   { fputs("nil", fp); return; }
     if (v == KORB_TRUE)  { fputs("true", fp); return; }
     if (v == KORB_FALSE) { fputs("false", fp); return; }
-    if (SYMBOL_P(v))     { fprintf(fp, ":%s", korb_sym_name(c->vm, SYM2ID(v))); return; }
+    if (SYMBOL_P(v)) {
+        const char *nm = korb_sym_name(c->vm, SYM2ID(v));
+        if (korb_sym_inspect_bare(nm)) fprintf(fp, ":%s", nm);
+        else { fputc(':', fp); korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm)); }
+        return;
+    }
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
