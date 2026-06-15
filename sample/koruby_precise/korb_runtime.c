@@ -1973,6 +1973,16 @@ static RESULT korb_m_int_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_int_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(1)); }
+/* real-number helpers shared by Integer/Float/Rational: real=self, imaginary=0. */
+static RESULT korb_m_num_real(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_num_imag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
+/* angle/arg/phase of a real: 0 (Integer) if >= 0, Math::PI (Float) if < 0. */
+static RESULT korb_m_num_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; double d;
+    if (!korb_num_to_d(VALUE_REF_GET(self), &d)) return RESULT_OK(LONG2FIX(0));
+    if (d < 0) return korb_float_new(c, slots, 3.141592653589793);
+    return RESULT_OK(LONG2FIX(0));
+}
 /* decompose a finite double into exact num/den (reduced); den>0. */
 static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
     if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "can't convert non-finite Float to Rational");
@@ -5362,6 +5372,16 @@ static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
     return RESULT_OK((s >= lo && s <= hi) ? KORB_TRUE : KORB_FALSE);
 }
+static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double lo, hi, s = VAL2FLT(VALUE_REF_GET(self))->val;
+    VALUE vlo = VALUE_SLICE_GET(a, 0), vhi = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!korb_num_to_d(vlo, &lo) || !korb_num_to_d(vhi, &hi)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+    if (UNLIKELY(lo > hi)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be smaller than max argument");
+    if (s < lo) return RESULT_OK(vlo);
+    if (s > hi) return RESULT_OK(vhi);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE iv = VALUE_SLICE_GET(a, 0);
@@ -5929,6 +5949,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "rationalize", korb_m_int_to_r, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "numerator", korb_m_int_numerator, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "denominator", korb_m_int_denominator, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "real", korb_m_num_real, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "imaginary", korb_m_num_imag, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "imag", korb_m_num_imag, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "arg", korb_m_num_angle, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "angle", korb_m_num_angle, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "phase", korb_m_num_angle, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_i", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_int", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "ord", korb_m_int_self, 0);
@@ -6075,6 +6101,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "[]", korb_m_str_aref, -1);
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
@@ -6379,9 +6406,14 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "pow", korb_m_flt_pow, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "angle", korb_m_flt_angle, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "arg", korb_m_flt_angle, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "phase", korb_m_flt_angle, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "real", korb_m_num_real, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "imaginary", korb_m_num_imag, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "imag", korb_m_num_imag, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "dup", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "+@", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "between?", korb_m_flt_between, 2);
+    korb_def_cmethod(c, KORB_C_FLOAT, "clamp", korb_m_flt_clamp, 2);
     korb_def_cmethod(c, KORB_C_FLOAT, "zero?", korb_m_flt_zero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nonzero?", korb_m_flt_nonzero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
