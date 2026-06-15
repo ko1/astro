@@ -3753,7 +3753,21 @@ KORB_SET_DELEG(korb_m_set_sum, korb_m_ary_sum)
 KORB_SET_DELEG(korb_m_set_minmax, korb_m_ary_minmax)
 static RESULT korb_hash_first_n(CTX *c, VALUE *slots, VALUE_REF self, uint32_t limit);
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
-static RESULT korb_m_ary_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_set_from_array(c, slots, self); }
+static RESULT korb_m_ary_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block == NULL) return korb_set_from_array(c, slots, self);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(self))->len));   /* map each through block first */
+    VALUE_REF mapped = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ar = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ar->len) break;
+        slots[1] = ar->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots + 2, mapped, r.value));
+    }
+    return korb_set_from_array(c, slots + 1, mapped);
+}
 static RESULT korb_m_hash_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* [k,v] pairs */
@@ -8261,7 +8275,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "==", korb_m_set_eq, 1);
     korb_def_cmethod(c, KORB_C_SET, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_inspect, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_set", korb_m_hash_to_set, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
 
