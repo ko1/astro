@@ -809,6 +809,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return kp_unsupported(tc, node, "Integer literal beyond Fixnum range (Bignum)");
         return ALLOC_node_lit(LONG2FIX(v));
       }
+      case PM_FLOAT_NODE:
+        return ALLOC_node_float(((const pm_float_node_t *)node)->value);
+
       case PM_STRING_NODE: {
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;

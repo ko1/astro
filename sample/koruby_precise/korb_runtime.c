@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <math.h>
 
 #include "node.h"
 #include "precise_gc/gc.h"
@@ -52,6 +53,82 @@ korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len)
     memcpy(s->bytes, bytes, len);
     s->bytes[len] = '\0';
     return RESULT_OK((VALUE)s);
+}
+
+/* ---------------------------------------------------------------------------
+ * Float (heap-boxed double).
+ * ------------------------------------------------------------------------- */
+
+RESULT
+korb_float_new(CTX *c, VALUE *slots, double d)
+{
+    KorbFloat *f = korb_alloc(c, slots, sizeof(KorbFloat), KORB_OBJ_FLOAT);
+    f->val = d;
+    return RESULT_OK((VALUE)f);
+}
+
+bool
+korb_num_to_d(VALUE v, double *out)
+{
+    if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
+    if (KORB_FLOAT_P(v)) { *out = VAL2FLT(v)->val;     return true; }
+    return false;
+}
+
+/* CRuby-style Float#to_s: shortest round-tripping decimal, always with a '.'
+ * or exponent.  buf must be >= 32 bytes; returns the length. */
+static uint32_t
+korb_float_to_s(double d, char *buf)
+{
+    if (isnan(d)) { memcpy(buf, "NaN", 4); return 3; }
+    if (isinf(d)) {
+        if (d < 0) { memcpy(buf, "-Infinity", 10); return 9; }
+        memcpy(buf, "Infinity", 9); return 8;
+    }
+    /* shortest #significant-digits that round-trips (via scientific form) */
+    char tmp[48];
+    int sig = 1;
+    for (; sig < 17; sig++) {
+        snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
+        if (strtod(tmp, NULL) == d) break;
+    }
+    int exp10 = atoi(strchr(tmp, 'e') + 1);
+    if (exp10 >= -4 && exp10 < 15) {                 /* fixed notation (CRuby range: -4..14) */
+        int frac = sig - 1 - exp10;
+        if (frac < 1) frac = 1;                      /* Ruby always shows ≥1 fractional digit */
+        snprintf(buf, 32, "%.*f", frac, d);
+    } else {                                         /* scientific: d.dddde±XX */
+        snprintf(buf, 32, "%.*e", sig - 1, d);
+        char *e = strchr(buf, 'e');
+        if (e && !memchr(buf, '.', (size_t)(e - buf))) {   /* "1e+20" → "1.0e+20" */
+            char t2[48]; size_t ml = (size_t)(e - buf);
+            memcpy(t2, buf, ml); memcpy(t2 + ml, ".0", 2); strcpy(t2 + ml + 2, e);
+            strcpy(buf, t2);
+        }
+    }
+    return (uint32_t)strlen(buf);
+}
+
+/* numeric arithmetic with at least one Float operand.  op: 0+ 1- 2* 3/ 4% */
+RESULT
+korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
+{
+    static const char *const opn[] = { "+", "-", "*", "/", "%" };
+    double a = 0.0, b = 0.0;
+    if (UNLIKELY(!korb_num_to_d(l, &b)))     /* l not numeric → method missing on l */
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for %s", opn[op], korb_a_type_name(l));
+    if (UNLIKELY(!korb_num_to_d(rhs, &b)))   /* rhs not numeric → coercion error */
+        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Float", korb_type_name(rhs));
+    (void)korb_num_to_d(l, &a);
+    double r;
+    switch (op) {
+      case 0: r = a + b; break;
+      case 1: r = a - b; break;
+      case 2: r = a * b; break;
+      case 3: r = a / b; break;                 /* float div: Inf on /0 */
+      default: r = fmod(a, b); if (r != 0.0 && ((r < 0) != (b < 0))) r += b; break;
+    }
+    return korb_float_new(c, slots, r);
 }
 
 /* a + b — alloc first, then copy through refs (fixup-safe; v2_design §4.3). */
@@ -576,6 +653,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_ARRAY:     return "Array";
       case KORB_OBJ_HASH:      return "Hash";
       case KORB_OBJ_RANGE:     return "Range";
+      case KORB_OBJ_FLOAT:     return "Float";
     }
     return "Object";
 }
@@ -594,6 +672,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_ARRAY:  return "an instance of Array";
       case KORB_OBJ_HASH:   return "an instance of Hash";
       case KORB_OBJ_RANGE:  return "an instance of Range";
+      case KORB_OBJ_FLOAT:  return "an instance of Float";
     }
     return "an instance of Object";
 }
@@ -629,6 +708,9 @@ korb_value_eq(VALUE a, VALUE b)
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         return x->len == y->len && memcmp(x->bytes, y->bytes, x->len) == 0;
     }
+    double da, db;              /* numeric ==: 1 == 1.0, 1.0 == 1.0 */
+    if ((KORB_FLOAT_P(a) || KORB_FLOAT_P(b)) && korb_num_to_d(a, &da) && korb_num_to_d(b, &db))
+        return da == db;
     return false;
 }
 
@@ -648,6 +730,17 @@ korb_cmperr_operand(VALUE v, char *buf, size_t cap)
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
 {
+    double ld, rd;
+    if ((KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) && korb_num_to_d(l, &ld) && korb_num_to_d(r, &rd)) {
+        bool t;
+        switch (op) {
+          case 0:  t = ld <  rd; break;
+          case 1:  t = ld <= rd; break;
+          case 2:  t = ld >  rd; break;
+          default: t = ld >= rd; break;
+        }
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
     if (KORB_STRING_P(l) && KORB_STRING_P(r)) {
         const KorbString *x = VAL2STR(l), *y = VAL2STR(r);
         uint32_t min = x->len < y->len ? x->len : y->len;
@@ -681,6 +774,7 @@ RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_str_plus_ref(c, slots, lhs, r);
@@ -706,6 +800,7 @@ RESULT
 korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 2, line);
     if (KORB_STRING_P(l) && FIXNUM_P(rhs))
         return korb_str_repeat_ref(c, slots, lhs, FIX2LONG(rhs), line);
     if (FIXNUM_P(l))
@@ -1058,6 +1153,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_RANGE:  return KORB_C_RANGE;
           case KORB_OBJ_CLASS:  return KORB_C_CLASS;
           case KORB_OBJ_EXCEPTION: return KORB_C_EXCEPTION;
+          case KORB_OBJ_FLOAT:  return KORB_C_FLOAT;
         }
     }
     return KORB_C_OBJECT;
@@ -1074,6 +1170,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_HASH:    return "Hash";
       case KORB_C_RANGE:   return "Range";
       case KORB_C_CLASS:   return "Class";
+      case KORB_C_FLOAT:   return "Float";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -1350,10 +1447,42 @@ static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!FIXNUM_P(o)) return RESULT_OK(KORB_NIL);    /* incomparable → nil */
-    intptr_t x = SELF_INT, y = FIX2LONG(o);
+    double y;
+    if (!korb_num_to_d(o, &y)) return RESULT_OK(KORB_NIL);   /* incomparable → nil */
+    double x = (double)SELF_INT;
     return RESULT_OK(LONG2FIX((x > y) - (x < y)));
 }
+static RESULT korb_m_int_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_float_new(c, slots, (double)SELF_INT);
+}
+
+/* ---- Float methods ------------------------------------------------------- */
+#define SELF_FLT (VAL2FLT(VALUE_REF_GET(self))->val)
+static RESULT korb_m_flt_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_flt_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_float_new(c, slots, fabs(SELF_FLT)); }
+static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT == 0.0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_flt_nan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(isnan(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_flt_inf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; double d = SELF_FLT; return RESULT_OK(isinf(d) ? LONG2FIX(d < 0 ? -1 : 1) : KORB_NIL); }
+static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    double o; if (!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o)) return RESULT_OK(KORB_NIL);
+    double s = SELF_FLT; return RESULT_OK(LONG2FIX((s > o) - (s < o)));
+}
+/* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */
+static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
+    double t = kind == 0 ? floor(d) : kind == 1 ? ceil(d) : kind == 2 ? round(d) : trunc(d);
+    if (UNLIKELY(!isfinite(t) || t < (double)FIXNUM_MIN || t > (double)FIXNUM_MAX))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
+    return RESULT_OK(LONG2FIX((intptr_t)t));
+}
+static RESULT korb_m_flt_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 3); }
+static RESULT korb_m_flt_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 0); }
+static RESULT korb_m_flt_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 1); }
+static RESULT korb_m_flt_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 2); }
+static RESULT korb_m_flt_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; char b[40]; uint32_t n = korb_float_to_s(SELF_FLT, b); return korb_str_new(c, slots, b, n);
+}
+#undef SELF_FLT
 
 static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
@@ -2483,6 +2612,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "odd?", korb_m_int_odd, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "positive?", korb_m_int_pos, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "negative?", korb_m_int_neg, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_f", korb_m_int_to_f, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_i", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_int", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "ord", korb_m_int_self, 0);
@@ -2666,6 +2796,23 @@ korb_register_core_methods(CTX *c)
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
+
+    /* Float */
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_f", korb_m_flt_to_f, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_i", korb_m_flt_to_i, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_int", korb_m_flt_to_i, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "truncate", korb_m_flt_to_i, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "floor", korb_m_flt_floor, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "ceil", korb_m_flt_ceil, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "round", korb_m_flt_round, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "abs", korb_m_flt_abs, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "magnitude", korb_m_flt_abs, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "zero?", korb_m_flt_zero, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "infinite?", korb_m_flt_inf, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "<=>", korb_m_flt_cmp, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_s", korb_m_flt_to_s, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "inspect", korb_m_flt_to_s, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2798,6 +2945,12 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_CLASS:
         fputs(korb_sym_name(c->vm, VAL2CLASS(v)->name_sym), fp);       /* class name */
         return;
+      case KORB_OBJ_FLOAT: {
+        char fb[40];
+        korb_float_to_s(VAL2FLT(v)->val, fb);
+        fputs(fb, fp);
+        return;
+      }
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->bytes, 1, VAL2STR(e->msg)->len, fp);

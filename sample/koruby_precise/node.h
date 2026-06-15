@@ -64,6 +64,13 @@ void *korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type);
 
 RESULT korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len);
 
+/* Float (heap-boxed double).  korb_num_to_d extracts a double from an Integer
+ * or Float (returns false if neither). */
+RESULT korb_float_new(CTX *c, VALUE *slots, double d);
+bool   korb_num_to_d(VALUE v, double *out);
+/* numeric arithmetic with a Float operand.  op: 0=+ 1=- 2=* 3=/ 4=% */
+RESULT korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line);
+
 /* string interpolation step: acc (String) + to_s(part) → new String */
 RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);
 

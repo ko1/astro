@@ -131,6 +131,7 @@ enum korb_obj_type {
     KORB_OBJ_RANGE       = 6,
     KORB_OBJ_OBJECT      = 7,   /* user object (incl. top-level `main`) */
     KORB_OBJ_CLASS       = 8,   /* user class */
+    KORB_OBJ_FLOAT       = 9,   /* heap-boxed double */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
@@ -142,6 +143,12 @@ typedef struct KorbString {
                               * object is a single allocation (moving GC
                               * copies it whole; no interior pointers kept) */
 } KorbString;
+
+/* heap-boxed double (no GC edges). */
+typedef struct KorbFloat {
+    AroObjectHeader head;            /* KORB_OBJ_FLOAT */
+    double val;
+} KorbFloat;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -213,6 +220,7 @@ typedef struct KorbClass {
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
 #define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
 #define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
+#define KORB_FLOAT_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
@@ -220,6 +228,7 @@ typedef struct KorbClass {
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
+#define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -250,7 +259,7 @@ typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
 enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
-    KORB_C_EXCEPTION, KORB_C_OBJECT,
+    KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_OBJECT,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -373,7 +382,8 @@ struct CTX_struct {
     AroObjectHeader *_h = (AroObjectHeader *)(payload);                      \
     switch (_h->flags & KORB_OBJ_TYPE_MASK) {                                \
       case KORB_OBJ_STRING:                                                  \
-        /* inline bytes — no edges */                                        \
+      case KORB_OBJ_FLOAT:                                                    \
+        /* inline bytes / double — no edges */                               \
         (void)(payload_size);                                                \
         break;                                                               \
       case KORB_OBJ_EXCEPTION: {                                             \
