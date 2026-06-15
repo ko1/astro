@@ -1933,14 +1933,14 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         uint32_t es = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)(b + cnt));
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
-    if (UNLIKELY(!FIXNUM_P(i0))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
-    intptr_t i = FIX2LONG(i0);
+    intptr_t i;
+    if (UNLIKELY(!korb_to_index(i0, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
     if (i < 0) i += ncp;
 
     if (VALUE_SLICE_LEN(a) >= 2) {                  /* s[start, len] */
         VALUE lv = VALUE_SLICE_GET(a, 1);
-        if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
-        intptr_t len = FIX2LONG(lv);
+        intptr_t len;
+        if (UNLIKELY(!korb_to_index(lv, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
         if (len < 0 || i < 0 || i > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)ncp) len = (intptr_t)ncp - i;
         uint32_t bs = korb_utf8_byteoff(s->bytes, s->len, (uint32_t)i);
@@ -3029,9 +3029,10 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
         if (KORB_ARRAY_P(cur)) {
-            if (UNLIKELY(!FIXNUM_P(key))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
+            intptr_t i;
+            if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
             KorbArray *ar = VAL2ARY(cur);
-            intptr_t i = FIX2LONG(key); if (i < 0) i += ar->len;
+            if (i < 0) i += ar->len;
             cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : ar->items->data[i];
         } else if (KORB_HASH_P(cur)) {
             int32_t idx = korb_hash_find(VAL2HASH(cur), key);
@@ -3681,8 +3682,7 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     intptr_t cnt = 1;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE cv = VALUE_SLICE_GET(a, 0);
-        if (UNLIKELY(!FIXNUM_P(cv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
-        cnt = FIX2LONG(cv);
+        if (UNLIKELY(!korb_to_index(cv, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
     }
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     uint32_t n = ary->len;
@@ -3730,11 +3730,12 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         VALUE iv = VALUE_SLICE_GET(a, j);
-        if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        intptr_t idx;
+        if (UNLIKELY(!korb_to_index(iv, &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-        intptr_t n = ary->len, idx = FIX2LONG(iv);
+        intptr_t n = ary->len, orig = idx;
         if (idx < 0) idx += n;
-        if (idx < 0 || idx >= n) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%ld...%ld", (long)FIX2LONG(iv), (long)n, (long)n);
+        if (idx < 0 || idx >= n) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%ld...%ld", (long)orig, (long)n, (long)n);
         CHECK(korb_ary_push_val(c, slots + 1, dst, ary->items->data[idx]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -3791,10 +3792,12 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t bn = s->len;
     VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
-    intptr_t i = FIX2LONG(iv); if (i < 0) i += bn;
+    intptr_t i;
+    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    if (i < 0) i += bn;
     if (i < 0 || i > (intptr_t)bn) return RESULT_OK(KORB_NIL);
-    intptr_t len = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 1;
+    intptr_t lentmp;
+    intptr_t len = (VALUE_SLICE_LEN(a) >= 2 && korb_to_index(VALUE_SLICE_GET(a, 1), &lentmp)) ? lentmp : 1;
     if (len < 0) return RESULT_OK(KORB_NIL);
     if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
     return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
@@ -3843,11 +3846,11 @@ static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE wv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(wv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(wv));
+    intptr_t width;
+    if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(wv));
     const KorbString *padstr = (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) ? VAL2STR(VALUE_SLICE_GET(a, 1)) : NULL;
     if (padstr && padstr->len == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zero width padding");
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    intptr_t width = FIX2LONG(wv);
     uint32_t ncp = korb_utf8_count(s->bytes, s->len);
     if (width <= (intptr_t)ncp) return korb_str_slice_new(c, slots, self, 0, s->len);
     uint32_t total_pad = (uint32_t)width - ncp;
