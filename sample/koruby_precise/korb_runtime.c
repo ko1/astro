@@ -3339,6 +3339,25 @@ static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t k = VALUE_SLICE_LEN(a);
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
+    for (intptr_t i = lo; i < hi; i++) {
+        uint32_t idx = (uint32_t)(i - lo);
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k + 1));
+        VALUE_REF row = VALUE_REF_AT(&slots[0]);
+        CHECK(korb_ary_push_val(c, slots + 1, row, LONG2FIX(i)));
+        for (uint32_t j = 0; j < k; j++) {
+            VALUE ov = VALUE_SLICE_GET(a, j);
+            VALUE e = (KORB_ARRAY_P(ov) && idx < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[idx] : KORB_NIL;
+            CHECK(korb_ary_push_val(c, slots + 1, row, e));
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     intptr_t lo, hi;
@@ -3949,6 +3968,27 @@ static RESULT korb_m_hash_find_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
             CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
         }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* zip → array of rows: [ [k,v], other0[i], other1[i], ... ] per pair i */
+static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t k = VALUE_SLICE_LEN(a);
+    uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));   /* dst below cursor */
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        slots[0] = h->items->data[2*i]; slots[1] = h->items->data[2*i+1];
+        CHECK(korb_hash_make_pair(c, slots + 4, &slots[0], &slots[1], &slots[2]));  /* pair at slots[2] */
+        slots[3] = UNWRAP(korb_ary_new(c, slots + 4, k + 1));                /* row at slots[3] */
+        VALUE_REF row = VALUE_REF_AT(&slots[3]);
+        CHECK(korb_ary_push_val(c, slots + 4, row, slots[2]));
+        for (uint32_t j = 0; j < k; j++) {
+            VALUE ov = VALUE_SLICE_GET(a, j);
+            VALUE e = (KORB_ARRAY_P(ov) && i < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[i] : KORB_NIL;
+            CHECK(korb_ary_push_val(c, slots + 4, row, e));
+        }
+        CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -4964,6 +5004,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "zip", korb_m_hash_zip, -1);
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
@@ -4994,6 +5035,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "drop", korb_m_range_drop, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "zip", korb_m_range_zip, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find_index", korb_m_range_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "drop_while", korb_m_range_drop_while, 0);
