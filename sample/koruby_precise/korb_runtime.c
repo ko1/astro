@@ -4279,8 +4279,40 @@ static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(self));    /* Ruby 4.0: block form returns the receiver */
 }
+/* chunk_while { |prev, cur| } — split between elements where the block is false;
+ * returns an Enumerator over the chunks.  Block yields each adjacent pair. */
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
+static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block given");
+    /* slots[0]=out (chunks), slots[1]=captured_self (root across yields/allocs),
+     * slots[2]=current chunk, yield args + scratch at slots+3. */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
+    slots[1] = captured_self;
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    if (len > 0) {
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 1));            /* current chunk */
+        VALUE_REF cur = VALUE_REF_AT(&slots[2]);
+        CHECK(korb_ary_push_val(c, slots + 3, cur, VAL2ARY(VALUE_REF_GET(self))->items->data[0]));
+        for (uint32_t i = 1; i < len; i++) {
+            VALUE argv[2] = { VAL2ARY(VALUE_REF_GET(self))->items->data[i - 1],
+                              VAL2ARY(VALUE_REF_GET(self))->items->data[i] };
+            RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, slots[1]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (!KORB_TRUTHY(r.value)) {                             /* boundary → close chunk */
+                CHECK(korb_ary_push_val(c, slots + 3, out, VALUE_REF_GET(cur)));
+                slots[2] = UNWRAP(korb_ary_new(c, slots + 3, 1));
+                cur = VALUE_REF_AT(&slots[2]);
+            }
+            CHECK(korb_ary_push_val(c, slots + 3, cur, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        }
+        CHECK(korb_ary_push_val(c, slots + 3, out, VALUE_REF_GET(cur)));
+    }
+    slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "chunk_while"));
+    return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+}
 static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator of [elem, index] pairs */
@@ -5887,6 +5919,11 @@ static RESULT korb_m_range_minmax_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (block == NULL) return korb_m_range_minmax(c, slots, self, a);
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
     return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);
+}
+static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self);
+static RESULT korb_m_range_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_chunk_while(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
 }
 static RESULT korb_m_range_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
@@ -8402,6 +8439,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_index", korb_m_ary_each_wi, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_slice", korb_m_ary_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_cons", korb_m_ary_each_cons, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "chunk_while", korb_m_ary_chunk_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "select", korb_m_ary_select, 0);
@@ -8547,6 +8585,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_object", korb_m_range_each_with_object, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax", korb_m_range_minmax_cmp, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "chunk_while", korb_m_range_chunk_while, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort", korb_m_range_sort_cmp, 0);   /* int range already ascending */
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);
