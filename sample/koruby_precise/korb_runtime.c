@@ -521,10 +521,14 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     }
     bf[0] = (VALUE)((uintptr_t)def_env | 1u);
-    for (uint32_t i = 0; i < argc; i++) {
-        bf[1 + i] = slots[(intptr_t)i - (intptr_t)argc];   /* yield args → params */
+    /* yield args → block params: extra args dropped, missing params nil
+     * (CRuby semantics).  np <= blocals (params are a prefix of locals), so
+     * this never writes past the block frame. */
+    const uint32_t np = korb_entry_params_cnt(entry);
+    for (uint32_t i = 0; i < np; i++) {
+        bf[1 + i] = (i < argc) ? slots[(intptr_t)i - (intptr_t)argc] : KORB_NIL;
     }
-    for (uint32_t i = argc; i < blocals; i++) {
+    for (uint32_t i = np; i < blocals; i++) {
         bf[1 + i] = KORB_NIL;
     }
 
