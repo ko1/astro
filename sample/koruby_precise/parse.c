@@ -553,9 +553,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
-    /* splat call f(*arr) / f(a, *arr, b): build the args Array, dispatch dynamically */
+    /* splat call f(*arr) or >3 plain args: build the args Array, dispatch dynamically */
     {
-        bool has_splat = false;
+        bool has_splat = argc > 3;
         for (size_t i = 0; i < argc; i++)
             if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
         if (has_splat) {
@@ -654,9 +654,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         bake_add(tc, &call->u.node_send_blk2.def_env_off);
         return call;
     }
-    /* splat receiver call recv.m(*arr): build args Array, dynamic dispatch */
+    /* splat receiver call recv.m(*arr) or >3 plain args: build args Array, dynamic dispatch */
     {
-        bool has_splat = false;
+        bool has_splat = argc > 3;
         for (size_t i = 0; i < argc; i++)
             if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
         if (has_splat) {
