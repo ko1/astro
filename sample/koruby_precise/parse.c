@@ -945,6 +945,31 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *rval = transduce(tc, lw->value);   /* register child: no staging */
         return lvar_write(tc, node, lw->name, lw->depth, rval);
       }
+      case PM_MULTI_WRITE_NODE: {
+        /* a, b = rhs  (local targets, no splat/post for now) */
+        const pm_multi_write_node_t *mw = (const pm_multi_write_node_t *)node;
+        if (mw->rest || mw->rights.size)
+            return kp_unsupported(tc, node, "multi-assign with splat/post target");
+        uint32_t nt = (uint32_t)mw->lefts.size;
+        for (uint32_t i = 0; i < nt; i++) {
+            const pm_node_t *t = mw->lefts.nodes[i];
+            if (!PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE))
+                return kp_unsupported(tc, t, "non-local multi-assign target");
+            if (((const pm_local_variable_target_node_t *)t)->depth != 0)
+                return kp_unsupported(tc, t, "outer-scope multi-assign target");
+        }
+        int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
+        if (!offs) abort();
+        NODE *rhs = transduce(tc, mw->value);                 /* register child */
+        for (uint32_t i = 0; i < nt; i++) {
+            const pm_local_variable_target_node_t *lt =
+                (const pm_local_variable_target_node_t *)mw->lefts.nodes[i];
+            offs[i] = (int32_t)lvar_index(tc, (const pm_node_t *)lt, lt->name) - tc->chain;
+        }
+        NODE *mn = ALLOC_node_massign(offs, nt, rhs);
+        for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
+        return mn;
+      }
       case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
         /* x op= v  →  write(x, binop(read(x), v)) */
         const pm_local_variable_operator_write_node_t *ow =

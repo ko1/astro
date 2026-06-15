@@ -84,6 +84,27 @@ node_lset(CTX *c, NODE *n, VALUE *slots, int32_t off, VALUE rval@child)
     return RESULT_OK(rval);
 }
 
+// Multiple assignment to local targets: `a, b = rhs`.  rhs (the @child) is
+// evaluated to a value; if it's an Array its elements distribute to the targets
+// (nil-padded), else target[0]=rhs and the rest are nil.  No allocation — the
+// rhs array (e.g. the literal built for `a, b = b, a`) snapshots both sides
+// first, so swaps work.  `offsets` is a baked int32[] of frame-slot offsets.
+NODE_DEF @noinline
+node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VALUE rval@child)
+{
+    (void)c; (void)n;
+    const int32_t *const offs = (const int32_t *)offsets;
+    if (KORB_ARRAY_P(rval)) {
+        const KorbArray *const a = VAL2ARY(rval);
+        for (uint32_t i = 0; i < ntargets; i++)
+            slots[offs[i]] = i < a->len ? a->items->data[i] : KORB_NIL;
+    } else {
+        for (uint32_t i = 0; i < ntargets; i++)
+            slots[offs[i]] = (i == 0) ? rval : KORB_NIL;
+    }
+    return RESULT_OK(rval);
+}
+
 // ---- arithmetic ------------------------------------------------------------
 //
 // lhs is VALUE_REF (staged: rhs evaluation may GC), rhs is the last child
