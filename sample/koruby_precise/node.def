@@ -40,6 +40,14 @@ node_float(CTX *c, NODE *n, VALUE *slots, double v)
     return korb_float_new(c, slots, v);
 }
 
+// Rational literal `2r` / `1.5r` → a fresh Rational(num/den) per evaluation.
+NODE_DEF
+node_rational(CTX *c, NODE *n, VALUE *slots, uint64_t num, uint64_t den)
+{
+    (void)n;
+    return korb_rat_new(c, slots, (intptr_t)num, (intptr_t)den);
+}
+
 // Parse-time-unsupported construct (M0 subset boundary): the file still
 // parses and runs up to this point, then raises NotImplementedError —
 // rubyharness then scores every line before it (a parse-time exit would

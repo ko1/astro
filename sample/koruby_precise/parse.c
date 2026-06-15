@@ -1012,6 +1012,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_FLOAT_NODE:
         return ALLOC_node_float(((const pm_float_node_t *)node)->value);
 
+      case PM_RATIONAL_NODE: {     /* `2r` / `1.5r` → Rational */
+        const pm_rational_node_t *rn = (const pm_rational_node_t *)node;
+        intptr_t num, den;
+        if (!kp_integer_value(&rn->numerator, &num) || !kp_integer_value(&rn->denominator, &den))
+            return kp_unsupported(tc, node, "Rational literal beyond Fixnum range (Bignum)");
+        return ALLOC_node_rational((uint64_t)num, (uint64_t)den);
+      }
+
       case PM_STRING_NODE: {
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;

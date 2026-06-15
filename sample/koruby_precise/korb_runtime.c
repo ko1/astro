@@ -120,7 +120,7 @@ static intptr_t korb_gcd_pos(intptr_t a, intptr_t b) {   /* gcd of |a|,|b| */
     return a;
 }
 /* Make a reduced Rational num/den (den != 0); den>0 normalized. den==0 → ZeroDiv. */
-static RESULT
+RESULT
 korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den)
 {
     if (UNLIKELY(den == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
