@@ -4957,6 +4957,12 @@ static RESULT korb_range_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, V
 }
 static RESULT korb_m_range_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, -1); }
 static RESULT korb_m_range_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, 1); }
+static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
+static RESULT korb_m_range_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#sort_by without a block is not supported");
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));      /* materialize, then Array#sort_by */
+    return korb_m_ary_sort_by(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+}
 static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reverse_each without a block is not supported");
@@ -7378,6 +7384,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "deconstruct_keys", korb_m_ary_self, -1);   /* pattern-match hook → self */
     korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
     korb_def_cmethod(c, KORB_C_HASH, "clear", korb_m_hash_clear, 0);
@@ -7464,6 +7471,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "sort", korb_m_range_to_a, 0);   /* int range already ascending */
+    korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reverse_each", korb_m_range_reverse_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "bsearch", korb_m_range_bsearch, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
