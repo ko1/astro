@@ -6514,6 +6514,23 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 }
 
 static RESULT
+korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (KORB_RATIONAL_P(nv) && n < 2) return RESULT_OK(nv);
+    if (UNLIKELY(!FIXNUM_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(nv));
+    intptr_t num = FIX2LONG(nv), den = 1;
+    if (n >= 2) {
+        VALUE dv = VALUE_SLICE_GET(args, 1);
+        if (UNLIKELY(!FIXNUM_P(dv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(dv));
+        den = FIX2LONG(dv);
+    }
+    return korb_rat_new(c, slots, num, den);
+}
+
+static RESULT
 korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     (void)slots;
@@ -6630,6 +6647,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "Rational", korb_bi_rational, -1);
 
     korb_register_core_methods(c);
 
