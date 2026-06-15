@@ -5178,6 +5178,18 @@ static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     return RESULT_OK(VALUE_REF_GET(h));
 }
+static RESULT korb_m_range_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    if (UNLIKELY(block == NULL || VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* memo (rooted) */
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE argv[2] = { LONG2FIX(i), slots[0] };
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(slots[0]);
+}
 static RESULT korb_m_range_overlap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_RANGE_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)", korb_type_name(o));
@@ -6741,6 +6753,23 @@ static RESULT korb_m_ary_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_ary_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, true); }
 
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
+static RESULT korb_m_hash_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#take_while without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!KORB_TRUTHY(r.value)) break;
+        VALUE pair; CHECK(korb_hash_pair_at(c, slots + 1, self, i, &pair));   /* pair at slots[3] */
+        CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     if (block == NULL) {                              /* sum(init): fold init + [k,v] over pairs via + */
         if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no init given");
@@ -7754,6 +7783,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "inject", korb_m_hash_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_with_object", korb_m_hash_each_wo, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "sum", korb_m_hash_sum, -1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "take_while", korb_m_hash_take_while, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "select!", korb_m_hash_select_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "filter!", korb_m_hash_select_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "keep_if", korb_m_hash_keep_if, 0);
@@ -7803,6 +7833,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "group_by", korb_m_range_group_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_object", korb_m_range_each_with_object, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "sort", korb_m_range_to_a, 0);   /* int range already ascending */
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
