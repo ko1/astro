@@ -194,6 +194,16 @@ korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im)
 #define SELF_CPX VAL2CPX(VALUE_REF_GET(self))
 static RESULT korb_m_cpx_real(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->re); }
 static RESULT korb_m_cpx_imag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->im); }
+static RESULT korb_m_cpx_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = SELF_CPX->re;
+    slots[1] = SELF_CPX->im;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF arr = VALUE_REF_AT(slots + 2);
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
 static RESULT korb_m_cpx_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_cpx_conj(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {  /* conjugate: negate im */
     (void)a;
@@ -2001,6 +2011,16 @@ static RESULT korb_m_num_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE_REF arr = VALUE_REF_AT(slots + 2);
     CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
     CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+/* rect/rectangular of a real: [self, 0]. */
+static RESULT korb_m_num_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+    VALUE_REF arr = VALUE_REF_AT(slots + 1);
+    CHECK(korb_ary_push_val(c, slots + 2, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 2, arr, LONG2FIX(0)));
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 /* decompose a finite double into exact num/den (reduced); den>0. */
@@ -5913,6 +5933,16 @@ static RESULT korb_m_sym_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const KorbString *rs = VAL2STR(r.value);
     return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
 }
+static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_sym_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    RESULT r = korb_m_str_swapcase(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    slots[1] = r.value;   /* root the new string across the (alloc'ing) intern */
+    const KorbString *rs = VAL2STR(slots[1]);
+    return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
+}
 static RESULT korb_m_sym_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
@@ -6147,6 +6177,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
     korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, 1);
     korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, 1);
     korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
@@ -6169,6 +6203,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "[]", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "succ", korb_m_sym_succ, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "next", korb_m_sym_succ, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "swapcase", korb_m_sym_swapcase, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
@@ -6549,6 +6584,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "real?", korb_m_num_real_p, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_c", korb_m_num_to_c, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "polar", korb_m_num_polar, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "rect", korb_m_num_rect, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "rectangular", korb_m_num_rect, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "infinite?", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "i", korb_m_int_i, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "conj", korb_m_num_conj_self, 0);
@@ -6556,7 +6593,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "real?", korb_m_num_real_p, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_c", korb_m_num_to_c, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "polar", korb_m_num_polar, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "rect", korb_m_num_rect, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "rectangular", korb_m_num_rect, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "real?", korb_m_lit_false, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "rect", korb_m_cpx_rect, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "rectangular", korb_m_cpx_rect, 0);
 }
 
 /* ---------------------------------------------------------------------------
