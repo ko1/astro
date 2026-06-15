@@ -881,9 +881,12 @@ RESULT
 korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
-    if (!KORB_ARRAY_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
-    if (KORB_STRING_P(l) && FIXNUM_P(rhs))
-        return korb_str_repeat_ref(c, slots, lhs, FIX2LONG(rhs), line);
+    if (!KORB_ARRAY_P(l) && !KORB_STRING_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
+    if (KORB_STRING_P(l)) {
+        intptr_t cnt;
+        if (UNLIKELY(!korb_to_index(rhs, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
+        return korb_str_repeat_ref(c, slots, lhs, cnt, line);
+    }
     if (KORB_ARRAY_P(l) && (FIXNUM_P(rhs) || KORB_FLOAT_P(rhs))) {   /* Array * n → repeated array (Float coerced via to_int) */
         intptr_t cnt = FIXNUM_P(rhs) ? FIX2LONG(rhs) : (intptr_t)VAL2FLT(rhs)->val;
         if (cnt < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
@@ -2298,6 +2301,9 @@ static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_ary_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_mul_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);   /* n→repeat, String→join */
 }
+static RESULT korb_m_str_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_mul_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);   /* String * n → repeat */
+}
 #undef SELF_ARY
 
 /* ---- yielding methods (drive a block) ------------------------------------ */
@@ -2625,6 +2631,20 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         vdat[j] = vk; kdat[j] = kk;
     }
     return RESULT_OK(VALUE_REF_GET(vals));
+}
+/* sort_by!: sort in place by block key (sort_by then copy back into self). */
+static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    RESULT sr = korb_m_ary_sort_by(c, slots, self, a, block, def_env, cself);   /* sorted copy at slots[0] */
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[0] = sr.value;                                  /* root the sorted array */
+    VALUE_REF sorted = VALUE_REF_AT(&slots[0]);
+    VAL2ARY(VALUE_REF_GET(self))->len = 0;
+    uint32_t n = VAL2ARY(VALUE_REF_GET(sorted))->len;
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(sorted))->items->data[i];
+        CHECK(korb_ary_push_val(c, slots + 1, self, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want) {
@@ -3239,6 +3259,40 @@ static RESULT korb_m_range_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (intptr_t i = lo + n; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_range_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#drop_while without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    bool dropping = true;
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        if (dropping) {
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) continue;
+            dropping = false;
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#take_while without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!KORB_TRUTHY(r.value)) break;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
     intptr_t lo, hi;
@@ -3804,6 +3858,19 @@ static RESULT korb_m_hash_find_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* find_index → integer index of first pair where block truthy, else nil */
+static RESULT korb_m_hash_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#find_index without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
+    }
+    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     HASH_REQ_BLOCK("Hash#reduce");
@@ -4593,6 +4660,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "*", korb_m_str_mul, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp", korb_m_str_casecmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);
@@ -4663,6 +4731,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect!", korb_m_ary_map_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_entry", korb_m_ary_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort_by", korb_m_ary_sort_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort_by!", korb_m_ary_sort_by_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "min_by", korb_m_ary_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "max_by", korb_m_ary_max_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter_map", korb_m_ary_filter_map, 0);
@@ -4794,6 +4863,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "find", korb_m_hash_find, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, 0);
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
@@ -4825,6 +4895,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "drop", korb_m_range_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find_index", korb_m_range_find_index, -1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "drop_while", korb_m_range_drop_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "take_while", korb_m_range_take_while, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "any?", korb_m_range_any, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "all?", korb_m_range_all, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "none?", korb_m_range_none, 0);
