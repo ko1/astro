@@ -232,6 +232,8 @@ struct Node;
 enum korb_method_kind {
     KORB_METHOD_ISEQ = 0,
     KORB_METHOD_BUILTIN = 1,
+    KORB_METHOD_ATTR_R = 2,   /* attr reader: return @ivar */
+    KORB_METHOD_ATTR_W = 3,   /* attr writer: @ivar = arg0 */
 };
 
 struct CTX_struct;
@@ -265,6 +267,7 @@ struct korb_method {
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
     int32_t  params_cnt;     /* -1 = variadic (builtins only) */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
+    uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     struct Node *body;       /* ISEQ */
     korb_builtin_fn bfn;     /* BUILTIN */
 };

@@ -89,6 +89,10 @@ void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block);
+/* attr_reader/writer/accessor: define a getter/setter on the class. */
+void   korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer);
+/* parse-time descriptor list for node_attr (one entry per generated method). */
+struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
 /* `class Name ... end`: create/find the class + run its body (self = class). */
 RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass);
 

@@ -377,6 +377,31 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     c->vm->method_serial++;
 }
 
+void
+korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer)
+{
+    KorbClass *const k = VAL2CLASS(klass);
+    struct korb_method *m = NULL;
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i].mid == mid) { m = &k->methods[i]; break; }
+    if (!m) {
+        if (k->method_cnt == k->method_capa) {
+            uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
+            k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
+            if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
+            k->method_capa = nc;
+        }
+        m = &k->methods[k->method_cnt++];
+        m->mid = mid;
+    }
+    m->kind = is_writer ? KORB_METHOD_ATTR_W : KORB_METHOD_ATTR_R;
+    m->params_cnt = is_writer ? 1 : 0;
+    m->attr_ivar = ivar_sym;
+    m->body = NULL;
+    m->bfn = NULL;
+    c->vm->method_serial++;
+}
+
 /* lookup mid up the superclass chain */
 static struct korb_method *
 korb_class_find_method(VALUE klass, uint32_t mid)
@@ -1037,7 +1062,19 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid);
-        if (um) return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+        if (um) {
+            if (um->kind == KORB_METHOD_ATTR_R)
+                return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+            if (um->kind == KORB_METHOD_ATTR_W) {
+                if (UNLIKELY(argc != 1))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                                      "wrong number of arguments (given %u, expected 1)", argc);
+                VALUE v = slots[-(intptr_t)argc];      /* arg0 (returned by writer) */
+                CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
+                return RESULT_OK(slots[-(intptr_t)argc]);
+            }
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+        }
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {

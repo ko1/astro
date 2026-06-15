@@ -445,6 +445,40 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-4) */
     }
 
+    /* attr_reader/writer/accessor :sym... → node_attr (defines getters/setters
+     * on self = the enclosing class). */
+    if (cn->block == NULL && argc > 0) {
+        const char *nm = kp_cid_cstr(tc, cn->name);
+        int mode = !strcmp(nm, "attr_reader") ? 0 : !strcmp(nm, "attr_writer") ? 1
+                 : !strcmp(nm, "attr_accessor") ? 2 : -1;
+        if (mode >= 0) {
+            bool all_syms = true;
+            for (size_t i = 0; i < argc; i++)
+                if (!PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SYMBOL_NODE)) { all_syms = false; break; }
+            if (all_syms) {
+                uint32_t count = (uint32_t)argc * (mode == 2 ? 2u : 1u);
+                struct korb_attr_desc *descs = malloc(sizeof(*descs) * count);
+                if (!descs) abort();
+                uint32_t di = 0;
+                for (size_t i = 0; i < argc; i++) {
+                    const pm_symbol_node_t *sn = (const pm_symbol_node_t *)args->arguments.nodes[i];
+                    const char *bn = (const char *)pm_string_source(&sn->unescaped);
+                    size_t blen = pm_string_length(&sn->unescaped);
+                    char buf[256];
+                    if (blen + 2 >= sizeof(buf)) { free(descs); return kp_unsupported(tc, (const pm_node_t *)cn, "attr name too long"); }
+                    buf[0] = '@'; memcpy(buf + 1, bn, blen);                 /* "@name" */
+                    uint32_t ivar = korb_intern(tc->c->vm, buf, blen + 1);
+                    uint32_t rmid = korb_intern(tc->c->vm, bn, blen);        /* "name" */
+                    memcpy(buf, bn, blen); buf[blen] = '=';                  /* "name=" */
+                    uint32_t wmid = korb_intern(tc->c->vm, buf, blen + 1);
+                    if (mode != 1) { descs[di].mid = rmid; descs[di].ivar = ivar; descs[di].is_writer = 0; di++; }
+                    if (mode != 0) { descs[di].mid = wmid; descs[di].ivar = ivar; descs[di].is_writer = 1; di++; }
+                }
+                return ALLOC_node_attr(-1 - tc->chain, descs, count);
+            }
+        }
+    }
+
     if (cn->block) {
         if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE)) {
             return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");

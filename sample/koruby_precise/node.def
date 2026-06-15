@@ -321,6 +321,22 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body)
     return korb_class_body(c, slots, name_sym, body, KORB_NIL);
 }
 
+// attr_reader/writer/accessor — defines getters/setters on self (the class).
+// `descs` is a parse-time immortal array (count entries); @noinline (pointer
+// operand isn't bakeable).
+NODE_DEF @noinline
+node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t count)
+{
+    (void)n;
+    VALUE cls = slots[self_off];
+    if (UNLIKELY(!KORB_CLASS_P(cls)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "attr accessor called outside a class body");
+    const struct korb_attr_desc *d = (const struct korb_attr_desc *)descs;
+    for (uint32_t i = 0; i < count; i++)
+        korb_class_def_attr(c, cls, d[i].mid, d[i].ivar, d[i].is_writer);
+    return RESULT_OK(KORB_NIL);
+}
+
 // constant read (`Foo`) — classes only for now.
 NODE_DEF
 node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym)
