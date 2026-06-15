@@ -3995,6 +3995,7 @@ static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         subseq_form = true;
     } else if (VALUE_SLICE_LEN(a) >= 2) {
         if (UNLIKELY(!korb_to_index(iv, &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (UNLIKELY(dellen < 0)) return RESULT_OK(KORB_NIL);   /* (start, negative len) → nil */
         if (start < 0) start += n;
         subseq_form = true;
     } else {
