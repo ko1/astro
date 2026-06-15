@@ -99,6 +99,10 @@ RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry
 RESULT korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                   VALUE def_class, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self);
 
+/* Exception hierarchy (korb_runtime.c) */
+void korb_init_exception_classes(CTX *c, VALUE *slots);
+bool korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class);   /* exc kind_of? rescue_class */
+
 /* binop slow paths (fast paths live in node.def bodies) */
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);

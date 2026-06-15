@@ -199,6 +199,7 @@ struct korb_method;
 typedef struct KorbClass {
     AroObjectHeader head;            /* KORB_OBJ_CLASS */
     uint32_t name_sym;               /* class name (interned), 0 = anonymous */
+    int32_t  exc_etype;              /* builtin exception class → its etype, else -1 */
     uint32_t method_cnt, method_capa;
     struct korb_method *methods;     /* libc side-array (no GC edges) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
@@ -293,6 +294,10 @@ struct korb_vm {
     uint32_t *const_names;
     VALUE    *const_vals;
     uint32_t  const_cnt, const_capa;
+
+    /* exception etype → constant name (class looked up via the const table, so
+     * no separate GC root needed).  Index by enum korb_etype. */
+    uint32_t  exc_name[16];
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */

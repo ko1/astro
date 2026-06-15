@@ -277,13 +277,19 @@ node_if(CTX *c, NODE *n, VALUE *slots, VALUE cond@child, NODE *then_b, NODE *els
 // bit1 has_ensure, bit2 rescue binds `resc_var`.  resc/ensure_b are lit-nil
 // placeholders when absent (NODE* operands must be non-NULL).
 NODE_DEF
-node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *resc, NODE *ensure_b, int32_t resc_var, uint32_t flags)
+node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescue_class, NODE *resc, NODE *ensure_b, int32_t resc_var, uint32_t flags)
 {
     (void)n;
     RESULT r = EVAL_ARG(c, body);
-    if ((flags & 1u) && r.state == KORB_RAISE) {       /* caught by a catch-all rescue */
-        if (flags & 4u) slots[resc_var] = r.value;     /* bind the exception local */
-        r = EVAL_ARG(c, resc);
+    if ((flags & 1u) && r.state == KORB_RAISE) {       /* a rescue clause is present */
+        slots[0] = r.value;                            /* root the exception in scratch */
+        RESULT cr = EVAL(c, rescue_class, slots + 1);  /* the rescue's class (StandardError if bare) */
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (korb_exc_matches(c, slots[0], cr.value)) {
+            if (flags & 4u) slots[resc_var] = slots[0];  /* bind the exception local */
+            r = EVAL_ARG(c, resc);
+        }
+        /* else: not matched → r stays RAISE (propagate) */
     }
     if (flags & 2u) {                                  /* ensure: always runs */
         RESULT er = EVAL_ARG(c, ensure_b);

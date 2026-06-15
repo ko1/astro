@@ -766,6 +766,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t flags = 0;
         int32_t resc_var = 0;
         NODE *body = bn->statements ? transduce_statements(tc, bn->statements) : lit_nil();
+        NODE *rescue_class = lit_nil();
         NODE *resc = lit_nil();
         NODE *ensure_b = lit_nil();
 
@@ -773,9 +774,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             const pm_rescue_node_t *rc = bn->rescue_clause;
             if (rc->subsequent)                          /* multiple rescue clauses */
                 return kp_unsupported(tc, node, "multiple rescue clauses");
-            if (rc->exceptions.size > 0)                 /* class-matched rescue (needs Exception hierarchy) */
-                return kp_unsupported(tc, node, "rescue with an exception class");
+            if (rc->exceptions.size > 1)                 /* rescue A, B — multiple classes */
+                return kp_unsupported(tc, node, "rescue with multiple exception classes");
             flags |= 1u;
+            /* bare rescue catches StandardError; `rescue C` catches C-and-below */
+            rescue_class = (rc->exceptions.size == 1)
+                ? transduce(tc, rc->exceptions.nodes[0])
+                : ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13));
             if (rc->reference) {
                 if (!PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE))
                     return kp_unsupported(tc, node, "rescue => non-local target");
@@ -791,7 +796,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             ensure_b = en->statements ? transduce_statements(tc, en->statements) : lit_nil();
             flags |= 2u;
         }
-        NODE *nd = ALLOC_node_begin(body, resc, ensure_b, resc_var, flags);
+        NODE *nd = ALLOC_node_begin(body, rescue_class, resc, ensure_b, resc_var, flags);
         if (flags & 4u) bake_add(tc, &nd->u.node_begin.resc_var);
         return nd;
       }
@@ -1017,8 +1022,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
         const pm_rescue_modifier_node_t *rm = (const pm_rescue_modifier_node_t *)node;
         NODE *body = transduce(tc, rm->expression);
+        NODE *rescue_class = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13));
         NODE *resc = transduce(tc, rm->rescue_expression);
-        return ALLOC_node_begin(body, resc, lit_nil(), 0, 1u);   /* has_rescue */
+        return ALLOC_node_begin(body, rescue_class, resc, lit_nil(), 0, 1u);   /* catch StandardError */
       }
 
       case PM_SUPER_NODE: {           /* super(...) — explicit args */

@@ -320,6 +320,7 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     VALUE_REF sref = SLOTS_PUSH(slots, superclass);   /* root super across alloc */
     KorbClass *k = korb_alloc(c, slots, sizeof(KorbClass), KORB_OBJ_CLASS);
     k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
+    k->exc_etype = -1;                                 /* not an exception class by default */
     if (superclass != KORB_NIL) ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->superclass, VALUE_REF_GET(sref));
     return RESULT_OK((VALUE)k);
 }
@@ -485,6 +486,61 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (m->kind == KORB_METHOD_ATTR_R)
         return RESULT_OK(korb_ivar_get(self, ID2SYM(m->attr_ivar)));
     return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
+}
+
+/* a descends from (or equals) b */
+static bool
+korb_class_le(VALUE a, VALUE b)
+{
+    while (KORB_CLASS_P(a)) {
+        if (a == b) return true;
+        a = VAL2CLASS(a)->superclass;
+    }
+    return false;
+}
+
+/* does exception `exc` match rescue class `rescue_class`? */
+bool
+korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
+{
+    if (!KORB_CLASS_P(rescue_class) || !KORB_EXC_P(exc)) return false;
+    uint32_t et = VAL2EXC(exc)->etype;
+    if (et >= 16) return false;
+    VALUE exc_class = korb_const_get(c->vm, c->vm->exc_name[et]);
+    return korb_class_le(exc_class, rescue_class);
+}
+
+/* Build the builtin Exception class hierarchy + register constants.  `slots` is
+ * scratch above any live frame (classes are rooted in the const table). */
+void
+korb_init_exception_classes(CTX *c, VALUE *slots)
+{
+    struct korb_vm *const vm = c->vm;
+    static const struct { const char *name; int etype; const char *super; } defs[] = {
+        { "Exception",           -1,                NULL },
+        { "StandardError",       -1,                "Exception" },
+        { "ScriptError",         -1,                "Exception" },
+        { "NameError",           KORB_E_NAME,       "StandardError" },
+        { "RuntimeError",        KORB_E_RUNTIME,    "StandardError" },
+        { "TypeError",           KORB_E_TYPE,       "StandardError" },
+        { "ArgumentError",       KORB_E_ARGUMENT,   "StandardError" },
+        { "ZeroDivisionError",   KORB_E_ZERODIV,    "StandardError" },
+        { "LocalJumpError",      KORB_E_LOCALJUMP,  "StandardError" },
+        { "IndexError",          -1,                "StandardError" },
+        { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
+        { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
+        { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },
+    };
+    for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
+        uint32_t name_sym = korb_intern(vm, defs[i].name, strlen(defs[i].name));
+        VALUE super = defs[i].super
+            ? korb_const_get(vm, korb_intern(vm, defs[i].super, strlen(defs[i].super)))
+            : KORB_NIL;
+        VALUE cls = korb_class_new(c, slots, name_sym, super).value;   /* never raises */
+        VAL2CLASS(cls)->exc_etype = defs[i].etype;
+        korb_const_define(c, name_sym, cls);
+        if (defs[i].etype >= 0) vm->exc_name[defs[i].etype] = name_sym;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2847,6 +2903,16 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
             return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, s->bytes);
         }
         if (KORB_EXC_P(a0)) return RESULT_RAISE_(a0);   /* re-raise an exception object */
+        if (KORB_CLASS_P(a0)) {                          /* raise SomeError[, msg] */
+            const KorbClass *k = VAL2CLASS(a0);
+            if (k->exc_etype < 0)
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(args, 1))) {
+                const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 1));
+                return korb_raise(c, slots, (unsigned)k->exc_etype, 0, "%.*s", (int)s->len, s->bytes);
+            }
+            return korb_raise(c, slots, (unsigned)k->exc_etype, 0, "%s", korb_sym_name(c->vm, k->name_sym));
+        }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
     }
     return korb_raise(c, slots, KORB_E_RUNTIME, 0, "unhandled exception");
