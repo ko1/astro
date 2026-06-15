@@ -1467,6 +1467,7 @@ static RESULT korb_m_int_pred(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(LONG2FIX(n));
 }
 static RESULT korb_m_int_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_int_nonzero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT != 0 ? VALUE_REF_GET(self) : KORB_NIL); }
 static RESULT korb_m_int_even(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((SELF_INT & 1) == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_int_odd (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((SELF_INT & 1) != 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_int_pos (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_INT > 0 ? KORB_TRUE : KORB_FALSE); }
@@ -1672,6 +1673,7 @@ static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_flt_nonzero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT != 0.0 ? VALUE_REF_GET(self) : KORB_NIL); }
 static RESULT korb_m_flt_neg_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT < 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_pos_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT > 0 ? KORB_TRUE : KORB_FALSE); }
 /* coerce(other) → [Float(other), Float(self)] */
@@ -3339,6 +3341,18 @@ static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_range_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#each_with_index without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE argv[2] = { LONG2FIX(i), LONG2FIX(i - lo) };
+        RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t k = VALUE_SLICE_LEN(a);
     intptr_t lo, hi;
@@ -4713,6 +4727,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "next", korb_m_int_succ, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "pred", korb_m_int_pred, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "zero?", korb_m_int_zero, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "nonzero?", korb_m_int_nonzero, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "even?", korb_m_int_even, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "odd?", korb_m_int_odd, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "positive?", korb_m_int_pos, 0);
@@ -5024,6 +5039,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_entry", korb_m_range_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each_with_index", korb_m_range_each_wi, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
@@ -5090,6 +5106,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "+@", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "between?", korb_m_flt_between, 2);
     korb_def_cmethod(c, KORB_C_FLOAT, "zero?", korb_m_flt_zero, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "nonzero?", korb_m_flt_nonzero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "infinite?", korb_m_flt_inf, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "<=>", korb_m_flt_cmp, 1);
