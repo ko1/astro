@@ -4832,6 +4832,25 @@ static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* max/min over [k,v] pairs (Array#<=>: key then value). want: 1 max, -1 min. */
+static RESULT korb_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
+    const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+    if (h->len == 0) return RESULT_OK(KORB_NIL);
+    uint32_t best = 0;
+    for (uint32_t i = 1; i < h->len; i++) {
+        h = VAL2HASH(VALUE_REF_GET(self));
+        int kc = korb_cmp_full(c, h->items->data[2*i], h->items->data[2*best]);
+        int cmp = (kc != 0) ? kc : korb_cmp_full(c, h->items->data[2*i+1], h->items->data[2*best+1]);
+        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if ((want > 0 && cmp > 0) || (want < 0 && cmp < 0)) best = i;
+    }
+    h = VAL2HASH(VALUE_REF_GET(self));
+    slots[0] = h->items->data[2*best]; slots[1] = h->items->data[2*best+1];
+    CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
+    return RESULT_OK(slots[2]);
+}
+static RESULT korb_m_hash_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_minmax(c, slots, self,  1); }
+static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_minmax(c, slots, self, -1); }
 /* group_by → Hash{ block_key => [[k,v], ...] } over pairs */
 static RESULT korb_m_hash_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#group_by without a block is not supported");
@@ -5993,6 +6012,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "group_by", korb_m_hash_group_by, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "max", korb_m_hash_max, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "min", korb_m_hash_min, 0);
     korb_def_cmethod(c, KORB_C_HASH, "zip", korb_m_hash_zip, -1);
     korb_def_cmethod(c, KORB_C_HASH, "grep", korb_m_hash_grep, 1);
     korb_def_cmethod(c, KORB_C_HASH, "grep_v", korb_m_hash_grep_v, 1);
