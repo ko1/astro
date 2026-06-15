@@ -2098,9 +2098,64 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(SELF_ARY->items->data[i]);
 }
 
+/* Replace self[start, dellen) with valref (spliced if Array, else single element).
+ * `valref` must be a rooted slot. Returns the replacement value. */
+static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, intptr_t start, intptr_t dellen, VALUE_REF valref) {
+    intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    if (start < 0) start += len;
+    if (UNLIKELY(start < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%ld", (long)(start - len + len), (long)len);
+    if (dellen < 0) dellen = 0;
+    bool splat = KORB_ARRAY_P(VALUE_REF_GET(valref));
+    /* build the new sequence in a temp array (rooted), then copy back into self */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
+    for (intptr_t i = 0; i < start; i++) {
+        VALUE e = (i < len) ? VAL2ARY(VALUE_REF_GET(self))->items->data[i] : KORB_NIL;   /* pad gap with nil */
+        CHECK(korb_ary_push_val(c, slots + 1, tmp, e));
+    }
+    if (splat) {
+        uint32_t vn = VAL2ARY(VALUE_REF_GET(valref))->len;
+        for (uint32_t j = 0; j < vn; j++) {
+            VALUE e = VAL2ARY(VALUE_REF_GET(valref))->items->data[j];
+            CHECK(korb_ary_push_val(c, slots + 1, tmp, e));
+        }
+    } else {
+        CHECK(korb_ary_push_val(c, slots + 1, tmp, VALUE_REF_GET(valref)));
+    }
+    for (intptr_t i = start + dellen; i < len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        CHECK(korb_ary_push_val(c, slots + 1, tmp, e));
+    }
+    /* overwrite self with tmp */
+    VAL2ARY(VALUE_REF_GET(self))->len = 0;
+    uint32_t tn = VAL2ARY(VALUE_REF_GET(tmp))->len;
+    for (uint32_t j = 0; j < tn; j++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(tmp))->items->data[j];
+        CHECK(korb_ary_push_val(c, slots + 1, self, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(valref));
+}
 static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbArray *ary = SELF_ARY;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
     VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (VALUE_SLICE_LEN(a) >= 3) {                        /* a[start, len] = val */
+        intptr_t start, dellen;
+        if (UNLIKELY(!korb_to_index(iv, &start)))               return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        return korb_ary_splice(c, slots, self, start, dellen, VALUE_SLICE_REF(a, 2));
+    }
+    if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val */
+        const KorbRange *r = VAL2RANGE(iv);
+        intptr_t b, e;
+        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+        if (b < 0) b += len;
+        if (e < 0) e += len;
+        intptr_t last = r->exclude_end ? e - 1 : e, dellen = last - b + 1;
+        if (dellen < 0) dellen = 0;
+        return korb_ary_splice(c, slots, self, b, dellen, VALUE_SLICE_REF(a, 1));
+    }
+    KorbArray *ary = SELF_ARY;
     intptr_t i;
     if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     if (i < 0) i += ary->len;
@@ -3948,7 +4003,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "at", korb_m_ary_aref, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "values_at", korb_m_ary_values_at, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fill", korb_m_ary_fill, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "[]=", korb_m_ary_aset, 2);
+    korb_def_cmethod(c, KORB_C_ARRAY, "[]=", korb_m_ary_aset, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "<<", korb_m_ary_ltlt, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "push", korb_m_ary_push, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "append", korb_m_ary_push, -1);
