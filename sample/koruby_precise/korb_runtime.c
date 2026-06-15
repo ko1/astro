@@ -3094,14 +3094,18 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* any? (mode 0) / all? (1) / none? (2), with a block */
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#any?/all?/none? without a block is not supported");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = ary->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        bool t = KORB_TRUTHY(r.value);
+        bool t;
+        if (block != NULL) {                                 /* truthiness of block result */
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            t = KORB_TRUTHY(r.value);
+        } else {
+            t = KORB_TRUTHY(slots[0]);                        /* no block → element truthiness */
+        }
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);     /* any? */
         if (mode == 1 && !t) return RESULT_OK(KORB_FALSE);   /* all? */
         if (mode == 2 && t) return RESULT_OK(KORB_FALSE);    /* none? */
@@ -3551,13 +3555,55 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))   /* fill {block} form not supported */
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#fill with a block is not supported");
-    VALUE v = VALUE_SLICE_GET(a, 0);
-    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    KorbArrayItems *it = ary->items;
-    for (uint32_t i = 0; i < ary->len; i++) ARO_STORE(c, it, &it->data[i], v);
+static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    intptr_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    uint32_t base = block ? 0 : 1;                        /* position args start here */
+    if (UNLIKELY(!block && VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+    VALUE v = block ? KORB_NIL : VALUE_SLICE_GET(a, 0);
+    /* compute fill region [beg, beg+len) following MRI rb_ary_fill order */
+    intptr_t beg = 0, len = n; bool have_len = false;
+    VALUE pos0 = VALUE_SLICE_LEN(a) > base ? VALUE_SLICE_GET(a, base) : KORB_NIL;
+    if (KORB_RANGE_P(pos0)) {
+        const KorbRange *r = VAL2RANGE(pos0);
+        intptr_t b, e;
+        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (b < 0) b += n;
+        if (e < 0) e += n;
+        if (b < 0) b = 0;
+        beg = b; len = (r->exclude_end ? e - 1 : e) - b + 1; have_len = true;
+    } else {
+        if (pos0 != KORB_NIL) {
+            if (UNLIKELY(!korb_to_index(pos0, &beg))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos0));
+        }
+        VALUE pos1 = VALUE_SLICE_LEN(a) > base + 1 ? VALUE_SLICE_GET(a, base + 1) : KORB_NIL;
+        if (pos1 != KORB_NIL) {
+            if (UNLIKELY(!korb_to_index(pos1, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos1));
+            have_len = true;
+        }
+        if (beg < 0) { beg += n; if (beg < 0) beg = 0; }
+        if (!have_len) len = n - beg;                    /* default: to end of array */
+    }
+    if (len < 0) len = 0;
+    slots[0] = v;                                        /* root value across any grow */
+    for (intptr_t i = beg; i < beg + len; i++) {
+        if (i < 0) continue;
+        if (block != NULL) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[0] = r.value;                          /* root before grow GC */
+        }
+        KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if ((uint32_t)i >= ary->len) {
+            CHECK(korb_ary_ensure(c, slots + 1, self, (uint32_t)i + 1 - ary->len));
+            ary = VAL2ARY(VALUE_REF_GET(self));
+            for (uint32_t k = ary->len; k <= (uint32_t)i; k++) ary->items->data[k] = KORB_NIL;
+            ary->len = (uint32_t)i + 1;
+        }
+        ary = VAL2ARY(VALUE_REF_GET(self));
+        ARO_STORE(c, ary->items, &ary->items->data[i], slots[0]);
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
@@ -3668,7 +3714,12 @@ static RESULT korb_m_hash_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_hash_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_hash_filter(c, slots, self, block, def_env, captured_self, false); }
 /* any?(0)/all?(1)/none?(2) */
 static RESULT korb_hash_quant(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#any?/all?/none? without a block is not supported");
+    if (block == NULL) {                                  /* pairs are always truthy */
+        uint32_t len = VAL2HASH(VALUE_REF_GET(self))->len;
+        if (mode == 0) return RESULT_OK(len > 0 ? KORB_TRUE : KORB_FALSE);   /* any? */
+        if (mode == 2) return RESULT_OK(len == 0 ? KORB_TRUE : KORB_FALSE);  /* none? */
+        return RESULT_OK(KORB_TRUE);                                          /* all? */
+    }
     uint32_t np = korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
@@ -4709,7 +4760,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "slice", korb_m_ary_aref, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "at", korb_m_ary_aref, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "values_at", korb_m_ary_values_at, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "fill", korb_m_ary_fill, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "fill", korb_m_ary_fill, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "[]=", korb_m_ary_aset, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "<<", korb_m_ary_ltlt, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "push", korb_m_ary_push, -1);
@@ -4789,6 +4840,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "select", korb_m_ary_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter", korb_m_ary_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_all", korb_m_ary_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reject", korb_m_ary_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find", korb_m_ary_find, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, 0);
