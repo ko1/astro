@@ -4847,21 +4847,26 @@ static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Integer#step / Float#step (generic over numeric self) */
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Numeric#step without a block is not supported");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE selfv = VALUE_REF_GET(self);
     VALUE limv = VALUE_SLICE_GET(a, 0);
     VALUE stepv = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(1);
     bool use_float = KORB_FLOAT_P(selfv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
+    const bool collect = (block == NULL);             /* no block → materialize into an Enumerator */
+    VALUE_REF dst = {0};
     if (use_float) {
         double s, lim, st;
         if (!korb_num_to_d(selfv, &s) || !korb_num_to_d(limv, &lim) || !korb_num_to_d(stepv, &st))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
         if (st == 0.0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+        if (collect) { slots[0] = UNWRAP(korb_ary_new(c, slots, 8)); dst = VALUE_REF_AT(&slots[0]); }  /* after reading the doubles */
         for (long i = 0; ; i++) {
             double d = s + (double)i * st;
             if (st > 0 ? d > lim : d < lim) break;
+            if (collect) { slots[1] = UNWRAP(korb_float_new(c, slots + 1, d)); CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); continue; }
             slots[0] = UNWRAP(korb_float_new(c, slots, d));
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -4869,11 +4874,17 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     } else {
         intptr_t s = FIX2LONG(selfv), lim = FIX2LONG(limv), st = FIX2LONG(stepv);
         if (st == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+        if (collect) { slots[0] = UNWRAP(korb_ary_new(c, slots, 8)); dst = VALUE_REF_AT(&slots[0]); }
         for (intptr_t i = s; st > 0 ? i <= lim : i >= lim; i += st) {
+            if (collect) { CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i))); continue; }
             slots[0] = LONG2FIX(i);
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         }
+    }
+    if (collect) {
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "step"));   /* dst at slots[0] still rooted */
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -5107,9 +5118,16 @@ static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(acc));
 }
 
+static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#each without a block (Enumerator) is not supported");
+    if (block == NULL) {                              /* → Enumerator over the range's elements */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
+        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
     for (intptr_t i = lo; i < hi; i++) {           /* bounds are plain ints — GC-safe */
@@ -5131,7 +5149,11 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#map without a block (Enumerator) is not supported");
+    if (block == NULL) {                              /* → Enumerator over the range's elements */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "map"));
+        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
@@ -5383,9 +5405,20 @@ static RESULT korb_m_range_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 static RESULT korb_m_range_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#each_with_index without a block is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (block == NULL) {                              /* → Enumerator of [elem, index] pairs */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0)));
+        VALUE_REF pairs = VALUE_REF_AT(&slots[0]);
+        for (intptr_t i = lo; i < hi; i++) {
+            slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(i)));
+            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(i - lo)));
+            CHECK(korb_ary_push_val(c, slots + 2, pairs, slots[1]));
+        }
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_with_index"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+    }
     for (intptr_t i = lo; i < hi; i++) {
         VALUE argv[2] = { LONG2FIX(i), LONG2FIX(i - lo) };
         RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2, cself);
@@ -5542,13 +5575,19 @@ static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
 static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#step without a block (Enumerator) is not supported");
     VALUE sv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (block == NULL) {                              /* → Enumerator of the stepped values */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        for (intptr_t i = lo; i < hi; i += st) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "step"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
+    }
     for (intptr_t i = lo; i < hi; i += st) {
         VALUE iv = LONG2FIX(i);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
