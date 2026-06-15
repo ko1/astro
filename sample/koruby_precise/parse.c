@@ -673,16 +673,15 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     if (dn->receiver) return kp_unsupported(tc, (const pm_node_t *)dn, "singleton method (def self.x)");
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
-    if (dn->parameters) {
-        const pm_parameters_node_t *ps = dn->parameters;
-        if (ps->rest || ps->posts.size ||
-            ps->keywords.size || ps->keyword_rest || ps->block) {
+    const pm_parameters_node_t *ps = dn->parameters;
+    if (ps) {
+        if (ps->rest || ps->posts.size || ps->block) {
             return kp_unsupported(tc, (const pm_node_t *)dn,
-                                  "non-positional parameters (rest/post/kw/block)");
+                                  "non-positional parameters (rest/post/block)");
         }
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
-        params_cnt = req_cnt + opt_cnt;
+        params_cnt = req_cnt + opt_cnt;   /* positional only; keywords live in later slots */
     }
 
     push_frame(tc, &dn->locals);
@@ -721,6 +720,35 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         }
     }
 
+    /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
+     * occupying locals after the positional params; bound by name in korb_invoke_method. */
+    struct korb_kw_info *kw_info = NULL;
+    if (ps && (ps->keywords.size || ps->keyword_rest)) {
+        kw_info = malloc(sizeof(*kw_info));
+        if (!kw_info) abort();
+        kw_info->count = (uint32_t)ps->keywords.size;
+        kw_info->kwrest_slot = -1;
+        kw_info->entries = ps->keywords.size ? malloc(sizeof(struct korb_kw_entry) * ps->keywords.size) : NULL;
+        for (uint32_t j = 0; j < kw_info->count; j++) {
+            const pm_node_t *kp = ps->keywords.nodes[j];
+            pm_constant_id_t name; NODE *deflt = NULL;
+            if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                name = ((const pm_required_keyword_parameter_node_t *)kp)->name;
+            } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                const pm_optional_keyword_parameter_node_t *ok = (const pm_optional_keyword_parameter_node_t *)kp;
+                name = ok->name;
+                deflt = transduce(tc, ok->value);    /* default runs at body cursor */
+            } else { pop_frame(tc); return kp_unsupported(tc, kp, "keyword parameter form"); }
+            kw_info->entries[j].mid  = kp_intern_cid(tc, name);
+            kw_info->entries[j].slot = lvar_index(tc, kp, name);
+            kw_info->entries[j].deflt = deflt;
+        }
+        if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {
+            pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
+            if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
+        }
+    }
+
     NODE *body;
     if (dn->body == NULL) {
         body = lit_nil();
@@ -737,7 +765,7 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, frame_size, uses_block, opt_defaults, -1 - tc->chain);
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */
@@ -975,6 +1003,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         for (size_t i = 0; i < cnt; i++)
             if (!PM_NODE_TYPE_P(hn->elements.nodes[i], PM_ASSOC_NODE))
                 return kp_unsupported(tc, node, "hash literal with ** splat");
+        return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
+      }
+
+      case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` args → a Hash (becomes kwargs) */
+        const pm_keyword_hash_node_t *hn = (const pm_keyword_hash_node_t *)node;
+        size_t cnt = hn->elements.size;
+        for (size_t i = 0; i < cnt; i++)
+            if (!PM_NODE_TYPE_P(hn->elements.nodes[i], PM_ASSOC_NODE))
+                return kp_unsupported(tc, node, "keyword args with ** splat");
         return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 

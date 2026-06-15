@@ -626,7 +626,7 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
-                      uint32_t uses_block, struct Node **opt_defaults)
+                      uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = NULL;
@@ -649,6 +649,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->locals_cnt = locals_cnt;
     m->body = body;
     m->opt_defaults = opt_defaults;
+    m->kw_info = kw_info;
     m->bfn = NULL;
     c->vm->method_serial++;
 }
@@ -714,21 +715,26 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
-    if (UNLIKELY(argc < m->req_cnt || argc > (uint32_t)m->params_cnt)) {
+    const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
+    VALUE *const base = slots - argc;
+    /* a method with keyword params consumes a trailing Hash arg as kwargs. */
+    uint32_t pos_argc = argc;
+    VALUE kwhash = KORB_NIL;
+    if (kw && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }
+    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt)) {
         if (m->req_cnt == (uint32_t)m->params_cnt)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+                              "wrong number of arguments (given %u, expected %d)", pos_argc, m->params_cnt);
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %u..%d)", argc, m->req_cnt, m->params_cnt);
+                          "wrong number of arguments (given %u, expected %u..%d)", pos_argc, m->req_cnt, m->params_cnt);
     }
-    VALUE *const base = slots - argc;
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
     if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     }
-    if (locals_cnt > argc) memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));
+    if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = def_class;     /* odd-tagged not needed: class is a heap obj or nil */
     if (block != NULL && m->uses_block) {
@@ -736,13 +742,51 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         base[locals_cnt - 4] = (VALUE)((uintptr_t)def_env | 1u);
         base[locals_cnt - 3] = captured_self;
     }
+    if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
     /* fill missing optional params by evaluating their defaults in method scope
      * (cursor = body cursor; defaults may reference earlier params + self). */
-    for (uint32_t pi = argc; pi < (uint32_t)m->params_cnt; pi++) {
+    for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
         NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
         RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
         base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
+    }
+    if (kw) {
+        if (kw->kwrest_slot >= 0) kwhash = base[kw->kwrest_slot];   /* re-read (GC during opt-fill) */
+        uint64_t present = 0;
+        for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 1: present keywords (no alloc) */
+            int32_t idx = (kwhash != KORB_NIL) ? korb_hash_find(VAL2HASH(kwhash), ID2SYM(kw->entries[j].mid)) : -1;
+            if (idx >= 0) { base[kw->entries[j].slot] = VAL2HASH(kwhash)->items->data[2*idx+1]; if (j < 64) present |= (1ull << j); }
+        }
+        for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 2: defaults / required check */
+            if (j < 64 && (present & (1ull << j))) continue;
+            if (kw->entries[j].deflt) {
+                RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                base[kw->entries[j].slot] = dr.value;
+            } else {
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, kw->entries[j].mid));
+            }
+        }
+        if (kw->kwrest_slot >= 0) {                                 /* collect undeclared keys into **rest */
+            VALUE *cur = base + locals_cnt;
+            cur[0] = UNWRAP(korb_hash_new(c, cur, 4));              /* new kwrest hash at cur[0] */
+            VALUE_REF kr = VALUE_REF_AT(&cur[0]);
+            VALUE kh = base[kw->kwrest_slot];
+            if (kh != KORB_NIL) {
+                uint32_t hn = VAL2HASH(kh)->len;
+                for (uint32_t i = 0; i < hn; i++) {
+                    VALUE key = VAL2HASH(base[kw->kwrest_slot])->items->data[2*i];
+                    bool declared = false;
+                    for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
+                    if (declared) continue;
+                    cur[1] = key;
+                    VALUE val = VAL2HASH(base[kw->kwrest_slot])->items->data[2*i+1];
+                    CHECK(korb_hash_set(c, cur + 2, kr, VALUE_REF_AT(&cur[1]), val));
+                }
+            }
+            base[kw->kwrest_slot] = VALUE_REF_GET(kr);
+        }
     }
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -1256,7 +1300,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
                    uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
-                   uint32_t uses_block, struct Node **opt_defaults)
+                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
@@ -1266,6 +1310,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->locals_cnt = locals_cnt;
     m->body = body;
     m->opt_defaults = opt_defaults;
+    m->kw_info = kw_info;
     m->bfn = NULL;
     c->vm->method_serial++;   /* invalidate call caches */
 }

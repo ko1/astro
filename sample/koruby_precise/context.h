@@ -307,6 +307,7 @@ struct korb_method {
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     struct Node *body;       /* ISEQ */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
+    void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     korb_builtin_fn bfn;     /* BUILTIN */
 };
 
