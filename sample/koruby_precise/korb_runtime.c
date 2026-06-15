@@ -2581,6 +2581,56 @@ static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VA
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* String#succ: increment rightmost alphanumeric run with carry; if none, byte++
+ * on the last char. Carry out of the leftmost alnum prepends '1'/'a'/'A'. */
+static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s0 = VAL2STR(VALUE_REF_GET(self));
+    uint32_t n = s0->len;
+    if (n == 0) return korb_str_new(c, slots, "", 0);
+    char *buf = malloc(n + 2); memcpy(buf, s0->buf->data, n);
+    bool has_alnum = false;
+    for (uint32_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)buf[i];
+        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) { has_alnum = true; break; }
+    }
+    char carry_ch = 0;
+    if (!has_alnum) {
+        for (int i = (int)n - 1; i >= 0; i--) {
+            unsigned char ch = (unsigned char)buf[i];
+            if (ch == 0xFF) { buf[i] = 0x00; if (i == 0) carry_ch = 0x01; }
+            else { buf[i] = (char)(ch + 1); break; }
+        }
+    } else {
+        int i = (int)n - 1;
+        for (;;) {
+            unsigned char ch = (unsigned char)buf[i];
+            bool carried = false;
+            if (ch >= '0' && ch <= '9')      { if (ch == '9') { buf[i] = '0'; carry_ch = '1'; carried = true; } else buf[i] = (char)(ch + 1); }
+            else if (ch >= 'a' && ch <= 'z') { if (ch == 'z') { buf[i] = 'a'; carry_ch = 'a'; carried = true; } else buf[i] = (char)(ch + 1); }
+            else if (ch >= 'A' && ch <= 'Z') { if (ch == 'Z') { buf[i] = 'A'; carry_ch = 'A'; carried = true; } else buf[i] = (char)(ch + 1); }
+            else { i--; if (i < 0) break; else continue; }
+            if (!carried) break;
+            int j = i - 1;
+            while (j >= 0) {
+                unsigned char cj = (unsigned char)buf[j];
+                if ((cj>='0'&&cj<='9')||(cj>='a'&&cj<='z')||(cj>='A'&&cj<='Z')) break;
+                j--;
+            }
+            if (j < 0) break;            /* carry out → keep carry_ch for prepend */
+            i = j; carry_ch = 0;
+        }
+    }
+    RESULT r;
+    if (carry_ch) {
+        char *out = malloc(n + 1); out[0] = carry_ch; memcpy(out + 1, buf, n);
+        r = korb_str_new(c, slots, out, n + 1); free(out);
+    } else {
+        r = korb_str_new(c, slots, buf, n);
+    }
+    free(buf);
+    return r;
+}
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
@@ -5493,6 +5543,15 @@ static RESULT korb_m_sym_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
     return korb_m_str_aref(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
 }
+static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_sym_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    RESULT r = korb_m_str_succ(c, slots + 1, VALUE_REF_AT(&slots[0]), a);   /* succ'd string */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    const KorbString *rs = VAL2STR(r.value);
+    return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
+}
 static RESULT korb_m_sym_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
@@ -5704,6 +5763,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "succ", korb_m_str_succ, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "next", korb_m_str_succ, 0);
     korb_def_cmethod(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
@@ -5732,6 +5793,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "[]", korb_m_sym_slice, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "succ", korb_m_sym_succ, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "next", korb_m_sym_succ, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
