@@ -5485,7 +5485,27 @@ static RESULT korb_m_hash_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    HASH_REQ_BLOCK("Hash#reduce");
+    if (block == NULL) {                          /* symbol form: reduce(:+) / reduce(init, :+) — op on [k,v] pairs */
+        uint32_t na = VALUE_SLICE_LEN(a), op_mid;
+        if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+        bool have_acc = (na >= 2);
+        if (have_acc) slots[0] = VALUE_SLICE_GET(a, 0);
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            if (i >= h->len) break;
+            slots[1] = h->items->data[2*i]; slots[2] = h->items->data[2*i+1];
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));   /* [k,v] pair */
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+            if (!have_acc) { slots[0] = slots[3]; have_acc = true; continue; }
+            slots[4] = slots[0]; slots[5] = slots[3];           /* recv=acc, arg=pair */
+            RESULT r = korb_send_impl(c, slots + 6, op_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[0] = r.value;
+        }
+        return RESULT_OK(have_acc ? slots[0] : KORB_NIL);
+    }
     uint32_t np = korb_entry_params_cnt(block);   /* acc + pair: block takes |acc, (k,v)| */
     if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#reduce needs an initial value");
     slots[0] = VALUE_SLICE_GET(a, 0);             /* acc */
