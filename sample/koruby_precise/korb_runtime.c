@@ -3825,6 +3825,23 @@ static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)slots;
     return RESULT_OK(korb_case_eq(c, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE);
 }
+/* Object#then / yield_self — yield self, return the block's value (no block → self). */
+static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = VALUE_REF_GET(self);                   /* rooted across the yield */
+    return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+}
+/* Object#tap — yield self, return self. */
+static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block != NULL) {
+        slots[0] = VALUE_REF_GET(self);
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 
 /* Exception#message / to_s — the stored message, or the class name if none. */
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -8373,6 +8390,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);
