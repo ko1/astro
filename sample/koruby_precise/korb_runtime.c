@@ -4120,6 +4120,38 @@ static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* each_slice(n): consecutive n-element slices.  block → yield each slice (nil);
+ * no block → an Enumerator over the slices.  The slices are pre-built into a
+ * rooted array so yielding is GC-safe. */
+static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    intptr_t n;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid slice size");
+    /* slots[0]=out, slots[1]=captured_self (heap VALUE — must be rooted across the
+     * slice-building allocs, else STRESS GC moves `main` and the later yield uses a
+     * stale self), slots[2]=current slice, yield/scratch at slots+3. */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* array of slices */
+    slots[1] = captured_self;
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i += (uint32_t)n) {
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, (uint32_t)n));   /* one slice; slots_top now covers [0..2] */
+        VALUE_REF slice = VALUE_REF_AT(&slots[2]);
+        for (uint32_t j = 0; j < (uint32_t)n && i + j < VAL2ARY(VALUE_REF_GET(self))->len; j++)
+            CHECK(korb_ary_push_val(c, slots + 3, slice, VAL2ARY(VALUE_REF_GET(self))->items->data[i + j]));
+        CHECK(korb_ary_push_val(c, slots + 3, out, VALUE_REF_GET(slice)));
+    }
+    if (block == NULL) {
+        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "each_slice"));
+        return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
+    }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
+        VALUE sl = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &sl, 1, slots[1]);   /* rooted self */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));    /* Ruby 4.0: block form returns the receiver */
+}
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
@@ -8149,6 +8181,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "intersection", korb_m_ary_intersect, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each", korb_m_ary_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_index", korb_m_ary_each_wi, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_slice", korb_m_ary_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "select", korb_m_ary_select, 0);
