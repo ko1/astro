@@ -2485,8 +2485,7 @@ static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALUE_SLICE a) {
     intptr_t ndig = 0;
     if (VALUE_SLICE_LEN(a) >= 1) {
-        if (UNLIKELY(!FIXNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
-        ndig = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
     intptr_t f = 1;
@@ -7180,8 +7179,9 @@ static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self)) & FIX2LONG(o), m = FIX2LONG(o);
+    intptr_t m;
+    if (UNLIKELY(!korb_to_index(o, &m))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(o));
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self)) & m;
     bool r = mode == 0 ? (n == 0) : mode == 1 ? (n != 0) : (n == m);   /* nobits/anybits/allbits */
     return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
 }
