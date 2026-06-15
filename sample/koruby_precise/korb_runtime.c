@@ -2529,6 +2529,17 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_m_int_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(8));   /* bytes in a machine word (Fixnum) */
+}
+static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self));
+    if (n < 0) n = ~n;                                 /* -n-1: bits of the two's-complement magnitude */
+    intptr_t len = 0;
+    while (n > 0) { len++; n >>= 1; }
+    return RESULT_OK(LONG2FIX(len));
+}
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t n = SELF_INT;
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain");
@@ -6507,6 +6518,24 @@ static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Hash#invert — new hash with keys and values swapped (later dups win, like CRuby). */
+static RESULT korb_m_hash_invert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2*i];                /* old key → new value */
+        slots[2] = h->items->data[2*i+1];              /* old value → new key */
+        CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[2]), slots[1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* Hash#rehash — our hash has no cached digests, so this is a no-op returning self. */
+static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
@@ -8004,6 +8033,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "between?", korb_m_int_between, 2);
     korb_def_cmethod(c, KORB_C_INTEGER, "clamp", korb_m_int_clamp, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "digits", korb_m_int_digits, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "size", korb_m_int_size, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "bit_length", korb_m_int_bit_length, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "<<", korb_m_int_lshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, ">>", korb_m_int_rshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "[]", korb_m_int_bitref, 1);
@@ -8333,6 +8364,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "invert", korb_m_hash_invert, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
     korb_def_cmethod(c, KORB_C_HASH, "deconstruct_keys", korb_m_ary_self, -1);   /* pattern-match hook → self */
     korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
