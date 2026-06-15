@@ -1190,7 +1190,12 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         }
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
-    if (FIXNUM_P(l) || KORB_STRING_P(l)) {
+    if (SYMBOL_P(l) && SYMBOL_P(r)) {
+        int cmp = strcmp(korb_sym_name(c->vm, SYM2ID(l)), korb_sym_name(c->vm, SYM2ID(r)));
+        bool t = (op == 0) ? cmp < 0 : (op == 1) ? cmp <= 0 : (op == 2) ? cmp > 0 : cmp >= 0;
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
+    if (FIXNUM_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
         char rdesc[64];
         korb_cmperr_operand(r, rdesc, sizeof(rdesc));
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -6004,6 +6009,38 @@ static RESULT korb_sym_case(CTX *c, VALUE *slots, VALUE_REF self, int op) {
     const KorbString *rs = VAL2STR(slots[1]);
     return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
 }
+static RESULT korb_m_sym_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!SYMBOL_P(o)) return RESULT_OK(KORB_NIL);
+    int r = strcmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o)));
+    return RESULT_OK(LONG2FIX(r < 0 ? -1 : (r > 0 ? 1 : 0)));
+}
+/* relational op on Symbols by name. op: 0='<' 1='<=' 2='>' 3='>=' */
+static RESULT korb_m_sym_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!SYMBOL_P(o))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Symbol with %s failed", korb_type_name(o));
+    int r = strcmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o)));
+    bool t = op == 0 ? r < 0 : op == 1 ? r <= 0 : op == 2 ? r > 0 : r >= 0;
+    return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_sym_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_sym_rel(c, slots, self, a, 0); }
+static RESULT korb_m_sym_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_sym_rel(c, slots, self, a, 1); }
+static RESULT korb_m_sym_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_sym_rel(c, slots, self, a, 2); }
+static RESULT korb_m_sym_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_sym_rel(c, slots, self, a, 3); }
+static RESULT korb_m_sym_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!SYMBOL_P(o)) return RESULT_OK(KORB_NIL);
+    int r = strcasecmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o)));
+    return RESULT_OK(LONG2FIX(r < 0 ? -1 : (r > 0 ? 1 : 0)));
+}
+static RESULT korb_m_sym_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!SYMBOL_P(o)) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(strcasecmp(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self))), korb_sym_name(c->vm, SYM2ID(o))) == 0 ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_sym_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_sym_case(c, slots, self, 0); }
 static RESULT korb_m_sym_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_sym_case(c, slots, self, 1); }
 static RESULT korb_m_sym_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_sym_case(c, slots, self, 2); }
@@ -6281,10 +6318,18 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "upcase", korb_m_sym_upcase, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "downcase", korb_m_sym_downcase, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "capitalize", korb_m_sym_capitalize, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "<=>", korb_m_sym_cmp, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "<", korb_m_sym_lt, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "<=", korb_m_sym_le, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, ">", korb_m_sym_gt, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, ">=", korb_m_sym_ge, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp", korb_m_sym_casecmp, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp?", korb_m_sym_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "intern", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "length", korb_m_sym_len, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "size", korb_m_sym_len, 0);
 
@@ -6351,6 +6396,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "*", korb_m_ary_mul, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "index", korb_m_ary_index, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "assoc", korb_m_ary_assoc, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sum", korb_m_ary_sum, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "min", korb_m_ary_min, 0);
