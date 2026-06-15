@@ -2038,10 +2038,65 @@ static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
     return korb_rat_new(c, slots, mant, (intptr_t)1 << (-e));
 }
 
+/* Simplest rational p/q in [a, b] (a <= b), CF-convergent search matching
+ * CRuby's nurat_rationalize_internal.  Returns false on non-convergence. */
+static bool korb_rationalize_internal(double a, double b, int64_t *restrict pn, int64_t *restrict pd) {
+    int64_t p0 = 0, p1 = 1, q0 = 1, q1 = 0;
+    for (int i = 0; i < 64; i++) {
+        double c = ceil(a);
+        if (!isfinite(c) || fabs(c) > 9.0e18) return false;
+        if (c < b) { *pn = (int64_t)c * p1 + p0; *pd = (int64_t)c * q1 + q0; return *pd != 0; }
+        int64_t k = (int64_t)c - 1;
+        int64_t p2 = k * p1 + p0, q2 = k * q1 + q0;
+        double bk = b - (double)k, ak = a - (double)k;
+        if (ak == 0.0 || bk == 0.0) return false;
+        double t = 1.0 / bk;
+        b = 1.0 / ak;
+        a = t;
+        p0 = p1; p1 = p2; q0 = q1; q1 = q2;
+    }
+    return false;
+}
+/* Simplest fraction p/q that round-trips to f as a double (CF convergents of f,
+ * first convergent reproducing f exactly).  Used by no-arg Float#rationalize. */
+static bool korb_flt_simplest_roundtrip(double f, int64_t *restrict pn, int64_t *restrict pd) {
+    double af = fabs(f), x = af;
+    int64_t hm1 = 1, hm2 = 0, km1 = 0, km2 = 1;
+    for (int i = 0; i < 64; i++) {
+        double fl = floor(x);
+        if (fabs(fl) > 9.0e18) return false;
+        int64_t a = (int64_t)fl;
+        if (hm1 != 0 && fabs((double)a * (double)hm1) > 9.0e18) return false;
+        int64_t h = a * hm1 + hm2, k = a * km1 + km2;
+        if (k != 0 && (double)h / (double)k == af) { *pn = f < 0 ? -h : h; *pd = k; return true; }
+        double frac = x - fl;
+        if (frac == 0.0) { *pn = f < 0 ? -h : h; *pd = (k != 0 ? k : 1); return true; }
+        x = 1.0 / frac;
+        hm2 = hm1; hm1 = h; km2 = km1; km1 = k;
+    }
+    return false;
+}
 /* ---- Float methods ------------------------------------------------------- */
 #define SELF_FLT (VAL2FLT(VALUE_REF_GET(self))->val)
 static RESULT korb_m_flt_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_flt_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_to_rat(c, slots, SELF_FLT); }
+/* Float#rationalize(eps=nil): simplest rational within eps (or within the
+ * float's own rounding interval if no eps) of self. */
+static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double f = SELF_FLT;
+    if (UNLIKELY(!isfinite(f))) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Infinity");
+    int64_t n, d;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        double eps;
+        if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &eps))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+        eps = fabs(eps);
+        if (eps == 0.0) return korb_flt_to_rat(c, slots, f);          /* exact */
+        if (!korb_rationalize_internal(f - eps, f + eps, &n, &d)) return korb_flt_to_rat(c, slots, f);
+    } else {
+        if (!korb_flt_simplest_roundtrip(f, &n, &d)) return korb_flt_to_rat(c, slots, f);
+    }
+    return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
+}
 static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(LONG2FIX(VAL2RAT(r.value)->num));
 }
@@ -2085,6 +2140,10 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     double r = fmod(SELF_FLT, o);
     if (r != 0.0 && ((r < 0) != (o < 0))) r += o;             /* floored division remainder */
     return korb_float_new(c, slots, r);
+}
+static RESULT korb_m_flt_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    return korb_float_new(c, slots, fmod(SELF_FLT, o));        /* C fmod: sign of dividend = remainder */
 }
 static RESULT korb_m_flt_finite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(isfinite(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, nextafter(SELF_FLT, (double)INFINITY)); }
@@ -5934,6 +5993,20 @@ static RESULT korb_m_sym_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
 }
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+/* Symbol case-fold: materialise name as String, run str transform op
+ * (0=upcase 1=downcase 2=capitalize), re-intern to a Symbol. */
+static RESULT korb_sym_case(CTX *c, VALUE *slots, VALUE_REF self, int op) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    RESULT r = korb_str_transform(c, slots + 1, VALUE_REF_AT(&slots[0]), op);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    slots[1] = r.value;   /* root the new string across the (alloc'ing) intern */
+    const KorbString *rs = VAL2STR(slots[1]);
+    return RESULT_OK(ID2SYM(korb_intern(c->vm, rs->buf->data, rs->len)));
+}
+static RESULT korb_m_sym_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_sym_case(c, slots, self, 0); }
+static RESULT korb_m_sym_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_sym_case(c, slots, self, 1); }
+static RESULT korb_m_sym_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_sym_case(c, slots, self, 2); }
 static RESULT korb_m_sym_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
@@ -6052,6 +6125,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "divmod", korb_m_int_divmod, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "div", korb_m_int_div, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_int_modulo, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "remainder", korb_m_int_remainder, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "+", korb_m_num_add, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "-", korb_m_num_sub, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "*", korb_m_num_mul, 1);
@@ -6204,6 +6278,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "succ", korb_m_sym_succ, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "next", korb_m_sym_succ, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "swapcase", korb_m_sym_swapcase, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "upcase", korb_m_sym_upcase, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "downcase", korb_m_sym_downcase, 0);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "capitalize", korb_m_sym_capitalize, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
@@ -6482,6 +6559,7 @@ korb_register_core_methods(CTX *c)
     /* Float */
     korb_def_cmethod(c, KORB_C_FLOAT, "to_f", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_r", korb_m_flt_to_r, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "rationalize", korb_m_flt_rationalize, -1);
     korb_def_cmethod(c, KORB_C_FLOAT, "numerator", korb_m_flt_numerator, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "denominator", korb_m_flt_denominator, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_i", korb_m_flt_to_i, 0);
@@ -6525,6 +6603,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "quo", korb_m_flt_fdiv, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "div", korb_m_flt_div, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "modulo", korb_m_flt_modulo, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "remainder", korb_m_flt_remainder, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "integer?", korb_m_lit_false, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "coerce", korb_m_flt_coerce, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "finite?", korb_m_flt_finite, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "next_float", korb_m_flt_next, 0);
