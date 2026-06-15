@@ -301,6 +301,7 @@ extern const struct NodeKind kind_node_plus;         /* all binops share slot_co
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
+extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
 extern const struct NodeKind kind_node_range_new;    /* range literal */
@@ -888,7 +889,17 @@ static NODE *
 build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
 {
     if (n == 0) return ALLOC_node_hash_new(capa);
-    const pm_assoc_node_t *as = (const pm_assoc_node_t *)assocs[n - 1];
+    const pm_node_t *last = assocs[n - 1];
+    if (PM_NODE_TYPE_P(last, PM_ASSOC_SPLAT_NODE)) {       /* `**h` → merge */
+        const pm_node_t *expr = (const pm_node_t *)((const pm_assoc_splat_node_t *)last)->value;
+        if (expr == NULL) return build_hash(tc, assocs, n - 1, capa);   /* bare `**` */
+        NODE *acc, *src;
+        uint32_t sc = kind_node_hash_merge.slot_count;
+        WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
+                            src = transduce(tc, expr)));
+        return ALLOC_node_hash_merge(acc, src);
+    }
+    const pm_assoc_node_t *as = (const pm_assoc_node_t *)last;
     NODE *acc, *key, *val;
     uint32_t sc = kind_node_hash_set.slot_count;
     WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
@@ -1040,18 +1051,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_HASH_NODE: {
         const pm_hash_node_t *hn = (const pm_hash_node_t *)node;
         size_t cnt = hn->elements.size;
-        for (size_t i = 0; i < cnt; i++)
-            if (!PM_NODE_TYPE_P(hn->elements.nodes[i], PM_ASSOC_NODE))
-                return kp_unsupported(tc, node, "hash literal with ** splat");
         return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 
-      case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` args → a Hash (becomes kwargs) */
+      case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` / `**h` args → a Hash (becomes kwargs) */
         const pm_keyword_hash_node_t *hn = (const pm_keyword_hash_node_t *)node;
         size_t cnt = hn->elements.size;
-        for (size_t i = 0; i < cnt; i++)
-            if (!PM_NODE_TYPE_P(hn->elements.nodes[i], PM_ASSOC_NODE))
-                return kp_unsupported(tc, node, "keyword args with ** splat");
         return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 

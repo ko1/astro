@@ -594,6 +594,13 @@ node_hash_set(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE_REF key
     return korb_hash_set(c, slots, hash, key, val);
 }
 
+NODE_DEF
+node_hash_merge(CTX *c, NODE *n, VALUE *slots, VALUE_REF hash@child, VALUE src@child)
+{
+    (void)n;
+    return korb_hash_merge_val(c, slots, hash, src);   /* **src: merge src's pairs into hash */
+}
+
 // ---- range literals --------------------------------------------------------
 //
 // `b..e` / `b...e`.  begin staged (VALUE_REF), end in a register.

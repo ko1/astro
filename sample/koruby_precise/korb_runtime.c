@@ -537,6 +537,22 @@ korb_hash_ensure(CTX *c, VALUE *slots, VALUE_REF href, uint32_t need)
     return RESULT_OK(VALUE_REF_GET(href));
 }
 
+/* merge `**src` into href: copy each src pair (Hash) into href.  nil → no-op. */
+RESULT
+korb_hash_merge_val(CTX *c, VALUE *slots, VALUE_REF href, VALUE src)
+{
+    if (src == KORB_NIL) return RESULT_OK(VALUE_REF_GET(href));
+    if (UNLIKELY(!KORB_HASH_P(src))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(src));
+    VALUE_REF sref = SLOTS_PUSH(slots, src);          /* root src across grow GCs */
+    uint32_t n = VAL2HASH(VALUE_REF_GET(sref))->len;
+    for (uint32_t i = 0; i < n; i++) {
+        slots[1] = VAL2HASH(VALUE_REF_GET(sref))->items->data[2*i];      /* key */
+        slots[2] = VAL2HASH(VALUE_REF_GET(sref))->items->data[2*i + 1];  /* val */
+        CHECK(korb_hash_set(c, slots + 3, href, VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(href));
+}
+
 RESULT
 korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
 {
