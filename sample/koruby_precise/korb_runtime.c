@@ -4077,6 +4077,15 @@ static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n);
     return korb_ary_minmax(c, slots, self,  1);
 }
+static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_minmax(c, slots, self, -1));        /* min (nil if empty) */
+    slots[1] = UNWRAP(korb_ary_minmax(c, slots + 1, self, 1));     /* max */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
+}
 
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -4911,6 +4920,34 @@ static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     return RESULT_OK(VALUE_REF_GET(h));
 }
+static RESULT korb_m_range_overlap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_RANGE_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)", korb_type_name(o));
+    intptr_t lo1, hi1, lo2, hi2;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo1, &hi1) || !korb_range_int_bounds(VAL2RANGE(o), &lo2, &hi2))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    bool ov = lo1 < hi2 && lo2 < hi1 && hi1 > lo1 && hi2 > lo2;   /* half-open [lo,hi) overlap, non-empty */
+    return RESULT_OK(ov ? KORB_TRUE : KORB_FALSE);
+}
+/* min_by(want=-1)/max_by(want=1): element whose block key is the extreme. */
+static RESULT korb_range_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#min_by/max_by without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (hi <= lo) return RESULT_OK(KORB_NIL);
+    bool have = false;
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &iv, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!have) { slots[0] = iv; slots[1] = r.value; have = true; continue; }
+        int cmp = korb_cmp_full(c, r.value, slots[1]);
+        if (cmp == want) { slots[0] = iv; slots[1] = r.value; }
+    }
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_range_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, -1); }
+static RESULT korb_m_range_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, 1); }
 static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#flat_map without a block (Enumerator) is not supported");
@@ -5486,6 +5523,24 @@ static RESULT korb_m_hash_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)c;(void)slots;(void)a;
     VAL2HASH(VALUE_REF_GET(self))->len = 0;     /* drop all pairs (payload kept, becomes garbage) */
     return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_default_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE v = VALUE_SLICE_GET(a, 0);
+    ARO_STORE(c, VAL2HASH(VALUE_REF_GET(self)), (VALUE *)(uintptr_t)&VAL2HASH(VALUE_REF_GET(self))->default_val, v);
+    return RESULT_OK(v);
+}
+static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        if (h->items->data[2*i+1] == KORB_NIL) continue;      /* drop nil values */
+        slots[1] = h->items->data[2*i]; slots[2] = h->items->data[2*i+1];
+        CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -7139,6 +7194,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "sum", korb_m_ary_sum, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "minmax", korb_m_ary_minmax, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "sort", korb_m_ary_sort, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "join", korb_m_ary_join, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact", korb_m_ary_compact, 0);
@@ -7236,6 +7292,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "slice", korb_m_hash_slice, -1);
     korb_def_cmethod(c, KORB_C_HASH, "except", korb_m_hash_except, -1);
     korb_def_cmethod(c, KORB_C_HASH, "default", korb_m_hash_default, -1);
+    korb_def_cmethod(c, KORB_C_HASH, "default=", korb_m_hash_default_set, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
@@ -7301,6 +7359,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "grep_v", korb_m_range_grep_v, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "group_by", korb_m_range_group_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "max_by", korb_m_range_max_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "flat_map", korb_m_range_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect_concat", korb_m_range_flat_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, 0);
