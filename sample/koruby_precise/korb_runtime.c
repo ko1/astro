@@ -936,6 +936,190 @@ static RESULT korb_m_str_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform(c, slots, self, 2); }
 static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)a; return korb_str_transform(c, slots, self, 3); }
 
+/* byte-substring search: index of needle in hay[0..hlen), or -1 (empty matches at 0) */
+static int32_t
+korb_byte_find(const char *hay, uint32_t hlen, const char *needle, uint32_t nlen)
+{
+    if (nlen == 0) return 0;
+    if (nlen > hlen) return -1;
+    for (uint32_t i = 0; i + nlen <= hlen; i++)
+        if (memcmp(hay + i, needle, nlen) == 0) return (int32_t)i;
+    return -1;
+}
+
+static inline bool korb_is_ws(unsigned char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
+}
+
+/* count UTF-8 codepoints in the first nbytes bytes (lead bytes only) */
+static uint32_t
+korb_utf8_count(const char *b, uint32_t nbytes)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < nbytes; i++)
+        if (((unsigned char)b[i] & 0xC0) != 0x80) n++;
+    return n;
+}
+
+/* alloc a fresh String = self->bytes[start, start+len); re-reads self after the
+ * alloc-GC (source may have moved) — THE safe substring primitive. */
+static RESULT
+korb_str_slice_new(CTX *c, VALUE *slots, VALUE_REF sref, uint32_t start, uint32_t len)
+{
+    KorbString *r = korb_alloc(c, slots, sizeof(KorbString) + len + 1, KORB_OBJ_STRING);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(sref));   /* re-read: GC may have moved it */
+    memcpy(r->bytes, s->bytes + start, len);
+    r->len = len; r->bytes[len] = '\0';
+    return RESULT_OK((VALUE)r);
+}
+
+static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    return RESULT_OK(korb_byte_find(s->bytes, s->len, n->bytes, n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE pv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        const KorbString *p = VAL2STR(pv);
+        if (p->len <= s->len && memcmp(s->bytes, p->bytes, p->len) == 0) return RESULT_OK(KORB_TRUE);
+    }
+    return RESULT_OK(KORB_FALSE);
+}
+
+static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE pv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        const KorbString *p = VAL2STR(pv);
+        if (p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, p->len) == 0) return RESULT_OK(KORB_TRUE);
+    }
+    return RESULT_OK(KORB_FALSE);
+}
+
+static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    int32_t b = korb_byte_find(s->bytes, s->len, n->bytes, n->len);
+    if (b < 0) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX(korb_utf8_count(s->bytes, (uint32_t)b)));   /* char index */
+}
+
+static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t i = 0; while (i < s->len && korb_is_ws((unsigned char)s->bytes[i])) i++;
+    intptr_t sign = 1;
+    if (i < s->len && (s->bytes[i] == '+' || s->bytes[i] == '-')) { if (s->bytes[i] == '-') sign = -1; i++; }
+    intptr_t n = 0;
+    while (i < s->len && s->bytes[i] >= '0' && s->bytes[i] <= '9') { n = n * 10 + (s->bytes[i] - '0'); i++; }
+    return RESULT_OK(LONG2FIX(sign * n));
+}
+
+/* trim: mode 0=both 1=left 2=right */
+static RESULT korb_str_strip(CTX *c, VALUE *slots, VALUE_REF self, int mode) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t start = 0, end = s->len;
+    if (mode != 2) while (start < end && (korb_is_ws((unsigned char)s->bytes[start]) || s->bytes[start] == '\0')) start++;
+    if (mode != 1) while (end > start && (korb_is_ws((unsigned char)s->bytes[end-1]) || s->bytes[end-1] == '\0')) end--;
+    return korb_str_slice_new(c, slots, self, start, end - start);
+}
+static RESULT korb_m_str_strip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_str_strip(c, slots, self, 0); }
+static RESULT korb_m_str_lstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_strip(c, slots, self, 1); }
+static RESULT korb_m_str_rstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_strip(c, slots, self, 2); }
+
+static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t len = s->len;
+    if (len >= 2 && s->bytes[len-2] == '\r' && s->bytes[len-1] == '\n') len -= 2;
+    else if (len >= 1 && (s->bytes[len-1] == '\n' || s->bytes[len-1] == '\r')) len -= 1;
+    return korb_str_slice_new(c, slots, self, 0, len);
+}
+
+static RESULT korb_m_str_chop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t len = s->len;
+    if (len >= 2 && s->bytes[len-2] == '\r' && s->bytes[len-1] == '\n') len -= 2;
+    else if (len >= 1) {
+        len--;                                  /* drop a whole trailing UTF-8 codepoint */
+        while (len > 0 && ((unsigned char)s->bytes[len] & 0xC0) == 0x80) len--;
+    }
+    return korb_str_slice_new(c, slots, self, 0, len);
+}
+
+/* String#split(sep=nil): nil/" " → whitespace runs; string sep → that literal
+ * (trailing empty fields dropped). */
+static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sepv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    bool ws = (sepv == KORB_NIL);
+    if (!ws) {
+        if (UNLIKELY(!KORB_STRING_P(sepv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
+        const KorbString *sp = VAL2STR(sepv);
+        if (sp->len == 1 && sp->bytes[0] == ' ') ws = true;   /* " " behaves as whitespace */
+    }
+    VALUE_REF sepref = ws ? (VALUE_REF){0} : VALUE_SLICE_REF(a, 0);
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    uint32_t pos = 0;
+    for (;;) {
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read each iter */
+        uint32_t slen = s->len;
+        if (ws) {
+            while (pos < slen && korb_is_ws((unsigned char)s->bytes[pos])) pos++;
+            if (pos >= slen) break;
+            uint32_t start = pos;
+            while (pos < slen && !korb_is_ws((unsigned char)s->bytes[pos])) pos++;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, pos - start))));
+        } else {
+            const KorbString *sep = VAL2STR(VALUE_REF_GET(sepref));
+            uint32_t seplen = sep->len;
+            int32_t found = (pos <= slen) ? korb_byte_find(s->bytes + pos, slen - pos, sep->bytes, seplen) : -1;
+            if (found < 0) {
+                CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos))));
+                break;
+            }
+            uint32_t end = pos + (uint32_t)found;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, end - pos))));
+            pos = end + (seplen ? seplen : 1);
+        }
+    }
+    if (!ws) {   /* CRuby drops trailing empty fields for an explicit separator */
+        KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
+        while (d->len > 0 && KORB_STRING_P(d->items->data[d->len-1]) && VAL2STR(d->items->data[d->len-1])->len == 0) {
+            d->items->data[--d->len] = KORB_NIL;
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    return RESULT_OK(LONG2FIX(korb_utf8_count(s->bytes, s->len)));
+}
+
+static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    uint32_t pos = 0;
+    for (;;) {
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+        if (pos >= s->len) break;
+        uint32_t cl = 1;                                  /* one UTF-8 codepoint */
+        while (pos + cl < s->len && ((unsigned char)s->bytes[pos+cl] & 0xC0) == 0x80) cl++;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, cl))));
+        pos += cl;
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
 /* ---- Symbol methods ------------------------------------------------------ */
 
 static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1283,18 +1467,30 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "downto", korb_m_int_downto, 1);
 
     /* String */
-    korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_len, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_len, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_charlen, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_i", korb_m_str_to_i, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_sym", korb_m_str_to_sym, 0);
     korb_def_cmethod(c, KORB_C_STRING, "intern", korb_m_str_to_sym, 0);
     korb_def_cmethod(c, KORB_C_STRING, "upcase", korb_m_str_upcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "downcase", korb_m_str_downcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "capitalize", korb_m_str_capitalize, 0);
     korb_def_cmethod(c, KORB_C_STRING, "reverse", korb_m_str_reverse, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "end_with?", korb_m_str_end_with, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "index", korb_m_str_index, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "strip", korb_m_str_strip, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "lstrip", korb_m_str_lstrip, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "rstrip", korb_m_str_rstrip, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "chomp", korb_m_str_chomp, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "chop", korb_m_str_chop, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
 
     /* Symbol */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
