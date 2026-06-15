@@ -1074,6 +1074,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_FLOAT:     return "Float";
       case KORB_OBJ_RATIONAL:  return "Rational";
       case KORB_OBJ_COMPLEX:   return "Complex";
+      case KORB_OBJ_ENUMERATOR: return "Enumerator";
     }
     return "Object";
 }
@@ -1095,6 +1096,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_FLOAT:  return "an instance of Float";
       case KORB_OBJ_RATIONAL: return "an instance of Rational";
       case KORB_OBJ_COMPLEX:  return "an instance of Complex";
+      case KORB_OBJ_ENUMERATOR: return "an instance of Enumerator";
     }
     return "an instance of Object";
 }
@@ -1731,6 +1733,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_FLOAT:  return KORB_C_FLOAT;
           case KORB_OBJ_RATIONAL: return KORB_C_RATIONAL;
           case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
+          case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
         }
     }
     return KORB_C_OBJECT;
@@ -1750,6 +1753,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_FLOAT:   return "Float";
       case KORB_C_RATIONAL: return "Rational";
       case KORB_C_COMPLEX:  return "Complex";
+      case KORB_C_ENUMERATOR: return "Enumerator";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -3444,6 +3448,118 @@ static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 /* generic to_s / inspect — render via the printer into a fresh String.
  * Specific types (Integer#to_s, String#to_s, ...) override via their own table. */
+/* ---- Enumerator (eager): values materialized at creation ----------------- */
+/* Build from a values Array + a desc String (or nil).  vals/desc must be rooted
+ * by the caller's slots region; we root-copy into the new object. */
+static RESULT
+korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
+{
+    slots[0] = vals; slots[1] = desc;                  /* root across alloc */
+    KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->values, slots[0]);
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->desc,   slots[1]);
+    return RESULT_OK((VALUE)e);
+}
+/* build the inspect desc "#<Enumerator: RECV:meth>" (no koruby alloc during print). */
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth) {
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (ms) { fputs("#<Enumerator: ", ms); korb_fprint_inspect(c, ms, recv); fprintf(ms, ":%s>", meth); fclose(ms); }
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+#define SELF_ENUM VAL2ENUM(VALUE_REF_GET(self))
+static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ENUM->values); }
+static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_ENUM->values)->len)); }
+static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    VALUE d = SELF_ENUM->desc;
+    if (KORB_STRING_P(d)) return RESULT_OK(d);
+    return korb_str_new(c, slots, "#<Enumerator>", 13);
+}
+/* each: yield every materialized value; with no block, return self. */
+static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+        if (i >= v->len) break;
+        slots[0] = v->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* map: collect block results over the materialized values; no block → self. */
+static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(SELF_ENUM->values)->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+        if (i >= v->len) break;
+        slots[1] = v->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* with_index(off=0): yield (value, off+i).  With a block → mapped array;
+ * without → a new Enumerator of [value, off+i] pairs. */
+static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    intptr_t off = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) off = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(SELF_ENUM->values)->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+        if (i >= v->len) break;
+        slots[1] = v->items->data[i];
+        if (block != NULL) {
+            VALUE argv[2] = { slots[1], LONG2FIX(off + (intptr_t)i) };
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+        } else {                                       /* build [value, idx] pair */
+            slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), LONG2FIX(off + (intptr_t)i)));
+            CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+        }
+    }
+    if (block == NULL) return korb_enum_new(c, slots + 1, VALUE_REF_GET(dst), KORB_NIL);
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* with_object(o): yield (value, o) for each; return o. */
+static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    if (UNLIKELY(block == NULL || VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    slots[0] = VALUE_SLICE_GET(a, 0);                  /* the memo object (rooted) */
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+        if (i >= v->len) break;
+        VALUE argv[2] = { v->items->data[i], slots[0] };
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_enum_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    KorbEnumerator *e = SELF_ENUM;
+    const KorbArray *v = VAL2ARY(e->values);
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    return RESULT_OK(v->items->data[e->cursor++]);
+}
+static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbEnumerator *e = SELF_ENUM;
+    const KorbArray *v = VAL2ARY(e->values);
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    return RESULT_OK(v->items->data[e->cursor]);
+}
+
 static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     char *buf = NULL; size_t sz = 0;
@@ -3744,8 +3860,14 @@ static RESULT korb_m_str_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
         what " without a block (Enumerator) is not supported"); } while (0)
 
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    (void)a; REQUIRE_BLOCK("Array#each");
+    (void)a;
+    if (block == NULL) {                              /* → Enumerator over the elements */
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "each"));
+        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read each iter (GC) */
         if (i >= ary->len) break;
@@ -3770,8 +3892,25 @@ static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    (void)a; REQUIRE_BLOCK("Array#each_with_index");
+    (void)a;
+    if (block == NULL) {                              /* → Enumerator of [elem, index] pairs */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(self))->len));
+        VALUE_REF pairs = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; ; i++) {
+            const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+            if (i >= ary->len) break;
+            slots[1] = ary->items->data[i];
+            slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), LONG2FIX(i)));
+            CHECK(korb_ary_push_val(c, slots + 3, pairs, slots[2]));
+        }
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_with_index"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
@@ -3783,7 +3922,11 @@ static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    (void)a; REQUIRE_BLOCK("Array#map");
+    (void)a;
+    if (block == NULL) {                              /* → Enumerator over the elements (for .with_index) */
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "map"));
+        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+    }
     uint32_t n0 = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));  /* slots now past dst */
     for (uint32_t i = 0; ; i++) {
@@ -7768,6 +7911,23 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
 
+    /* Enumerator (eager) */
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_a", korb_m_enum_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "entries", korb_m_enum_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "force", korb_m_enum_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "size", korb_m_enum_size, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_s", korb_m_enum_inspect, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "inspect", korb_m_enum_inspect, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each", korb_m_enum_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "map", korb_m_enum_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "collect", korb_m_enum_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "with_index", korb_m_enum_with_index, -1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_index", korb_m_enum_with_index, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "with_object", korb_m_enum_with_object, -1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_object", korb_m_enum_with_object, -1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
+
     /* Integer/Float → Complex helpers */
     korb_def_cmethod(c, KORB_C_INTEGER, "i", korb_m_int_i, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "conj", korb_m_num_conj_self, 0);
@@ -7960,6 +8120,12 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->buf->data, 1, VAL2STR(e->msg)->len, fp);
         else fputs(korb_etype_name(e->etype), fp);
+        return;
+      }
+      case KORB_OBJ_ENUMERATOR: {
+        const KorbEnumerator *e = VAL2ENUM(v);
+        if (KORB_STRING_P(e->desc)) fwrite(VAL2STR(e->desc)->buf->data, 1, VAL2STR(e->desc)->len, fp);
+        else fputs("#<Enumerator>", fp);
         return;
       }
     }
