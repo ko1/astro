@@ -273,6 +273,25 @@ node_if(CTX *c, NODE *n, VALUE *slots, VALUE cond@child, NODE *then_b, NODE *els
     return EVAL_ARG(c, else_b);
 }
 
+// begin/rescue/ensure (catch-all rescue only).  flags: bit0 has_rescue,
+// bit1 has_ensure, bit2 rescue binds `resc_var`.  resc/ensure_b are lit-nil
+// placeholders when absent (NODE* operands must be non-NULL).
+NODE_DEF
+node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *resc, NODE *ensure_b, int32_t resc_var, uint32_t flags)
+{
+    (void)n;
+    RESULT r = EVAL_ARG(c, body);
+    if ((flags & 1u) && r.state == KORB_RAISE) {       /* caught by a catch-all rescue */
+        if (flags & 4u) slots[resc_var] = r.value;     /* bind the exception local */
+        r = EVAL_ARG(c, resc);
+    }
+    if (flags & 2u) {                                  /* ensure: always runs */
+        RESULT er = EVAL_ARG(c, ensure_b);
+        if (er.state != KORB_NORMAL) return er;         /* ensure's raise/return wins */
+    }
+    return r;
+}
+
 // while (negate=0) / until (negate=1).  Result is nil.
 NODE_DEF @nogc
 node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate)

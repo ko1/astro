@@ -758,10 +758,42 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       case PM_BEGIN_NODE: {
         const pm_begin_node_t *bn = (const pm_begin_node_t *)node;
-        if (bn->rescue_clause || bn->ensure_clause || bn->else_clause) {
-            return kp_unsupported(tc, node, "begin/rescue/ensure");
+        if (bn->else_clause)
+            return kp_unsupported(tc, node, "begin/else");
+        if (!bn->rescue_clause && !bn->ensure_clause)   /* plain begin/end */
+            return transduce_statements(tc, bn->statements);
+
+        uint32_t flags = 0;
+        int32_t resc_var = 0;
+        NODE *body = bn->statements ? transduce_statements(tc, bn->statements) : lit_nil();
+        NODE *resc = lit_nil();
+        NODE *ensure_b = lit_nil();
+
+        if (bn->rescue_clause) {
+            const pm_rescue_node_t *rc = bn->rescue_clause;
+            if (rc->subsequent)                          /* multiple rescue clauses */
+                return kp_unsupported(tc, node, "multiple rescue clauses");
+            if (rc->exceptions.size > 0)                 /* class-matched rescue (needs Exception hierarchy) */
+                return kp_unsupported(tc, node, "rescue with an exception class");
+            flags |= 1u;
+            if (rc->reference) {
+                if (!PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE))
+                    return kp_unsupported(tc, node, "rescue => non-local target");
+                const pm_local_variable_target_node_t *ref = (const pm_local_variable_target_node_t *)rc->reference;
+                uint32_t idx = lvar_index(tc, rc->reference, ref->name);
+                resc_var = (int32_t)idx - tc->chain;     /* lvar offset (frame_size fixup below) */
+                flags |= 4u;
+            }
+            resc = rc->statements ? transduce_statements(tc, rc->statements) : lit_nil();
         }
-        return transduce_statements(tc, bn->statements);
+        if (bn->ensure_clause) {
+            const pm_ensure_node_t *en = bn->ensure_clause;
+            ensure_b = en->statements ? transduce_statements(tc, en->statements) : lit_nil();
+            flags |= 2u;
+        }
+        NODE *nd = ALLOC_node_begin(body, resc, ensure_b, resc_var, flags);
+        if (flags & 4u) bake_add(tc, &nd->u.node_begin.resc_var);
+        return nd;
       }
 
       /* ---- literals ---- */

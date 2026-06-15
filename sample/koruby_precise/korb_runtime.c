@@ -1001,6 +1001,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_HASH:   return KORB_C_HASH;
           case KORB_OBJ_RANGE:  return KORB_C_RANGE;
           case KORB_OBJ_CLASS:  return KORB_C_CLASS;
+          case KORB_OBJ_EXCEPTION: return KORB_C_EXCEPTION;
         }
     }
     return KORB_C_OBJECT;
@@ -1664,6 +1665,15 @@ static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
+
+/* Exception#message / to_s — the stored message, or the class name if none. */
+static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbException *e = VAL2EXC(VALUE_REF_GET(self));
+    if (e->msg != KORB_NIL) return RESULT_OK(e->msg);
+    const char *nm = korb_etype_name(e->etype);
+    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+}
 
 /* ---- Array methods ------------------------------------------------------- */
 
@@ -2596,6 +2606,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
+
+    /* Exception */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2820,6 +2834,24 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
+ * Exception hierarchy, not yet present.) */
+static RESULT
+korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    if (n >= 1) {
+        VALUE a0 = VALUE_SLICE_GET(args, 0);
+        if (KORB_STRING_P(a0)) {
+            const KorbString *s = VAL2STR(a0);
+            return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, s->bytes);
+        }
+        if (KORB_EXC_P(a0)) return RESULT_RAISE_(a0);   /* re-raise an exception object */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+    }
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "unhandled exception");
+}
+
 /* ---------------------------------------------------------------------------
  * CTX creation (main.c entry helper).
  * ------------------------------------------------------------------------- */
@@ -2884,6 +2916,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "puts",  korb_bi_puts,  -1);
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
+    korb_builtin_define(c, "raise", korb_bi_raise, -1);
 
     korb_register_core_methods(c);
 
