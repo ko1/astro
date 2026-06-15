@@ -993,6 +993,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Hash", KORB_C_HASH }, { "Range", KORB_C_RANGE }, { "NilClass", KORB_C_NIL },
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
+        { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -1075,6 +1076,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_RATIONAL:  return "Rational";
       case KORB_OBJ_COMPLEX:   return "Complex";
       case KORB_OBJ_ENUMERATOR: return "Enumerator";
+      case KORB_OBJ_SET: return "Set";
     }
     return "Object";
 }
@@ -1097,6 +1099,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_RATIONAL: return "an instance of Rational";
       case KORB_OBJ_COMPLEX:  return "an instance of Complex";
       case KORB_OBJ_ENUMERATOR: return "an instance of Enumerator";
+      case KORB_OBJ_SET: return "an instance of Set";
     }
     return "an instance of Object";
 }
@@ -1157,6 +1160,16 @@ korb_value_eq(VALUE a, VALUE b)
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++)
             if (!korb_value_eq(x->items->data[i], y->items->data[i])) return false;
+        return true;
+    }
+    if (KORB_SET_P(a) && KORB_SET_P(b)) {             /* Set#==: same members (order-independent) */
+        const KorbArray *x = VAL2ARY(VAL2SET(a)->elems), *y = VAL2ARY(VAL2SET(b)->elems);
+        if (x->len != y->len) return false;
+        for (uint32_t i = 0; i < x->len; i++) {
+            bool found = false;
+            for (uint32_t j = 0; j < y->len; j++) if (korb_value_eq(x->items->data[i], y->items->data[j])) { found = true; break; }
+            if (!found) return false;
+        }
         return true;
     }
     if (KORB_HASH_P(a) && KORB_HASH_P(b)) {           /* Hash#==: same pairs (order-independent) */
@@ -1221,6 +1234,10 @@ korb_cmperr_operand(VALUE v, char *buf, size_t cap)
 }
 
 static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup);
+static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
@@ -1273,6 +1290,15 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         bool t = (op == 0) ? cmp < 0 : (op == 1) ? cmp <= 0 : (op == 2) ? cmp > 0 : cmp >= 0;
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
+    if (KORB_SET_P(l)) {                               /* Set </<=/>/>= → proper/sub/super-set */
+        slots[0] = l; slots[1] = r;
+        VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+        VALUE_SLICE sl = VALUE_SLICE_MAKE(&slots[1], 1);
+        return op == 0 ? korb_m_set_psubset(c, slots + 2, sref, sl)
+             : op == 1 ? korb_m_set_subset(c, slots + 2, sref, sl)
+             : op == 2 ? korb_m_set_psuperset(c, slots + 2, sref, sl)
+             :           korb_m_set_superset(c, slots + 2, sref, sl);
+    }
     if (FIXNUM_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
         char rdesc[64];
         korb_cmperr_operand(r, rdesc, sizeof(rdesc));
@@ -1287,6 +1313,12 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
 /* ---------------------------------------------------------------------------
  * Binop slow paths (String variants + type errors).
  * ------------------------------------------------------------------------- */
+static RESULT korb_m_set_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_diff(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 
 RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
@@ -1295,6 +1327,7 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 0);
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
+    if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_union(c, slots + 1, lhs, VALUE_SLICE_MAKE(&slots[0], 1)); }   /* Set + → union */
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_str_plus_ref(c, slots, lhs, r);
@@ -1557,6 +1590,9 @@ korb_report_uncaught(CTX *c, VALUE exc)
  * block group {block_entry, def_env, captured_self} sits just below at
  * base[fs-4..fs-2], odd-tagged so the GC root scan skips the two pointers.
  * `block` is NULL for an ordinary call (block ignored by non-yielding callees). */
+static VALUE  korb_set_elems_of(VALUE v);
+static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems);
+static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -1734,6 +1770,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_RATIONAL: return KORB_C_RATIONAL;
           case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
           case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
+          case KORB_OBJ_SET: return KORB_C_SET;
         }
     }
     return KORB_C_OBJECT;
@@ -1754,6 +1791,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_RATIONAL: return "Rational";
       case KORB_C_COMPLEX:  return "Complex";
       case KORB_C_ENUMERATOR: return "Enumerator";
+      case KORB_C_SET: return "Set";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -1873,6 +1911,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
             if (argc >= 1) ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(intptr_t)argc]);
             return RESULT_OK(slots[0]);
+        }
+        if (cname == vm->class_name[KORB_C_SET]) {          /* Set.new([enumerable]) */
+            VALUE src = argc >= 1 ? korb_set_elems_of(slots[-(intptr_t)argc]) : KORB_NIL;
+            if (argc >= 1 && src == KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+            if (src == KORB_NIL) { slots[0] = UNWRAP(korb_ary_new(c, slots, 0)); return korb_set_new(c, slots + 1, slots[0]); }
+            slots[0] = src;
+            return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
         }
         if (cname == vm->class_name[KORB_C_STRING]) {       /* String.new([str]) */
             if (argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) {
@@ -3558,6 +3603,165 @@ static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbArray *v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
     return RESULT_OK(v->items->data[e->cursor]);
+}
+
+/* ---- Set (array-backed, unique by korb_value_eq) -------------------------- */
+static bool korb_arr_has(const KorbArray *ar, VALUE v) {
+    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eq(ar->items->data[i], v)) return true;
+    return false;
+}
+static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems) {
+    slots[0] = elems;
+    KorbSet *s = korb_alloc(c, slots + 1, sizeof(KorbSet), KORB_OBJ_SET);
+    ARO_STORE(c, s, (VALUE *)(uintptr_t)&s->elems, slots[0]);
+    return RESULT_OK((VALUE)s);
+}
+/* build a deduped Set from an array of values (src rooted by caller). */
+static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src) {
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(src))->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(src))->len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
+        if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+    }
+    return korb_set_new(c, slots + 1, VALUE_REF_GET(dst));
+}
+static VALUE korb_set_elems_of(VALUE v) {
+    if (KORB_SET_P(v)) return VAL2SET(v)->elems;
+    if (KORB_ARRAY_P(v)) return v;
+    return KORB_NIL;
+}
+#define SELF_SET VAL2SET(VALUE_REF_GET(self))
+static RESULT korb_m_set_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_SET->elems); }
+static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_SET->elems)->len)); }
+static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_set_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_arr_has(VAL2ARY(SELF_SET->elems), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_set_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE v = VALUE_SLICE_GET(a, 0);
+    if (!korb_arr_has(VAL2ARY(SELF_SET->elems), v)) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), v)); }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_set_add_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (korb_arr_has(VAL2ARY(SELF_SET->elems), VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
+    return korb_m_set_add(c, slots, self, a);
+}
+static RESULT korb_m_set_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbArray *ar = VAL2ARY(SELF_SET->elems);
+    VALUE v = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 0; i < ar->len; i++)
+        if (korb_value_eq(ar->items->data[i], v)) {
+            for (uint32_t j = i; j + 1 < ar->len; j++) ARO_STORE(c, ar->items, &ar->items->data[j], ar->items->data[j+1]);
+            ar->items->data[--ar->len] = KORB_NIL;
+            break;
+        }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_set_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ar = VAL2ARY(SELF_SET->elems);
+        if (i >= ar->len) break;
+        slots[0] = ar->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* set ops: op 0=union 1=intersection 2=difference 3=xor */
+static RESULT korb_set_binop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
+    VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
+    slots[0] = ov;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    const KorbArray *me = VAL2ARY(SELF_SET->elems);
+    for (uint32_t i = 0; i < me->len; i++) {
+        VALUE e = VAL2ARY(SELF_SET->elems)->items->data[i];
+        bool ino = korb_arr_has(VAL2ARY(slots[0]), e);
+        bool keep = op == 0 ? true : op == 1 ? ino : !ino;       /* union / inter / (diff|xor) */
+        if (keep && !korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 2, dst, e));
+    }
+    if (op == 0 || op == 3) {
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+            VALUE e = VAL2ARY(slots[0])->items->data[i];
+            bool inme = korb_arr_has(VAL2ARY(SELF_SET->elems), e);
+            bool keep = op == 0 ? true : !inme;
+            if (keep && !korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 2, dst, e));
+        }
+    }
+    return korb_set_new(c, slots + 2, VALUE_REF_GET(dst));
+}
+static RESULT korb_m_set_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_binop(c, slots, self, a, 0); }
+static RESULT korb_m_set_inter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_binop(c, slots, self, a, 1); }
+static RESULT korb_m_set_diff(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_binop(c, slots, self, a, 2); }
+static RESULT korb_m_set_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_binop(c, slots, self, a, 3); }
+static RESULT korb_m_set_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
+    slots[0] = ov;
+    for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+        VALUE e = VAL2ARY(slots[0])->items->data[i];
+        if (!korb_arr_has(VAL2ARY(SELF_SET->elems), e)) { slots[1] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), e)); }
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_set_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int rel) {
+    VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be a set");
+    const KorbArray *me = VAL2ARY(SELF_SET->elems), *ot = VAL2ARY(ov);
+    bool sub = true; for (uint32_t i = 0; i < me->len; i++) if (!korb_arr_has(ot, me->items->data[i])) { sub = false; break; }
+    bool sup = true; for (uint32_t i = 0; i < ot->len; i++) if (!korb_arr_has(me, ot->items->data[i])) { sup = false; break; }
+    bool t = rel == 0 ? sub : rel == 1 ? sup : rel == 2 ? (sub && me->len < ot->len) : (sup && me->len > ot->len);
+    return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_rel(c, slots, self, a, 0); }
+static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_rel(c, slots, self, a, 1); }
+static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_rel(c, slots, self, a, 2); }
+static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a){ return korb_set_rel(c, slots, self, a, 3); }
+static RESULT korb_m_set_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_SET_P(o)) return RESULT_OK(KORB_FALSE);
+    const KorbArray *me = VAL2ARY(SELF_SET->elems), *ot = VAL2ARY(VAL2SET(o)->elems);
+    if (me->len != ot->len) return RESULT_OK(KORB_FALSE);
+    for (uint32_t i = 0; i < me->len; i++) if (!korb_arr_has(ot, me->items->data[i])) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(KORB_TRUE);
+}
+/* Set Enumerable methods delegate to the elements array's Array method. */
+static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
+static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
+static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
+static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
+static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+#define KORB_SET_DELEG_BLK(name, target) \
+    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { \
+        slots[0] = SELF_SET->elems; return target(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself); }
+#define KORB_SET_DELEG(name, target) \
+    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+        slots[0] = SELF_SET->elems; return target(c, slots + 1, VALUE_REF_AT(&slots[0]), a); }
+KORB_SET_DELEG_BLK(korb_m_set_map, korb_m_ary_map)
+KORB_SET_DELEG_BLK(korb_m_set_select, korb_m_ary_select)
+KORB_SET_DELEG_BLK(korb_m_set_reject, korb_m_ary_reject)
+KORB_SET_DELEG_BLK(korb_m_set_find, korb_m_ary_find)
+KORB_SET_DELEG(korb_m_set_sort, korb_m_ary_sort)
+KORB_SET_DELEG(korb_m_set_sum, korb_m_ary_sum)
+KORB_SET_DELEG(korb_m_set_minmax, korb_m_ary_minmax)
+static RESULT korb_hash_first_n(CTX *c, VALUE *slots, VALUE_REF self, uint32_t limit);
+static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_ary_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_set_from_array(c, slots, self); }
+static RESULT korb_m_hash_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* [k,v] pairs */
+    return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
+}
+static RESULT korb_m_range_to_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
+    return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
 }
 
 static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -6816,6 +7020,7 @@ RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
         slots[0] = rhs;
         return korb_m_ary_difference(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
     }
+    if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_diff(c, slots + 1, lhs, VALUE_SLICE_MAKE(&slots[0], 1)); }   /* Set - → difference */
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
 }
 static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -8011,6 +8216,55 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
 
+    /* Set */
+    korb_def_cmethod(c, KORB_C_SET, "to_a", korb_m_set_to_a, 0);
+    korb_def_cmethod(c, KORB_C_SET, "to_set", korb_m_set_self, 0);
+    korb_def_cmethod(c, KORB_C_SET, "size", korb_m_set_size, 0);
+    korb_def_cmethod(c, KORB_C_SET, "length", korb_m_set_size, 0);
+    korb_def_cmethod(c, KORB_C_SET, "count", korb_m_set_size, 0);
+    korb_def_cmethod(c, KORB_C_SET, "empty?", korb_m_set_empty, 0);
+    korb_def_cmethod(c, KORB_C_SET, "include?", korb_m_set_include, 1);
+    korb_def_cmethod(c, KORB_C_SET, "member?", korb_m_set_include, 1);
+    korb_def_cmethod(c, KORB_C_SET, "===", korb_m_set_include, 1);
+    korb_def_cmethod(c, KORB_C_SET, "add", korb_m_set_add, 1);
+    korb_def_cmethod(c, KORB_C_SET, "<<", korb_m_set_add, 1);
+    korb_def_cmethod(c, KORB_C_SET, "add?", korb_m_set_add_q, 1);
+    korb_def_cmethod(c, KORB_C_SET, "delete", korb_m_set_delete, 1);
+    korb_def_cmethod_blk(c, KORB_C_SET, "each", korb_m_set_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "map", korb_m_set_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "collect", korb_m_set_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "select", korb_m_set_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "filter", korb_m_set_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "reject", korb_m_set_reject, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "find", korb_m_set_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_SET, "detect", korb_m_set_find, 0);
+    korb_def_cmethod(c, KORB_C_SET, "sort", korb_m_set_sort, 0);
+    korb_def_cmethod(c, KORB_C_SET, "sum", korb_m_set_sum, -1);
+    korb_def_cmethod(c, KORB_C_SET, "minmax", korb_m_set_minmax, 0);
+    korb_def_cmethod(c, KORB_C_SET, "|", korb_m_set_union, 1);
+    korb_def_cmethod(c, KORB_C_SET, "union", korb_m_set_union, 1);
+    korb_def_cmethod(c, KORB_C_SET, "+", korb_m_set_union, 1);
+    korb_def_cmethod(c, KORB_C_SET, "merge", korb_m_set_merge, 1);
+    korb_def_cmethod(c, KORB_C_SET, "&", korb_m_set_inter, 1);
+    korb_def_cmethod(c, KORB_C_SET, "intersection", korb_m_set_inter, 1);
+    korb_def_cmethod(c, KORB_C_SET, "-", korb_m_set_diff, 1);
+    korb_def_cmethod(c, KORB_C_SET, "difference", korb_m_set_diff, 1);
+    korb_def_cmethod(c, KORB_C_SET, "^", korb_m_set_xor, 1);
+    korb_def_cmethod(c, KORB_C_SET, "subset?", korb_m_set_subset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "<=", korb_m_set_subset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "superset?", korb_m_set_superset, 1);
+    korb_def_cmethod(c, KORB_C_SET, ">=", korb_m_set_superset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "<", korb_m_set_psubset, 1);
+    korb_def_cmethod(c, KORB_C_SET, ">", korb_m_set_psuperset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "proper_subset?", korb_m_set_psubset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "proper_superset?", korb_m_set_psuperset, 1);
+    korb_def_cmethod(c, KORB_C_SET, "==", korb_m_set_eq, 1);
+    korb_def_cmethod(c, KORB_C_SET, "to_s", korb_m_obj_to_s, 0);
+    korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "to_set", korb_m_hash_to_set, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
+
     /* Integer/Float → Complex helpers */
     korb_def_cmethod(c, KORB_C_INTEGER, "i", korb_m_int_i, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "conj", korb_m_num_conj_self, 0);
@@ -8209,6 +8463,13 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         const KorbEnumerator *e = VAL2ENUM(v);
         if (KORB_STRING_P(e->desc)) fwrite(VAL2STR(e->desc)->buf->data, 1, VAL2STR(e->desc)->len, fp);
         else fputs("#<Enumerator>", fp);
+        return;
+      }
+      case KORB_OBJ_SET: {                             /* Set[a, b, c] (elements via inspect) */
+        const KorbArray *el = VAL2ARY(VAL2SET(v)->elems);
+        fputs("Set[", fp);
+        for (uint32_t i = 0; i < el->len; i++) { if (i) fputs(", ", fp); korb_fprint_inspect(c, fp, el->items->data[i]); }
+        fputc(']', fp);
         return;
       }
     }
