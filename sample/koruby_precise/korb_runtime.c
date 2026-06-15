@@ -2558,6 +2558,18 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_slice_new(c, slots, self, bs, es - bs);
 }
 
+static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_byte without a block (Enumerator) is not supported");
+    for (uint32_t pos = 0; ; pos++) {
+        const KorbString *s = SELF_STR;
+        if (pos >= s->len) break;
+        VALUE bv = LONG2FIX((unsigned char)s->buf->data[pos]);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &bv, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_char without a block (Enumerator) is not supported");
@@ -4723,6 +4735,31 @@ static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* group_by → Hash{ block_key => [[k,v], ...] } over pairs */
+static RESULT korb_m_hash_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#group_by without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 4));     VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *hh = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= hh->len) break;
+        slots[1] = hh->items->data[2*i]; slots[2] = hh->items->data[2*i+1];
+        CHECK(korb_hash_make_pair(c, slots + 5, &slots[1], &slots[2], &slots[3]));   /* pair at slots[3] */
+        RESULT r = korb_hash_yield(c, slots + 5, block, def_env, cself, np, slots[1], slots[2]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[4] = r.value;                            /* key */
+        int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(h)), slots[4]);
+        if (idx < 0) {
+            slots[5] = UNWRAP(korb_ary_new(c, slots + 6, 4));
+            CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[3]));
+            CHECK(korb_hash_set(c, slots + 6, h, VALUE_REF_AT(&slots[4]), slots[5]));
+        } else {
+            slots[5] = VAL2HASH(VALUE_REF_GET(h))->items->data[2*idx+1];
+            CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[3]));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(h));
+}
 /* find_index → integer index of first pair where block truthy, else nil */
 static RESULT korb_m_hash_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#find_index without a block is not supported");
@@ -5638,6 +5675,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "[]", korb_m_str_aref, -1);
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
 
     /* Symbol */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
@@ -5840,6 +5878,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_all", korb_m_hash_find_all, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find_index", korb_m_hash_find_index, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "group_by", korb_m_hash_group_by, 0);
     korb_def_cmethod(c, KORB_C_HASH, "zip", korb_m_hash_zip, -1);
     korb_def_cmethod(c, KORB_C_HASH, "grep", korb_m_hash_grep, 1);
     korb_def_cmethod(c, KORB_C_HASH, "grep_v", korb_m_hash_grep_v, 1);
