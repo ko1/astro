@@ -2154,6 +2154,84 @@ static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
     }
     return true;
 }
+static RESULT korb_m_str_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(lo) || !KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+    VALUE s = VALUE_REF_GET(self);
+    int lc = korb_cmp_values(s, lo), uc = korb_cmp_values(s, hi);
+    return RESULT_OK((lc >= 0 && lc != 2 && uc <= 0 && uc != 2) ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(lo) || !KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+    VALUE s = VALUE_REF_GET(self);
+    if (korb_cmp_values(s, lo) < 0) return RESULT_OK(lo);
+    if (korb_cmp_values(s, hi) > 0) return RESULT_OK(hi);
+    return RESULT_OK(s);
+}
+/* delete: remove chars present in ALL set args. (in_place → delete!) */
+static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t n = s->len;
+    KorbString *r = korb_str_alloc(c, slots, n);
+    s = VAL2STR(VALUE_REF_GET(self));                   /* re-read after alloc */
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i];
+        if (!korb_str_sets_match(a, ch)) r->buf->data[w++] = (char)ch;
+    }
+    r->len = w; r->buf->data[w] = '\0';
+    if (!in_place) return RESULT_OK((VALUE)r);
+    bool changed = (w != n);
+    slots[0] = (VALUE)r;
+    KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
+    r = VAL2STR(slots[0]);
+    memcpy(s2->buf->data, r->buf->data, w);
+    s2->len = w; s2->buf->data[w] = '\0';
+    return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
+}
+static RESULT korb_m_str_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_delete_into(c, slots, self, a, false); }
+static RESULT korb_m_str_delete_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_delete_into(c, slots, self, a, true); }
+/* gsub/sub with a literal String pattern + String replacement (no regex/block). */
+static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place) {
+    VALUE pv = VALUE_SLICE_GET(a, 0), rv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(pv) || !KORB_STRING_P(rv)))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub supports only (String, String)");
+    /* snapshot pattern + replacement bytes into stable C buffers (survive grows) */
+    const KorbString *ps = VAL2STR(pv);
+    uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
+    const KorbString *rs = VAL2STR(rv);
+    uint32_t rn = rs->len; char *rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn);
+    /* build result into a C buffer (no GC during the scan) */
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { free(pat); free(rep); fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t i = 0, sn = s->len; bool replaced = false;
+    while (i < sn) {
+        if (pn > 0 && i + pn <= sn && memcmp(s->buf->data + i, pat, pn) == 0 && (global || !replaced)) {
+            fwrite(rep, 1, rn, ms); i += pn; replaced = true;
+        } else {
+            fputc(s->buf->data[i], ms); i++;
+        }
+    }
+    fclose(ms); free(pat); free(rep);
+    RESULT nr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    if (!in_place) return nr;
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    slots[0] = nr.value;
+    const KorbString *res = VAL2STR(slots[0]);
+    uint32_t w = res->len;
+    KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
+    res = VAL2STR(slots[0]);
+    memcpy(s2->buf->data, res->buf->data, w);
+    s2->len = w; s2->buf->data[w] = '\0';
+    return RESULT_OK(replaced ? VALUE_REF_GET(self) : KORB_NIL);
+}
+static RESULT korb_m_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_gsub_into(c, slots, self, a, true, false); }
+static RESULT korb_m_str_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_str_gsub_into(c, slots, self, a, false, false); }
+static RESULT korb_m_str_gsub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_gsub_into(c, slots, self, a, true, true); }
+static RESULT korb_m_str_sub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_gsub_into(c, slots, self, a, false, true); }
 static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -5149,6 +5227,16 @@ static RESULT korb_m_sym_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
     return korb_m_str_aref(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
 }
+static RESULT korb_m_sym_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    return korb_m_str_start_with(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
+static RESULT korb_m_sym_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
+    return korb_m_str_end_with(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     VALUE sv = VALUE_SLICE_GET(a, 0);
@@ -5313,6 +5401,14 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "squeeze!", korb_m_str_squeeze_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "append_as_bytes", korb_m_str_append_as_bytes, -1);
     korb_def_cmethod(c, KORB_C_STRING, "ascii_only?", korb_m_str_ascii_only, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "between?", korb_m_str_between, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, 2);
+    korb_def_cmethod(c, KORB_C_STRING, "delete", korb_m_str_delete, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "delete!", korb_m_str_delete_b, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "gsub", korb_m_str_gsub, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "sub", korb_m_str_sub, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "gsub!", korb_m_str_gsub_b, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "sub!", korb_m_str_sub_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rpartition", korb_m_str_rpartition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "scrub", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scrub!", korb_m_str_self, -1);
@@ -5352,6 +5448,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "[]", korb_m_sym_slice, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_sym", korb_m_sym_to_sym, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "length", korb_m_sym_len, 0);
