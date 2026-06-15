@@ -6277,7 +6277,8 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    intptr_t sh = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 1;
+    intptr_t sh = 1;
+    if (VALUE_SLICE_LEN(a) >= 1 && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &sh))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (len == 0) return korb_ary_subseq(c, slots, self, 0, 0);
     intptr_t s = ((sh % (intptr_t)len) + (intptr_t)len) % (intptr_t)len;   /* normalized left rotation */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, len)));
