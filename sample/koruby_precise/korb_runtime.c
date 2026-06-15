@@ -5090,7 +5090,7 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 
 /* product(other, ...) → cartesian product as an array of rows. */
-static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     uint32_t na = VALUE_SLICE_LEN(a);
     if (na > 15) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#product with >16 arrays is not supported");
     for (uint32_t j = 0; j < na; j++)
@@ -5101,6 +5101,20 @@ static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     uint32_t lens[16];
     uint64_t total = 1;
     for (uint32_t j = 0; j < k; j++) { lens[j] = ARR_J(j)->len; total *= lens[j]; }
+    /* with a block: yield each combination, return self (no result array) */
+    if (block != NULL) {
+        if (total == 0) return RESULT_OK(VALUE_REF_GET(self));
+        uint32_t bidx[16] = {0};
+        for (uint64_t t = 0; t < total; t++) {
+            slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k));   /* row at slots[0] */
+            VALUE_REF row = VALUE_REF_AT(&slots[0]);
+            for (uint32_t j = 0; j < k; j++) CHECK(korb_ary_push_val(c, slots + 1, row, ARR_J(j)->items->data[bidx[j]]));
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            for (int j = (int)k - 1; j >= 0; j--) { if (++bidx[j] < lens[j]) break; bidx[j] = 0; }
+        }
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     uint32_t capa = total > 0 && total < 0x40000000ull ? (uint32_t)total : 4;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, capa)));
     if (total == 0) return RESULT_OK(VALUE_REF_GET(dst));
@@ -5592,7 +5606,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse!", korb_m_ary_reverse_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
