@@ -198,6 +198,13 @@ enum korb_class {
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
 
+/* Block-taking built-in (Array#each, Integer#times, ...).  `block` is a
+ * node_entry NODE (NULL = no block given); `def_env` is the caller frame base
+ * holding the block's captured outer vars.  The method drives the block via
+ * korb_block_yield. */
+typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
+                                     VALUE_SLICE args, struct Node *block, VALUE *def_env);
+
 struct korb_method {
     uint32_t mid;            /* interned name */
     uint8_t  kind;           /* enum korb_method_kind */
@@ -225,7 +232,10 @@ struct korb_vm {
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
-    struct korb_cmethod { uint32_t mid; korb_method_fn fn; int32_t arity; } *cmethods[KORB_NCLASS];
+    struct korb_cmethod {
+        uint32_t mid; korb_method_fn fn; korb_method_blk_fn bfn;
+        int32_t arity; uint8_t takes_block;
+    } *cmethods[KORB_NCLASS];
     uint32_t cmethod_cnt[KORB_NCLASS], cmethod_capa[KORB_NCLASS];
 
     /* in-flight raise backtrace (filled during unwind; libc only — the

@@ -435,6 +435,23 @@ node_call_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struc
     return korb_call_blk(c, slots, mid, line, cc, 1, block, &slots[def_env_off]);
 }
 
+// Receiver method call with a literal block (arr.each { ... }).  Like
+// node_call_blk but the receiver is staged too; korb_send_blk resolves the
+// built-in and hands it the block (node_entry) + def_env so it can yield.
+NODE_DEF @noinline
+node_send_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE *block, int32_t def_env_off, VALUE_REF recv@child)
+{
+    (void)n; (void)block_dispatcher; (void)recv;
+    return korb_send_blk(c, slots, mid, line, 0, block, &slots[def_env_off]);
+}
+
+NODE_DEF @noinline
+node_send_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child)
+{
+    (void)n; (void)block_dispatcher; (void)recv; (void)a0;
+    return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off]);
+}
+
 // yield to the current method's block.  `biseq_off` / `def_env_off` read the
 // frame-top block cells (odd-tagged); korb_yield masks and sets up the frame.
 NODE_DEF

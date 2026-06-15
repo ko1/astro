@@ -603,6 +603,33 @@ uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
+/* Core block invocation: lay out the block frame at cursor `slots` and
+ * dispatch the entry.  Args come from `argv` (argv[i] copied into block
+ * params; extra dropped, missing → nil — CRuby semantics).  argv may alias the
+ * cursor region (node_yield passes &slots[-argc]); copies happen before any
+ * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
+RESULT
+korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                 const VALUE *argv, uint32_t argc)
+{
+    const uint32_t blocals = korb_entry_locals_cnt(block);
+    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals. */
+    VALUE *const bf = slots;
+    char cstack_probe;
+    if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit)) {
+        return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    }
+    bf[0] = (VALUE)((uintptr_t)def_env | 1u);
+    const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals */
+    for (uint32_t i = 0; i < np; i++)      bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+    for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+
+    RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
+    if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
+    return r;
+}
+
 RESULT
 korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
            VALUE block_cell, VALUE def_env_cell)
@@ -613,30 +640,7 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
     }
     NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell   & ~(uintptr_t)1u);
     VALUE *def_env = (VALUE *)(uintptr_t)((uintptr_t)def_env_cell & ~(uintptr_t)1u);
-    const uint32_t blocals = korb_entry_locals_cnt(entry);
-
-    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals. */
-    VALUE *const bf = slots;
-    char cstack_probe;
-    if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit)) {
-        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
-    }
-    bf[0] = (VALUE)((uintptr_t)def_env | 1u);
-    /* yield args → block params: extra args dropped, missing params nil
-     * (CRuby semantics).  np <= blocals (params are a prefix of locals), so
-     * this never writes past the block frame. */
-    const uint32_t np = korb_entry_params_cnt(entry);
-    for (uint32_t i = 0; i < np; i++) {
-        bf[1 + i] = (i < argc) ? slots[(intptr_t)i - (intptr_t)argc] : KORB_NIL;
-    }
-    for (uint32_t i = np; i < blocals; i++) {
-        bf[1 + i] = KORB_NIL;
-    }
-
-    RESULT r = (*entry->head.dispatcher)(c, entry, bf + 1 + blocals);
-    if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = yield value */
-    return r;
+    return korb_block_yield(c, slots, entry, def_env, slots - argc, argc);
 }
 
 /* ---------------------------------------------------------------------------
@@ -688,7 +692,17 @@ korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
         vm->cmethod_capa[cls] = nc;
     }
     struct korb_cmethod *m = &vm->cmethods[cls][vm->cmethod_cnt[cls]++];
-    m->mid = mid; m->fn = fn; m->arity = arity;
+    m->mid = mid; m->fn = fn; m->bfn = NULL; m->arity = arity; m->takes_block = 0;
+}
+
+void
+korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
+                     korb_method_blk_fn fn, int32_t arity)
+{
+    korb_def_cmethod(c, cls, name, NULL, arity);             /* grows + fills common fields */
+    struct korb_vm *const vm = c->vm;
+    struct korb_cmethod *m = &vm->cmethods[cls][vm->cmethod_cnt[cls] - 1];
+    m->bfn = fn; m->takes_block = 1;
 }
 
 static const struct korb_cmethod *
@@ -704,8 +718,12 @@ korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid)
     return NULL;
 }
 
-RESULT
-korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
+/* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;
+ * non-NULL for a `{ ... }` form.  A block handed to a non-yielding method is
+ * ignored (CRuby); a yielding method called without a block gets NULL. */
+static RESULT
+korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+               NODE *block, VALUE *def_env)
 {
     struct korb_vm *const vm = c->vm;
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
@@ -721,14 +739,29 @@ korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                           "wrong number of arguments (given %u, expected %d)", argc, m->arity);
     }
-    RESULT r = m->fn(c, slots, VALUE_REF_AT(recv_slot),
-                     VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+    const VALUE_REF recv = VALUE_REF_AT(recv_slot);
+    const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
+    RESULT r = m->takes_block ? m->bfn(c, slots, recv, args, block, def_env)
+                              : m->fn(c, slots, recv, args);
     if (UNLIKELY(r.state == KORB_RAISE)) {
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
         e->line = line;
     }
     return r;
+}
+
+RESULT
+korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
+{
+    return korb_send_impl(c, slots, mid, line, argc, NULL, NULL);
+}
+
+RESULT
+korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+              uint32_t argc, NODE *block, VALUE *def_env)
+{
+    return korb_send_impl(c, slots, mid, line, argc, block, def_env);
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
@@ -948,6 +981,89 @@ static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 #undef SELF_ARY
 
+/* ---- yielding methods (drive a block) ------------------------------------ */
+
+#define REQUIRE_BLOCK(what) \
+    do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
+        what " without a block (Enumerator) is not supported"); } while (0)
+
+static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a; REQUIRE_BLOCK("Array#each");
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read each iter (GC) */
+        if (i >= ary->len) break;
+        VALUE elem = ary->items->data[i];                      /* copied into bf before GC */
+        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a; REQUIRE_BLOCK("Array#each_with_index");
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        VALUE argv[2] = { ary->items->data[i], LONG2FIX(i) };
+        RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a; REQUIRE_BLOCK("Array#map");
+    uint32_t n0 = VAL2ARY(VALUE_REF_GET(self))->len;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));  /* slots now past dst */
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        VALUE elem = ary->items->data[i];
+        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots, dst, r.value));      /* push roots r.value */
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    (void)a; REQUIRE_BLOCK("Integer#times");
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self));
+    for (intptr_t i = 0; i < n; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    REQUIRE_BLOCK("Integer#upto");
+    VALUE lv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+    intptr_t to = FIX2LONG(lv);
+    for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i <= to; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+    REQUIRE_BLOCK("Integer#downto");
+    VALUE lv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+    intptr_t to = FIX2LONG(lv);
+    for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i >= to; i--) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+#undef REQUIRE_BLOCK
+
 static void
 korb_register_core_methods(CTX *c)
 {
@@ -969,6 +1085,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "to_s", korb_m_int_to_s, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "inspect", korb_m_int_to_s, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "chr", korb_m_int_chr, 0);
+    korb_def_cmethod_blk(c, KORB_C_INTEGER, "times", korb_m_int_times, 0);
+    korb_def_cmethod_blk(c, KORB_C_INTEGER, "upto", korb_m_int_upto, 1);
+    korb_def_cmethod_blk(c, KORB_C_INTEGER, "downto", korb_m_int_downto, 1);
 
     /* String */
     korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_len, 0);
@@ -1020,6 +1139,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "include?", korb_m_ary_include, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "each", korb_m_ary_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_with_index", korb_m_ary_each_wi, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
 
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);

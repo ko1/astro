@@ -497,10 +497,30 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_not(transduce(tc, cn->receiver));
     }
 
-    /* receiver method dispatch: recv.mid(args).  Block form (arr.each{}) needs
-     * yielding built-ins — not yet (next commit). */
+    /* receiver method dispatch with a literal block: recv.mid(args) { ... } */
     if (cn->block) {
-        return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with block");
+        if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE))
+            return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");
+        if (argc > 1)
+            return kp_unsupported(tc, (const pm_node_t *)cn, "receiver call with block and >1 arg");
+        NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
+        /* def_env_off: cursor → caller frame base = -(chain + staging); staging
+         * = recv(1) + argc.  bake_add fixes up by the caller's frame_size. */
+        if (argc == 0) {
+            uint32_t sc = 1;
+            NODE *recv;
+            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
+            NODE *call = ALLOC_node_send_blk0(mid, line, entry, -(tc->chain + (int32_t)sc), recv);
+            bake_add(tc, &call->u.node_send_blk0.def_env_off);
+            return call;
+        }
+        uint32_t sc = 2;
+        NODE *recv, *a0;
+        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                            a0   = transduce(tc, cn->arguments->arguments.nodes[0])));
+        NODE *call = ALLOC_node_send_blk1(mid, line, entry, -(tc->chain + (int32_t)sc), recv, a0);
+        bake_add(tc, &call->u.node_send_blk1.def_env_off);
+        return call;
     }
     if (argc > 3) {
         return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with >3 args");

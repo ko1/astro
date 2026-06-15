@@ -82,8 +82,18 @@ enum korb_class korb_class_of(VALUE v);
 const char *korb_class_name(enum korb_class cls);
 void   korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
                         korb_method_fn fn, int32_t arity);
+void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
+                            korb_method_blk_fn fn, int32_t arity);
 /* Dispatch `recv.mid(args)`: recv at slots[-argc-1], args at slots[-argc..]. */
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
+/* Same, with a literal block (recv.mid(args) { ... }) handed to the method. */
+RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+                     uint32_t argc, NODE *block, VALUE *def_env);
+
+/* Invoke a block (node_entry + def_env) with `argc` args from `argv`.  The
+ * block frame is laid out at the cursor `slots`.  NEXT is folded to NORMAL. */
+RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                        const VALUE *argv, uint32_t argc);
 
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
