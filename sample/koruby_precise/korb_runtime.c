@@ -2293,10 +2293,21 @@ static RESULT korb_m_int_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_int_round_to(c, slots, SELF_INT, 2, a); }
 static RESULT korb_m_int_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_round_to(c, slots, SELF_INT, 3, a); }
 static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!FIXNUM_P(lo) || !FIXNUM_P(hi))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
-    intptr_t n = SELF_INT, l = FIX2LONG(lo), h = FIX2LONG(hi);
-    return RESULT_OK(LONG2FIX(n < l ? l : (n > h ? h : n)));
+    VALUE lo, hi;
+    if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
+        const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        lo = r->rbegin; hi = r->rend;
+    } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
+    intptr_t n = SELF_INT;
+    if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
+        if (UNLIKELY(!FIXNUM_P(lo))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (n < FIX2LONG(lo)) return RESULT_OK(lo);
+    }
+    if (hi != KORB_NIL) {
+        if (UNLIKELY(!FIXNUM_P(hi))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+        if (n > FIX2LONG(hi)) return RESULT_OK(hi);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -2594,9 +2605,19 @@ static RESULT korb_m_str_strip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_str_lstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip_bang(c, slots, self, a, 1); }
 static RESULT korb_m_str_rstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip_bang(c, slots, self, a, 2); }
 static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)slots;
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp!(sep) */
+        VALUE sv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        const KorbString *sep = VAL2STR(sv);
+        if (sep->len == 0) { while (n >= 1 && s->buf->data[n-1] == '\n') { if (n >= 2 && s->buf->data[n-2] == '\r') n--; n--; } }
+        else if (n >= sep->len && memcmp(s->buf->data + n - sep->len, sep->buf->data, sep->len) == 0) n -= sep->len;
+        if (n == s->len) return RESULT_OK(KORB_NIL);
+        s->len = n; s->buf->data[n] = '\0';
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     if (n >= 1 && s->buf->data[n-1] == '\n') { n--; if (n >= 1 && s->buf->data[n-1] == '\r') n--; }
     else if (n >= 1 && s->buf->data[n-1] == '\r') n--;
     else return RESULT_OK(KORB_NIL);
@@ -4673,6 +4694,17 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
     return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
 }
+static RESULT korb_m_range_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* count(obj): 1 if obj in the integer range else 0 */
+        VALUE o = VALUE_SLICE_GET(a, 0);
+        if (!FIXNUM_P(o)) return RESULT_OK(LONG2FIX(0));
+        intptr_t v = FIX2LONG(o);
+        return RESULT_OK(LONG2FIX(v >= lo && v < hi ? 1 : 0));
+    }
+    return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
+}
 
 static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
@@ -5550,17 +5582,27 @@ static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
 static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
 static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
+static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
-    (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#one? without a block is not supported");
-    uint32_t np = korb_entry_params_cnt(block);
+    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    if (!has_pat && UNLIKELY(block == NULL)) {        /* no block, no pattern → exactly one pair */
+        return RESULT_OK(VAL2HASH(VALUE_REF_GET(self))->len == 1 ? KORB_TRUE : KORB_FALSE);
+    }
+    uint32_t np = block ? korb_entry_params_cnt(block) : 0;
     uint32_t cnt = 0;
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
-        RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (KORB_TRUTHY(r.value) && ++cnt > 1) return RESULT_OK(KORB_FALSE);
+        bool t;
+        if (has_pat) {
+            VALUE pair; CHECK(korb_hash_pair_at(c, slots, self, i, &pair));
+            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[2]);
+        } else {
+            RESULT r = korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            t = KORB_TRUTHY(r.value);
+        }
+        if (t && ++cnt > 1) return RESULT_OK(KORB_FALSE);
     }
     return RESULT_OK(cnt == 1 ? KORB_TRUE : KORB_FALSE);
 }
@@ -6074,13 +6116,20 @@ static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK((s >= lo && s <= hi) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double lo, hi, s = VAL2FLT(VALUE_REF_GET(self))->val;
-    VALUE vlo = VALUE_SLICE_GET(a, 0), vhi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!korb_num_to_d(vlo, &lo) || !korb_num_to_d(vhi, &hi)))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
-    if (UNLIKELY(lo > hi)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be smaller than max argument");
-    if (s < lo) return RESULT_OK(vlo);
-    if (s > hi) return RESULT_OK(vhi);
+    double s = VAL2FLT(VALUE_REF_GET(self))->val, lo, hi;
+    VALUE vlo, vhi;
+    if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
+        const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        vlo = r->rbegin; vhi = r->rend;
+    } else { vlo = VALUE_SLICE_GET(a, 0); vhi = VALUE_SLICE_GET(a, 1); }
+    if (vlo != KORB_NIL) {
+        if (UNLIKELY(!korb_num_to_d(vlo, &lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (s < lo) return RESULT_OK(vlo);
+    }
+    if (vhi != KORB_NIL) {
+        if (UNLIKELY(!korb_num_to_d(vhi, &hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (s > hi) return RESULT_OK(vhi);
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -6778,7 +6827,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "coerce", korb_m_int_coerce, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "<=>", korb_m_int_cmp, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "between?", korb_m_int_between, 2);
-    korb_def_cmethod(c, KORB_C_INTEGER, "clamp", korb_m_int_clamp, 2);
+    korb_def_cmethod(c, KORB_C_INTEGER, "clamp", korb_m_int_clamp, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "digits", korb_m_int_digits, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "<<", korb_m_int_lshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, ">>", korb_m_int_rshift, 1);
@@ -6836,7 +6885,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "strip!", korb_m_str_strip_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "lstrip!", korb_m_str_lstrip_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rstrip!", korb_m_str_rstrip_b, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "chomp!", korb_m_str_chomp_b, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "chomp!", korb_m_str_chomp_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chop!", korb_m_str_chop_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "count", korb_m_str_count, -1);
     korb_def_cmethod(c, KORB_C_STRING, "sum", korb_m_str_sum, -1);
@@ -7133,7 +7182,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "keep_if", korb_m_hash_keep_if, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "reject!", korb_m_hash_reject_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "delete_if", korb_m_hash_delete_if, 0);
-    korb_def_cmethod_blk(c, KORB_C_HASH, "one?", korb_m_hash_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "one?", korb_m_hash_one, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "sort_by", korb_m_hash_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "min_by", korb_m_hash_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "max_by", korb_m_hash_max_by, 0);
@@ -7158,7 +7207,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "last", korb_m_range_last, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "exclude_end?", korb_m_range_exclude, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "size", korb_m_range_size, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "count", korb_m_range_size, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "count", korb_m_range_count, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_cover, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
@@ -7252,7 +7301,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "dup", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "+@", korb_m_flt_to_f, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "between?", korb_m_flt_between, 2);
-    korb_def_cmethod(c, KORB_C_FLOAT, "clamp", korb_m_flt_clamp, 2);
+    korb_def_cmethod(c, KORB_C_FLOAT, "clamp", korb_m_flt_clamp, -1);
     korb_def_cmethod(c, KORB_C_FLOAT, "zero?", korb_m_flt_zero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nonzero?", korb_m_flt_nonzero, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "nan?", korb_m_flt_nan, 0);
