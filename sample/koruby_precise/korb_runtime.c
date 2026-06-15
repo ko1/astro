@@ -3999,11 +3999,13 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_ary_minmax_n(c, slots, self, -1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    intptr_t n;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, -1, n);
     return korb_ary_minmax(c, slots, self, -1);
 }
 static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_ary_minmax_n(c, slots, self, 1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    intptr_t n;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n);
     return korb_ary_minmax(c, slots, self,  1);
 }
 
@@ -4321,7 +4323,8 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
 }
 static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int depth = -1;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) depth = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    intptr_t d;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &d)) depth = (int)d;
     uint32_t n = SELF_ARY->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
     CHECK(korb_ary_flatten_depth(c, slots + 1, dst, self, depth));
@@ -4727,8 +4730,9 @@ static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take,
 static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     intptr_t lo, hi;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* min(n) → first n ascending */
-        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* min(n) → first n ascending */
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
         uint32_t take = (uint32_t)n; if ((intptr_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
@@ -4740,8 +4744,9 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     intptr_t lo, hi;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* max(n) → last n descending */
-        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* max(n) → last n descending */
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
         uint32_t take = (uint32_t)n; if ((intptr_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
@@ -5790,16 +5795,18 @@ static RESULT korb_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
     return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_hash_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {  /* max(n) → n largest pairs */
+    intptr_t n;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) {  /* max(n) → n largest pairs */
         slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
-        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), 1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), 1, n);
     }
     return korb_hash_minmax(c, slots, self,  1);
 }
 static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {  /* min(n) → n smallest pairs */
+    intptr_t n;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) {  /* min(n) → n smallest pairs */
         slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
-        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), -1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), -1, n);
     }
     return korb_hash_minmax(c, slots, self, -1);
 }
