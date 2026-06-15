@@ -182,7 +182,7 @@ static RESULT korb_m_rat_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 
 /* Complex re + im*i; re/im are numeric VALUEs (GC edges). */
-static RESULT
+RESULT
 korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im)
 {
     slots[0] = re; slots[1] = im;                      /* root both across alloc */

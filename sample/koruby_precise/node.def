@@ -48,6 +48,14 @@ node_rational(CTX *c, NODE *n, VALUE *slots, uint64_t num, uint64_t den)
     return korb_rat_new(c, slots, (intptr_t)num, (intptr_t)den);
 }
 
+// Imaginary literal `3i` / `1.5i` / `2ri` → Complex(0, <numeric>) per evaluation.
+NODE_DEF
+node_imaginary(CTX *c, NODE *n, VALUE *slots, VALUE_REF im@child)
+{
+    (void)n;
+    return korb_cpx_new(c, slots, LONG2FIX(0), VALUE_REF_GET(im));
+}
+
 // Parse-time-unsupported construct (M0 subset boundary): the file still
 // parses and runs up to this point, then raises NotImplementedError —
 // rubyharness then scores every line before it (a parse-time exit would

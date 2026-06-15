@@ -68,6 +68,7 @@ RESULT korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len);
  * or Float (returns false if neither). */
 RESULT korb_float_new(CTX *c, VALUE *slots, double d);
 RESULT korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den);
+RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);
 bool   korb_num_to_d(VALUE v, double *out);
 /* numeric arithmetic with a Float operand.  op: 0=+ 1=- 2=* 3=/ 4=% */
 RESULT korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line);
