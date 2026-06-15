@@ -4528,6 +4528,18 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    slots[0] = UNWRAP(korb_hash_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0)));
+    VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (intptr_t i = lo; i < hi; i++) {              /* int range elements are unique → count 1 each */
+        slots[1] = LONG2FIX(i);
+        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(1)));
+    }
+    return RESULT_OK(VALUE_REF_GET(h));
+}
 static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#flat_map without a block (Enumerator) is not supported");
@@ -5126,6 +5138,26 @@ static RESULT korb_hash_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 }
 #define HASH_REQ_BLOCK(what) do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, what " without a block is not supported"); } while (0)
 
+static RESULT korb_m_hash_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; HASH_REQ_BLOCK("Hash#flat_map");
+    uint32_t np = korb_entry_params_cnt(block);
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, np, h->items->data[2*i], h->items->data[2*i+1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_ARRAY_P(r.value)) {                 /* flatten one level */
+            slots[1] = r.value;
+            uint32_t sublen = VAL2ARY(slots[1])->len;
+            for (uint32_t j = 0; j < sublen; j++)
+                CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[1])->items->data[j]));
+        } else {
+            CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_hash_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     (void)a; HASH_REQ_BLOCK("Hash#map");
     uint32_t np = korb_entry_params_cnt(block);
@@ -6681,7 +6713,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "map", korb_m_hash_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "collect", korb_m_hash_map, 0);
-    korb_def_cmethod_blk(c, KORB_C_HASH, "flat_map", korb_m_hash_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "flat_map", korb_m_hash_flat_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "collect_concat", korb_m_hash_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "select", korb_m_hash_select, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "filter", korb_m_hash_select, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "reject", korb_m_hash_reject, 0);
@@ -6742,6 +6775,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "flat_map", korb_m_range_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect_concat", korb_m_range_flat_map, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reduce", korb_m_range_reduce, -1);
