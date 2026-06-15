@@ -451,6 +451,16 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym)
     return RESULT_OK(v);
 }
 
+// constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
+// root-scanned), returns the value.
+NODE_DEF
+node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, VALUE val@child)
+{
+    (void)n; (void)slots;
+    korb_const_define(c, name_sym, val);
+    return RESULT_OK(val);
+}
+
 // Call nodes: argc staged children sit contiguously at slots[-argc..-1],
 // which IS the callee's parameter window (frame base = slots - argc).
 // korb_call positions the callee cursor at base + locals_cnt.

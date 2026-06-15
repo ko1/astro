@@ -300,6 +300,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
+extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
@@ -1246,6 +1247,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
         return ALLOC_node_const(kp_intern_cid(tc, cr->name));
+      }
+
+      case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
+        const pm_constant_write_node_t *cw = (const pm_constant_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, cw->name);
+        NODE *val;
+        uint32_t sc = kind_node_const_set.slot_count;
+        WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
+        return ALLOC_node_const_set(name, val);
       }
 
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
