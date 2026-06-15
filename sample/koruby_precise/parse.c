@@ -437,14 +437,48 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
 
 /* Call with a literal block.  Bakes def_env_off (caller frame base) and
  * hands the node_entry + def_env to the callee.  B2: 0 or 1 positional arg. */
+/* Synthesize the block `{ |x| x.sym }` for `&:sym` (symbol-to-proc), reusing the
+ * normal block machinery — a real node_entry, so dispatcher prefetch is safe. */
+static NODE *
+kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
+{
+    static pm_constant_id_t one_id[1] = { 0 };       /* one synthetic local `x` */
+    pm_constant_id_list_t fake; fake.ids = one_id; fake.size = 1; fake.capacity = 1;
+    push_frame(tc, &fake);
+    NODE *recv;
+    WITH_CHAIN(tc, 1, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
+    NODE *body = ALLOC_node_send0(sym_id, 0, recv);
+    uint32_t frame_size = pop_frame(tc);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0);
+    code_repo_add("symblock", entry, true);
+    return entry;
+}
+
+/* Resolve a call's block: a literal `{ }` → real node_entry; `&:sym` → a
+ * synthesized `{ |x| x.sym }` block; else NULL = unsupported. */
+static NODE *
+kp_block_entry(struct kp_ctx *tc, const pm_node_t *blk)
+{
+    if (PM_NODE_TYPE_P(blk, PM_BLOCK_NODE))
+        return transduce_block(tc, (const pm_block_node_t *)blk);
+    if (PM_NODE_TYPE_P(blk, PM_BLOCK_ARGUMENT_NODE)) {
+        const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)blk;
+        if (ba->expression && PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
+            const pm_symbol_node_t *sn = (const pm_symbol_node_t *)ba->expression;
+            size_t len = pm_string_length(&sn->unescaped);
+            uint32_t id = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len);
+            return kp_symbol_block(tc, id);
+        }
+    }
+    return NULL;
+}
+
 static NODE *
 transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t mid,
                           uint32_t line, const pm_arguments_node_t *args, size_t argc,
-                          const pm_block_node_t *blk)
+                          NODE *entry)
 {
     if (argc > 1) return kp_unsupported(tc, (const pm_node_t *)cn, "call with block and >1 arg");
-
-    NODE *entry = transduce_block(tc, blk);
 
     /* def_env_off: cursor → caller frame base = -(chain + slot_count); pop
      * subtracts the caller's frame_size (the slot_count = argc). */
@@ -511,11 +545,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 
     if (cn->block) {
-        if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE)) {
-            return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");
-        }
-        return transduce_call_with_block(tc, cn, mid, line, args, argc,
-                                         (const pm_block_node_t *)cn->block);
+        NODE *entry = kp_block_entry(tc, cn->block);
+        if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
+        return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
     /* caller self cell (base[fs-1]); the argc staged args advance the body
@@ -570,13 +602,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_not(transduce(tc, cn->receiver));
     }
 
-    /* receiver method dispatch with a literal block: recv.mid(args) { ... } */
+    /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */
     if (cn->block) {
-        if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE))
-            return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");
         if (argc > 2)
             return kp_unsupported(tc, (const pm_node_t *)cn, "receiver call with block and >2 args");
-        NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
+        NODE *entry = kp_block_entry(tc, cn->block);
+        if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
          * = recv(1) + argc.  bake_add fixes up by the caller's frame_size. */
         /* caller self; recv(1) + argc staged children advance the body cursor */
