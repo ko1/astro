@@ -1242,6 +1242,11 @@ static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
 {
+    if (FIXNUM_P(l) && FIXNUM_P(r)) {                    /* both Integer (reached via send/cmethod, not the node fast path) */
+        intptr_t x = FIX2LONG(l), y = FIX2LONG(r);
+        bool t = op == 0 ? x < y : op == 1 ? x <= y : op == 2 ? x > y : x >= y;
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
     if (KORB_HASH_P(l) && KORB_HASH_P(r)) {              /* subset/superset comparison */
         const KorbHash *me = VAL2HASH(l), *other = VAL2HASH(r);
         bool t;
@@ -4169,31 +4174,25 @@ static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    REQUIRE_BLOCK("Integer#upto");
+/* up==true: self upto to (ascending); else downto (descending). */
+static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself, bool up, const char *meth) {
     VALUE lv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
-    intptr_t to = FIX2LONG(lv);
-    for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i <= to; i++) {
-        VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    intptr_t to = FIX2LONG(lv), from = FIX2LONG(VALUE_REF_GET(self));
+    if (block == NULL) {                              /* → Enumerator of the sequence */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        if (up) for (intptr_t i = from; i <= to; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+        else    for (intptr_t i = from; i >= to; i--) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), meth));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
     }
+    if (up) for (intptr_t i = from; i <= to; i++) { VALUE iv = LONG2FIX(i); RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    else    for (intptr_t i = from; i >= to; i--) { VALUE iv = LONG2FIX(i); RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     return RESULT_OK(VALUE_REF_GET(self));
 }
-
-static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    REQUIRE_BLOCK("Integer#downto");
-    VALUE lv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
-    intptr_t to = FIX2LONG(lv);
-    for (intptr_t i = FIX2LONG(VALUE_REF_GET(self)); i >= to; i--) {
-        VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    }
-    return RESULT_OK(VALUE_REF_GET(self));
-}
+static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, true, "upto"); }
+static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, false, "downto"); }
 
 /* ---- Hash methods -------------------------------------------------------- */
 
@@ -8119,6 +8118,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "===", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "min", korb_m_range_min, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "max", korb_m_range_max, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
