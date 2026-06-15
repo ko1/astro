@@ -299,6 +299,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
+extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
 extern const struct NodeKind kind_node_range_new;    /* range literal */
@@ -844,11 +845,15 @@ static NODE *
 build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
 {
     if (n == 0) return ALLOC_node_array_new(capa);
+    const pm_node_t *last = elems[n - 1];
+    bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
+    const pm_node_t *expr = splat ? (const pm_node_t *)((const pm_splat_node_t *)last)->expression : last;
+    if (splat && expr == NULL) return build_array(tc, elems, n - 1, capa);   /* bare `*` → nothing */
     NODE *acc, *elem;
-    uint32_t sc = kind_node_ary_push.slot_count;
+    uint32_t sc = kind_node_ary_push.slot_count;        /* concat shares the push layout */
     WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
-                        elem = transduce(tc, elems[n - 1])));
-    return ALLOC_node_ary_push(acc, elem);
+                        elem = transduce(tc, expr)));
+    return splat ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
 }
 
 /* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
@@ -991,9 +996,6 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_ARRAY_NODE: {
         const pm_array_node_t *an = (const pm_array_node_t *)node;
         size_t cnt = an->elements.size;
-        for (size_t i = 0; i < cnt; i++)             /* splat lands later */
-            if (PM_NODE_TYPE(an->elements.nodes[i]) == PM_SPLAT_NODE)
-                return kp_unsupported(tc, node, "array literal with splat (*)");
         return build_array(tc, an->elements.nodes, cnt, (uint32_t)cnt);
       }
 

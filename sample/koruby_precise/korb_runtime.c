@@ -445,6 +445,31 @@ korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem)
     return RESULT_OK(VALUE_REF_GET(aref));
 }
 
+static bool korb_range_int_bounds(const KorbRange *r, intptr_t *lo, intptr_t *hi);
+/* splat `*val` into aref: Array → its elements, Range → its ints, nil → nothing,
+ * else → val itself (Ruby `[*x]` semantics). aref/srcref are slots-rooted. */
+RESULT
+korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
+{
+    if (KORB_ARRAY_P(val)) {
+        VALUE_REF sref = SLOTS_PUSH(slots, val);    /* root src across grow GCs */
+        uint32_t n = VAL2ARY(VALUE_REF_GET(sref))->len;
+        for (uint32_t i = 0; i < n; i++)
+            CHECK(korb_ary_push_val(c, slots + 1, aref, VAL2ARY(VALUE_REF_GET(sref))->items->data[i]));
+        return RESULT_OK(VALUE_REF_GET(aref));
+    }
+    if (KORB_RANGE_P(val)) {
+        const KorbRange *r = VAL2RANGE(val);
+        intptr_t lo, hi;
+        if (korb_range_int_bounds(r, &lo, &hi)) {
+            for (intptr_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots, aref, LONG2FIX(i)));
+            return RESULT_OK(VALUE_REF_GET(aref));
+        }
+    }
+    if (val == KORB_NIL) return RESULT_OK(VALUE_REF_GET(aref));
+    return korb_ary_push_val(c, slots, aref, val);
+}
+
 /* Concatenate two arrays into a fresh one (Array#+ / the `+` binop).  lref/rref
  * are rooted; the result is left on the slots cursor via push. */
 static RESULT

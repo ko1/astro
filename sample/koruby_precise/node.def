@@ -538,6 +538,13 @@ node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@chi
     return korb_ary_push_val(c, slots, ary, elem);
 }
 
+NODE_DEF
+node_ary_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@child)
+{
+    (void)n;
+    return korb_ary_concat_val(c, slots, ary, elem);   /* splat: spread elem into ary */
+}
+
 // ---- hash literals ---------------------------------------------------------
 //
 // `{k => v, ...}` lowers to a set chain: hash_set(hash_set(hash_new(n),k0,v0)...).

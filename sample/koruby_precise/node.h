@@ -77,6 +77,7 @@ RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);
 /* Array (korb_runtime.c) */
 RESULT korb_ary_new(CTX *c, VALUE *slots, uint32_t capa);
 RESULT korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem);
+RESULT korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val);
 
 /* Hash (korb_runtime.c) */
 RESULT korb_hash_new(CTX *c, VALUE *slots, uint32_t capa);
