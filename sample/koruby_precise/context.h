@@ -134,6 +134,7 @@ enum korb_obj_type {
     KORB_OBJ_FLOAT       = 9,   /* heap-boxed double */
     KORB_OBJ_STR_BUF     = 10,  /* raw char[] payload backing a (mutable) KorbString */
     KORB_OBJ_RATIONAL    = 11,  /* exact rational num/den (no GC edges) */
+    KORB_OBJ_COMPLEX     = 12,  /* complex re + im*i (re/im are GC edges) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
@@ -161,6 +162,12 @@ typedef struct KorbRational {
     AroObjectHeader head;            /* KORB_OBJ_RATIONAL */
     intptr_t num, den;
 } KorbRational;
+
+/* complex number re + im*i; components are arbitrary numerics (GC edges). */
+typedef struct KorbComplex {
+    AroObjectHeader head;            /* KORB_OBJ_COMPLEX */
+    VALUE ARO_GC_EDGE re, im;
+} KorbComplex;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -245,6 +252,8 @@ typedef struct KorbClass {
 #define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)(v))
 #define KORB_RATIONAL_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RATIONAL)
 #define VAL2RAT(v)         ((KorbRational *)(uintptr_t)(v))
+#define KORB_COMPLEX_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_COMPLEX)
+#define VAL2CPX(v)         ((KorbComplex *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -275,7 +284,7 @@ typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
 enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
-    KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_OBJECT,
+    KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -442,6 +451,13 @@ struct CTX_struct {
         KorbRange *_rg = (KorbRange *)(payload);                            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rg->rbegin);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rg->rend);                   \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_COMPLEX: {                                               \
+        KorbComplex *_cx = (KorbComplex *)(payload);                         \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cx->re);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cx->im);                      \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

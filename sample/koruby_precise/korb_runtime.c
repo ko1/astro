@@ -179,6 +179,84 @@ static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_rat_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 0 ? KORB_TRUE : KORB_FALSE); }
 #undef SELF_RAT
 
+static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
+
+/* Complex re + im*i; re/im are numeric VALUEs (GC edges). */
+static RESULT
+korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im)
+{
+    slots[0] = re; slots[1] = im;                      /* root both across alloc */
+    KorbComplex *x = korb_alloc(c, slots + 2, sizeof(KorbComplex), KORB_OBJ_COMPLEX);
+    ARO_STORE(c, x, (VALUE *)(uintptr_t)&x->re, slots[0]);
+    ARO_STORE(c, x, (VALUE *)(uintptr_t)&x->im, slots[1]);
+    return RESULT_OK((VALUE)x);
+}
+#define SELF_CPX VAL2CPX(VALUE_REF_GET(self))
+static RESULT korb_m_cpx_real(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->re); }
+static RESULT korb_m_cpx_imag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->im); }
+static RESULT korb_m_cpx_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_cpx_conj(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {  /* conjugate: negate im */
+    (void)a;
+    slots[0] = SELF_CPX->re;
+    RESULT nr = korb_num_binop(c, slots + 1, LONG2FIX(0), SELF_CPX->im, 1);   /* 0 - im */
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    slots[1] = nr.value;
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
+static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; double re, im;
+    if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
+    return korb_float_new(c, slots, sqrt(re * re + im * im));
+}
+static RESULT korb_m_cpx_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    const KorbComplex *x = SELF_CPX;
+    if (KORB_COMPLEX_P(o))
+        return RESULT_OK((korb_value_eq(x->re, VAL2CPX(o)->re) && korb_value_eq(x->im, VAL2CPX(o)->im)) ? KORB_TRUE : KORB_FALSE);
+    /* complex == real iff im == 0 and re == real */
+    double im;
+    bool im_zero = korb_num_to_d(x->im, &im) && im == 0.0;
+    return RESULT_OK((im_zero && korb_value_eq(x->re, o)) ? KORB_TRUE : KORB_FALSE);
+}
+#undef SELF_CPX
+static RESULT korb_m_int_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_cpx_new(c, slots, LONG2FIX(0), VALUE_REF_GET(self)); }
+static RESULT korb_m_num_conj_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
+    if (KORB_COMPLEX_P(v)) { *re = VAL2CPX(v)->re; *im = VAL2CPX(v)->im; return true; }
+    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v)) { *re = v; *im = LONG2FIX(0); return true; }
+    return false;
+}
+/* Complex arithmetic (op 0+ 1- 2*); returns a Complex. Components combined via
+ * korb_num_binop (Int/Float/Rational-aware). Division (op 3) is unsupported. */
+RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
+    VALUE lre, lim, rre, rim;
+    if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(KORB_COMPLEX_P(l) ? r : l));
+    if (UNLIKELY(op == 3)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#/ is not implemented");
+    slots[0] = lre; slots[1] = lim; slots[2] = rre; slots[3] = rim;   /* root inputs */
+    VALUE res_re, res_im;
+    if (op == 0 || op == 1) {
+        RESULT a = korb_num_binop(c, slots + 4, slots[0], slots[2], op); if (UNLIKELY(a.state != KORB_NORMAL)) return a; slots[4] = a.value;
+        RESULT b = korb_num_binop(c, slots + 5, slots[1], slots[3], op); if (UNLIKELY(b.state != KORB_NORMAL)) return b; slots[5] = b.value;
+        res_re = slots[4]; res_im = slots[5];
+    } else {   /* mul: (lre*rre - lim*rim) + (lre*rim + lim*rre)i */
+        RESULT m1 = korb_num_binop(c, slots + 4, slots[0], slots[2], 2); if (UNLIKELY(m1.state != KORB_NORMAL)) return m1; slots[4] = m1.value;
+        RESULT m2 = korb_num_binop(c, slots + 5, slots[1], slots[3], 2); if (UNLIKELY(m2.state != KORB_NORMAL)) return m2; slots[5] = m2.value;
+        RESULT re = korb_num_binop(c, slots + 6, slots[4], slots[5], 1); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[6] = re.value;
+        RESULT m3 = korb_num_binop(c, slots + 7, slots[0], slots[3], 2); if (UNLIKELY(m3.state != KORB_NORMAL)) return m3; slots[7] = m3.value;
+        RESULT m4 = korb_num_binop(c, slots + 8, slots[1], slots[2], 2); if (UNLIKELY(m4.state != KORB_NORMAL)) return m4; slots[8] = m4.value;
+        RESULT im = korb_num_binop(c, slots + 9, slots[7], slots[8], 0); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[9] = im.value;
+        res_re = slots[6]; res_im = slots[9];
+    }
+    slots[10] = res_re; slots[11] = res_im;
+    return korb_cpx_new(c, slots + 12, slots[10], slots[11]);
+}
+static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
+static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
+static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
+
 bool
 korb_num_to_d(VALUE v, double *out)
 {
@@ -790,7 +868,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "String", KORB_C_STRING }, { "Symbol", KORB_C_SYMBOL }, { "Array", KORB_C_ARRAY },
         { "Hash", KORB_C_HASH }, { "Range", KORB_C_RANGE }, { "NilClass", KORB_C_NIL },
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
-        { "Rational", KORB_C_RATIONAL },
+        { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -871,6 +949,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_RANGE:     return "Range";
       case KORB_OBJ_FLOAT:     return "Float";
       case KORB_OBJ_RATIONAL:  return "Rational";
+      case KORB_OBJ_COMPLEX:   return "Complex";
     }
     return "Object";
 }
@@ -891,6 +970,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_RANGE:  return "an instance of Range";
       case KORB_OBJ_FLOAT:  return "an instance of Float";
       case KORB_OBJ_RATIONAL: return "an instance of Rational";
+      case KORB_OBJ_COMPLEX:  return "an instance of Complex";
     }
     return "an instance of Object";
 }
@@ -936,6 +1016,13 @@ korb_value_eq(VALUE a, VALUE b)
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         return x->len == y->len && memcmp(x->buf->data, y->buf->data, x->len) == 0;
+    }
+    if (KORB_COMPLEX_P(a) || KORB_COMPLEX_P(b)) {     /* complex == complex / == real(im 0) */
+        if (KORB_COMPLEX_P(a) && KORB_COMPLEX_P(b))
+            return korb_value_eq(VAL2CPX(a)->re, VAL2CPX(b)->re) && korb_value_eq(VAL2CPX(a)->im, VAL2CPX(b)->im);
+        VALUE cx = KORB_COMPLEX_P(a) ? a : b, ot = KORB_COMPLEX_P(a) ? b : a;
+        double im;
+        return korb_num_to_d(VAL2CPX(cx)->im, &im) && im == 0.0 && korb_value_eq(VAL2CPX(cx)->re, ot);
     }
     if (KORB_RATIONAL_P(a) || KORB_RATIONAL_P(b)) {   /* (1/2) == 0.5 / == 3 / == (1/2) */
         int cmp = korb_rat_cmp(a, b);
@@ -1049,6 +1136,7 @@ RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 0);
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
@@ -1078,6 +1166,7 @@ RESULT
 korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 2);
     if (!KORB_ARRAY_P(l) && !KORB_STRING_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 2);
     if (KORB_STRING_P(l)) {
@@ -1479,6 +1568,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_EXCEPTION: return KORB_C_EXCEPTION;
           case KORB_OBJ_FLOAT:  return KORB_C_FLOAT;
           case KORB_OBJ_RATIONAL: return KORB_C_RATIONAL;
+          case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
         }
     }
     return KORB_C_OBJECT;
@@ -1497,6 +1587,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_CLASS:   return "Class";
       case KORB_C_FLOAT:   return "Float";
       case KORB_C_RATIONAL: return "Rational";
+      case KORB_C_COMPLEX:  return "Complex";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -6280,6 +6371,30 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "<=", korb_m_num_le, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, ">", korb_m_num_gt, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, ">=", korb_m_num_ge, 1);
+
+    /* Complex */
+    korb_def_cmethod(c, KORB_C_COMPLEX, "real", korb_m_cpx_real, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "imaginary", korb_m_cpx_imag, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "imag", korb_m_cpx_imag, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "conjugate", korb_m_cpx_conj, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "conj", korb_m_cpx_conj, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "abs", korb_m_cpx_abs, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "magnitude", korb_m_cpx_abs, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "to_c", korb_m_cpx_self, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "+", korb_m_cpx_add, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "-", korb_m_cpx_sub, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "*", korb_m_cpx_mul, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
+
+    /* Integer/Float → Complex helpers */
+    korb_def_cmethod(c, KORB_C_INTEGER, "i", korb_m_int_i, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "conj", korb_m_num_conj_self, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "conjugate", korb_m_num_conj_self, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "i", korb_m_int_i, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "conj", korb_m_num_conj_self, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "conjugate", korb_m_num_conj_self, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6437,6 +6552,16 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_RATIONAL:
         fprintf(fp, "%ld/%ld", (long)VAL2RAT(v)->num, (long)VAL2RAT(v)->den);   /* to_s: n/d */
         return;
+      case KORB_OBJ_COMPLEX: {                          /* to_s: re±|im|i */
+        const KorbComplex *x = VAL2CPX(v);
+        korb_fprint_to_s(c, fp, x->re);
+        char *ib = NULL; size_t isz = 0; FILE *ims = open_memstream(&ib, &isz);
+        if (ims) { korb_fprint_to_s(c, ims, x->im); fclose(ims); }
+        if (ib && ib[0] == '-') fprintf(fp, "-%si", ib + 1);
+        else                    fprintf(fp, "+%si", ib ? ib : "0");
+        free(ib);
+        return;
+      }
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->buf->data, 1, VAL2STR(e->msg)->len, fp);
@@ -6471,6 +6596,9 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         return;
       case KORB_OBJ_RATIONAL:
         fprintf(fp, "(%ld/%ld)", (long)VAL2RAT(v)->num, (long)VAL2RAT(v)->den);   /* inspect: (n/d) */
+        return;
+      case KORB_OBJ_COMPLEX:                            /* inspect: (re±|im|i) */
+        fputc('(', fp); korb_fprint_to_s(c, fp, v); fputc(')', fp);
         return;
     }
     korb_fprint_to_s(c, fp, v);
@@ -6528,6 +6656,16 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
         den = FIX2LONG(dv);
     }
     return korb_rat_new(c, slots, num, den);
+}
+
+static RESULT
+korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE re = VALUE_SLICE_GET(args, 0);
+    VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    return korb_cpx_new(c, slots, re, im);
 }
 
 static RESULT
@@ -6648,6 +6786,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
+    korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 
     korb_register_core_methods(c);
 
