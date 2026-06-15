@@ -136,6 +136,7 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented in M0)");
     }
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
     if (KORB_ARRAY_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
@@ -173,6 +174,7 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return RESULT_OK(LONG2FIX(q));
     }
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, line);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 3);
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '/' for %s", korb_a_type_name(l));

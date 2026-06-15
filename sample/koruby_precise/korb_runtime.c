@@ -113,11 +113,78 @@ korb_float_new(CTX *c, VALUE *slots, double d)
     return RESULT_OK((VALUE)f);
 }
 
+static intptr_t korb_gcd_pos(intptr_t a, intptr_t b) {   /* gcd of |a|,|b| */
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b) { intptr_t t = a % b; a = b; b = t; }
+    return a;
+}
+/* Make a reduced Rational num/den (den != 0); den>0 normalized. den==0 → ZeroDiv. */
+static RESULT
+korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den)
+{
+    if (UNLIKELY(den == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+    if (den < 0) { num = -num; den = -den; }
+    intptr_t g = korb_gcd_pos(num, den);
+    if (g > 1) { num /= g; den /= g; }
+    KorbRational *r = korb_alloc(c, slots, sizeof(KorbRational), KORB_OBJ_RATIONAL);
+    r->num = num; r->den = den;
+    return RESULT_OK((VALUE)r);
+}
+/* (num,den) of an Int-or-Rational; false if neither. */
+static bool korb_as_rat(VALUE v, intptr_t *num, intptr_t *den) {
+    if (FIXNUM_P(v))        { *num = FIX2LONG(v); *den = 1; return true; }
+    if (KORB_RATIONAL_P(v)) { *num = VAL2RAT(v)->num; *den = VAL2RAT(v)->den; return true; }
+    return false;
+}
+/* Rational arithmetic (op 0+ 1- 2* 3/); Float involved → Float, else exact Rational. */
+RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) return korb_num_arith(c, slots, l, r, op, 0);
+    intptr_t ln, ld, rn, rd;
+    if (UNLIKELY(!korb_as_rat(l, &ln, &ld) || !korb_as_rat(r, &rn, &rd)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(KORB_RATIONAL_P(l) ? r : l));
+    intptr_t num, den;
+    switch (op) {
+      case 0: num = ln * rd + rn * ld; den = ld * rd; break;
+      case 1: num = ln * rd - rn * ld; den = ld * rd; break;
+      case 2: num = ln * rn;           den = ld * rd; break;
+      default: num = ln * rd;          den = ld * rn; break;   /* / */
+    }
+    return korb_rat_new(c, slots, num, den);
+}
+/* Rational compare vs Int/Rational/Float → -1/0/1, or 2 if incomparable. */
+static int korb_rat_cmp(VALUE l, VALUE r) {
+    intptr_t ln, ld, rn, rd;
+    if (korb_as_rat(l, &ln, &ld) && korb_as_rat(r, &rn, &rd)) {
+        intptr_t a = ln * rd, b = rn * ld;             /* dens > 0 → sign preserved */
+        return (a > b) - (a < b);
+    }
+    double x, y;
+    if (korb_num_to_d(l, &x) && korb_num_to_d(r, &y)) return (x > y) - (x < y);
+    return 2;
+}
+#define SELF_RAT VAL2RAT(VALUE_REF_GET(self))
+static RESULT korb_m_rat_num(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->num)); }
+static RESULT korb_m_rat_den(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->den)); }
+static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, (double)SELF_RAT->num / (double)SELF_RAT->den); }
+static RESULT korb_m_rat_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->num / SELF_RAT->den)); }
+static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_rat_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; intptr_t n = SELF_RAT->num; return korb_rat_new(c, slots, n < 0 ? -n : n, SELF_RAT->den); }
+static RESULT korb_m_rat_neg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_new(c, slots, -SELF_RAT->num, SELF_RAT->den); }
+static RESULT korb_m_rat_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
+static RESULT korb_m_rat_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
+static RESULT korb_m_rat_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
+static RESULT korb_m_rat_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
+static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r)); }
+static RESULT korb_m_rat_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 0 ? KORB_TRUE : KORB_FALSE); }
+#undef SELF_RAT
+
 bool
 korb_num_to_d(VALUE v, double *out)
 {
     if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
     if (KORB_FLOAT_P(v)) { *out = VAL2FLT(v)->val;     return true; }
+    if (KORB_RATIONAL_P(v)) { *out = (double)VAL2RAT(v)->num / (double)VAL2RAT(v)->den; return true; }
     return false;
 }
 
@@ -723,6 +790,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "String", KORB_C_STRING }, { "Symbol", KORB_C_SYMBOL }, { "Array", KORB_C_ARRAY },
         { "Hash", KORB_C_HASH }, { "Range", KORB_C_RANGE }, { "NilClass", KORB_C_NIL },
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
+        { "Rational", KORB_C_RATIONAL },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -802,6 +870,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_HASH:      return "Hash";
       case KORB_OBJ_RANGE:     return "Range";
       case KORB_OBJ_FLOAT:     return "Float";
+      case KORB_OBJ_RATIONAL:  return "Rational";
     }
     return "Object";
 }
@@ -821,6 +890,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_HASH:   return "an instance of Hash";
       case KORB_OBJ_RANGE:  return "an instance of Range";
       case KORB_OBJ_FLOAT:  return "an instance of Float";
+      case KORB_OBJ_RATIONAL: return "an instance of Rational";
     }
     return "an instance of Object";
 }
@@ -866,6 +936,10 @@ korb_value_eq(VALUE a, VALUE b)
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         return x->len == y->len && memcmp(x->buf->data, y->buf->data, x->len) == 0;
+    }
+    if (KORB_RATIONAL_P(a) || KORB_RATIONAL_P(b)) {   /* (1/2) == 0.5 / == 3 / == (1/2) */
+        int cmp = korb_rat_cmp(a, b);
+        if (cmp != 2) return cmp == 0;
     }
     double da, db;              /* numeric ==: 1 == 1.0, 1.0 == 1.0 */
     if ((KORB_FLOAT_P(a) || KORB_FLOAT_P(b)) && korb_num_to_d(a, &da) && korb_num_to_d(b, &db))
@@ -924,6 +998,13 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         }
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(r)) {     /* exact rational/int compare */
+        int cmp = korb_rat_cmp(l, r);
+        if (cmp != 2) {
+            bool t = (op == 0) ? cmp < 0 : (op == 1) ? cmp <= 0 : (op == 2) ? cmp > 0 : cmp >= 0;
+            return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+        }
+    }
     double ld, rd;
     if ((KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) && korb_num_to_d(l, &ld) && korb_num_to_d(r, &rd)) {
         bool t;
@@ -969,6 +1050,7 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_str_plus_ref(c, slots, lhs, r);
@@ -997,6 +1079,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
     if (!KORB_ARRAY_P(l) && !KORB_STRING_P(l) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) return korb_num_arith(c, slots, l, rhs, 2, line);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 2);
     if (KORB_STRING_P(l)) {
         intptr_t cnt;
         if (UNLIKELY(!korb_to_index(rhs, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
@@ -1395,6 +1478,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_CLASS:  return KORB_C_CLASS;
           case KORB_OBJ_EXCEPTION: return KORB_C_EXCEPTION;
           case KORB_OBJ_FLOAT:  return KORB_C_FLOAT;
+          case KORB_OBJ_RATIONAL: return KORB_C_RATIONAL;
         }
     }
     return KORB_C_OBJECT;
@@ -1412,6 +1496,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_RANGE:   return "Range";
       case KORB_C_CLASS:   return "Class";
       case KORB_C_FLOAT:   return "Float";
+      case KORB_C_RATIONAL: return "Rational";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -1727,10 +1812,36 @@ static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_float_new(c, slots, (double)SELF_INT);
 }
+static RESULT korb_m_int_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_rat_new(c, slots, SELF_INT, 1);
+}
+static RESULT korb_m_int_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_int_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(1)); }
+/* decompose a finite double into exact num/den (reduced); den>0. */
+static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
+    if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "can't convert non-finite Float to Rational");
+    if (d == 0.0) return korb_rat_new(c, slots, 0, 1);
+    int e; double m = frexp(d, &e);                    /* d = m * 2^e, m in [0.5,1) */
+    intptr_t mant = (intptr_t)ldexp(m, 53);            /* integer mantissa */
+    e -= 53;
+    if (e >= 0) {
+        if (e >= 62) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float magnitude too large for Rational (Bignum)");
+        return korb_rat_new(c, slots, mant << e, 1);
+    }
+    if (-e >= 62) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float too small for Rational (Bignum)");
+    return korb_rat_new(c, slots, mant, (intptr_t)1 << (-e));
+}
 
 /* ---- Float methods ------------------------------------------------------- */
 #define SELF_FLT (VAL2FLT(VALUE_REF_GET(self))->val)
 static RESULT korb_m_flt_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static RESULT korb_m_flt_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_to_rat(c, slots, SELF_FLT); }
+static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(LONG2FIX(VAL2RAT(r.value)->num));
+}
+static RESULT korb_m_flt_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(LONG2FIX(VAL2RAT(r.value)->den));
+}
 static RESULT korb_m_flt_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_float_new(c, slots, fabs(SELF_FLT)); }
 static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT == 0.0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_nan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(isnan(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
@@ -5658,6 +5769,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "positive?", korb_m_int_pos, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "negative?", korb_m_int_neg, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_f", korb_m_int_to_f, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "to_r", korb_m_int_to_r, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "rationalize", korb_m_int_to_r, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "numerator", korb_m_int_numerator, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "denominator", korb_m_int_denominator, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_i", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_int", korb_m_int_self, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "ord", korb_m_int_self, 0);
@@ -6091,6 +6206,9 @@ korb_register_core_methods(CTX *c)
 
     /* Float */
     korb_def_cmethod(c, KORB_C_FLOAT, "to_f", korb_m_flt_to_f, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "to_r", korb_m_flt_to_r, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "numerator", korb_m_flt_numerator, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "denominator", korb_m_flt_denominator, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_i", korb_m_flt_to_i, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_int", korb_m_flt_to_i, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "truncate", korb_m_flt_to_i, 0);
@@ -6136,6 +6254,32 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "positive?", korb_m_flt_pos_q, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_s", korb_m_flt_to_s, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "inspect", korb_m_flt_to_s, 0);
+
+    /* Rational */
+    korb_def_cmethod(c, KORB_C_RATIONAL, "numerator", korb_m_rat_num, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "denominator", korb_m_rat_den, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_f", korb_m_rat_to_f, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_i", korb_m_rat_to_i, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_int", korb_m_rat_to_i, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_to_i, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_r", korb_m_rat_self, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "rationalize", korb_m_rat_self, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "abs", korb_m_rat_abs, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "magnitude", korb_m_rat_abs, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "-@", korb_m_rat_neg, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "+", korb_m_rat_add, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "-", korb_m_rat_sub, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "*", korb_m_rat_mul, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "/", korb_m_rat_div, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "quo", korb_m_rat_div, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "<=>", korb_m_rat_cmp_m, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "==", korb_m_rat_eq, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_s", korb_m_obj_to_s, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "<", korb_m_num_lt, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "<=", korb_m_num_le, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, ">", korb_m_num_gt, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, ">=", korb_m_num_ge, 1);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6290,6 +6434,9 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         fputs(fb, fp);
         return;
       }
+      case KORB_OBJ_RATIONAL:
+        fprintf(fp, "%ld/%ld", (long)VAL2RAT(v)->num, (long)VAL2RAT(v)->den);   /* to_s: n/d */
+        return;
       case KORB_OBJ_EXCEPTION: {
         const KorbException *e = VAL2EXC(v);
         if (e->msg != KORB_NIL) fwrite(VAL2STR(e->msg)->buf->data, 1, VAL2STR(e->msg)->len, fp);
@@ -6321,6 +6468,9 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
       }
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, fp, v, true);   /* inspect endpoints */
+        return;
+      case KORB_OBJ_RATIONAL:
+        fprintf(fp, "(%ld/%ld)", (long)VAL2RAT(v)->num, (long)VAL2RAT(v)->den);   /* inspect: (n/d) */
         return;
     }
     korb_fprint_to_s(c, fp, v);
