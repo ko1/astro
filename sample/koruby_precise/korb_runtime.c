@@ -3478,6 +3478,100 @@ static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(cnt == 1 ? KORB_TRUE : KORB_FALSE);
 }
+/* Build a fresh [k,v] pair array at *out (a rooted slot). cursor = scratch above it. */
+static RESULT korb_hash_make_pair(CTX *c, VALUE *cursor, VALUE *kslot, VALUE *vslot, VALUE *out) {
+    *out = UNWRAP(korb_ary_new(c, cursor, 2));
+    CHECK(korb_ary_push_val(c, cursor + 1, VALUE_REF_AT(out), *kslot));
+    CHECK(korb_ary_push_val(c, cursor + 1, VALUE_REF_AT(out), *vslot));
+    return RESULT_OK(*out);
+}
+/* sort_by → array of [k,v] pairs sorted by block key */
+static RESULT korb_m_hash_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#sort_by without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF vals = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF keys = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[2] = h->items->data[2*i]; slots[3] = h->items->data[2*i+1];
+        CHECK(korb_hash_make_pair(c, slots + 5, &slots[2], &slots[3], &slots[4]));  /* pair at slots[4] */
+        RESULT r = korb_hash_yield(c, slots + 5, block, def_env, cself, np, slots[2], slots[3]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[5] = r.value;
+        CHECK(korb_ary_push_val(c, slots + 6, vals, slots[4]));
+        CHECK(korb_ary_push_val(c, slots + 6, keys, slots[5]));
+    }
+    KorbArray *vd = VAL2ARY(VALUE_REF_GET(vals)), *kd = VAL2ARY(VALUE_REF_GET(keys));
+    VALUE *vdat = vd->items->data, *kdat = kd->items->data;
+    for (uint32_t i = 1; i < vd->len; i++) {
+        VALUE vk = vdat[i], kk = kdat[i]; uint32_t j = i;
+        while (j > 0) {
+            int cmp = korb_cmp_full(c, kdat[j-1], kk);
+            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+            if (cmp <= 0) break;
+            vdat[j] = vdat[j-1]; kdat[j] = kdat[j-1]; j--;
+        }
+        vdat[j] = vk; kdat[j] = kk;
+    }
+    return RESULT_OK(VALUE_REF_GET(vals));
+}
+/* min_by/max_by → the [k,v] pair with the extreme block key */
+static RESULT korb_hash_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#min_by/max_by without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    slots[0] = KORB_NIL; slots[1] = KORB_NIL; bool have = false;   /* best pair / best key */
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[2] = h->items->data[2*i]; slots[3] = h->items->data[2*i+1];
+        CHECK(korb_hash_make_pair(c, slots + 5, &slots[2], &slots[3], &slots[4]));
+        RESULT r = korb_hash_yield(c, slots + 5, block, def_env, cself, np, slots[2], slots[3]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[5] = r.value;
+        if (!have) { slots[0] = slots[4]; slots[1] = slots[5]; have = true; continue; }
+        int cmp = korb_cmp_full(c, slots[5], slots[1]);
+        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if ((want < 0 && cmp < 0) || (want > 0 && cmp > 0)) { slots[0] = slots[4]; slots[1] = slots[5]; }
+    }
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_hash_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_minmax_by(c, slots, self, block, def_env, cself, -1); }
+static RESULT korb_m_hash_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_minmax_by(c, slots, self, block, def_env, cself,  1); }
+/* filter_map → collect truthy block results */
+static RESULT korb_m_hash_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#filter_map without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, cself, np, h->items->data[2*i], h->items->data[2*i+1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value)) CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* partition → [yes_pairs, no_pairs] */
+static RESULT korb_m_hash_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#partition without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF yes = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF no  = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[2] = h->items->data[2*i]; slots[3] = h->items->data[2*i+1];
+        CHECK(korb_hash_make_pair(c, slots + 5, &slots[2], &slots[3], &slots[4]));
+        RESULT r = korb_hash_yield(c, slots + 5, block, def_env, cself, np, slots[2], slots[3]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        CHECK(korb_ary_push_val(c, slots + 5, KORB_TRUTHY(r.value) ? yes : no, slots[4]));
+    }
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));    VALUE_REF out = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, out, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, out, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(out));
+}
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     HASH_REQ_BLOCK("Hash#reduce");
     uint32_t np = korb_entry_params_cnt(block);   /* acc + pair: block takes |acc, (k,v)| */
@@ -4344,6 +4438,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "reject!", korb_m_hash_reject_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "delete_if", korb_m_hash_delete_if, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "one?", korb_m_hash_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "sort_by", korb_m_hash_sort_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "min_by", korb_m_hash_min_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "max_by", korb_m_hash_max_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "filter_map", korb_m_hash_filter_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "partition", korb_m_hash_partition, 0);
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
