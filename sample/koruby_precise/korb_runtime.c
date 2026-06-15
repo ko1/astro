@@ -1311,6 +1311,9 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
 /* ---- node_entry accessors + yield ----------------------------------------- */
 
+static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                             NODE *block, VALUE *def_env, VALUE captured_self);
+
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
@@ -3742,8 +3745,54 @@ static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 1); }
 static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_quant(c, slots, self, block, def_env, captured_self, 2); }
 
+/* Numeric binop for send/symbol dispatch (op: 0+ 1- 2* 3/ 4%). Int op int → Int
+ * (overflow→error), Float involved → Float; matches the node_plus/minus/... paths. */
+static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
+    if (FIXNUM_P(l) && FIXNUM_P(r)) {
+        intptr_t a = FIX2LONG(l), b = FIX2LONG(r), res;
+        switch (op) {
+          case 0: if (UNLIKELY(__builtin_add_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
+          case 1: if (UNLIKELY(__builtin_sub_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
+          case 2: if (UNLIKELY(__builtin_mul_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
+          case 3: if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); return RESULT_OK(LONG2FIX(korb_int_fdiv(a, b)));
+          default: if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); return RESULT_OK(LONG2FIX(korb_int_fmod(a, b)));
+        }
+    }
+    return korb_num_arith(c, slots, l, r, op, 0);
+}
+static RESULT korb_m_num_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
+static RESULT korb_m_num_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
+static RESULT korb_m_num_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
+static RESULT korb_m_num_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
+static RESULT korb_m_num_mod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 4); }
+static RESULT korb_m_num_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cmp_slow(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0, 0); }
+static RESULT korb_m_num_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cmp_slow(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1, 0); }
+static RESULT korb_m_num_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cmp_slow(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2, 0); }
+static RESULT korb_m_num_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cmp_slow(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3, 0); }
+/* extract the operator mid from a sym-form reduce arg (Symbol or String). */
+static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
+    if (SYMBOL_P(v))       { *op_mid = SYM2ID(v); return true; }
+    if (KORB_STRING_P(v))  { *op_mid = korb_intern(c->vm, VAL2STR(v)->buf->data, VAL2STR(v)->len); return true; }
+    return false;
+}
 static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#reduce without a block (symbol form) is not supported");
+    if (block == NULL) {                                   /* symbol form: reduce(:+) / reduce(init, :+) */
+        uint32_t na = VALUE_SLICE_LEN(a), op_mid;
+        if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+        uint32_t i = 0;
+        if (na >= 2) slots[0] = VALUE_SLICE_GET(a, 0);     /* explicit init */
+        else { const KorbArray *ary = SELF_ARY; if (ary->len == 0) return RESULT_OK(KORB_NIL); slots[0] = ary->items->data[0]; i = 1; }
+        for (; ; i++) {
+            const KorbArray *ary = SELF_ARY;
+            if (i >= ary->len) break;
+            slots[1] = slots[0]; slots[2] = ary->items->data[i];   /* acc, elem (recv+arg) */
+            RESULT r = korb_send_impl(c, slots + 3, op_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[0] = r.value;
+        }
+        return RESULT_OK(slots[0]);
+    }
     uint32_t i = 0;
     if (VALUE_SLICE_LEN(a) >= 1) {
         slots[0] = VALUE_SLICE_GET(a, 0);                  /* acc = initial */
@@ -4046,9 +4095,23 @@ static RESULT korb_m_range_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reduce without a block (symbol form) is not supported");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (block == NULL) {                                   /* symbol form */
+        uint32_t na = VALUE_SLICE_LEN(a), op_mid;
+        if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+        intptr_t i = lo;
+        if (na >= 2) slots[0] = VALUE_SLICE_GET(a, 0);
+        else { if (lo >= hi) return RESULT_OK(KORB_NIL); slots[0] = LONG2FIX(lo); i = lo + 1; }
+        for (; i < hi; i++) {
+            slots[1] = slots[0]; slots[2] = LONG2FIX(i);
+            RESULT r = korb_send_impl(c, slots + 3, op_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[0] = r.value;
+        }
+        return RESULT_OK(slots[0]);
+    }
     intptr_t i = lo;
     if (VALUE_SLICE_LEN(a) >= 1) {
         slots[0] = VALUE_SLICE_GET(a, 0);
@@ -5445,6 +5508,15 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "divmod", korb_m_int_divmod, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "div", korb_m_int_div, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_int_modulo, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "+", korb_m_num_add, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "-", korb_m_num_sub, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "*", korb_m_num_mul, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "/", korb_m_num_div, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "%", korb_m_num_mod, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "<", korb_m_num_lt, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "<=", korb_m_num_le, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, ">", korb_m_num_gt, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, ">=", korb_m_num_ge, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
@@ -5868,6 +5940,15 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "infinite?", korb_m_flt_inf, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "<=>", korb_m_flt_cmp, 1);
     korb_def_cmethod_blk(c, KORB_C_FLOAT, "step", korb_m_num_step, -1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "+", korb_m_num_add, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "-", korb_m_num_sub, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "*", korb_m_num_mul, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "/", korb_m_num_div, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "%", korb_m_num_mod, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "<", korb_m_num_lt, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "<=", korb_m_num_le, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, ">", korb_m_num_gt, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, ">=", korb_m_num_ge, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "fdiv", korb_m_flt_fdiv, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "quo", korb_m_flt_fdiv, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "div", korb_m_flt_div, 1);
