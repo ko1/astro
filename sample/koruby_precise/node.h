@@ -115,6 +115,7 @@ bool korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class);   /* exc kind_of? 
 RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
+RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
 RESULT korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line);
 bool   korb_value_eq(VALUE a, VALUE b);
 

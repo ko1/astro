@@ -4290,6 +4290,111 @@ static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 /* ---- more String methods ------------------------------------------------- */
 
+/* String#% : printf-style formatting. Single arg or an Array of args.
+ * Supports d/i/u, f/e/E/g/G, x/X/o, b, s, c, p, %% with C flags/width/precision
+ * (binary `b` honors width/0-flag manually; `*` dynamic width is unsupported). */
+static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
+    const char *fmt = fs->bytes; uint32_t flen = fs->len;
+    VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    const VALUE *args; uint32_t argn;
+    if (KORB_ARRAY_P(single)) { args = VAL2ARY(single)->items->data; argn = VAL2ARY(single)->len; }
+    else { args = &single; argn = VALUE_SLICE_LEN(a); }
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
+    for (uint32_t i = 0; i < flen; i++) {
+        if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
+        char spec[64]; int si = 0; spec[si++] = '%';
+        i++;
+        if (i < flen && fmt[i] == '%') { fputc('%', ms); continue; }
+        while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; }
+        while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; }
+        if (i < flen && fmt[i] == '.') { if (si < 58) spec[si++] = '.'; i++; while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; } }
+        if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
+        char conv = fmt[i];
+        VALUE arg = (ai < argn) ? args[ai] : KORB_NIL;
+        switch (conv) {
+          case 'd': case 'i': case 'u': {
+            intptr_t v;
+            if (FIXNUM_P(arg)) v = FIX2LONG(arg);
+            else if (KORB_FLOAT_P(arg)) v = (intptr_t)VAL2FLT(arg)->val;
+            else { err = true; errmsg = "expected a number"; break; }
+            spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
+            fprintf(ms, spec, (long)v); ai++;
+            break;
+          }
+          case 'f': case 'e': case 'E': case 'g': case 'G': {
+            double v; if (!korb_num_to_d(arg, &v)) { err = true; errmsg = "expected a number"; break; }
+            spec[si++] = conv; spec[si] = '\0';
+            fprintf(ms, spec, v); ai++;
+            break;
+          }
+          case 'x': case 'X': case 'o': {
+            intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
+            spec[si++] = 'l'; spec[si++] = conv; spec[si] = '\0';
+            fprintf(ms, spec, (long)v); ai++;
+            break;
+          }
+          case 'b': case 'B': {
+            intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
+            bool left = false, zero = false; int width = 0;          /* parse flags/width from spec */
+            for (int k = 1; k < si; k++) {
+                char sc = spec[k];
+                if (sc == '-') left = true;
+                else if (sc == '0') zero = true;
+                else if (sc == '+' || sc == ' ' || sc == '#') { /* ignored for binary */ }
+                else if (isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');
+                else break;
+            }
+            char tmp[80]; uint32_t n = korb_fmt_int(v, 2, tmp);
+            int pad = width > (int)n ? width - (int)n : 0;
+            if (!left) { char padc = zero ? '0' : ' '; for (int p = 0; p < pad; p++) fputc(padc, ms); }
+            fwrite(tmp, 1, n, ms);
+            if (left) for (int p = 0; p < pad; p++) fputc(' ', ms);
+            ai++;
+            break;
+          }
+          case 's': {
+            spec[si++] = 's'; spec[si] = '\0';
+            if (KORB_STRING_P(arg)) { fprintf(ms, spec, VAL2STR(arg)->bytes); }
+            else {
+                char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
+                if (tms) { korb_fprint_to_s(c, tms, arg); fclose(tms); }
+                fprintf(ms, spec, tb ? tb : ""); free(tb);
+            }
+            ai++;
+            break;
+          }
+          case 'p': {
+            char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
+            if (tms) { korb_fprint_inspect(c, tms, arg); fclose(tms); }
+            spec[si++] = 's'; spec[si] = '\0';
+            fprintf(ms, spec, tb ? tb : ""); free(tb); ai++;
+            break;
+          }
+          case 'c': {
+            if (FIXNUM_P(arg)) fputc((int)FIX2LONG(arg), ms);
+            else if (KORB_STRING_P(arg) && VAL2STR(arg)->len > 0) fwrite(VAL2STR(arg)->bytes, 1, 1, ms);
+            ai++;
+            break;
+          }
+          default: err = true; errmsg = "malformed format sequence"; break;
+        }
+        if (err) break;
+    }
+    fclose(ms);
+    if (err) { free(buf); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error"); }
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+
+RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs) {
+    slots[0] = rhs;
+    return korb_m_str_format(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
+}
+
 static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
     uint32_t m = al < bl ? al : bl;
     for (uint32_t i = 0; i < m; i++) {
@@ -4487,6 +4592,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp", korb_m_str_casecmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);

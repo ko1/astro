@@ -170,6 +170,7 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         if (r != 0 && ((r ^ b) < 0)) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
+    if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 4, line);
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
