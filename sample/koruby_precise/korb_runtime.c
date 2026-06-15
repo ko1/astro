@@ -2338,8 +2338,7 @@ static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
 static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
     intptr_t ndig = 0;
     if (VALUE_SLICE_LEN(a) >= 1) {
-        if (UNLIKELY(!FIXNUM_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
-        ndig = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (ndig == 0) return korb_flt_toint(c, slots, d, kind);
     double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
@@ -6569,6 +6568,12 @@ static RESULT korb_hash_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_hash_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_hash_grep(c, slots, self, a, true); }
 static RESULT korb_m_hash_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_hash_grep(c, slots, self, a, false); }
 /* zip → array of rows: [ [k,v], other0[i], other1[i], ... ] per pair i */
+/* i-th element of a zip source arg: Array → data[i], Range → lo+i (in bounds), else nil. */
+static VALUE korb_zip_elem(VALUE arg, uint32_t i) {
+    if (KORB_ARRAY_P(arg)) return i < VAL2ARY(arg)->len ? VAL2ARY(arg)->items->data[i] : KORB_NIL;
+    if (KORB_RANGE_P(arg)) { intptr_t lo, hi; if (korb_range_int_bounds(VAL2RANGE(arg), &lo, &hi)) { intptr_t v = lo + (intptr_t)i; if (v < hi) return LONG2FIX(v); } }
+    return KORB_NIL;
+}
 static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t k = VALUE_SLICE_LEN(a);
     uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
@@ -6580,11 +6585,8 @@ static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         slots[3] = UNWRAP(korb_ary_new(c, slots + 4, k + 1));                /* row at slots[3] */
         VALUE_REF row = VALUE_REF_AT(&slots[3]);
         CHECK(korb_ary_push_val(c, slots + 4, row, slots[2]));
-        for (uint32_t j = 0; j < k; j++) {
-            VALUE ov = VALUE_SLICE_GET(a, j);
-            VALUE e = (KORB_ARRAY_P(ov) && i < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[i] : KORB_NIL;
-            CHECK(korb_ary_push_val(c, slots + 4, row, e));
-        }
+        for (uint32_t j = 0; j < k; j++)
+            CHECK(korb_ary_push_val(c, slots + 4, row, korb_zip_elem(VALUE_SLICE_GET(a, j), i)));
         CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -6850,11 +6852,8 @@ static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         slots[1] = UNWRAP(korb_ary_new(c, slots + 2, k + 1));              /* row at slots[1] */
         VALUE_REF row = VALUE_REF_AT(&slots[1]);
         CHECK(korb_ary_push_val(c, slots + 2, row, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
-        for (uint32_t j = 0; j < k; j++) {
-            VALUE ov = VALUE_SLICE_GET(a, j);
-            VALUE e = (KORB_ARRAY_P(ov) && i < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[i] : KORB_NIL;
-            CHECK(korb_ary_push_val(c, slots + 2, row, e));
-        }
+        for (uint32_t j = 0; j < k; j++)
+            CHECK(korb_ary_push_val(c, slots + 2, row, korb_zip_elem(VALUE_SLICE_GET(a, j), i)));
         if (block != NULL) {
             RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
