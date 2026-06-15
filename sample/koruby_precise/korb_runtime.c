@@ -2208,6 +2208,11 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(bv)) {                            /* Integer#ceildiv(Float) → ceil(self/f) Integer */
+        double f = VAL2FLT(bv)->val;
+        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        return RESULT_OK(LONG2FIX((intptr_t)ceil((double)SELF_INT / f)));
+    }
     if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -6371,7 +6376,7 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
         if (KORB_HASH_P(cur)) { int32_t idx = korb_hash_find(VAL2HASH(cur), key); cur = idx < 0 ? KORB_NIL : VAL2HASH(cur)->items->data[2 * idx + 1]; }
-        else if (KORB_ARRAY_P(cur)) { if (!FIXNUM_P(key)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); KorbArray *ar = VAL2ARY(cur); intptr_t i = FIX2LONG(key); if (i < 0) i += ar->len; cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : ar->items->data[i]; }
+        else if (KORB_ARRAY_P(cur)) { intptr_t i; if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key)); KorbArray *ar = VAL2ARY(cur); if (i < 0) i += ar->len; cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : ar->items->data[i]; }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
     }
     return RESULT_OK(cur);
