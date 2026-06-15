@@ -659,11 +659,15 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 static NODE *
 transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 {
-    if (cn->superclass)
-        return kp_unsupported(tc, (const pm_node_t *)cn, "class inheritance (< superclass)");
     if (!PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_READ_NODE))
         return kp_unsupported(tc, (const pm_node_t *)cn, "namespaced class name");
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
+
+    /* superclass expression (evaluated in the ENCLOSING scope) → node_class's
+     * staged child; nil when absent. */
+    NODE *super_node;
+    WITH_CHAIN(tc, 1, (super_node = cn->superclass ? transduce(tc, cn->superclass)
+                                                   : ALLOC_node_lit(KORB_NIL)));
 
     push_frame(tc, &cn->locals);
     NODE *body;
@@ -677,7 +681,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    return ALLOC_node_class(name_sym, entry);
+    return ALLOC_node_class(name_sym, entry, super_node);
 }
 
 /* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is

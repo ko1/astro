@@ -315,10 +315,10 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t param
 // `class Name ... end` — create/find the class + run its body with self=class.
 // @noinline: body is a per-process node_entry pointer (not bakeable).
 NODE_DEF @noinline
-node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body)
+node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, VALUE_REF super@child)
 {
     (void)n; (void)body_dispatcher;
-    return korb_class_body(c, slots, name_sym, body, KORB_NIL);
+    return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super));
 }
 
 // attr_reader/writer/accessor — defines getters/setters on self (the class).

@@ -455,6 +455,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
 RESULT
 korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass)
 {
+    if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be a Class (%s given)", korb_type_name(superclass));
     VALUE cls = korb_const_get(c->vm, name_sym);
     if (!KORB_CLASS_P(cls)) {
         cls = UNWRAP(korb_class_new(c, slots, name_sym, superclass));
@@ -839,12 +841,35 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
+
+    /* implicit self-call on a user instance → dispatch through its class chain
+     * (a miss falls through to the global function table). */
+    if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
+        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid);
+        if (um) {
+            if (um->kind == KORB_METHOD_ATTR_R)
+                return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+            if (um->kind == KORB_METHOD_ATTR_W) {
+                if (UNLIKELY(argc != 1))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                                      "wrong number of arguments (given %u, expected 1)", argc);
+                slots[0] = self;                       /* root self for the set */
+                VALUE v = slots[-(intptr_t)argc];
+                CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(um->attr_ivar), v));
+                return RESULT_OK(slots[-(intptr_t)argc]);
+            }
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, block, def_env, captured_self);
+        }
+    }
+
     struct korb_method *m = cc->m;
     if (UNLIKELY(cc->serial != vm->method_serial)) {
         m = korb_method_lookup(vm, mid);
         if (UNLIKELY(m == NULL)) {
             return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                              "undefined method '%s' for main", korb_sym_name(vm, mid));
+                              "undefined method '%s' for %s", korb_sym_name(vm, mid),
+                              (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)
+                                  ? "main" : korb_a_type_name(self));
         }
         cc->m = m;
         cc->serial = vm->method_serial;
