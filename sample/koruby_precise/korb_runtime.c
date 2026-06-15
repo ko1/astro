@@ -6183,7 +6183,7 @@ static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         slots[0] = h->items->data[2 * i];
         slots[1] = h->items->data[2 * i + 1];
-        if (depth <= 0) {                                /* depth 0: keep [k,v] pairs unflattened */
+        if (depth == 0) {                                /* depth 0 only: keep [k,v] pairs (negative = full) */
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
@@ -8357,8 +8357,15 @@ korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
                 fputc('#', fp);
             break;
           default:
-            if (ch < 0x20 || ch == 0x7f) fprintf(fp, "\\u%04X", ch);
-            else fputc(ch, fp);   /* non-ASCII UTF-8 passes through */
+            if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
+            else if (ch < 0x80) { fputc(ch, fp); }
+            else {                /* >= 0x80: pass valid UTF-8 through, escape invalid bytes as \xHH */
+                int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
+                bool valid = n >= 0 && i + (uint32_t)n < len;
+                for (int k = 1; valid && k <= n; k++) if (((unsigned char)bytes[i+k] & 0xC0) != 0x80) valid = false;
+                if (valid) { fputc(ch, fp); for (int k = 1; k <= n; k++) fputc(bytes[i+k], fp); i += (uint32_t)n; }
+                else fprintf(fp, "\\x%02X", ch);
+            }
         }
     }
     fputc('"', fp);
