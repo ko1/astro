@@ -1839,6 +1839,42 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
+        uint32_t cname = VAL2CLASS(self)->name_sym;
+        if (cname == vm->class_name[KORB_C_ARRAY]) {       /* Array.new(n[,v]) / Array.new(n){|i|} */
+            intptr_t n = 0;
+            if (argc >= 1) {
+                if (UNLIKELY(!korb_to_index(slots[-(intptr_t)argc], &n))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion into Integer");
+                if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
+            }
+            slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
+            VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+            for (intptr_t i = 0; i < n; i++) {
+                if (block != NULL) {
+                    VALUE iv = LONG2FIX(i);
+                    RESULT r = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, captured_self);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                    CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+                } else {
+                    CHECK(korb_ary_push_val(c, slots + 1, dst, argc >= 2 ? slots[-(intptr_t)argc + 1] : KORB_NIL));
+                }
+            }
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) */
+            slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
+            if (argc >= 1) ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(intptr_t)argc]);
+            return RESULT_OK(slots[0]);
+        }
+        if (cname == vm->class_name[KORB_C_STRING]) {       /* String.new([str]) */
+            if (argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) {
+                slots[0] = slots[-(intptr_t)argc];          /* root source across the alloc */
+                uint32_t len = VAL2STR(slots[0])->len;
+                KorbString *r = korb_str_alloc(c, slots + 1, len);
+                memcpy(r->buf->data, VAL2STR(slots[0])->buf->data, len);   /* re-read src (moved) */
+                return RESULT_OK((VALUE)r);
+            }
+            return korb_str_new(c, slots, "", 0);
+        }
         uint32_t init_mid = korb_intern(vm, "initialize", 10);
         VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
         /* find initialize AFTER the alloc-GC, re-reading the class from the
