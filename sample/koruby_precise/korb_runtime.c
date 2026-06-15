@@ -1198,6 +1198,15 @@ korb_value_eq(VALUE a, VALUE b)
     return false;
 }
 
+/* eql? semantics (Array#uniq/&/|/-, Set, hash membership): like ==, but numerics
+ * are type-strict — 1 is NOT eql? 1.0 / (1/1).  Non-numeric → identical to ==. */
+static bool korb_value_eql(VALUE a, VALUE b) {
+    int ta = FIXNUM_P(a) ? 1 : KORB_FLOAT_P(a) ? 2 : KORB_RATIONAL_P(a) ? 3 : 0;
+    int tb = FIXNUM_P(b) ? 1 : KORB_FLOAT_P(b) ? 2 : KORB_RATIONAL_P(b) ? 3 : 0;
+    if ((ta || tb) && ta != tb) return false;        /* mixed numeric types → not eql? */
+    return korb_value_eq(a, b);
+}
+
 /* case equality `pat === val`: Range membership, Class is-a, else ==. No alloc. */
 static bool
 korb_case_eq(CTX *c, VALUE pat, VALUE val)
@@ -3681,7 +3690,7 @@ static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* ---- Set (array-backed, unique by korb_value_eq) -------------------------- */
 static bool korb_arr_has(const KorbArray *ar, VALUE v) {
-    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eq(ar->items->data[i], v)) return true;
+    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eql(ar->items->data[i], v)) return true;
     return false;
 }
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems) {
@@ -5179,7 +5188,7 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         VALUE e = SELF_ARY->items->data[i];
         const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
         bool seen = false;
-        for (uint32_t j = 0; j < d->len; j++) if (korb_value_eq(d->items->data[j], e)) { seen = true; break; }
+        for (uint32_t j = 0; j < d->len; j++) if (korb_value_eql(d->items->data[j], e)) { seen = true; break; }
         if (!seen) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -7245,7 +7254,7 @@ static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 
 static bool korb_ary_has(const KorbArray *ar, VALUE v) {
-    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eq(ar->items->data[i], v)) return true;
+    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eql(ar->items->data[i], v)) return true;
     return false;
 }
 /* `|` union (in self then other, deduped) / `&` intersection (in both, self order, deduped) */
