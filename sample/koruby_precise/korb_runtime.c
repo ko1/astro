@@ -771,6 +771,28 @@ korb_value_eq(VALUE a, VALUE b)
     return false;
 }
 
+/* case equality `pat === val`: Range membership, Class is-a, else ==. No alloc. */
+static bool
+korb_case_eq(CTX *c, VALUE pat, VALUE val)
+{
+    if (KORB_RANGE_P(pat)) {
+        const KorbRange *r = VAL2RANGE(pat);
+        int lc = korb_cmp_values(r->rbegin, val);
+        int uc = korb_cmp_values(val, r->rend);
+        if (lc == 2 || uc == 2) return false;
+        bool lower = (lc <= 0);
+        bool upper = r->exclude_end ? (uc < 0) : (uc <= 0);
+        return lower && upper;
+    }
+    if (KORB_CLASS_P(pat)) {
+        if (pat == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return true;
+        VALUE cls = korb_class_obj_of(c, val);
+        while (KORB_CLASS_P(cls)) { if (cls == pat) return true; cls = VAL2CLASS(cls)->superclass; }
+        return false;
+    }
+    return korb_value_eq(pat, val);
+}
+
 static const char *const korb_cmp_op_name[] = { "<", "<=", ">", ">=" };
 
 /* CRuby rb_cmperr flavor: immediates render via inspect, others by class. */
@@ -2706,6 +2728,29 @@ static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(h));
 }
 
+/* grep(pat)(keep=1) / grep_v(pat)(keep=0): select by `pat === elem`, optional block map. */
+static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself, bool keep) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[0] = ary->items->data[i];                  /* root elem across yield */
+        if (korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]) == keep) {
+            if (block != NULL) {
+                RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
+            } else {
+                CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+            }
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself)   { return korb_ary_grep(c, slots, self, a, block, def_env, cself, true); }
+static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_ary_grep(c, slots, self, a, block, def_env, cself, false); }
+
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* sep at slots scratch so it survives the per-element to_s allocs */
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
@@ -4468,6 +4513,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect_concat", korb_m_ary_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "partition", korb_m_ary_partition, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "group_by", korb_m_ary_group_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep", korb_m_ary_grep, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "grep_v", korb_m_ary_grep_v, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "clear", korb_m_ary_clear, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "intersect?", korb_m_ary_intersect_q, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
