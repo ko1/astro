@@ -3354,6 +3354,141 @@ static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+/* dup: shallow copy. Immutables (fixnum/symbol/nil/true/false/float) return self;
+ * String/Array/Hash get a fresh shallow copy. */
+static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    VALUE v = VALUE_REF_GET(self);
+    if (KORB_STRING_P(v)) {
+        uint32_t len = VAL2STR(v)->len;
+        KorbString *r = korb_alloc(c, slots, sizeof(KorbString) + len + 1, KORB_OBJ_STRING);
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after alloc */
+        memcpy(r->bytes, s->bytes, len); r->bytes[len] = '\0'; r->len = len;
+        return RESULT_OK((VALUE)r);
+    }
+    if (KORB_ARRAY_P(v)) {
+        uint32_t n = VAL2ARY(v)->len;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
+        for (uint32_t i = 0; i < n; i++) {
+            VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+            CHECK(korb_ary_push_val(c, slots, dst, e));
+        }
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    if (KORB_HASH_P(v)) {
+        uint32_t n = VAL2HASH(v)->len;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, n)));
+        for (uint32_t i = 0; i < n; i++) {
+            slots[0] = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i];
+            VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+            CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+        }
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    return RESULT_OK(v);   /* immutable / no special copy */
+}
+
+/* in-place reverse of items[lo, hi) — no alloc, so pointers are stable. */
+static void korb_ary_rev_range(CTX *c, KorbArrayItems *it, uint32_t lo, uint32_t hi) {
+    while (lo + 1 < hi + 1 && lo < hi) {       /* lo < hi (guard wrap) */
+        hi--;
+        VALUE t = it->data[lo];
+        ARO_STORE(c, it, &it->data[lo], it->data[hi]);
+        ARO_STORE(c, it, &it->data[hi], t);
+        lo++;
+    }
+}
+static RESULT korb_m_ary_reverse_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    korb_ary_rev_range(c, ary->items, 0, ary->len);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t cnt = 1;
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        VALUE cv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!FIXNUM_P(cv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
+        cnt = FIX2LONG(cv);
+    }
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    uint32_t n = ary->len;
+    if (n > 1) {
+        intptr_t k = ((cnt % (intptr_t)n) + (intptr_t)n) % (intptr_t)n;   /* normalize */
+        KorbArrayItems *it = ary->items;
+        korb_ary_rev_range(c, it, 0, (uint32_t)k);
+        korb_ary_rev_range(c, it, (uint32_t)k, n);
+        korb_ary_rev_range(c, it, 0, n);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* product(other, ...) → cartesian product as an array of rows. */
+static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t na = VALUE_SLICE_LEN(a);
+    if (na > 15) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#product with >16 arrays is not supported");
+    for (uint32_t j = 0; j < na; j++)
+        if (UNLIKELY(!KORB_ARRAY_P(VALUE_SLICE_GET(a, j))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, j)));
+    uint32_t k = na + 1;                                  /* self + args */
+    #define ARR_J(j) ((j) == 0 ? VAL2ARY(VALUE_REF_GET(self)) : VAL2ARY(VALUE_SLICE_GET(a, (j) - 1)))
+    uint32_t lens[16];
+    uint64_t total = 1;
+    for (uint32_t j = 0; j < k; j++) { lens[j] = ARR_J(j)->len; total *= lens[j]; }
+    uint32_t capa = total > 0 && total < 0x40000000ull ? (uint32_t)total : 4;
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, capa)));
+    if (total == 0) return RESULT_OK(VALUE_REF_GET(dst));
+    uint32_t idx[16] = {0};
+    for (uint64_t t = 0; t < total; t++) {
+        slots[0] = UNWRAP(korb_ary_new(c, slots, k));    /* row, rooted at slots[0] */
+        VALUE_REF row = VALUE_REF_AT(&slots[0]);
+        for (uint32_t j = 0; j < k; j++) {
+            VALUE e = ARR_J(j)->items->data[idx[j]];
+            CHECK(korb_ary_push_val(c, slots + 1, row, e));
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        for (int j = (int)k - 1; j >= 0; j--) { if (++idx[j] < lens[j]) break; idx[j] = 0; }
+    }
+    #undef ARR_J
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        VALUE iv = VALUE_SLICE_GET(a, j);
+        if (UNLIKELY(!FIXNUM_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        intptr_t n = ary->len, idx = FIX2LONG(iv);
+        if (idx < 0) idx += n;
+        if (idx < 0 || idx >= n) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%ld...%ld", (long)FIX2LONG(iv), (long)n, (long)n);
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ary->items->data[idx]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+/* one?: exactly one truthy element (or exactly one block-truthy element). */
+static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a;
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        VALUE e = ary->items->data[i];
+        bool t;
+        if (block != NULL) {
+            slots[0] = e;
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            t = KORB_TRUTHY(r.value);
+        } else {
+            t = KORB_TRUTHY(e);
+        }
+        if (t && ++cnt > 1) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(cnt == 1 ? KORB_TRUE : KORB_FALSE);
+}
+
 /* ---- more String methods ------------------------------------------------- */
 
 static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
@@ -3599,6 +3734,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "pop", korb_m_ary_pop, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "include?", korb_m_ary_include, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "reverse!", korb_m_ary_reverse_bang, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "index", korb_m_ary_index, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
@@ -3748,6 +3888,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "clone", korb_m_obj_dup, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_NIL,    "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_TRUE,   "frozen?", korb_m_true_lit2, 0);
