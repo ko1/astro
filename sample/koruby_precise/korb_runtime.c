@@ -1617,6 +1617,21 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (r != 0.0 && ((r < 0) != (o < 0))) r += o;             /* floored division remainder */
     return korb_float_new(c, slots, r);
 }
+static RESULT korb_m_flt_finite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(isfinite(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+    double s = SELF_FLT, q = floor(s / o), r = s - o * q;
+    RESULT qr = korb_flt_toint(c, slots, q, 3);          /* quotient → Integer */
+    if (UNLIKELY(qr.state != KORB_NORMAL)) return qr;
+    slots[0] = qr.value;
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, r));
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_flt_neg_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT < 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_pos_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT > 0 ? KORB_TRUE : KORB_FALSE); }
 /* coerce(other) → [Float(other), Float(self)] */
@@ -2685,6 +2700,31 @@ static RESULT korb_m_ary_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+static RESULT korb_m_ary_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    KorbArrayItems *it = ary->items;
+    uint32_t w = 0; bool changed = false;
+    for (uint32_t r = 0; r < ary->len; r++) {
+        if (it->data[r] == KORB_NIL) { changed = true; continue; }
+        if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]);
+        w++;
+    }
+    for (uint32_t r = w; r < ary->len; r++) it->data[r] = KORB_NIL;
+    ary->len = w;
+    return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
+}
+static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+    (void)a; ARY_REQUIRE_BLOCK("Array#each_index");
+    for (uint32_t i = 0; ; i++) {
+        if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     uint32_t n = SELF_ARY->len;
@@ -3572,6 +3612,23 @@ static RESULT korb_m_hash_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     CHECK(korb_ary_push_val(c, slots + 3, out, slots[1]));
     return RESULT_OK(VALUE_REF_GET(out));
 }
+/* find/detect → the first [k,v] pair whose block is truthy, else nil */
+static RESULT korb_m_hash_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#find without a block is not supported");
+    uint32_t np = korb_entry_params_cnt(block);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[0] = h->items->data[2*i]; slots[1] = h->items->data[2*i+1];
+        RESULT r = korb_hash_yield(c, slots + 3, block, def_env, cself, np, slots[0], slots[1]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_TRUTHY(r.value)) {
+            CHECK(korb_hash_make_pair(c, slots + 3, &slots[0], &slots[1], &slots[2]));
+            return RESULT_OK(slots[2]);
+        }
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     HASH_REQ_BLOCK("Hash#reduce");
     uint32_t np = korb_entry_params_cnt(block);   /* acc + pair: block takes |acc, (k,v)| */
@@ -4195,6 +4252,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "finite?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "fdiv", korb_m_int_fdiv, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "ceildiv", korb_m_int_ceildiv, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "coerce", korb_m_int_coerce, 1);
@@ -4339,6 +4397,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "sort", korb_m_ary_sort, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "join", korb_m_ary_join, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact", korb_m_ary_compact, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "compact!", korb_m_ary_compact_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, 1);
@@ -4443,6 +4503,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "max_by", korb_m_hash_max_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "filter_map", korb_m_hash_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "partition", korb_m_hash_partition, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "find", korb_m_hash_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "detect", korb_m_hash_find, 0);
 
     /* Range */
     korb_def_cmethod(c, KORB_C_RANGE, "begin", korb_m_range_begin, 0);
@@ -4530,6 +4592,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "div", korb_m_flt_div, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "modulo", korb_m_flt_modulo, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "coerce", korb_m_flt_coerce, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "finite?", korb_m_flt_finite, 0);
+    korb_def_cmethod(c, KORB_C_FLOAT, "divmod", korb_m_flt_divmod, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "negative?", korb_m_flt_neg_q, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "positive?", korb_m_flt_pos_q, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "to_s", korb_m_flt_to_s, 0);
