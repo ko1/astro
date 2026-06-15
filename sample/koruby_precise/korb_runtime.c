@@ -1983,6 +1983,9 @@ static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_float_new(c, slots, (double)SELF_INT);
 }
+static RESULT korb_m_int_quo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3);   /* exact division → Rational/Float */
+}
 static RESULT korb_m_int_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_rat_new(c, slots, SELF_INT, 1);
 }
@@ -2673,6 +2676,42 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     slots[0] = UNWRAP(korb_str_slice_new(c, slots + 1, self, post_s, VAL2STR(VALUE_REF_GET(self))->len - post_s));
     CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *sep = VAL2STR(sv);
+    int32_t at = (s->len >= sep->len) ? korb_byte_find(s->buf->data, s->len, sep->buf->data, sep->len) : -1;
+    uint32_t post_s = (at < 0) ? 0 : (uint32_t)at + sep->len;   /* before any alloc (sep moves under moving GC) */
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 3)));
+    if (at < 0) {                                     /* not found → [self,"",""] */
+        CHECK(korb_ary_push_val(c, slots + 1, dst, VALUE_REF_GET(self)));
+        slots[0] = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        slots[0] = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    slots[0] = UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, (uint32_t)at));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* the separator */
+    CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    slots[0] = UNWRAP(korb_str_slice_new(c, slots + 1, self, post_s, VAL2STR(VALUE_REF_GET(self))->len - post_s));
+    CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    char buf[64]; uint32_t j = 0, i = 0;
+    while (i < s->len && korb_is_ws((unsigned char)s->buf->data[i])) i++;
+    for (; i < s->len && j < sizeof(buf) - 1; i++) {
+        char ch = s->buf->data[i];
+        if (ch == '_') continue;                      /* digit separators are ignored */
+        buf[j++] = ch;
+    }
+    buf[j] = '\0';
+    return korb_float_new(c, slots, strtod(buf, NULL));
 }
 static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
@@ -6168,6 +6207,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "negative?", korb_m_int_neg, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_f", korb_m_int_to_f, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_r", korb_m_int_to_r, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "quo", korb_m_int_quo, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "rationalize", korb_m_int_to_r, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "numerator", korb_m_int_numerator, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "denominator", korb_m_int_denominator, 0);
@@ -6288,6 +6328,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "gsub!", korb_m_str_gsub_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "sub!", korb_m_str_sub_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rpartition", korb_m_str_rpartition, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "partition", korb_m_str_partition, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "to_f", korb_m_str_to_f, 0);
     korb_def_cmethod(c, KORB_C_STRING, "scrub", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scrub!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
