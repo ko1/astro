@@ -2076,10 +2076,23 @@ static intptr_t korb_int_gcd(intptr_t a, intptr_t b) {
     return a;
 }
 
+static double korb_cospi(double x);
+static double korb_sinpi(double x);
 static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ev = VALUE_SLICE_GET(a, 0);
+    intptr_t base = SELF_INT;
+    if (KORB_FLOAT_P(ev)) {                            /* Integer ** Float → Float (Complex if neg base) */
+        double e = VAL2FLT(ev)->val;
+        if (base < 0 && e != floor(e)) {
+            double mag = pow(-(double)base, e);
+            slots[0] = UNWRAP(korb_float_new(c, slots, mag * korb_cospi(e)));
+            slots[1] = UNWRAP(korb_float_new(c, slots + 1, mag * korb_sinpi(e)));
+            return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+        }
+        return korb_float_new(c, slots, pow((double)base, e));
+    }
     if (UNLIKELY(!FIXNUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(ev));
-    intptr_t base = SELF_INT, exp = FIX2LONG(ev);
+    intptr_t exp = FIX2LONG(ev);
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* pow(exp, mod): modular exponentiation */
         VALUE mv = VALUE_SLICE_GET(a, 1);
         if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
@@ -2096,7 +2109,17 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (mod < 0 && res != 0) res += mod;          /* floored result (sign of mod) */
         return RESULT_OK(LONG2FIX(res));
     }
-    if (exp < 0) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "negative exponent (Rational is not implemented)");
+    if (exp < 0) {                                    /* negative exponent → Rational(1, base^|exp|) */
+        if (UNLIKELY(base == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        intptr_t p = 1;
+        for (intptr_t i = 0; i < -exp; i++) {
+            if (UNLIKELY(base != 0 && (p * base) / base != p)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+            p *= base;
+            if (UNLIKELY(!FIXABLE(p))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+        }
+        if (p == 1 || p == -1) return RESULT_OK(LONG2FIX(p));   /* base^|exp| == ±1 → Integer */
+        return p < 0 ? korb_rat_new(c, slots, -1, -p) : korb_rat_new(c, slots, 1, p);
+    }
     intptr_t r = 1;
     for (intptr_t i = 0; i < exp; i++) {
         if (UNLIKELY(base != 0 && (r * base) / base != r))   /* overflow */
