@@ -2439,11 +2439,19 @@ static RESULT korb_m_flt_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 #undef SELF_FLT
 
+/* Comparable#between?(min, max): short-circuits like CRuby — compare to min
+ * first, return false if self < min before ever touching max (so a bad max with
+ * self already below min is NOT an error). */
+static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi) {
+    int c1 = korb_cmp_full(c, self, lo);
+    if (UNLIKELY(c1 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(self), korb_type_name(lo));
+    if (c1 < 0) return RESULT_OK(KORB_FALSE);
+    int c2 = korb_cmp_full(c, self, hi);
+    if (UNLIKELY(c2 == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(self), korb_type_name(hi));
+    return RESULT_OK(c2 <= 0 ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!FIXNUM_P(lo) || !FIXNUM_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
-    intptr_t n = SELF_INT;
-    return RESULT_OK((n >= FIX2LONG(lo) && n <= FIX2LONG(hi)) ? KORB_TRUE : KORB_FALSE);
+    return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 
 /* Integer round/floor/ceil/truncate(ndigits). ndig>=0 → self; ndig<0 → snap to 10^-ndig.
@@ -7189,11 +7197,9 @@ static RESULT korb_m_flt_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a; double d = VAL2FLT(VALUE_REF_GET(self))->val;
     return d < 0 ? korb_float_new(c, slots, M_PI) : RESULT_OK(LONG2FIX(0));   /* arg: 0 (Integer) or PI */
 }
+static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi);
 static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double lo, hi, s = VAL2FLT(VALUE_REF_GET(self))->val;
-    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &lo) || !korb_num_to_d(VALUE_SLICE_GET(a, 1), &hi)))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
-    return RESULT_OK((s >= lo && s <= hi) ? KORB_TRUE : KORB_FALSE);
+    return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double s = VAL2FLT(VALUE_REF_GET(self))->val, lo, hi;
