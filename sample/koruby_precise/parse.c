@@ -744,6 +744,28 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     return ALLOC_node_class(name_sym, entry, super_node);
 }
 
+/* `module Name ... end` → node_module (own scope, run with self = the module). */
+static NODE *
+transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
+{
+    if (!PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_READ_NODE))
+        return kp_unsupported(tc, (const pm_node_t *)mn, "namespaced module name");
+    uint32_t name_sym = kp_intern_cid(tc, mn->name);
+    push_frame(tc, &mn->locals);
+    NODE *body;
+    if (mn->body == NULL)
+        body = lit_nil();
+    else if (PM_NODE_TYPE_P(mn->body, PM_STATEMENTS_NODE))
+        body = transduce_statements(tc, (const pm_statements_node_t *)mn->body);
+    else
+        body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
+    uint32_t frame_size = pop_frame(tc);
+
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0);
+    code_repo_add("module", entry, true);
+    return ALLOC_node_module(name_sym, entry);
+}
+
 /* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is
  * unsupported).  Element i nests i pushes deep, so it transduces at the chain
  * depth matching its runtime cursor offset. */
@@ -1095,6 +1117,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_def(tc, (const pm_def_node_t *)node);
       case PM_CLASS_NODE:
         return transduce_class(tc, (const pm_class_node_t *)node);
+      case PM_MODULE_NODE:
+        return transduce_module(tc, (const pm_module_node_t *)node);
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
         return ALLOC_node_const(kp_intern_cid(tc, cr->name));

@@ -213,8 +213,10 @@ typedef struct KorbClass {
     uint32_t name_sym;               /* class name (interned), 0 = anonymous */
     int32_t  exc_etype;              /* builtin exception class → its etype, else -1 */
     uint32_t method_cnt, method_capa;
+    uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
     struct korb_method *methods;     /* libc side-array (no GC edges) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
+    VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
 } KorbClass;
 
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
@@ -443,6 +445,7 @@ struct CTX_struct {
       case KORB_OBJ_CLASS: {                                                 \
         KorbClass *_cl = (KorbClass *)(payload);                            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->superclass);            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->included);             \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

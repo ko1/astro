@@ -542,6 +542,17 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
         KorbClass *k = VAL2CLASS(klass);
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i].mid == mid) { if (out_def) *out_def = klass; return &k->methods[i]; }
+        /* included modules, most-recently-included first (nearest ancestor) */
+        if (k->included != KORB_NIL) {
+            const KorbArray *inc = VAL2ARY(k->included);
+            for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
+                VALUE mod = inc->items->data[j];
+                if (!KORB_CLASS_P(mod)) continue;
+                KorbClass *mk = VAL2CLASS(mod);
+                for (uint32_t i = 0; i < mk->method_cnt; i++)
+                    if (mk->methods[i].mid == mid) { if (out_def) *out_def = mod; return &mk->methods[i]; }
+            }
+        }
         klass = k->superclass;
     }
     return NULL;
@@ -600,17 +611,40 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
 }
 
 RESULT
-korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass)
+korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module)
 {
     if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be a Class (%s given)", korb_type_name(superclass));
     VALUE cls = korb_const_get(c->vm, name_sym);
     if (!KORB_CLASS_P(cls)) {
         cls = UNWRAP(korb_class_new(c, slots, name_sym, superclass));
+        if (is_module) VAL2CLASS(cls)->is_module = 1;
         korb_const_define(c, name_sym, cls);    /* now rooted in the const table */
     }
     slots[0] = cls;                              /* root for the body run + capture */
     return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, slots[0]);
+}
+
+/* `include mod...` in a class/module body: append each module to klass->included
+ * (later lookups check most-recently-included first). Returns the class. */
+RESULT
+korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
+{
+    slots[0] = klass;                            /* root klass across allocs */
+    VALUE_REF kref = VALUE_REF_AT(&slots[0]);
+    if (VAL2CLASS(klass)->included == KORB_NIL) {
+        VALUE arr = UNWRAP(korb_ary_new(c, slots + 1, 4));
+        KorbClass *k = VAL2CLASS(VALUE_REF_GET(kref));   /* re-read after GC */
+        ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->included, arr);
+    }
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
+        VALUE mod = VALUE_SLICE_GET(mods, i);
+        if (UNLIKELY(!KORB_CLASS_P(mod)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mod));
+        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;   /* the array (rooted) */
+        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), mod));
+    }
+    return RESULT_OK(VALUE_REF_GET(kref));
 }
 
 /* `super` — invoke `mid` starting from def_class's superclass, keeping self. */
@@ -618,9 +652,23 @@ RESULT
 korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
            VALUE def_class, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
-    VALUE sup = KORB_CLASS_P(def_class) ? VAL2CLASS(def_class)->superclass : KORB_NIL;
     VALUE found_def = KORB_NIL;
-    struct korb_method *m = korb_class_find_method(sup, mid, &found_def);
+    struct korb_method *m = NULL;
+    /* MRO after def_class: its included modules (nearest first), then superclass. */
+    if (KORB_CLASS_P(def_class)) {
+        VALUE inc = VAL2CLASS(def_class)->included;
+        if (inc != KORB_NIL) {
+            const KorbArray *arr = VAL2ARY(inc);
+            for (int32_t j = (int32_t)arr->len - 1; j >= 0 && m == NULL; j--) {
+                VALUE mod = arr->items->data[j];
+                if (!KORB_CLASS_P(mod)) continue;
+                KorbClass *mk = VAL2CLASS(mod);
+                for (uint32_t i = 0; i < mk->method_cnt; i++)
+                    if (mk->methods[i].mid == mid) { m = &mk->methods[i]; found_def = mod; break; }
+            }
+        }
+        if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
+    }
     if (UNLIKELY(m == NULL))
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "super: no superclass method '%s'", korb_sym_name(c->vm, mid));
@@ -1204,6 +1252,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             }
             return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
         }
+    }
+
+    /* `include Mod...` inside a class/module body (self is the class) */
+    if (KORB_CLASS_P(self) && argc >= 1 && strcmp(korb_sym_name(vm, mid), "include") == 0) {
+        return korb_do_include(c, slots, self, VALUE_SLICE_MAKE(slots - argc, argc));
     }
 
     struct korb_method *m = cc->m;

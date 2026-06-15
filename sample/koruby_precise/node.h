@@ -102,7 +102,8 @@ void   korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym,
 /* parse-time descriptor list for node_attr (one entry per generated method). */
 struct korb_attr_desc { uint32_t mid; uint32_t ivar; uint8_t is_writer; };
 /* `class Name ... end`: create/find the class + run its body (self = class). */
-RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass);
+RESULT korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module);
+RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);
 /* `super`: invoke mid from def_class's superclass, same self.  args at slots[-argc..]. */
 RESULT korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                   VALUE def_class, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self);
