@@ -641,25 +641,28 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 {
     if (dn->receiver) return kp_unsupported(tc, (const pm_node_t *)dn, "singleton method (def self.x)");
 
-    uint32_t params_cnt = 0;
+    uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     if (dn->parameters) {
         const pm_parameters_node_t *ps = dn->parameters;
-        if (ps->optionals.size || ps->rest || ps->posts.size ||
+        if (ps->rest || ps->posts.size ||
             ps->keywords.size || ps->keyword_rest || ps->block) {
             return kp_unsupported(tc, (const pm_node_t *)dn,
-                                  "non-positional parameters (opt/rest/kw/block)");
+                                  "non-positional parameters (rest/post/kw/block)");
         }
-        params_cnt = (uint32_t)ps->requireds.size;
+        req_cnt = (uint32_t)ps->requireds.size;
+        opt_cnt = (uint32_t)ps->optionals.size;
+        params_cnt = req_cnt + opt_cnt;
     }
 
     push_frame(tc, &dn->locals);
     tc->frame->method_mid = kp_intern_cid(tc, dn->name);   /* for `super` inside the body */
     tc->frame->method_params = params_cnt;
 
-    /* prism orders def locals with the parameters first — the staged-args
-     * window doubles as the parameter slots.  Verify the assumption. */
+    /* prism orders def locals with the parameters first (required, then optional);
+     * the staged-args window doubles as the parameter slots.  Verify the layout. */
+    struct Node **opt_defaults = NULL;
     if (dn->parameters) {
-        for (uint32_t i = 0; i < params_cnt; i++) {
+        for (uint32_t i = 0; i < req_cnt; i++) {
             const pm_node_t *p = dn->parameters->requireds.nodes[i];
             if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
                 pop_frame(tc);
@@ -669,6 +672,20 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
             if (lvar_index(tc, p, cid) != i) {
                 kp_failf(tc, p, "koruby_precise: parameter '%s' is not locals[%u]",
                          kp_cid_cstr(tc, cid), i);
+            }
+        }
+        if (opt_cnt) {
+            opt_defaults = malloc(sizeof(struct Node *) * opt_cnt);
+            if (!opt_defaults) abort();
+            for (uint32_t j = 0; j < opt_cnt; j++) {
+                const pm_optional_parameter_node_t *op =
+                    (const pm_optional_parameter_node_t *)dn->parameters->optionals.nodes[j];
+                if (lvar_index(tc, (const pm_node_t *)op, op->name) != req_cnt + j) {
+                    kp_failf(tc, (const pm_node_t *)op, "koruby_precise: optional '%s' is not locals[%u]",
+                             kp_cid_cstr(tc, op->name), req_cnt + j);
+                }
+                /* default expr runs in method scope at the body cursor (chain 0) */
+                opt_defaults[j] = transduce(tc, op->value);
             }
         }
     }
@@ -689,7 +706,7 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, frame_size, uses_block, -1 - tc->chain);
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, frame_size, uses_block, opt_defaults, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */

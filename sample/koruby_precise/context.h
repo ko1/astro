@@ -281,10 +281,12 @@ struct korb_method {
     uint32_t mid;            /* interned name */
     uint8_t  kind;           /* enum korb_method_kind */
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
-    int32_t  params_cnt;     /* -1 = variadic (builtins only) */
+    int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
+    uint32_t req_cnt;        /* ISEQ: required positional count (== params_cnt if no opts) */
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     struct Node *body;       /* ISEQ */
+    struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     korb_builtin_fn bfn;     /* BUILTIN */
 };
 

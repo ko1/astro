@@ -480,7 +480,8 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
-                      uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
+                      uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
+                      uint32_t uses_block, struct Node **opt_defaults)
 {
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = NULL;
@@ -499,8 +500,10 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->kind = KORB_METHOD_ISEQ;
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
+    m->req_cnt = req_cnt;
     m->locals_cnt = locals_cnt;
     m->body = body;
+    m->opt_defaults = opt_defaults;
     m->bfn = NULL;
     c->vm->method_serial++;
 }
@@ -555,9 +558,12 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    NODE *block, VALUE *def_env, VALUE captured_self)
 {
     struct korb_vm *const vm = c->vm;
-    if (UNLIKELY((uint32_t)m->params_cnt != argc)) {
+    if (UNLIKELY(argc < m->req_cnt || argc > (uint32_t)m->params_cnt)) {
+        if (m->req_cnt == (uint32_t)m->params_cnt)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+                          "wrong number of arguments (given %u, expected %u..%d)", argc, m->req_cnt, m->params_cnt);
     }
     VALUE *const base = slots - argc;
     const uint32_t locals_cnt = m->locals_cnt;
@@ -573,6 +579,14 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         base[locals_cnt - 5] = (VALUE)((uintptr_t)block   | 1u);
         base[locals_cnt - 4] = (VALUE)((uintptr_t)def_env | 1u);
         base[locals_cnt - 3] = captured_self;
+    }
+    /* fill missing optional params by evaluating their defaults in method scope
+     * (cursor = body cursor; defaults may reference earlier params + self). */
+    for (uint32_t pi = argc; pi < (uint32_t)m->params_cnt; pi++) {
+        NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
+        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        base[pi] = dr.value;              /* below cursor → rooted for later defaults/body */
     }
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -1021,14 +1035,17 @@ korb_method_slot(CTX *c, uint32_t mid)
 
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
-                   uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
+                   uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
+                   uint32_t uses_block, struct Node **opt_defaults)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
+    m->req_cnt = req_cnt;
     m->locals_cnt = locals_cnt;
     m->body = body;
+    m->opt_defaults = opt_defaults;
     m->bfn = NULL;
     c->vm->method_serial++;   /* invalidate call caches */
 }
