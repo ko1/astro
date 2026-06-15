@@ -2187,6 +2187,44 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(val);
 }
 
+/* slice!: remove and return element (single index) or subarray (range/start,len). */
+static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    VALUE iv = VALUE_SLICE_GET(a, 0);
+    intptr_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    intptr_t start, dellen; bool subseq_form = false;
+    if (KORB_RANGE_P(iv)) {
+        const KorbRange *r = VAL2RANGE(iv);
+        intptr_t b, e;
+        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (b < 0) b += n;
+        if (e < 0) e += n;
+        intptr_t last = r->exclude_end ? e - 1 : e;
+        start = b; dellen = last - b + 1; if (dellen < 0) dellen = 0;
+        subseq_form = true;
+    } else if (VALUE_SLICE_LEN(a) >= 2) {
+        if (UNLIKELY(!korb_to_index(iv, &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (start < 0) start += n;
+        subseq_form = true;
+    } else {
+        if (UNLIKELY(!korb_to_index(iv, &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (start < 0) start += n;
+        if (start < 0 || start >= n) return RESULT_OK(KORB_NIL);
+        slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[start];   /* removed elem */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));              /* empty replacement */
+        CHECK(korb_ary_splice(c, slots + 2, self, start, 1, VALUE_REF_AT(&slots[1])));
+        return RESULT_OK(slots[0]);
+    }
+    if (start < 0 || start > n) return RESULT_OK(KORB_NIL);
+    if (dellen < 0) dellen = 0;
+    if (start + dellen > n) dellen = n - start;
+    slots[0] = UNWRAP(korb_ary_subseq(c, slots, self, (uint32_t)start, (uint32_t)dellen));
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+    CHECK(korb_ary_splice(c, slots + 2, self, start, dellen, VALUE_REF_AT(&slots[1])));
+    (void)subseq_form;
+    return RESULT_OK(slots[0]);
+}
+
 static RESULT korb_m_ary_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     CHECK(korb_ary_push_val(c, slots, self, VALUE_SLICE_GET(a, 0)));
     return RESULT_OK(VALUE_REF_GET(self));
@@ -3116,6 +3154,51 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+static RESULT korb_m_range_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    for (intptr_t i = lo + n; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    uint32_t cnt = 0;
+    for (intptr_t i = lo; i < hi; i++) {
+        bool t;
+        if (block != NULL) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            t = KORB_TRUTHY(r.value);
+        } else t = true;                              /* every Integer is truthy */
+        if (t && ++cnt > 1) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(cnt == 1 ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_range_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    bool has_arg = VALUE_SLICE_LEN(a) >= 1;
+    for (intptr_t i = lo; i < hi; i++) {
+        VALUE iv = LONG2FIX(i);
+        bool hit;
+        if (has_arg) hit = korb_value_eq(iv, VALUE_SLICE_GET(a, 0));
+        else {
+            if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#find_index without arg or block is not supported");
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            hit = KORB_TRUTHY(r.value);
+        }
+        if (hit) return RESULT_OK(LONG2FIX(i - lo));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reduce without a block (symbol form) is not supported");
     intptr_t lo, hi;
@@ -4398,6 +4481,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "join", korb_m_ary_join, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact", korb_m_ary_compact, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact!", korb_m_ary_compact_bang, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "slice!", korb_m_ary_slice_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, 0);
@@ -4533,6 +4617,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reject", korb_m_range_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "find", korb_m_range_find, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "detect", korb_m_range_find, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "drop", korb_m_range_drop, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "one?", korb_m_range_one, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "find_index", korb_m_range_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "any?", korb_m_range_any, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "all?", korb_m_range_all, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "none?", korb_m_range_none, 0);
