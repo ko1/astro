@@ -672,6 +672,23 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
     uint32_t sc = 1u + (uint32_t)argc;     /* recv + args staging */
     NODE *recv, *a[3];
+    /* safe navigation `recv&.m(args)`: if recv is nil, yield nil w/o dispatch */
+    if ((cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) && argc <= 2) {
+        switch (argc) {
+          case 0:
+            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
+            return ALLOC_node_send_safe0(mid, line, recv);
+          case 1:
+            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                                a[0] = transduce(tc, cn->arguments->arguments.nodes[0])));
+            return ALLOC_node_send_safe1(mid, line, recv, a[0]);
+          default:
+            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
+                                a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
+                                a[1] = transduce(tc, cn->arguments->arguments.nodes[1])));
+            return ALLOC_node_send_safe2(mid, line, recv, a[0], a[1]);
+        }
+    }
     switch (argc) {
       case 0:
         WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
