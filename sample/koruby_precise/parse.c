@@ -290,8 +290,9 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 
 /* ---- operators --------------------------------------------------------- */
 
-extern const struct NodeKind kind_node_plus;       /* all binops share slot_count */
-extern const struct NodeKind kind_node_ary_push;   /* array-literal push chain */
+extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
+extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
+extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 
 enum kp_binop {
     KP_BINOP_NONE = 0,
@@ -602,6 +603,20 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     return ALLOC_node_ary_push(acc, elem);
 }
 
+/* Interpolated string `"a#{x}b"` → inside-out concat chain (same shape as
+ * build_array).  The accumulator is always a String; each part is appended
+ * via its to_s inside node_dstr_concat. */
+static NODE *
+build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
+{
+    if (n == 0) return ALLOC_node_str("", 0);
+    NODE *acc, *part;
+    uint32_t sc = kind_node_dstr_concat.slot_count;
+    WITH_CHAIN(tc, sc, (acc  = build_dstr(tc, parts, n - 1),
+                        part = transduce(tc, parts[n - 1])));
+    return ALLOC_node_dstr_concat(acc, part);
+}
+
 /* ---- main dispatch -------------------------------------------------------- */
 
 static NODE *
@@ -663,6 +678,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             if (PM_NODE_TYPE(an->elements.nodes[i]) == PM_SPLAT_NODE)
                 return kp_unsupported(tc, node, "array literal with splat (*)");
         return build_array(tc, an->elements.nodes, cnt, (uint32_t)cnt);
+      }
+
+      case PM_INTERPOLATED_STRING_NODE: {
+        const pm_interpolated_string_node_t *in = (const pm_interpolated_string_node_t *)node;
+        return build_dstr(tc, in->parts.nodes, in->parts.size);
+      }
+      case PM_EMBEDDED_STATEMENTS_NODE: {
+        const pm_embedded_statements_node_t *en = (const pm_embedded_statements_node_t *)node;
+        if (!en->statements) return ALLOC_node_lit(KORB_NIL);   /* #{} → "" via nil.to_s */
+        return transduce_statements(tc, en->statements);
       }
 
       /* ---- locals (depth 0 = own frame, depth >= 1 = outer/closure) ---- */

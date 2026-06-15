@@ -390,6 +390,19 @@ node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@chi
     return korb_ary_push_val(c, slots, ary, elem);
 }
 
+// ---- string interpolation --------------------------------------------------
+//
+// `"a#{x}b"` lowers to a concat chain over the parts (same inside-out shape as
+// array literals): dstr_concat(dstr_concat(str(""), "a"-or-x), ...).  `acc` is
+// always a String; `part` is any value, appended via its to_s.
+
+NODE_DEF
+node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@child)
+{
+    (void)n;
+    return korb_str_interp(c, slots, acc, part);
+}
+
 // ---- blocks / yield / closures (M1, docs/v2_blocks_design.md) ---------------
 
 // Entry node: the dispatch root of a block (like a method body — registered

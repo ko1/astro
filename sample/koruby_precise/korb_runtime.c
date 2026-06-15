@@ -90,6 +90,30 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, intptr_t cnt, uint32_t 
     return RESULT_OK((VALUE)s);
 }
 
+/* String interpolation step: acc (a String) + to_s(part).  String parts take
+ * the direct concat path; other values render through korb_fprint_to_s (which
+ * does not allocate, so `part` stays put) into a transient buffer first. */
+RESULT
+korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
+{
+    VALUE_REF pref = SLOTS_PUSH(slots, part);            /* root part across GC */
+    VALUE p = VALUE_REF_GET(pref);
+    if (KORB_STRING_P(p))
+        return korb_str_plus_ref(c, slots, aref, pref);
+
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    korb_fprint_to_s(c, ms, p);                          /* no GC inside */
+    fclose(ms);
+    RESULT sr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    VALUE tmp = UNWRAP(sr);
+    VALUE_REF tref = SLOTS_PUSH(slots, tmp);
+    return korb_str_plus_ref(c, slots, aref, tref);
+}
+
 /* ---------------------------------------------------------------------------
  * Array — header + separately-allocated growable VALUE[] payload.
  * ------------------------------------------------------------------------- */
