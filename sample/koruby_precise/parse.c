@@ -1040,6 +1040,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_IMAGINARY_NODE:      /* `3i` / `1.5i` / `2ri` → Complex(0, numeric) */
         return ALLOC_node_imaginary(transduce(tc, ((const pm_imaginary_node_t *)node)->numeric));
 
+      case PM_IMPLICIT_NODE:       /* hash shorthand `{x:, y:}` — value = the named local/call */
+        return transduce(tc, ((const pm_implicit_node_t *)node)->value);
+
       case PM_STRING_NODE: {
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;
