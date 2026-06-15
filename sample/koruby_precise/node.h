@@ -72,11 +72,31 @@ bool   korb_value_eq(VALUE a, VALUE b);
 
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
-                          uint32_t params_cnt, uint32_t locals_cnt);
+                          uint32_t params_cnt, uint32_t locals_cnt,
+                          uint32_t uses_block);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
                            int32_t params_cnt);
 RESULT korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  struct korb_callcache *cc, uint32_t argc);
+
+/* Call with a literal block (M1, docs/v2_blocks_design.md).  `block` is a
+ * node_entry NODE carrying {body, params_cnt, locals_cnt}; `def_env` is the
+ * caller's frame base (slots pointer to the block's captured outer vars).
+ * The callee receives them in its frame's top 2 cells for `yield`. */
+RESULT korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+                     struct korb_callcache *cc, uint32_t argc,
+                     NODE *block, VALUE *def_env);
+
+/* yield to the current method's block.  `block_entry` / `def_env` are the
+ * (odd-tagged) frame-top cells, read by the node_yield body. */
+RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
+                  VALUE block_entry, VALUE def_env);
+
+/* node_entry field accessors (block body metadata) — defined in node.def's
+ * node_entry struct; korb_yield reads them off the node_entry NODE. */
+uint32_t korb_entry_params_cnt(NODE *entry);
+uint32_t korb_entry_locals_cnt(NODE *entry);
+NODE    *korb_entry_body(NODE *entry);
 
 /* raise + uncaught-exception report */
 RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
@@ -92,6 +112,7 @@ enum korb_etype {
     KORB_E_SYSSTACK,
     KORB_E_NOTIMPL,
     KORB_E_NAME,
+    KORB_E_LOCALJUMP,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

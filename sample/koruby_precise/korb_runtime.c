@@ -272,10 +272,11 @@ korb_method_slot(CTX *c, uint32_t mid)
 
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
-                   uint32_t params_cnt, uint32_t locals_cnt)
+                   uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
+    m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->locals_cnt = locals_cnt;
     m->body = body;
@@ -362,6 +363,7 @@ korb_etype_name(unsigned int etype)
       case KORB_E_SYSSTACK: return "SystemStackError";
       case KORB_E_NOTIMPL:  return "NotImplementedError";
       case KORB_E_NAME:     return "NameError";
+      case KORB_E_LOCALJUMP: return "LocalJumpError";
       default:              return "RuntimeError";
     }
 }
@@ -405,9 +407,15 @@ korb_report_uncaught(CTX *c, VALUE exc)
  * Calls.
  * ------------------------------------------------------------------------- */
 
-RESULT
-korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-          struct korb_callcache *cc, uint32_t argc)
+/* Shared call path.  `block` (a node_entry NODE) + `def_env` are NULL for an
+ * ordinary call; for a call with a literal block they are written into the
+ * callee frame's top 2 cells (odd-tagged so the GC root scan skips them) when
+ * the callee reserves them (m->uses_block).  A block passed to a method that
+ * does not yield is simply ignored. */
+static RESULT
+korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+               struct korb_callcache *cc, uint32_t argc,
+               NODE *block, VALUE *def_env)
 {
     struct korb_vm *const vm = c->vm;
     struct korb_method *m = cc->m;
@@ -453,6 +461,12 @@ korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (locals_cnt > argc) {
         memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));  /* nil-init */
     }
+    /* Block cells at the frame top (base[fs-2], base[fs-1]); only for methods
+     * that reserve them.  No block → nil from the nil-init above (= no block). */
+    if (block != NULL && m->uses_block) {
+        base[locals_cnt - 2] = (VALUE)((uintptr_t)block   | 1u);
+        base[locals_cnt - 1] = (VALUE)((uintptr_t)def_env | 1u);
+    }
 
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -464,6 +478,58 @@ korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         korb_bt_append(vm, e->line, korb_sym_name(vm, m->mid));
         e->line = line;
     }
+    return r;
+}
+
+RESULT
+korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+          struct korb_callcache *cc, uint32_t argc)
+{
+    return korb_call_impl(c, slots, mid, line, cc, argc, NULL, NULL);
+}
+
+RESULT
+korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+              struct korb_callcache *cc, uint32_t argc, NODE *block, VALUE *def_env)
+{
+    return korb_call_impl(c, slots, mid, line, cc, argc, block, def_env);
+}
+
+/* ---- node_entry accessors + yield ----------------------------------------- */
+
+uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
+uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
+NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
+
+RESULT
+korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
+           VALUE block_cell, VALUE def_env_cell)
+{
+    /* Frame-top cells are odd-tagged when a block is present; nil (0) = none. */
+    if (UNLIKELY(((uintptr_t)block_cell & 1u) == 0)) {
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
+    }
+    NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell   & ~(uintptr_t)1u);
+    VALUE *def_env = (VALUE *)(uintptr_t)((uintptr_t)def_env_cell & ~(uintptr_t)1u);
+    const uint32_t blocals = korb_entry_locals_cnt(entry);
+
+    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals. */
+    VALUE *const bf = slots;
+    char cstack_probe;
+    if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit)) {
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    }
+    bf[0] = (VALUE)((uintptr_t)def_env | 1u);
+    for (uint32_t i = 0; i < argc; i++) {
+        bf[1 + i] = slots[(intptr_t)i - (intptr_t)argc];   /* yield args → params */
+    }
+    for (uint32_t i = argc; i < blocals; i++) {
+        bf[1 + i] = KORB_NIL;
+    }
+
+    RESULT r = (*entry->head.dispatcher)(c, entry, bf + 1 + blocals);
+    if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = yield value */
     return r;
 }
 

@@ -86,6 +86,7 @@ enum korb_state {
     KORB_NORMAL = 0,
     KORB_RETURN = 1,    /* `return` — caught at the method-call boundary */
     KORB_RAISE  = 2,    /* exception in .value — unwinds to a handler / main */
+    KORB_NEXT   = 3,    /* `next` in a block — caught at the yield boundary */
 };
 
 typedef struct {
@@ -96,6 +97,7 @@ typedef struct {
 #define RESULT_OK(v)      ((RESULT){ (v), KORB_NORMAL })
 #define RESULT_RETURN_(v) ((RESULT){ (v), KORB_RETURN })
 #define RESULT_RAISE_(v)  ((RESULT){ (v), KORB_RAISE })
+#define RESULT_NEXT_(v)   ((RESULT){ (v), KORB_NEXT })
 
 /* UNWRAP(expr): take the VALUE out of a RESULT expression, early-returning
  * the RESULT from the *caller* when non-NORMAL.  CHECK(expr): same but the
@@ -172,8 +174,9 @@ typedef RESULT (*korb_builtin_fn)(CTX *c, VALUE *slots, VALUE_SLICE args);
 struct korb_method {
     uint32_t mid;            /* interned name */
     uint8_t  kind;           /* enum korb_method_kind */
+    uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
     int32_t  params_cnt;     /* -1 = variadic (builtins only) */
-    uint32_t locals_cnt;     /* ISEQ: frame size (params first) */
+    uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     struct Node *body;       /* ISEQ */
     korb_builtin_fn bfn;     /* BUILTIN */
 };
@@ -218,6 +221,11 @@ struct CTX_struct {
     struct ASTroGC *astro_gc;
     struct korb_vm *vm;
 };
+
+/* The block handed to a method lives in the callee's frame (slots), not in
+ * CTX — see docs/v2_blocks_design.md (no CTX mutable state, strict
+ * no-globals).  Frame top 2 cells: { node_entry|1, def_env|1 } (odd-tagged
+ * so the GC root scan skips these non-heap pointers). */
 
 #define ARO_GC_INSTANCE(c)  ((c)->astro_gc)
 

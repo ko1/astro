@@ -1,382 +1,435 @@
-# koruby v2 ブロック設計 — block / Proc / closure を slots ABI に載せる
+# koruby v2 ブロック / クロージャ設計 — env を slots ABI と moving GC に載せる
 
-Status: **設計ドラフト** (2026-06-13)。実装未着手。[v2_design.md](./v2_design.md)
-の M1 スコープのうち block/yield/Proc/closure を扱う。確定度マーカーは
-v2_design と同じ: ✅ = 設計から従う/合意済み、🤔 = 提案 (要レビュー)、❓ = 未決。
+Status: **設計確定ドラフト** (2026-06-15)。実装未着手。長い設計議論の結論。
+確定度: ✅ = 合意・設計から従う / 🤔 = 実装時に詰める perf 調整 / ❓ = M2 以降。
+
+対象: M1 の block / yield / Proc / lambda / closure。eval / binding は **M2** だが、
+設計が foreclose しないことを §10 で確認する。
 
 関連:
-
-- [closure_sp_model.md](./closure_sp_model.md) — v1 の block 実装の総括。
-  特に §2 (sp の A/B divergence)、§4-6 (in-place env 共有と clone/writeback)、
-  §10.7 (sp 一本の正体)
-- [v2_design.md](./v2_design.md) §7.8 (lvar 一本)、§13 #6 (iterator と ref 規約)
-- [v2_m0_status.md](./v2_m0_status.md) — 土台 (M0) の現状
+- [v2_design.md](./v2_design.md) — slots ABI のコア(§7.8 lvar 一本、§13 #6 iterator)
+- [v2_m0_status.md](./v2_m0_status.md) — 土台(M0): frame=直 slots、C スタック制御
+- [closure_sp_model.md](./closure_sp_model.md) — v1 の破綻総括(本設計が排除する対象)
 
 ---
 
-## 0. 何が問題だったか — v1 の block の構造 ✅
-
-v1 の block は「**定義元 frame の stack slots を in-place 共有する env**」だった
-(closure_sp_model.md §3-6)。そこから芋づる式に出たもの:
-
-| v1 の機構 | 何のためにあったか |
-|---|---|
-| 役割 A/B の sp 二本 (A < B) | block body が iterator の frame の**下**で走るため |
-| `creates_proc` flag + fresh-env clone | iteration ごとに独立 env が要るケース |
-| `method_overlaps_env` 検出 + clone + writeback | in-place 実行が active frame を破壊するケース |
-| `korb_proc_snapshot_env_if_in_frame` | method return 後も Proc が生きる (escape) ため stack→heap 昇格 |
-| `env_size` 算定 (method locals + block locals の同居) | curry / nested lambda で破綻した (env_size バグ) |
-
-**v2 の結論は「env を stack に置くのをやめる」**。captured 変数を最初から
-heap に置けば、上の表は全部消える。これは V8 の context allocation /
-Lua の upvalue close と同系の、確立された設計。
-
----
-
-## 1. 一枚で分かる全体像 🤔
+## 0. 結論を 1 枚で ✅
 
 ```
-  方針: 「捕捉されるか」を parse 時に決め、捕捉される変数だけ heap の
-        KorbEnv レコードに住まわせる。slots 上の lvar 機構は無傷。
-
-  def m(a)              # a は block に捕捉される → env 行き
-    x = 0               # x も捕捉される → env 行き
-    y = 1               # y は捕捉されない → 普通の slot (M0 と同じ)
-    each_n(3) { |i| x += a + i }
-    x
-  end
-
-  m の frame:   [ a(slot:据置), x(slot:据置), y, …, env* ]   ← env* = 隠し slot
-                                                  │
-                       KorbEnv (heap, moving) ◄───┘
-                       { parent=nil, vals[0]=a, vals[1]=x }
-                          ▲
-  block 値 (alloc なし): { iseq†, env, home‡ }  ← 呼び先 frame の隠し cell 3 つ
-                          ▲
-  block frame: [ i, …block locals…, outer_env*, … ]   ← yield が積む「普通の frame」
+- frame: M0 のまま。own-local は slots[off] 直アクセス(fib に env 機構ゼロ)
+- env: [prev | loc | vals] という単一 shape。生存中は frame の slots 内、
+       escape 後は moving heap。アクセスは node->loc[idx]、チェーンは node->prev
+- 「env はどーせすぐ消える」: 非escape の block は env オブジェクトを一切作らない
+- escape(proc/binding 生成)した時だけ heap env オブジェクトを materialize(open)
+- frame return = env が消える瞬間 = ここで close(slots→vals コピー、loc 差し替え)
+- 複数 referrer は heap オブジェクト(安定 identity)を指して集約。close は中身差し替え
+- moving GC が relocation を全部 fixup。CRuby が ep を手管理してた部分を GC に丸投げ
 ```
 
-† iseq = parse 時に作る immortal な block メタ (NODE\* + arity 等)。
-‡ home = 非局所 return / break の戻り先トークン (fixnum、§6)。
-
-コア決定は 5 つ:
-
-- **D1**: captured 変数は **frame 進入時に alloc する heap KorbEnv** に住む
-  (単一の住所。slot との二重生活・writeback はしない)
-- **D2**: block は**非 alloc**。`{iseq, env, home}` の 3 cell が呼び先 frame の
-  隠し slot に乗って運ばれる。オブジェクト化 (`proc{}` / `&b`) した時だけ
-  KorbProc を alloc
-- **D3**: **yield は「callee が block iseq な call」と完全同型**。staged 引数窓 =
-  block params 窓、frame は常に top に積む (v1 A4 の「常に fresh」を正式化)
-- **D4**: 非局所脱出は RESULT.state の追加 (NEXT / BREAK) + fixnum トークン
-- **D5**: Proc / lambda は KorbEnv を指す heap オブジェクト。escape 対応は
-  「env が最初から heap」なので**何もしなくてよい**
+CRuby との対応: CRuby (non-moving) は escape 時 `vm_make_env` で env を heap 化し
+`ep` を手で張り替える。v2 は **moving GC** なので、heap env の relocation・referrer
+の追従を **GC が自動でやる**。手で要るのは slots→heap の close 1 ステップだけ。
 
 ---
 
-## 2. D1: capture 解析と KorbEnv ✅(機構)/ 🤔(細部)
+## 1. 用語 ✅
 
-### 2.1 parse 時 capture 解析
+- **env**: 1 スコープ活性化の変数置き場。`[prev | loc | vals]` 構造。
+  - **open**: `loc` が **frame の slots 上の locals** を指す(生存中、コピー前)。
+  - **closed**: `loc` が **自分の vals** を指す(escape して frame return 後)。
+- **escape**: `proc{}` / `lambda` / `&blk` / `binding` が実行された瞬間。env が frame
+  より長生きし得ることが確定する点。
+- **close**: env が消える瞬間(その env を持つ frame の return)。slots→vals コピー +
+  `loc` 差し替え。「escape を決めた瞬間」じゃなく「**消える瞬間**」にやるのが肝。
+- **(depth, index)**: 変数参照を parse 時に解決した座標。depth=prev を辿る回数、
+  index=その env 内の位置。
+- **referrer**: env を指すもの(`Proc.env` / 子 env の `prev` / binding)。
 
-scope (toplevel / def / block) ごとに、**その scope の local が内側の block から
-参照されるか** (prism の depth > 0 参照) を判定する。transduce 前に当該 scope の
-prism 部分木を 1 回スキャンする pre-pass を入れる (AST walk のみ、安い)。
+---
 
-- captured 変数 → **env index** を採番。lget/lset は env アクセスに bake
-- captured でない変数 → M0 と同じ slot アクセス (一本モデル無傷)
-- **param が captured の場合**: 呼出規約上 staged 窓 (slot) に届くので、
-  frame prologue で env へ 1 回 copy する。以後 slot 側は読まない (単一住所)
+## 2. frame レイアウト ✅
 
-### 2.2 KorbEnv — heap レコード
+```
+非捕捉スコープ (method = fib 等):
+  slots: [ local0 | local1 | ... ]              ← env 機構ゼロ。M0 そのまま
+
+捕捉スコープ (外側変数を使う/使われる block・proc):
+  slots: [ PREV | LOC | local0 | ... | local_{n-1} | MY_ENV ]
+           └────────── env 領域 (open form) ──────────┘
+```
+
+- **PREV**: 外側(lexical parent)の env を指す。outer 変数アクセスの起点。
+  yield / proc.call 入口で設定。
+- **LOC**: 自分の locals 先頭(`&local0`)を指す。子からの uniform アクセス
+  (`node->loc[idx]`)用。生存中は自分の slots を指す。
+- **MY_ENV**: 自分の env を heap 化した **オブジェクト**。**NULL のまま**で、
+  escape した瞬間に生成。
+- method(fib)は外側を捕捉しない(Ruby の method は closure じゃない)ので
+  PREV/LOC/MY_ENV を持たない。**fib は完全に M0、env 機構の影響ゼロ**。
+
+heap env オブジェクト `KorbEnv` も **同じ shape**:
 
 ```c
-typedef struct KorbEnv {            /* KORB_OBJ_ENV */
-    AroObjectHeader head;
-    uint32_t cnt;
-    VALUE ARO_GC_EDGE parent;       /* 外側 scope の KorbEnv | nil */
-    VALUE ARO_GC_EDGE vals[];       /* captured 変数の実体 */
+typedef struct KorbEnv {
+    AroObjectHeader head;          // KORB_OBJ_ENV (moving heap)
+    struct KorbEnv *ARO_GC_EDGE prev;   // 親 env (heap or NULL)
+    VALUE *loc;                    // open: slots を指す / closed: &vals[0]。GC edge ではない(§7)
+    uint32_t n;
+    VALUE ARO_GC_EDGE vals[];      // closed 時に値が入る
 } KorbEnv;
 ```
 
-- SCAN_EDGES: parent + vals[*] を visit。moving 対応は自動
-  (KorbEnv への参照はすべて VALUE として slot / 他オブジェクト経由)
-- 割付けは capture を持つ frame の **prologue で 1 回** (`korb_alloc`)。
-  alloc 時点で params は staged 窓に rooted 済み → alloc 後に env へ copy
-  (`ARO_STORE`、gen backend の WB に乗る)
-- env への参照は **frame の隠し slot** (`slots[env_off]`、offset は lvar と同じ
-  bake 機構) に置く。**KorbEnv は movable なので C local の `KorbEnv *` を
-  GC point 跨ぎで持たない** — アクセスごとに slot から読み直す
-  (v2_design §7.5 の通常規則そのもの)
-
-### 2.3 lvar 解決の拡張 (parse) 🤔
-
-prism の (depth, index) を parser が **(hops, env_idx) または (slot_off)** に
-解決する:
-
-- depth == 0 & 非 captured → `node_lget(off)` (M0 のまま)
-- depth == 0 & captured → `node_eget(env_off, idx)` (自 frame の env)
-- depth > 0 → `node_eget_outer(outer_off, hops, idx)`。hops は「**env を持つ
-  scope だけ**を数えた hop 数」(capture が無い中間 scope は env を作らない /
-  chain に挟まらないので、prism depth からの読み替え表を parser が持つ)
-
-`(1..3).each { |i| procs << proc { i } }` の v1 殺し (creates_proc):
-i は block scope の captured 変数 → **block frame が iteration ごとに新しい
-KorbEnv を alloc** → 内側 proc はそれぞれ自分の iteration の env を指す。
-**clone も writeback も要らない**。これが D1 の最大の配当。
+slots の env 領域と heap KorbEnv が同 shape なので、**env への参照は slots/heap を
+問わず uniform に扱える**(これが yield と proc で body を共通化する鍵)。
 
 ---
 
-## 3. D2: block 値の表現 — 3 隠し cell、alloc なし 🤔
+## 3. アクセス ✅(✅ / caching は 🤔)
 
-### 3.1 block iseq (immortal メタ)
+### 3.1 own-local
 
 ```c
-struct korb_biseq {                 /* parse 時 malloc、immortal (NODE と同格) */
-    NODE *body;                     /* code_repo 登録済み = 自分の AOT entry */
-    uint32_t params_cnt;
-    uint32_t locals_cnt;            /* 隠し slot 込み frame サイズは別途 */
-    uint32_t hidden_off;            /* outer_env / home 等の隠し cell 開始 */
-    /* arity 詳細 (autosplat 等) は M1 後半で追加 */
-};
+slots[off]      // off は parse 時 bake。直アクセス、1 load。fib 無傷
 ```
 
-### 3.2 値としての block = 3 cell
+捕捉スコープでも own-local は **直 slots**(LOC を経由しない)。env の loc とは
+別腹。close 時に slots→vals へコピーされるが、それは frame 退出時なので own-access
+は生存中ずっと直 slots で正しい(§5)。
 
-block は first-class 値ではないので、**呼び先 frame の隠し slot 3 つ**として
-運ぶ (CRuby が cfp に block handler を載せるのと同じ発想):
+### 3.2 outer 変数 (depth d, index i)
 
-| cell | 内容 | GC からの見え方 |
-|---|---|---|
-| blk_iseq | `(VALUE)((uintptr_t)biseq \| 1)` — **奇数タグの immortal ポインタ** | 奇数 = fixnum 扱いで skip ✅ |
-| blk_env | 定義元 scope の KorbEnv \| nil | 普通の VALUE edge (scan される) |
-| blk_home | 非局所脱出トークン (fixnum、§6) | fixnum で skip |
-
-- block を渡さない呼出しは blk_iseq = nil (= `block_given?` が false)
-- 隠し cell を持つのは「body が yield / block_given? / `&param` を使う
-  method」だけ (parser が判定して locals に追加)。**使わない method は
-  1 cycle も払わない**
-- 奇数タグの immortal ポインタは**この隠し cell 専用の内部表現**とし、
-  ユーザ値空間 (fixnum) とは決して混ざらない (yield 機構しか decode しない)
-  ことを context.h に明記する。audit build では decode 時に
-  「code_repo に実在する biseq か」を検査できる ❓
-  - 代替案: KorbBlock を heap alloc して 1 cell にする。GC 的にはより素直
-    だが **block 渡し呼出しごとに 1 alloc** (each ループの本丸に乗る)。
-    タグ案で開始し、audit で不安が出たら差し替え 🤔
-
-### 3.3 呼出規約
-
-```
-node_call1_blk(mid, line, cc@ref, biseq, a0@child)   ← biseq は固有 operand
-  glue: a0 を staging (M0 と同じ)
-  korb_call_blk(c, slots, mid, line, cc, argc, biseq, blk_env, blk_home)
-    blk_env  = 自 frame の env (定義元 scope の env を継承。無ければ外側のを素通し)
-    blk_home = §6 のトークン (call site で組む)
-    → callee frame: [args | locals... | blk_iseq, blk_env, blk_home | (own env)]
+```c
+KorbEnv *node = (KorbEnv *)PREV;   // 入口で設定済み
+for (k = 1; k < d; k++) node = node->prev;
+//   read : v = node->loc[i];
+//   write: korb_env_store(node, i, v);   // §6 (WB)
 ```
 
-`&blk` での転送 (`def m(&b); other(&b); end`) は cell 3 つの素通し。
-Proc 化 (§5) するまで alloc は発生しない。
+- `node->loc[i]`: loc が slots(open)でも vals(closed)でも同じコード。
+- depth 1(最頻 = block が直近 method の local を使う)は walk なし。
+- 1 アクセス ≈ 2 load(loc, value)。CRuby の ep 相対と同程度。
+- 🤔 perf: depth ごとの base を入口で 1 回解決して display 配列に置けば
+  per-access の loc 間接を消せる(CRuby は per-access walk)。計測してから。
 
 ---
 
-## 4. D3: yield = 「block を callee とする call」 ✅
+## 4. block 値の表現 ✅
+
+block は first-class 値じゃないので **非 alloc**。呼び先 frame の隠しセル 3 つで運ぶ:
+
+| セル | 内容 |
+|---|---|
+| `blk_iseq` | block 本体の immortal 記述子(NODE + arity)。奇数タグ immortal ポインタ(§7 で GC skip) |
+| `blk_env` | 定義スコープの env(slots region or KorbEnv)。yield の outer chain 起点 |
+| `blk_home` | 非局所脱出トークン(fixnum、§8) |
+
+- block を渡さない呼び出しは `blk_iseq = nil`(= `block_given?` が false)。
+- 隠しセルを持つのは yield / `block_given?` / `&param` を使う method だけ(parser 判定)。
+- **`proc{}` / `lambda` / `&blk` でオブジェクト化した時だけ `KorbProc` を alloc**:
 
 ```c
-NODE_DEF
-node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF a0@child)
-{
-    return korb_yield(c, slots, /*argc=*/1, line);
-}
-```
-
-korb_yield の仕事 (korb_call とほぼ同じ):
-
-1. 自 frame の blk_iseq cell を読む。nil → LocalJumpError "no block given (yield)"
-2. `base = slots - argc` (staged 引数窓 = block params 窓、M0 の call と同一)
-3. arity 合わせ: 不足は nil 埋め、過剰は捨てる (block の緩い arity)。
-   autosplat (`|a,b|` に Array 1 個) は M1 後半 ❓
-4. limit check (slots + machine stack) → SystemStackError
-5. 非 param block locals をゼロ埋め (= nil)
-6. **block frame の隠し cell を書く**: outer_env = blk_env、home 系 = blk_home
-7. block 自身が capture を持つなら prologue で KorbEnv alloc (parent = blk_env)
-8. `(*biseq->body->head.dispatcher)(c, body, base + frame_size)` —
-   **常に現在の top に積む**。v1 の「iterator の下で走る」A<B divergence は
-   構造ごと存在しない
-9. RESULT 処理: NEXT → NORMAL に畳む (§6)。RETURN / BREAK / RAISE は素通し
-
-**block body の cursor 規約は method body と完全に同一**。node.def に block
-専用の特例は無く、M0 の全ノードが無変更で block body 内でも正しい。
-
-### 4.1 iterator builtin と ref 規約 (v2_design §13 #6 の答) ✅
-
-C で書く iterator (M1 の `Array#each` / `Integer#times` 等) は:
-
-```c
-RESULT korb_ary_each_ref(CTX *c, VALUE *slots, VALUE_REF ary)
-{
-    for (long i = 0; ; i++) {
-        if (i >= KORB_ARRAY_LEN(VALUE_REF_GET(ary))) break;  /* 毎回 ref 経由 */
-        VALUE_REF a0 = SLOTS_PUSH(slots, korb_ary_at(VALUE_REF_GET(ary), i));
-        CHECK_YIELD(korb_yield(c, slots, 1, line));   /* GC 任意 / BREAK 透過 */
-        slots--;                                      /* 窓を巻き戻す (local cursor) */
-    }
-    return RESULT_OK(VALUE_REF_GET(ary));
-}
-```
-
-- receiver は VALUE_REF で持ち、**yield (任意コード実行) を跨ぐ読みは毎回
-  GET し直す** — §7.5 の通常規則で閉じる。特例なし
-- 要素 staging は SLOTS_PUSH → yield の引数窓、と M0 の規約のまま
-
----
-
-## 5. D5: Proc / lambda ✅(方針)/ 🤔(細部)
-
-```c
-typedef struct KorbProc {           /* KORB_OBJ_PROC */
-    AroObjectHeader head;
-    uint32_t flags;                 /* KORB_PROC_LAMBDA */
-    struct korb_biseq *biseq;       /* immortal — SCAN_EDGES は触らない */
-    VALUE ARO_GC_EDGE env;          /* KorbEnv | nil */
-    VALUE home;                     /* fixnum トークン (§6) — scan 不要だが VALUE で保持 */
+typedef struct KorbProc {
+    AroObjectHeader head;          // KORB_OBJ_PROC
+    const korb_iseq_t *iseq;       // immortal(SCAN しない)
+    struct KorbEnv *ARO_GC_EDGE env;  // 捕捉した env(= 定義スコープの KorbEnv)
+    VALUE self;
+    uint32_t flags;                // is_lambda 等
 } KorbProc;
 ```
 
-- `proc {}` / `lambda {}` / `-> {}` / `&b` 受け = 隠し cell 3 つを包むだけ。
-  **escape 処理は存在しない** — env は生まれつき heap なので、定義元 method が
-  return しても Proc から到達可能な間 KorbEnv は GC が生かす。
-  v1 の `snapshot_env_if_in_frame` / `FL_HAS_PROC_IVARS` walk は廃止
-- `Proc#call` = korb_yield と同じ frame 構築を KorbProc から行う。
-  **常に top に積む**ので v1 の「slot 衝突 / overlap clone」も無い
-- lambda: arity 厳格 (ArgumentError は method と同文言)。`return` は局所
-  (KORB_RETURN を lambda 呼出境界で畳む)。proc: arity 緩く、`return` は
-  非局所 (§6)
-- 依存: `p.call` は receiver method call なので **M1 の receiver dispatch
-  実装が前提** (block/yield 自体は前提にしない — 進め方 §9 参照)
+---
+
+## 5. yield / escape / close ✅
+
+### 5.1 yield(= callee が biseq の call。非escape の常態)
+
+```c
+korb_yield(c, slots, argc):
+  blk_iseq が nil → LocalJumpError "no block given (yield)"
+  base = slots - argc                 // staged 引数 = block params 窓(M0 の call と同型)
+  block frame を base+locals_cnt に積む(常に top。v1 の A<B divergence は構造的に無い)
+  block frame の PREV = blk_env、blk_home を継承
+  body 実行
+```
+
+**非escape の block は env オブジェクトを一切作らない。** block の outer アクセスは
+PREV(= 定義スコープの slots env 領域)を辿るだけ。`each { p a }` も `each { a += 1 }`
+も **alloc ゼロ・WB ゼロ**(a は親 slots = root、直読み/直書き)。
+
+### 5.2 escape(`proc{}` / `binding` 等が実行された瞬間)
+
+捕捉チェーンを上に辿り、**各スコープに heap KorbEnv を open で確保**(まだ無ければ):
+
+```c
+korb_escape_chain(capturing_scope):
+  for each scope S from capturing_scope up to outermost-captured:
+    if S.MY_ENV == NULL:
+      E = korb_alloc(KorbEnv, S.n)
+      E->loc  = &S.slots.local0     // open: S の slots を指す
+      E->prev = (S の親).MY_ENV     // 親も同ループで確保済み
+      S.MY_ENV = E
+  KorbProc.env = capturing_scope.MY_ENV
+```
+
+- escape 時点では **値は slots のまま**(loc → slots)。コピーしない。
+- 複数 proc が同じスコープを捕捉 → `MY_ENV` を見て **同じ E に集約**(共有 mutation)。
+- escape は **C primitive の中で実行時に起こる**(`korb_proc_new` / `korb_binding_new`)。
+  alias / send 経由でも同じ C 関数に来るので **検出漏れしない**(§10)。
+
+### 5.3 close(env が消える瞬間 = その frame の return)✅
+
+```c
+frame return (korb_call / korb_yield の戻り 1 経路):
+  if MY_ENV != NULL:                  // escape したスコープだけ
+    memcpy(MY_ENV->vals, &local0, n)  // slots → vals(§6 で WB)
+    MY_ENV->loc = &MY_ENV->vals[0]    // open → closed
+```
+
+- referrer(Proc.env / 子の prev)は **E オブジェクトを指したまま**。loc が中身ごと
+  差し替わるので open→closed は透過。**referrer を探して回る必要なし**(集約済み)。
+- `a=0; [1].each{ $g=proc{a}; a=99 }; p $g.call` → block が a=99 を slots に書く →
+  $g は MY_ENV->loc(open=slots)経由で同じ a を見る → close で 99 が vals に固定 →
+  `$g.call` は 99。✅ 共有が正しい。
+
+### 5.4 全 exit 経路で close(= v1 の地雷回避)✅
+
+close は **正常 return / `next` / `break` / `return` / 例外**の全経路で漏れなく走る
+必要がある。**frame の出入りを korb_call / korb_yield の 1 経路に集約**して、そこで
+「MY_ENV != NULL なら close」を 1 箇所だけ書く。v1 は close が散らばって事故った。
+RESULT で unwind する koruby では、unwind が通過する各 frame 境界(= korb_call /
+korb_yield の戻り)で必ず close を通す。
 
 ---
 
-## 6. D4: 非局所脱出 — RESULT state 追加 + fixnum トークン 🤔
+## 6. GC / Write Barrier ✅
 
-state を 2 つ追加する。**伝播経路 (UNWRAP/CHECK) は無変更**で、境界だけが
-新 state を畳む:
+### 6.1 root / scan
+
+- `PREV` / `LOC` / `MY_ENV` は slots 内 → **root として scan**。env オブジェクト
+  (`MY_ENV` が指す)は moving GC が forward。`PREV`/`MY_ENV` が指す KorbEnv も同様。
+- `SCAN_EDGES(KorbEnv)` は open/closed で切替:
+  - **open**: `prev` のみ scan(値は slots = root 経由で scan 済み。vals は未使用)。
+  - **closed**: `prev` + `vals[0..n)`。
+- `loc` は **GC edge ではない**(open=slots 固定 / closed=自分の vals を指す自己ポインタ)。
+  forward 対象にしない。relocation 時、**closed なら loc を新しい &vals に付け替え**、
+  open なら slots 固定なので放置。
+
+### 6.2 Write Barrier — DUMMY holder、NULL check なし ✅
+
+own-local write は直 slots(root)なので **WB ゼロ**(fib・`each{a+=1}` 無傷)。
+外側変数 write だけ WB 経路。
+
+**holder は activation 入口で 1 回決める**(per-write 分岐しない):
+
+```
+入口: H = env_closed ? E : DUMMY    // yield / open は DUMMY、closed だけ実 E
+write: ARO_STORE(c, H, node->loc + i, v)
+```
+
+- **DUMMY** = gc_flags=0(young/clean)の共有 immortal オブジェクト 1 個。WB の
+  `(gc_flags & (OLD|DIRTY)) != OLD` が常に真 → early-out(remember しない)。
+  root への write は scan されるので remember 不要 = 正しい。
+- 入口で固定できる根拠: proc P 実行中、捕捉元 F の open/closed は不変
+  (F が P の生きた祖先なら P が return するまで F は close しない)。
+- **`holder == NULL` 分岐は使わない**。理由: NULL を predict-taken にすると
+  heap write 側(WB が本当に要る側)で mispredict して遅い。**root は DUMMY を渡す**
+  ことで WB を単一パス化(`*slot=v` → gc_flags チェック → remember)。
+- copy backend は `ARO_STORE` = 素の store(WB 無し)。この最適化は generational
+  backend(copy_gen 等)で効く。**M1 開発(copy)では挙動同じ**だが、規約として
+  最初から「root は DUMMY、NULL 不使用」で統一しておく。
+- ⚠ framework 影響: 共有 `runtime/precise_gc/gc.h` の `aro_gc_store` は今 NULL check
+  を持つ(baruby_precise 由来「stack-root は holder=NULL」規約)。**NULL check 撤去は
+  全 precise sample 横断の framework 変更**(baruby/ascheme の caller を DUMMY 化)。
+  → 別タスク・user GO 待ち。koruby は「常に DUMMY/E を渡す(NULL 不使用)」で
+  非侵襲に利得を取る(既存 gc.h のまま、NULL 分岐に入らないだけ)。
+
+---
+
+## 7. 値表現の追加 ✅
+
+| 物 | タグ / 種別 | GC |
+|---|---|---|
+| `KorbEnv` | moving heap (KORB_OBJ_ENV) | open=prev / closed=prev+vals、loc は edge 外 |
+| `KorbProc` | moving heap (KORB_OBJ_PROC) | env のみ(iseq は immortal) |
+| `blk_iseq` 隠しセル | 奇数タグ immortal ポインタ `(ptr\|1)` | 奇数 = fixnum 扱いで skip |
+| `blk_env` / PREV / LOC / MY_ENV | slots 内の VALUE / ポインタ | root scan(LOC は §6.1 の扱い) |
+| `blk_home` | fixnum トークン | skip |
+
+---
+
+## 8. 非局所脱出 ✅
+
+RESULT state を 2 つ追加。伝播(UNWRAP/CHECK)は無変更、境界だけが畳む:
 
 | state | 発生 | 畳む場所 |
 |---|---|---|
-| KORB_NEXT | `next [v]` (block body 内) | korb_yield / Proc#call (→ NORMAL、値 = v) |
-| KORB_BREAK | `break [v]` (block body 内) | **block を供給した call site** (→ NORMAL、call の値 = v) |
-| KORB_RETURN (既存) | `return` | method 境界 (M0 のまま)。**block 内 return** は home が一致する method 境界まで素通し |
+| KORB_NEXT | `next [v]` | korb_yield / Proc#call(→ NORMAL) |
+| KORB_BREAK | `break [v]` | block を供給した call site(→ NORMAL、call の値) |
+| KORB_RETURN(既存)| `return` | home トークンが一致する method 境界 |
 
-### 6.1 トークン (blk_home) の中身
+- `blk_home` = `(frame_serial << K) | frame_base_slot_off` の fixnum。slots が固定
+  mmap なので frame_base_slot がスコープ識別になる。serial で再帰中の同一 call を区別。
+- break: block を渡す call node が自分のトークンを cell に載せ、BREAK が戻った call
+  site が一致判定して畳む。return: block 定義時の enclosing method のトークン。
+- 不一致のまま toplevel / Proc 境界に達したら **LocalJumpError**(escape した Proc から
+  の break/return が CRuby と同じ失敗)。
+- **全経路で close(§5.4)を必ず通す**ので、非局所脱出でも env の close は漏れない。
+- 導入順: next(トークン不要)→ break(call site トークン)→ return-from-block / proc。
 
-slots バッファは CTX 生存中アドレス固定なので、**frame base の slot offset が
-活性 frame の一意な座標**になる。これに reuse 対策の serial を足して 1 fixnum
-にパックする:
+---
+
+## 9. 完全な例 ✅
+
+```ruby
+a = 1
+1.times{ b = 2
+  1.times{ c = 3
+    $g = proc{ x = 0; a + b + c + x }   # x=local、a/b/c=free var
+  }
+}
+```
+
+parse 時の解決(`$g` body から):`x→(0,xi)`, `c→(1,ci)`, `b→(2,bi)`, `a→(3,ai)`。
+
+**escape 前**(inner block 実行中、`proc{}` 直前)— 全部 slots、heap オブジェクトゼロ:
 
 ```
-home = LONG2FIX( (frame_serial << 21) | frame_base_slot_off )
-        21 bit = 8 MiB / 8 B / slot ≤ 2^20 slot (KORUBY_SLOTS_BYTES 拡大時は桁再配分)
-        frame_serial = vm->serial++ (block を渡す / 定義する活性化ごと)
+slots: [ top:  a=1 ... ]
+       [ outer:PREV→top  LOC→self  b=2  MY_ENV=nil ]
+       [ inner:PREV→outer LOC→self c=3  MY_ENV=nil ]  ← 今ここ
 ```
 
-- **break 用**: block を渡す call node が自分の活性化トークンを組んで cell に
-  載せる。BREAK が戻ってきた call site は「自分のトークン == 例外側の
-  トークン」なら畳む。再帰中の同一 call site も serial で区別される
-- **return 用**: block 定義時点の「lexically enclosing method frame」の
-  トークン。block cell 生成時に自 frame のものを継承して渡す
-- 不一致のまま toplevel / Proc 境界に達したら **LocalJumpError**
-  ("break from proc-closure" / "unexpected return") — escape した Proc からの
-  break/return が CRuby と同じ失敗をする
-- 運搬: BREAK/RETURN の戻り値は RESULT.value に乗せ、トークンは
-  `vm->nonlocal_token` (CTX 配下、in-flight 1 個) に置く。**raise と同じく
-  unwind 経路に GC point は無い**ので stale 化しない。rescue (M1) が
-  RAISE と同様に「畳まれずに横切る」ケースは ensure 実装時に要整理 ❓
+**`proc{}` = escape** → 捕捉チェーン(inner→outer→top)に KorbEnv を open 確保:
 
-### 6.2 段階導入
+```
+heap (moving): E_top  {prev=nil,   loc→top の slots,   vals[未]}
+               E_out  {prev=E_top, loc→outer の slots, vals[未]}
+               E_in   {prev=E_out, loc→inner の slots, vals[未]}
+       $g = KorbProc{ iseq, env=E_in }
+slots: 各 frame の MY_ENV = 対応する E_*
+```
 
-next (トークン不要) → break (call site トークン) → return-from-block /
-proc (home トークン) の順に入れる。最初の gate は next だけで張れる。
+**各 frame return = close**(LIFO: inner→outer→top):各 E_* の loc を slots→自分の
+vals に、値をコピー。E_in.vals=[c=3]、E_out.vals=[b=2]、E_top.vals=[a=1]。
 
----
+**`$g.call`**:
 
-## 7. GC contract 追加分 ✅
+```
+proc frame を積む。PREV = $g.env = E_in。x は proc frame の slots(own、直)
+  x (0,xi): slots[off]              = 0   ← own、直 slot
+  c (1,ci): E_in.loc[ci]            = 3   ← closed なので loc→vals
+  b (2,bi): E_in.prev.loc[bi]       = 2   ← E_out
+  a (3,ai): E_in.prev.prev.loc[ai]  = 1   ← E_top
+  = 6
+```
 
-| 物 | 種別 | SCAN_EDGES |
-|---|---|---|
-| KorbEnv | moving heap | parent + vals[0..cnt) |
-| KorbProc | moving heap | env のみ (biseq は immortal なので**触らない**) |
-| 隠し cell blk_iseq | 奇数タグ → 偶数 8-align でないので skip | — |
-| 隠し cell blk_env / outer_env | 普通の VALUE slot (frame 内) | root scan が拾う |
-| 隠し cell blk_home / home | fixnum | — |
-
-- env への書き (`vals[i] = v`、eset) は **ARO_STORE** 経由 (gen backend WB)。
-  M0 で導入済みの discipline のまま
-- STRESS+PURGE の効き所: block frame prologue の env alloc が「毎 yield GC」
-  になるので、capture 周りの rooting 漏れは即日炙り出される (gate §9)
+**対比**: `proc{}` を作らず `1.times{ p c }` だけなら、escape しないので **E_* は一切
+生成されない**。block は PREV→親 slots を直に辿って c を読むだけ。
 
 ---
 
-## 8. AOT / 部分評価との整合 🤔
+## 10. eval / binding(M2)— foreclose しないことの確認 ❓
 
-- **block body = 独立 entry** ✅: yield は frame cell 経由の runtime dispatch
-  なので specializer は畳めない (feedback_runtime_dispatch_entries と同じ)。
-  parse 時に code_repo へ登録し、bake 対象に含める (M0 の method body と同列)
-- **call site の biseq operand**: malloc ポインタなので SD には焼けない →
-  operand override で `n->u.x.biseq` の runtime 参照を emit (M0 の
-  `const char *` / line と同じ手口)。HASH には biseq->body の構造 hash を
-  畳み込む (同一 block 構造の call site は SD 共有)
-- **eget/eset の SD**: env_off / hops / idx は uint32 operand なので定数で
-  焼ける。env load の間接 1 段は moving GC の代償として残る (v2_design §8.2
-  R1 と同種 — heap 値はどうせ fold 禁止なので新たな後退ではない)
-- リスク: yield の間接 call が iteration ごとに残る。v1 でもそうだった。
-  block-site speculation (PG で biseq を仮定して直 call + guard) は
-  §13 #9 (IC 防衛) と同じ枠で M2 以降に計測してから ❓
+drop-in 目標なので **今の仕様を壊さない**(eval/binding/reflection フル対応)。本設計は
+これを foreclose しない:
 
----
+- **whole-env が強制される**(per-variable subset は不可)。理由: eval は `alias` /
+  `send` / `method(:eval)` 経由で呼べて **構文検出できない**ので、escape した env は
+  「どの local も eval され得る」前提で **全 local を保存**するしかない。本設計の env は
+  元々スコープの全 local を持つ(whole-env)ので OK。
+- **検出は実行時(C primitive 内)**:`binding` / `eval` の C 実装が走った時に処理する。
+  alias 不問(同じ C 関数に dispatch)。escape も §5.2 で実行時検出済み。
+- **名前解決**: eval/binding は名前→index が要る。これは scope を導入した **immortal な
+  NODE**(method なら node_def、block なら block literal NODE)に **local 名 ID 列**を
+  持たせて引く(CRuby の env→iseq→local_table(ID 列)を、koruby では env→scope NODE→
+  ID 列 でやる)。M1 では不要、M2 で NODE に足すだけ。**koruby に iseq は作らない**
+  (AST walker、immortal は NODE)。
+- **eval が新 local を作る**(`b.eval("y=1")` が binding に永続)→ eval に触れた env
+  だけ実行時拡張可能な名前表。M2 の、しかも eval-touched env だけの話。
 
-## 9. 進め方と gate 🤔
-
-GC は常に copy + STRESS/PURGE、AOT 常時 green (M0 と同じ常設 gate)。
-
-| 段 | 内容 | gate |
-|---|---|---|
-| **B1** | capture 解析 + KorbEnv + eget/eset (block なしでも capture 機構単体を `def` 内 lambda 不使用のダミーで…は不可能なので、B1+B2 は一括) | — |
-| **B2** | block literal + yield + next + block_given? + 隠し cell 機構。**receiver call 非依存**: `def each_n(n); i=0; while i<n; yield i; i+=1; end; end` 級が駆動コーパス | rubyharness CAT=block の該当分 + 手書き syntax/hand_* green (STRESS+PURGE 込み)。bench/block.rb は receiver iterator 依存なら持ち越し |
-| **B3** | `&b` param / `proc{}` / `->{}` / KorbProc。Proc#call は receiver dispatch (M1 並行作業) が入り次第 | proc_closure 系 green。**curry / nested-lambda 再現テスト** (v1 の env_size バグの回帰枠) を rubyharness 側に追加 |
-| **B4** | break / return-from-block / LocalJumpError | exception 系の該当分 green |
-| 以後 | autosplat、numbered params (`it`/`_1`)、self/cref (class 統合と同時) | — |
-
-計測 (gate ではなく記録): capturing frame の env alloc コスト、eget 間接の
-fib/loop 影響ゼロ確認 (非 capture コードに 1 命令も増えないこと)、
-bench/block.rb / closures.rb の v1 凍結値・CRuby 比。
+→ M1 は eval/binding 無しで実装。env 構造(whole-env)・実行時検出・名前表の席は
+最初から空けてあるので、M2 で被せるだけ。
 
 ---
 
-## 10. v1 から消えるもの / 残る原理 ✅
+## 11. コスト早見 ✅
+
+| ケース | env alloc | WB | own access |
+|---|---|---|---|
+| fib(捕捉なし method)| なし | なし | slots 直(1 load)|
+| `each{ p a }`(捕捉 read・非escape)| **なし** | なし | a=親 slots 直(2 load: loc,val)|
+| `each{ a += 1 }`(捕捉 write・非escape)| **なし** | **なし**(root)| 親 slots 直 |
+| 捕捉なし block(`each{|x| p x}`)| なし | なし | x=own、直 |
+| `proc{ }` / `binding`(escape)| escape したスコープに 1 個(共有)| closed 後の write だけ | proc.env 経由 |
+
+- **env を作るのは escape した時だけ。** 非escape の block は read/write とも slots 直。
+- escape しても **スコープ活性化ごとに 1 個**(iteration ごとじゃない、複数 proc で共有)。
+- 非escape で死ぬ env(短命)は copying nursery で die-young = タダ。
+
+---
+
+## 12. v1 から消えるもの ✅
 
 | v1 | v2 |
 |---|---|
-| env = stack in-place 共有 | captured だけ heap KorbEnv (単一住所) |
-| creates_proc / fresh-env clone + writeback | 構造ごと消滅 (iteration ごとに自然に新 env) |
-| method_overlaps_env 検出 + clone | 消滅 (block frame は常に top) |
-| snapshot_env_if_in_frame (escape 昇格) | 消滅 (env は生まれつき heap) |
-| env_size = method+block locals 同居 (curry バグ) | 消滅 (scope ごと独立 env / frame) |
-| sp 役割 A < B (block 下走り) | 消滅 (yield = 普通の call) |
-| c->current_block (global 連鎖) | 消滅 (frame 隠し cell。per-CTX どころか per-frame) |
-
-残る原理は M0 と同じ 3 行 — slots は top、publish は korb_alloc だけ、
-GC 跨ぎは ref 経由。block はその上の「callee が biseq な call」にすぎない。
+| env = stack in-place 共有 + sp A<B | env は [prev\|loc\|vals] 統一、yield は普通の top call |
+| creates_proc clone + writeback | 消滅(各 iteration fresh frame、escape で別 E)|
+| method_overlaps_env clone | 消滅(block は top で走る)|
+| snapshot_env_if_in_frame(return 時 scan)| close(frame return で内部差し替え)1 箇所 |
+| env_size 同居(curry バグ)| scope ごと独立 env + prev リンク |
+| c->current_block(global 連鎖)| frame の隠しセル(per-frame)|
+| escape 時の参照追跡 | referrer は安定 object を指す = 集約済み、loc 差し替えだけ |
 
 ---
 
-## 11. 未決事項 ❓
+## 13. マイルストーン(M1 内)🤔
+
+GC は copy + STRESS/PURGE、AOT 常設(M0 と同じ gate)。
+
+| 段 | 内容 | gate |
+|---|---|---|
+| **B0** | frame 出入りを korb_call / korb_yield の 1 経路に集約(close hook の置き場)| 既存 green 維持 |
+| **B1** | capture 解析(parse)+ frame の PREV/LOC/MY_ENV セル + outer access(depth/index)| — |
+| **B2** | yield + `block_given?` + next。**escape なし = env オブジェクト 0**。`def each_n` 級で駆動 | CAT=block 該当 green(STRESS+PURGE)|
+| **B3** | `proc{}` / `lambda` / `&blk` / KorbProc / escape / close / Proc#call。**curry / nested-lambda 回帰テスト**(v1 env_size バグ枠)| proc_closure 系 green |
+| **B4** | break / return-from-block / LocalJumpError(§8)| exception 系該当 green |
+| 以後 | autosplat、numbered params(`it`/`_1`)、self/cref(class と同時)| — |
+
+計測(gate でなく記録): 非捕捉/非escape が本当に alloc ゼロか、outer access の loc 間接
+が hot loop に効くか(per-access vs entry-display §3.2)、escaped env の nursery 寿命分布。
+
+---
+
+## 14. 残る未決 ❓
 
 | # | 論点 | 決め方 |
 |---|---|---|
-| 1 | blk_iseq の奇数タグ vs KorbBlock heap 化 (§3.2) | B2 で audit/STRESS を通してから。alloc コストは bench/block.rb で |
-| 2 | per-scope KorbEnv レコード vs 変数単位 box。レコード採用だが、「1 個だけ捕捉」が支配的なら box の方が軽い可能性 | B3 後に capture 統計を採ってから |
-| 3 | autosplat / implicit_rest の arity 細部 | B2 後、rubyharness の block corpus 差分で駆動 |
-| 4 | nonlocal_token と rescue/ensure (M1) の交差 — ensure は BREAK/RETURN も横切らせつつ実行する必要 | ensure 実装と同時に設計 |
-| 5 | home serial の桁配分 (KORUBY_SLOTS_BYTES 拡大時) | B4 実装時に encode を 1 箇所に閉じ込めておく |
-| 6 | self / cref の block 継承 | M1 class 設計と同時 |
-| 7 | yield site の block speculation (間接 call 除去) | M2 以降、PG/IC 枠で計測してから |
+| 1 | outer access caching: per-access loc 間接 vs 入口 display(§3.2)| B2/B3 で bench |
+| 2 | framework の `aro_gc_store` NULL check 撤去(横断、§6.2)| 別タスク・user GO |
+| 3 | `blk_iseq` の奇数タグ vs KorbBlock heap 化 | B2 で audit/STRESS 後 |
+| 4 | `blk_home` トークンの桁配分 / ensure(M1 後半)との交差 | break 実装時 |
+| 5 | eval/binding 詳細・eval-added local の動的名前表(§10)| M2 |
+| 6 | self / cref の block 継承 | M1 class と同時 |
+
+---
+
+## 付録: 却下した案と理由(設計の経緯)
+
+到達までに潰した案。再提案を避けるため記録する。
+
+1. **eager heap(env を常に heap)**: 性能 NG。→ 非escape は alloc しない方向へ。
+2. **per-variable upvalue(Lua/clox の変数単位)**: Ruby は **eval が任意の可視 local を
+   触れる**(alias で検出不能)ので escape 時 subset 保存が unsound。whole-env 強制。
+   Lua が per-variable で済むのは `load` が enclosing locals を見ないから。
+3. **fp(二本)/ reified frame**: own access を ep 相対(2 load)にして fib が遅くなる、
+   かつ nested escape が suspended frame の ep を更新するため reified frame が要る。
+   → own は直 slots を維持し、escape したものだけ heap object 化(本設計)。
+4. **sp だけ + slots に直書きコピー(snapshot at escape)**: コピーで home が 2 つになり
+   共有 mutation が壊れる(`i=0;f=proc{i};i=1;f.call` が 0 を返す)。→ move(参照張替)で
+   解決、さらに move-at-exit(消える瞬間に close)で frame 自身の repoint を不要化。
+5. **birth-in-heap(捕捉スコープは最初から heap env)**: 非escape の `each{acc}` でも
+   alloc する。→ escape 時だけ materialize に(non-escape タダ)。
+6. **WB の holder==NULL 分岐**: heap write 側で mispredict。→ DUMMY holder + 単一パス。
+
+核心の転換点: **「v2 は moving GC」**。CRuby (non-moving) が手管理してた env 移動・
+referrer 追従を GC に丸投げでき、手で要るのは close 1 ステップだけになった。

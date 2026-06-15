@@ -299,10 +299,10 @@ node_return(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 // body is its own AOT entry (call sites dispatch via body->head.dispatcher
 // at runtime, which the specializer cannot constant-fold) — @noinline.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t uses_block)
 {
     (void)n; (void)slots; (void)body_dispatcher;
-    korb_method_define(c, mid, body, params_cnt, locals_cnt);
+    korb_method_define(c, mid, body, params_cnt, locals_cnt, uses_block);
     return RESULT_OK(ID2SYM(mid));
 }
 
@@ -336,4 +336,101 @@ node_call3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct ko
 {
     (void)n; (void)a0; (void)a1; (void)a2;
     return korb_call(c, slots, mid, line, cc, 3);
+}
+
+// ---- blocks / yield / closures (M1, docs/v2_blocks_design.md) ---------------
+
+// Entry node: the dispatch root of a block (like a method body — registered
+// in code_repo, its own AOT entry).  Carries the block's arity; `yield`
+// reads params/locals off it (korb_entry_*) to size the block frame, then
+// dispatches it (EVAL evaluates the body at the block-frame cursor).
+NODE_DEF
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    (void)n; (void)params_cnt; (void)locals_cnt;
+    return EVAL_ARG(c, body);
+}
+
+// Call with a literal block.  `def_env_off` is parse-baked: &slots[def_env_off]
+// is the CALLER's frame base = where the block's captured outer vars live.
+// @noinline: the block operand is a per-process NODE pointer (not bakeable),
+// so this stays interpreter-dispatched; the block body (node_entry) is its
+// own AOT entry, so blocks are still specialized.
+NODE_DEF @noinline
+node_call_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off)
+{
+    (void)n; (void)block_dispatcher;
+    return korb_call_blk(c, slots, mid, line, cc, 0, block, &slots[def_env_off]);
+}
+
+NODE_DEF @noinline
+node_call_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF a0@child)
+{
+    (void)n; (void)block_dispatcher; (void)a0;
+    return korb_call_blk(c, slots, mid, line, cc, 1, block, &slots[def_env_off]);
+}
+
+// yield to the current method's block.  `biseq_off` / `def_env_off` read the
+// frame-top block cells (odd-tagged); korb_yield masks and sets up the frame.
+NODE_DEF
+node_yield0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off)
+{
+    (void)n;
+    return korb_yield(c, slots, 0, line, slots[biseq_off], slots[def_env_off]);
+}
+
+NODE_DEF
+node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, VALUE_REF a0@child)
+{
+    (void)n; (void)a0;
+    return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off]);
+}
+
+// block_given? — reads the frame-top biseq cell (odd-tagged when a block was
+// passed; nil when not).
+NODE_DEF @nogc
+node_block_given(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
+{
+    (void)c; (void)n;
+    return RESULT_OK(((uintptr_t)slots[biseq_off] & 1u) ? KORB_TRUE : KORB_FALSE);
+}
+
+// `next [v]` — early-return from a block; korb_yield catches KORB_NEXT.
+NODE_DEF @nogc
+node_next(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
+{
+    (void)c; (void)n; (void)slots;
+    return RESULT_NEXT_(v);
+}
+
+// ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------
+//
+// `prev_off` is parse-baked: slots[prev_off] is the current (block) frame's
+// PREV cell (bf[0]) — a tagged-odd pointer to the definer's locals-base.
+// depth 1 reads that base directly; deeper levels walk node[-1] (the next
+// frame's PREV cell, also tagged).  The odd tag makes the GC root scan skip
+// these slots-internal pointers (they're not heap objects).
+
+NODE_DEF @nogc
+node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index)
+{
+    (void)c; (void)n;
+    VALUE *node = (VALUE *)(uintptr_t)((uintptr_t)slots[prev_off] & ~(uintptr_t)1);
+    for (uint32_t k = 1; k < depth; k++)
+        node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1);
+    return RESULT_OK(node[index]);
+}
+
+// B2: the target slot is always in the (non-moving) slots root range, so a
+// plain store is GC-safe (no WB).  B3 (escape → closed heap env) will route
+// closed-env writes through ARO_STORE.
+NODE_DEF @nogc
+node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index, VALUE val@child)
+{
+    (void)c; (void)n;
+    VALUE *node = (VALUE *)(uintptr_t)((uintptr_t)slots[prev_off] & ~(uintptr_t)1);
+    for (uint32_t k = 1; k < depth; k++)
+        node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1);
+    node[index] = val;
+    return RESULT_OK(val);
 }

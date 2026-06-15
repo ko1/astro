@@ -30,6 +30,7 @@ struct kp_frame {
     const pm_constant_id_list_t *locals;
     uint32_t bake_base;
     int32_t saved_chain;
+    bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
     struct kp_frame *prev;
 };
 
@@ -115,23 +116,27 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->locals = locals;
     f->bake_base = tc->bake_cnt;
     f->saved_chain = tc->chain;
+    f->uses_block = false;
     f->prev = tc->frame;
     tc->frame = f;
     tc->chain = 0;
 }
 
-static void
+/* Returns the frame size (= locals + 2 block cells if the frame yields), which
+ * is what callers bake into node_def / use for the toplevel cursor. */
+static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    int32_t locals_cnt = (int32_t)f->locals->size;
+    uint32_t frame_size = (uint32_t)f->locals->size + (f->uses_block ? 2u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
-        *tc->bake_list[i] -= locals_cnt;
+        *tc->bake_list[i] -= (int32_t)frame_size;
     }
     tc->bake_cnt = f->bake_base;
     tc->chain = f->saved_chain;
     tc->frame = f->prev;
     free(f);
+    return frame_size;
 }
 
 static void
@@ -155,6 +160,21 @@ lvar_index(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid)
     kp_failf(tc, node, "koruby_precise: local '%s' not in scope table", kp_cid_cstr(tc, cid));
 }
 
+/* Index of an outer variable `depth` enclosing scopes out (prism depth). */
+static uint32_t
+lvar_index_at(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
+{
+    struct kp_frame *f = tc->frame;
+    for (uint32_t d = 0; d < depth; d++) {
+        f = f ? f->prev : NULL;
+    }
+    if (!f) kp_failf(tc, node, "koruby_precise: outer scope depth %u not found", depth);
+    for (size_t i = 0; i < f->locals->size; i++) {
+        if (f->locals->ids[i] == cid) return (uint32_t)i;
+    }
+    kp_failf(tc, node, "koruby_precise: outer local '%s' not at depth %u", kp_cid_cstr(tc, cid), depth);
+}
+
 static NODE *
 bake_lget(struct kp_ctx *tc, uint32_t index)
 {
@@ -169,6 +189,40 @@ bake_lset(struct kp_ctx *tc, uint32_t index, NODE *rval)
     NODE *n = ALLOC_node_lset((int32_t)index - tc->chain, rval);
     bake_add(tc, &n->u.node_lset.off);
     return n;
+}
+
+/* Outer-variable get/set (depth >= 1).  prev_off addresses the current frame's
+ * PREV cell (bf[0] = base[-1]): baked -1 - chain, pop subtracts frame_size →
+ * -(frame_size+1) - chain.  depth/index are constants (no fixup). */
+static NODE *
+bake_eget(struct kp_ctx *tc, uint32_t depth, uint32_t index)
+{
+    NODE *n = ALLOC_node_eget(-1 - tc->chain, depth, index);
+    bake_add(tc, &n->u.node_eget.prev_off);
+    return n;
+}
+
+static NODE *
+bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
+{
+    NODE *n = ALLOC_node_eset(-1 - tc->chain, depth, index, rval);
+    bake_add(tc, &n->u.node_eset.prev_off);
+    return n;
+}
+
+/* depth==0 → local, depth>=1 → outer.  Centralizes the read/write dispatch. */
+static NODE *
+lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
+{
+    if (depth == 0) return bake_lget(tc, lvar_index(tc, node, cid));
+    return bake_eget(tc, depth, lvar_index_at(tc, node, cid, depth));
+}
+
+static NODE *
+lvar_write(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth, NODE *rval)
+{
+    if (depth == 0) return bake_lset(tc, lvar_index(tc, node, cid), rval);
+    return bake_eset(tc, depth, lvar_index_at(tc, node, cid, depth), rval);
 }
 
 /* ---- helpers ----------------------------------------------------------- */
@@ -282,6 +336,93 @@ alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
 
 /* ---- calls -------------------------------------------------------------- */
 
+/* Parse a block literal into a node_entry (its own scope; registered as an
+ * AOT entry like a method body).  docs/v2_blocks_design.md. */
+static NODE *
+transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
+{
+    push_frame(tc, &blk->locals);
+
+    uint32_t bparams = 0;
+    if (blk->parameters) {
+        if (!PM_NODE_TYPE_P(blk->parameters, PM_BLOCK_PARAMETERS_NODE)) {
+            pop_frame(tc);
+            return kp_unsupported(tc, blk->parameters, "numbered/it block parameters");
+        }
+        const pm_block_parameters_node_t *bp =
+            (const pm_block_parameters_node_t *)blk->parameters;
+        const pm_parameters_node_t *ps = bp->parameters;
+        if (bp->locals.size) {
+            pop_frame(tc);
+            return kp_unsupported(tc, blk->parameters, "block-local variables (|x; y|)");
+        }
+        if (ps) {
+            if (ps->optionals.size || ps->rest || ps->posts.size ||
+                ps->keywords.size || ps->keyword_rest || ps->block) {
+                pop_frame(tc);
+                return kp_unsupported(tc, (const pm_node_t *)ps,
+                                      "non-positional block parameters");
+            }
+            bparams = (uint32_t)ps->requireds.size;
+            for (uint32_t i = 0; i < bparams; i++) {
+                const pm_node_t *p = ps->requireds.nodes[i];
+                if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
+                    pop_frame(tc);
+                    return kp_unsupported(tc, p, "destructuring block parameter");
+                }
+                pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
+                if (lvar_index(tc, p, cid) != i) {
+                    kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]",
+                             kp_cid_cstr(tc, cid), i);
+                }
+            }
+        }
+    }
+
+    NODE *body;
+    if (blk->body == NULL) {
+        body = lit_nil();
+    }
+    else if (PM_NODE_TYPE_P(blk->body, PM_STATEMENTS_NODE)) {
+        body = transduce_statements(tc, (const pm_statements_node_t *)blk->body);
+    }
+    else {
+        body = kp_unsupported(tc, blk->body, "block body with rescue/ensure");
+    }
+
+    uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size);
+    /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
+     * AOT entry, body inlined into its SD. */
+    code_repo_add("block", entry, true);
+    return entry;
+}
+
+/* Call with a literal block.  Bakes def_env_off (caller frame base) and
+ * hands the node_entry + def_env to the callee.  B2: 0 or 1 positional arg. */
+static NODE *
+transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t mid,
+                          uint32_t line, const pm_arguments_node_t *args, size_t argc,
+                          const pm_block_node_t *blk)
+{
+    if (argc > 1) return kp_unsupported(tc, (const pm_node_t *)cn, "call with block and >1 arg");
+
+    NODE *entry = transduce_block(tc, blk);
+
+    /* def_env_off: cursor → caller frame base = -(chain + slot_count); pop
+     * subtracts the caller's frame_size (the slot_count = argc). */
+    if (argc == 0) {
+        NODE *call = ALLOC_node_call_blk0(mid, line, entry, -(tc->chain + 0));
+        bake_add(tc, &call->u.node_call_blk0.def_env_off);
+        return call;
+    }
+    NODE *a0;
+    WITH_CHAIN(tc, 1, (a0 = transduce(tc, args->arguments.nodes[0])));
+    NODE *call = ALLOC_node_call_blk1(mid, line, entry, -(tc->chain + 1), a0);
+    bake_add(tc, &call->u.node_call_blk1.def_env_off);
+    return call;
+}
+
 static NODE *
 transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 {
@@ -290,7 +431,20 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     const pm_arguments_node_t *args = cn->arguments;
     size_t argc = args ? args->arguments.size : 0;
 
-    if (cn->block) return kp_unsupported(tc, (const pm_node_t *)cn, "block argument");
+    /* block_given? — reads the current method's frame-top biseq cell. */
+    if (argc == 0 && cn->block == NULL &&
+        strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
+        tc->frame->uses_block = true;
+        return ALLOC_node_block_given(-2 - tc->chain);   /* frame-top biseq cell */
+    }
+
+    if (cn->block) {
+        if (!PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE)) {
+            return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument");
+        }
+        return transduce_call_with_block(tc, cn, mid, line, args, argc,
+                                         (const pm_block_node_t *)cn->block);
+    }
 
     NODE *a[3];
     switch (argc) {
@@ -394,11 +548,11 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         body = kp_unsupported(tc, dn->body, "def body with rescue/ensure");
     }
 
-    uint32_t locals_cnt = (uint32_t)dn->locals.size;
-    pop_frame(tc);
+    uint32_t uses_block = tc->frame->uses_block ? 1u : 0u;
+    uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, locals_cnt);
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, frame_size, uses_block);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */
@@ -416,8 +570,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_program_node_t *pn = (const pm_program_node_t *)node;
         push_frame(tc, &pn->locals);
         NODE *body = transduce_statements(tc, pn->statements);
-        pop_frame(tc);
-        koruby_toplevel_locals_cnt = (uint32_t)pn->locals.size;
+        koruby_toplevel_locals_cnt = pop_frame(tc);   /* frame_size for main's cursor */
         return body;
       }
 
@@ -461,24 +614,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
 
-      /* ---- locals ---- */
+      /* ---- locals (depth 0 = own frame, depth >= 1 = outer/closure) ---- */
       case PM_LOCAL_VARIABLE_READ_NODE: {
         const pm_local_variable_read_node_t *lr = (const pm_local_variable_read_node_t *)node;
-        if (lr->depth != 0) return kp_unsupported(tc, node, "closure local (depth > 0)");
-        return bake_lget(tc, lvar_index(tc, node, lr->name));
+        return lvar_read(tc, node, lr->name, lr->depth);
       }
       case PM_LOCAL_VARIABLE_WRITE_NODE: {
         const pm_local_variable_write_node_t *lw = (const pm_local_variable_write_node_t *)node;
-        if (lw->depth != 0) return kp_unsupported(tc, node, "closure local (depth > 0)");
         NODE *rval = transduce(tc, lw->value);   /* register child: no staging */
-        return bake_lset(tc, lvar_index(tc, node, lw->name), rval);
+        return lvar_write(tc, node, lw->name, lw->depth, rval);
       }
       case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
-        /* x op= v  →  lset(x, binop(lget(x), v)) */
+        /* x op= v  →  write(x, binop(read(x), v)) */
         const pm_local_variable_operator_write_node_t *ow =
             (const pm_local_variable_operator_write_node_t *)node;
-        if (ow->depth != 0) return kp_unsupported(tc, node, "closure local (depth > 0)");
-        uint32_t idx = lvar_index(tc, node, ow->name);
         const char *opname = kp_cid_cstr(tc, ow->binary_operator);
         enum kp_binop op = kp_binop_kind(opname);
         if (op == KP_BINOP_NONE) {
@@ -489,25 +638,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t line = kp_line(tc, node);
         uint32_t n_slots = kind_node_plus.slot_count;
         NODE *lhs, *rhs;
-        WITH_CHAIN(tc, n_slots, (lhs = bake_lget(tc, idx),
+        WITH_CHAIN(tc, n_slots, (lhs = lvar_read(tc, node, ow->name, ow->depth),
                                  rhs = transduce(tc, ow->value)));
-        return bake_lset(tc, idx, alloc_binop(op, lhs, rhs, line));
+        return lvar_write(tc, node, ow->name, ow->depth, alloc_binop(op, lhs, rhs, line));
       }
       case PM_LOCAL_VARIABLE_AND_WRITE_NODE: {
         const pm_local_variable_and_write_node_t *aw =
             (const pm_local_variable_and_write_node_t *)node;
-        if (aw->depth != 0) return kp_unsupported(tc, node, "closure local (depth > 0)");
-        uint32_t idx = lvar_index(tc, node, aw->name);
-        return ALLOC_node_and(bake_lget(tc, idx),
-                              bake_lset(tc, idx, transduce(tc, aw->value)));
+        return ALLOC_node_and(lvar_read(tc, node, aw->name, aw->depth),
+                              lvar_write(tc, node, aw->name, aw->depth, transduce(tc, aw->value)));
       }
       case PM_LOCAL_VARIABLE_OR_WRITE_NODE: {
         const pm_local_variable_or_write_node_t *ow =
             (const pm_local_variable_or_write_node_t *)node;
-        if (ow->depth != 0) return kp_unsupported(tc, node, "closure local (depth > 0)");
-        uint32_t idx = lvar_index(tc, node, ow->name);
-        return ALLOC_node_or(bake_lget(tc, idx),
-                             bake_lset(tc, idx, transduce(tc, ow->value)));
+        return ALLOC_node_or(lvar_read(tc, node, ow->name, ow->depth),
+                             lvar_write(tc, node, ow->name, ow->depth, transduce(tc, ow->value)));
       }
 
       /* ---- control flow ---- */
@@ -568,6 +713,33 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return kp_unsupported(tc, node, "return with multiple values");
         }
         return ALLOC_node_return(v);
+      }
+
+      /* ---- blocks ---- */
+      case PM_YIELD_NODE: {
+        const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
+        tc->frame->uses_block = true;            /* this method reserves block cells */
+        uint32_t line = kp_line(tc, node);
+        size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
+        if (yargc == 0) {
+            /* yield0 slot_count 0: cells at cursor[-2-chain], cursor[-1-chain] */
+            return ALLOC_node_yield0(line, -2 - tc->chain, -1 - tc->chain);
+        }
+        if (yargc == 1) {
+            /* yield1 slot_count 1: a0 at cursor[-1]; cells below it */
+            NODE *a0;
+            WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
+            return ALLOC_node_yield1(line, -2 - (tc->chain + 1), -1 - (tc->chain + 1), a0);
+        }
+        return kp_unsupported(tc, node, "yield with more than 1 value");
+      }
+      case PM_NEXT_NODE: {
+        const pm_next_node_t *nn = (const pm_next_node_t *)node;
+        NODE *v;
+        if (nn->arguments == NULL || nn->arguments->arguments.size == 0) v = lit_nil();
+        else if (nn->arguments->arguments.size == 1) v = transduce(tc, nn->arguments->arguments.nodes[0]);
+        else return kp_unsupported(tc, node, "next with multiple values");
+        return ALLOC_node_next(v);
       }
 
       /* ---- calls / def ---- */
