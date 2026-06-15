@@ -675,13 +675,18 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
     if (ps) {
-        if (ps->rest || ps->posts.size || ps->block) {
+        if (ps->posts.size || ps->block) {
             return kp_unsupported(tc, (const pm_node_t *)dn,
-                                  "non-positional parameters (rest/post/block)");
+                                  "non-positional parameters (post/block)");
         }
+        if (ps->rest && !(PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
+                          ((const pm_rest_parameter_node_t *)ps->rest)->name))
+            return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding rest parameter");
+        if (ps->rest && (ps->keywords.size || ps->keyword_rest))
+            return kp_unsupported(tc, (const pm_node_t *)dn, "rest + keyword parameters combined");
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
-        params_cnt = req_cnt + opt_cnt;   /* positional only; keywords live in later slots */
+        params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */
     }
 
     push_frame(tc, &dn->locals);
@@ -718,6 +723,13 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
                 opt_defaults[j] = transduce(tc, op->value);
             }
         }
+    }
+
+    /* *rest param: collects surplus positionals; its local slot follows req+opt. */
+    int32_t rest_slot = -1;
+    if (ps && ps->rest) {
+        pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
+        rest_slot = (int32_t)lvar_index(tc, ps->rest, rn);
     }
 
     /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
@@ -765,7 +777,7 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */

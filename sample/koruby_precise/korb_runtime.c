@@ -625,7 +625,7 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
-                      uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
+                      uint32_t params_cnt, uint32_t req_cnt, int32_t rest_slot, uint32_t locals_cnt,
                       uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     KorbClass *const k = VAL2CLASS(klass);
@@ -646,6 +646,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
+    m->rest_slot = rest_slot;
     m->locals_cnt = locals_cnt;
     m->body = body;
     m->opt_defaults = opt_defaults;
@@ -721,7 +722,10 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     uint32_t pos_argc = argc;
     VALUE kwhash = KORB_NIL;
     if (kw && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }
-    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt)) {
+    if (UNLIKELY(pos_argc < m->req_cnt || (m->rest_slot < 0 && pos_argc > (uint32_t)m->params_cnt))) {
+        if (m->rest_slot >= 0)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected %u+)", pos_argc, m->req_cnt);
         if (m->req_cnt == (uint32_t)m->params_cnt)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                               "wrong number of arguments (given %u, expected %d)", pos_argc, m->params_cnt);
@@ -734,7 +738,22 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                  &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     }
+    /* *rest: collect surplus positionals BEFORE memset / writing the self+def_class
+     * frame-top cells, which would clobber high arg slots when argc is large.
+     * (rest + keyword params are rejected at parse, so here kwhash is nil.) */
+    VALUE rest_arr = KORB_NIL; bool have_rest = false;
+    if (m->rest_slot >= 0) {
+        uint32_t surplus = (pos_argc > (uint32_t)m->params_cnt) ? pos_argc - (uint32_t)m->params_cnt : 0;
+        VALUE *cur = base + pos_argc;                  /* scratch above all staged args */
+        cur[0] = UNWRAP(korb_ary_new(c, cur, surplus ? surplus : 4));
+        VALUE_REF arr = VALUE_REF_AT(&cur[0]);
+        for (uint32_t i = 0; i < surplus; i++)
+            CHECK(korb_ary_push_val(c, cur + 1, arr, base[(uint32_t)m->params_cnt + i]));
+        rest_arr = VALUE_REF_GET(arr); have_rest = true;   /* C-local; no alloc until stored below */
+        for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus slots */
+    }
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
+    if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = def_class;     /* odd-tagged not needed: class is a heap obj or nil */
     if (block != NULL && m->uses_block) {
@@ -1299,7 +1318,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
-                   uint32_t params_cnt, uint32_t req_cnt, uint32_t locals_cnt,
+                   uint32_t params_cnt, uint32_t req_cnt, int32_t rest_slot, uint32_t locals_cnt,
                    uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
     struct korb_method *m = korb_method_slot(c, mid);
@@ -1307,6 +1326,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
+    m->rest_slot = rest_slot;
     m->locals_cnt = locals_cnt;
     m->body = body;
     m->opt_defaults = opt_defaults;
