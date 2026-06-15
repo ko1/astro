@@ -2130,8 +2130,24 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX(r));
 }
 
+/* floored float modulo (sign follows divisor) — for Integer op Float. */
+static double korb_float_fmod(double s, double f) {
+    double r = fmod(s, f);
+    if (r != 0.0 && ((r < 0) != (f < 0))) r += f;
+    return r;
+}
 static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
+        double f = VAL2FLT(bv)->val, s = (double)SELF_INT;
+        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        slots[0] = LONG2FIX((intptr_t)floor(s / f));
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_fmod(s, f)));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        return RESULT_OK(slots[2]);
+    }
     if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -2144,6 +2160,11 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(bv)) {                            /* Integer#div(Float) → floor(self/f) Integer */
+        double f = VAL2FLT(bv)->val;
+        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        return RESULT_OK(LONG2FIX((intptr_t)floor((double)SELF_INT / f)));
+    }
     if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -2152,6 +2173,11 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 static RESULT korb_m_int_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(bv)) {                            /* Integer#modulo(Float) → Float (floored) */
+        double f = VAL2FLT(bv)->val;
+        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        return korb_float_new(c, slots, korb_float_fmod((double)SELF_INT, f));
+    }
     if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
@@ -6203,8 +6229,9 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), sh = FIX2LONG(o);
+    intptr_t sh;
+    if (UNLIKELY(!korb_to_index(o, &sh))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(o));
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     intptr_t r = sh >= 0 ? (sh < 62 ? (n << sh) : 0) : (n >> (-sh < 63 ? -sh : 62));
     if (sh >= 0 && (sh >= 62 || (r >> sh) != n || !FIXABLE(r)))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
@@ -6212,8 +6239,9 @@ static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), sh = FIX2LONG(o);
+    intptr_t sh;
+    if (UNLIKELY(!korb_to_index(o, &sh))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(o));
+    intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     intptr_t r = sh >= 0 ? (sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)) : (sh > -62 ? (n << -sh) : 0);
     return RESULT_OK(LONG2FIX(r));
 }
