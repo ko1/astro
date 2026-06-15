@@ -3856,8 +3856,42 @@ static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
     }
     return RESULT_OK(best);
 }
-static RESULT korb_m_ary_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_ary_minmax(c, slots, self, -1); }
-static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_ary_minmax(c, slots, self,  1); }
+/* min(n)/max(n): the n smallest (want=-1) / largest (want=1), sorted accordingly. */
+static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, intptr_t n) {
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    uint32_t len = SELF_ARY->len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, len));        /* sorted-ascending working copy */
+    VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, tmp, SELF_ARY->items->data[i]));
+    KorbArray *t = VAL2ARY(VALUE_REF_GET(tmp));
+    VALUE *d = t->items->data;                             /* insertion sort ascending */
+    for (uint32_t i = 1; i < len; i++) {
+        VALUE key = d[i]; uint32_t j = i;
+        while (j > 0) {
+            int cmp = korb_cmp_full(c, d[j-1], key);
+            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(d[j-1]), korb_type_name(key));
+            if (cmp <= 0) break;
+            d[j] = d[j-1]; j--;
+        }
+        d[j] = key;
+    }
+    uint32_t take = (uint32_t)n; if (take > len) take = len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, take));
+    VALUE_REF dst = VALUE_REF_AT(slots + 1);              /* tmp(slots[0]) stays rooted below */
+    for (uint32_t i = 0; i < take; i++) {
+        uint32_t src = want < 0 ? i : len - 1 - i;        /* min: ascending; max: descending */
+        CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(VALUE_REF_GET(tmp))->items->data[src]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_ary_minmax_n(c, slots, self, -1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    return korb_ary_minmax(c, slots, self, -1);
+}
+static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_ary_minmax_n(c, slots, self, 1, FIX2LONG(VALUE_SLICE_GET(a, 0)));
+    return korb_ary_minmax(c, slots, self,  1);
+}
 
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -4069,8 +4103,11 @@ static RESULT korb_m_ary_sort_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
-    slots[0] = UNWRAP(korb_hash_new(c, slots, 4));      VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    if (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0)))
+        slots[0] = VALUE_SLICE_GET(a, 0);              /* tally(hash): accumulate into it */
+    else
+        slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
+    VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
@@ -6728,7 +6765,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "tally", korb_m_ary_tally, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "tally", korb_m_ary_tally, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "first", korb_m_ary_first, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "last", korb_m_ary_last, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "[]", korb_m_ary_aref, -1);
@@ -6776,8 +6813,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sum", korb_m_ary_sum, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "min", korb_m_ary_min, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "max", korb_m_ary_max, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sort", korb_m_ary_sort, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "join", korb_m_ary_join, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "compact", korb_m_ary_compact, 0);
