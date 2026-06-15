@@ -4177,6 +4177,15 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
 }
 static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
 static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
+static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1));
+    slots[1] = UNWRAP(korb_ary_minmax_by(c, slots + 1, self, block, def_env, cself, 1));
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
+}
 /* filter_map: collect block results that are truthy. */
 static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#filter_map");
@@ -4948,6 +4957,39 @@ static RESULT korb_range_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, V
 }
 static RESULT korb_m_range_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, -1); }
 static RESULT korb_m_range_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_range_by(c, slots, self, block, def_env, cself, 1); }
+static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reverse_each without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    for (intptr_t i = hi - 1; i >= lo; i--) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* bsearch (find-minimum mode): smallest i in [lo,hi) where block(i) is truthy. */
+static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#bsearch without a block is not supported");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    bool found = false; intptr_t ans = 0;                 /* leftmost truthy index */
+    while (lo < hi) {
+        intptr_t mid = lo + (hi - lo) / 2;
+        VALUE iv = LONG2FIX(mid);
+        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (FIXNUM_P(r.value)) {                          /* find-any mode: 0=hit, <0 left, >0 right */
+            intptr_t v = FIX2LONG(r.value);
+            if (v == 0) return RESULT_OK(LONG2FIX(mid));
+            if (v < 0) hi = mid; else lo = mid + 1;
+        } else if (KORB_TRUTHY(r.value)) { found = true; ans = mid; hi = mid; }   /* find-minimum: go left */
+        else lo = mid + 1;
+    }
+    return RESULT_OK(found ? LONG2FIX(ans) : KORB_NIL);
+}
 static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     intptr_t lo, hi;
@@ -7228,6 +7270,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort_by!", korb_m_ary_sort_by_bang, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "min_by", korb_m_ary_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "max_by", korb_m_ary_max_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "minmax_by", korb_m_ary_minmax_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter_map", korb_m_ary_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "flat_map", korb_m_ary_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect_concat", korb_m_ary_flat_map, 0);
@@ -7415,6 +7458,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "reverse_each", korb_m_range_reverse_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "bsearch", korb_m_range_bsearch, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "max_by", korb_m_range_max_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax_by", korb_m_range_minmax_by, 0);
