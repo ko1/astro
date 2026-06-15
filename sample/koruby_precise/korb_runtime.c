@@ -1680,7 +1680,12 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else {
         const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
-        for (uint32_t i = 0; i < np; i++)      bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+        if (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat: |a,b| yielded one Array */
+            const KorbArray *ar = VAL2ARY(argv[0]);
+            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
+        } else {
+            for (uint32_t i = 0; i < np; i++)  bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+        }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     }
     bf[blocals] = captured_self;                        /* block's lexical self */
