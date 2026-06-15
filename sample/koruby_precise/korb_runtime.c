@@ -7137,9 +7137,30 @@ static RESULT korb_m_int_gcdlcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(l)));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* cos(pi*x) / sin(pi*x) — exact 0/±1 at half-integers (matches CRuby's accurate
+ * polar form so `(-1.0)**0.5` yields a clean (0.0+1.0i)). */
+static double korb_cospi(double x) {
+    double r = fmod(fabs(x), 2.0);
+    if (r == 0.5 || r == 1.5) return 0.0;
+    return cos(M_PI * x);
+}
+static double korb_sinpi(double x) {
+    double sgn = x < 0 ? -1.0 : 1.0, r = fmod(fabs(x), 2.0);
+    if (r == 0.0 || r == 1.0) return 0.0;
+    if (r == 0.5) return sgn;
+    if (r == 1.5) return -sgn;
+    return sin(M_PI * x);
+}
 static RESULT korb_m_flt_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double e; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    return korb_float_new(c, slots, pow(VAL2FLT(VALUE_REF_GET(self))->val, e));
+    double base = VAL2FLT(VALUE_REF_GET(self))->val;
+    if (base < 0 && e != floor(e)) {                  /* negative base ^ non-integer → Complex */
+        double mag = pow(-base, e);
+        slots[0] = UNWRAP(korb_float_new(c, slots, mag * korb_cospi(e)));
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, mag * korb_sinpi(e)));
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    return korb_float_new(c, slots, pow(base, e));
 }
 static RESULT korb_m_flt_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; double d = VAL2FLT(VALUE_REF_GET(self))->val;
