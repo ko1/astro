@@ -6955,6 +6955,15 @@ static RESULT korb_hash_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *bl
 }
 static RESULT korb_m_hash_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_minmax_by(c, slots, self, block, def_env, cself, -1); }
 static RESULT korb_m_hash_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_hash_minmax_by(c, slots, self, block, def_env, cself,  1); }
+static RESULT korb_m_hash_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_minmax_by(c, slots, self, block, def_env, cself, -1));      /* min pair */
+    slots[1] = UNWRAP(korb_hash_minmax_by(c, slots + 1, self, block, def_env, cself, 1));   /* max pair */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(slots[2]);
+}
 /* filter_map → collect truthy block results */
 static RESULT korb_m_hash_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     (void)a; if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#filter_map without a block is not supported");
@@ -8600,6 +8609,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "sort_by", korb_m_hash_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "min_by", korb_m_hash_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "max_by", korb_m_hash_max_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "minmax_by", korb_m_hash_minmax_by, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "filter_map", korb_m_hash_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "partition", korb_m_hash_partition, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "find", korb_m_hash_find, 0);
