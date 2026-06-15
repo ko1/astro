@@ -1802,6 +1802,23 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
     VALUE self = *recv_slot;
 
+    /* send / __send__ / public_send: redispatch by the symbol/string name in arg0.
+     * Shift recv into arg0's slot so [recv | arg1..] forms an argc-1 call. */
+    if (UNLIKELY(argc >= 1)) {
+        const char *nm = korb_sym_name(vm, mid);
+        if ((nm[0] == 's' && strcmp(nm, "send") == 0) ||
+            (nm[0] == '_' && strcmp(nm, "__send__") == 0) ||
+            (nm[0] == 'p' && strcmp(nm, "public_send") == 0)) {
+            VALUE name = slots[-(intptr_t)argc];           /* arg0 */
+            uint32_t rmid;
+            if (SYMBOL_P(name)) rmid = SYM2ID(name);
+            else if (KORB_STRING_P(name)) rmid = korb_intern(vm, VAL2STR(name)->buf->data, VAL2STR(name)->len);
+            else return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(name));
+            slots[-(intptr_t)argc] = self;                 /* recv → arg0 slot; args shift down by one */
+            return korb_send_impl(c, slots, rmid, line, argc - 1, block, def_env, captured_self);
+        }
+    }
+
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
