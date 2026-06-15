@@ -1097,6 +1097,15 @@ korb_value_eq(VALUE a, VALUE b)
             if (!korb_value_eq(x->items->data[i], y->items->data[i])) return false;
         return true;
     }
+    if (KORB_HASH_P(a) && KORB_HASH_P(b)) {           /* Hash#==: same pairs (order-independent) */
+        const KorbHash *x = VAL2HASH(a), *y = VAL2HASH(b);
+        if (x->len != y->len) return false;
+        for (uint32_t i = 0; i < x->len; i++) {
+            int32_t j = korb_hash_find(y, x->items->data[2*i]);
+            if (j < 0 || !korb_value_eq(x->items->data[2*i+1], y->items->data[2*j+1])) return false;
+        }
+        return true;
+    }
     if (KORB_COMPLEX_P(a) || KORB_COMPLEX_P(b)) {     /* complex == complex / == real(im 0) */
         if (KORB_COMPLEX_P(a) && KORB_COMPLEX_P(b))
             return korb_value_eq(VAL2CPX(a)->re, VAL2CPX(b)->re) && korb_value_eq(VAL2CPX(a)->im, VAL2CPX(b)->im);
