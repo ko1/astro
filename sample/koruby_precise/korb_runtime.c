@@ -5623,6 +5623,8 @@ static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VAL
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
+static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; return RESULT_OK(VALUE_SLICE_GET(a, 0)); }   /* proc defaults unsupported; accept + ignore */
+static RESULT korb_m_hash_compare_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }   /* identity-keys approximated by value-eq */
 static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
@@ -7391,6 +7393,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "default_proc=", korb_m_hash_default_proc_set, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity", korb_m_hash_compare_by_id, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity?", korb_m_lit_false, 0);
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
@@ -7458,6 +7463,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "map", korb_m_range_map, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "overlap?", korb_m_range_overlap, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "minmax", korb_m_range_minmax, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "sort", korb_m_range_to_a, 0);   /* int range already ascending */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reverse_each", korb_m_range_reverse_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "bsearch", korb_m_range_bsearch, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
