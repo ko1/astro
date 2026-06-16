@@ -968,12 +968,54 @@ korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
     return korb_class_le(exc_class, rescue_class);
 }
 
+/* Per-instance class override table (subclass instances / extended objects).
+ * Linear scan, but only ever reached for objects with KORB_FL_HAS_KLASS set. */
+static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj) {
+    for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+        if (vm->sklass_obj[i] == obj) return vm->sklass_cls[i];
+    return KORB_NIL;
+}
+static void korb_klass_override_set(CTX *c, VALUE obj, VALUE cls) {
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->sklass_cnt; i++)        /* replace if present */
+        if (vm->sklass_obj[i] == obj) { vm->sklass_cls[i] = cls; return; }
+    if (vm->sklass_cnt == vm->sklass_capa) {             /* libc realloc, not a GC point */
+        uint32_t nc = vm->sklass_capa ? vm->sklass_capa * 2 : 16;
+        vm->sklass_obj = realloc(vm->sklass_obj, sizeof(VALUE) * nc);
+        vm->sklass_cls = realloc(vm->sklass_cls, sizeof(VALUE) * nc);
+        if (!vm->sklass_obj || !vm->sklass_cls) { fprintf(stderr, "koruby_precise: oom (sklass)\n"); abort(); }
+        vm->sklass_capa = nc;
+    }
+    vm->sklass_obj[vm->sklass_cnt] = obj;
+    vm->sklass_cls[vm->sklass_cnt] = cls;
+    vm->sklass_cnt++;
+    ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_KLASS;
+}
+
+/* Walk cls's superclass chain; return the enum of the builtin base class it
+ * derives from (KORB_C_STRING/ARRAY/... or KORB_C_OBJECT), or KORB_NCLASS if the
+ * chain contains no registered builtin class. */
+static enum korb_class korb_builtin_base_class(struct korb_vm *vm, VALUE cls) {
+    while (KORB_CLASS_P(cls)) {
+        for (int k = 0; k < KORB_NCLASS; k++)
+            if (vm->class_name[k] != 0 && korb_const_get(vm, vm->class_name[k]) == cls)
+                return (enum korb_class)k;
+        cls = VAL2CLASS(cls)->superclass;
+    }
+    return KORB_NCLASS;
+}
+
 /* class object of `self` (for `.class` / is_a?).  User objects → their klass;
- * exceptions → the etype's class; else the builtin class via class_name[]. */
+ * overridden builtins → their subclass; exceptions → the etype's class; else the
+ * builtin class via class_name[]. */
 static VALUE
 korb_class_obj_of(CTX *c, VALUE self)
 {
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) return VAL2OBJ(self)->klass;
+    if (AROH_IS_GC_OBJECT(self) && (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)) {
+        VALUE ov = korb_klass_override_get(c->vm, self);   /* subclass instance → its real class */
+        if (ov != KORB_NIL) return ov;
+    }
     if (KORB_EXC_P(self)) {
         uint32_t et = VAL2EXC(self)->etype;
         if (et < 16) return korb_const_get(c->vm, c->vm->exc_name[et]);
@@ -1607,6 +1649,9 @@ korb_report_uncaught(CTX *c, VALUE exc)
 static VALUE  korb_set_elems_of(VALUE v);
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems);
 static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
+static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                             NODE *block, VALUE *def_env, VALUE captured_self);
+static const struct korb_cmethod *korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -1632,6 +1677,26 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
             return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
+        }
+    }
+
+    /* implicit self-call where self is a builtin (or overridden builtin), e.g.
+     * `upcase` inside a String-subclass method = `self.upcase`.  Resolve as a
+     * method on self (override chain, then tag cmethod); if found, re-dispatch as
+     * a send (stage recv at slots[0], args above it).  Only if NOT found as a
+     * method do we fall through to the global table (p/puts/top-level defs).
+     * `main` (klass=nil KorbObject) is excluded so top-level keeps using globals. */
+    if (AROH_IS_GC_OBJECT(self) && !(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)) {
+        bool found = false;
+        if (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS) {
+            VALUE ov = korb_klass_override_get(vm, self);
+            if (ov != KORB_NIL && korb_class_find_method(ov, mid, NULL) != NULL) found = true;
+        }
+        if (!found && korb_find_cmethod(vm, korb_class_of(self), mid) != NULL) found = true;
+        if (found) {
+            for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+            slots[0] = self;                            /* recv below the args */
+            return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
         }
     }
 
@@ -1943,6 +2008,40 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return korb_str_new(c, slots, "", 0);
         }
+        /* subclass of a constructible builtin (String/Array/Hash/Set): build that
+         * payload, tag it with the subclass via the override table, run the
+         * subclass's initialize if it defines one (else builtin-construct args). */
+        {
+            enum korb_class base = korb_builtin_base_class(vm, self);
+            if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {
+                uint32_t imid = korb_intern(vm, "initialize", 10);
+                VALUE idef = KORB_NIL;
+                struct korb_method *uinit = korb_class_find_method(*recv_slot, imid, &idef);
+                slots[0] = *recv_slot;                         /* root the subclass (recv) */
+                VALUE inst;
+                if (base == KORB_C_ARRAY)      inst = UNWRAP(korb_ary_new(c, slots + 1, 0));
+                else if (base == KORB_C_HASH)  inst = UNWRAP(korb_hash_new(c, slots + 1, 4));
+                else if (base == KORB_C_SET) { slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0)); inst = UNWRAP(korb_set_new(c, slots + 2, slots[1])); }
+                else {                                          /* String: copy a string arg unless initialize overrides */
+                    if (!uinit && argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) {
+                        slots[1] = slots[-(intptr_t)argc];
+                        uint32_t len = VAL2STR(slots[1])->len;
+                        KorbString *r = korb_str_alloc(c, slots + 2, len);
+                        memcpy(r->buf->data, VAL2STR(slots[1])->buf->data, len);
+                        inst = (VALUE)r;
+                    } else inst = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+                }
+                slots[1] = inst;                               /* root instance */
+                korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                if (uinit) {
+                    VALUE *ibase = slots - argc;
+                    RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, captured_self);
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(ibase[uinit->locals_cnt - 1]);   /* the (possibly moved) instance */
+                }
+                return RESULT_OK(slots[1]);
+            }
+        }
         uint32_t init_mid = korb_intern(vm, "initialize", 10);
         VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
         /* find initialize AFTER the alloc-GC, re-reading the class from the
@@ -1961,9 +2060,35 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(obj);
     }
 
+    /* per-instance class override on a builtin (subclass instance / extended /
+     * singleton method): try the override class's chain first; a miss falls
+     * through to the builtin tag dispatch below (inherited builtin methods). */
+    if (UNLIKELY(AROH_IS_GC_OBJECT(self) &&
+                 (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS))) {
+        VALUE ov = korb_klass_override_get(vm, self);
+        if (ov != KORB_NIL) {
+            VALUE def_class = KORB_NIL;
+            struct korb_method *um = korb_class_find_method(ov, mid, &def_class);
+            if (um) {
+                if (um->kind == KORB_METHOD_ATTR_R)
+                    return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+                if (um->kind == KORB_METHOD_ATTR_W) {
+                    if (UNLIKELY(argc != 1))
+                        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 1)", argc);
+                    VALUE v = slots[-(intptr_t)argc];
+                    CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
+                    return RESULT_OK(slots[-(intptr_t)argc]);
+                }
+                return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
+            }
+        }
+    }
+
     enum korb_class cls = korb_class_of(self);
     const struct korb_cmethod *m = korb_find_cmethod(vm, cls, mid);
     if (UNLIKELY(m == NULL)) {
+        /* no builtin method, but an override class (subclass/extend) may still
+         * define it via a module not on the tag's table — already tried above. */
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "undefined method '%s' for %s",
                           korb_sym_name(vm, mid), korb_a_type_name(self));

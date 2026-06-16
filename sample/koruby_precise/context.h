@@ -138,8 +138,12 @@ enum korb_obj_type {
     KORB_OBJ_ENUMERATOR  = 13,  /* eager Enumerator: materialized values + inspect desc */
     KORB_OBJ_SET         = 14,  /* Set: backed by an array of unique elements */
 };
-/* `flags` is a dedicated 16-bit sample-owned field; 4 bits leaves room to grow. */
+/* `flags` is a dedicated 16-bit sample-owned field; low 4 bits = type tag. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
+/* bit 4: this heap object has a per-instance class override (subclass instance /
+ * extended / singleton-method'd) recorded in the VM's sklass table.  Gates both
+ * class lookup and dispatch so the common (no-override) path pays only a bit test. */
+#define KORB_FL_HAS_KLASS  0x10u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
@@ -356,6 +360,18 @@ struct korb_vm {
     VALUE    *const_vals;
     uint32_t  const_cnt, const_capa;
 
+    /* per-instance class override table (subclass instances / extended objects /
+     * singleton methods).  sklass_obj[i] is the heap object, sklass_cls[i] its
+     * override class.  BOTH columns are forwarded as roots in AROH_VISIT_ROOTS,
+     * so the moving GC rewrites them in lockstep and `self == sklass_obj[i]`
+     * stays valid across compaction (no GC-core hook needed).  Only objects with
+     * KORB_FL_HAS_KLASS appear here, so the common path never touches this.
+     * NB: the obj column is a strong root → an overridden object is pinned for
+     * the program's life (acceptable: such objects are rare; weak-ref later). */
+    VALUE    *sklass_obj;
+    VALUE    *sklass_cls;
+    uint32_t  sklass_cnt, sklass_capa;
+
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */
     uint32_t  exc_name[16];
@@ -429,6 +445,12 @@ struct CTX_struct {
     /* constants (class values) are roots too */                            \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \
+    }                                                                        \
+    /* per-instance class override table: forward both columns in lockstep   \
+     * so the (object, class) pairing survives compaction. */                \
+    for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
     }                                                                        \
 } while (0)
 
