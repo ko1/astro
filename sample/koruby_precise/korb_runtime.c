@@ -272,6 +272,9 @@ korb_num_to_d(VALUE v, double *out)
     if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
     if (KORB_FLOAT_P(v)) { *out = VAL2FLT(v)->val;     return true; }
     if (KORB_RATIONAL_P(v)) { *out = (double)VAL2RAT(v)->num / (double)VAL2RAT(v)->den; return true; }
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(v)) { *out = korb_big_to_d(v); return true; }
+#endif
     return false;
 }
 
@@ -1507,6 +1510,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_COMPLEX:   return "Complex";
       case KORB_OBJ_ENUMERATOR: return "Enumerator";
       case KORB_OBJ_ARITHSEQ:  return "Enumerator::ArithmeticSequence";
+      case KORB_OBJ_BIGNUM:    return "Integer";
       case KORB_OBJ_SET: return "Set";
     }
     return "Object";
@@ -1531,6 +1535,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_COMPLEX:  return "an instance of Complex";
       case KORB_OBJ_ENUMERATOR: return "an instance of Enumerator";
       case KORB_OBJ_ARITHSEQ: return "an instance of Enumerator::ArithmeticSequence";
+      case KORB_OBJ_BIGNUM: return "an instance of Integer";
       case KORB_OBJ_SET: return "an instance of Set";
     }
     return "an instance of Object";
@@ -1583,6 +1588,9 @@ bool
 korb_value_eq(VALUE a, VALUE b)
 {
     if (a == b) return true;    /* fixnum / symbol / singletons / identity */
+#ifdef KORB_HAVE_GMP
+    if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b) == 0;   /* Bignum/Fixnum */
+#endif
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         return x->len == y->len && memcmp(x->buf->data, y->buf->data, x->len) == 0;
@@ -1688,6 +1696,13 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         bool t = op == 0 ? x < y : op == 1 ? x <= y : op == 2 ? x > y : x >= y;
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
+#ifdef KORB_HAVE_GMP
+    if (KORB_INTEGER_P(l) && KORB_INTEGER_P(r)) {        /* at least one Bignum */
+        int cmp = korb_int_cmp(l, r);
+        bool t = op == 0 ? cmp < 0 : op == 1 ? cmp <= 0 : op == 2 ? cmp > 0 : cmp >= 0;
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
+#endif
     if (KORB_HASH_P(l) && KORB_HASH_P(r)) {              /* subset/superset comparison */
         const KorbHash *me = VAL2HASH(l), *other = VAL2HASH(r);
         bool t;
@@ -2368,6 +2383,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
           case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
           case KORB_OBJ_ARITHSEQ: return KORB_C_ARITHSEQ;
+          case KORB_OBJ_BIGNUM: return KORB_C_INTEGER;
           case KORB_OBJ_SET: return KORB_C_SET;
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
           case KORB_OBJ_METHOD: return KORB_C_METHOD;
@@ -2682,6 +2698,7 @@ korb_fmt_int(intptr_t n, int base, char *buf)
     return len;
 }
 
+#include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
 #include "builtins/string.c"
@@ -3652,6 +3669,13 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
     if (v == KORB_FALSE)       { fputs("false", fp); return; }
     if (SYMBOL_P(v))           { fputs(korb_sym_name(c->vm, SYM2ID(v)), fp); return; }
     switch (KORB_OBJ_TYPE(v)) {
+#ifdef KORB_HAVE_GMP
+      case KORB_OBJ_BIGNUM: {
+        char *s = mpz_get_str(NULL, 10, VAL2BIG(v)->z);   /* GMP-malloc'd */
+        fputs(s, fp); free(s);
+        return;
+      }
+#endif
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
         fwrite(s->buf->data, 1, s->len, fp);

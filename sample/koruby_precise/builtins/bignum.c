@@ -1,0 +1,101 @@
+/* koruby_precise — bignum.c: arbitrary-precision Integer.
+ *
+ * Abstraction layer over GMP (the only backend today); a future hand-rolled
+ * limb-in-GC implementation can replace the body behind the same korb_int_ /
+ * korb_big_ API.  Compiled only when KORB_HAVE_GMP is defined — otherwise the
+ * overflow sites keep raising NotImplementedError (build-time "give up").
+ *
+ * #included into korb_runtime.c's TU. */
+#ifdef KORB_HAVE_GMP
+
+/* Initialise a local temp mpz from a Fixnum / Bignum VALUE.  Caller mpz_clear's
+ * it.  The copy is independent of the GC heap, so it survives later allocs. */
+static void korb_to_mpz(VALUE v, mpz_t out) {
+    if (FIXNUM_P(v)) mpz_init_set_si(out, (long)FIX2LONG(v));
+    else             mpz_init_set(out, VAL2BIG(v)->z);
+}
+/* Normalise an mpz result → Fixnum when it fits, else a fresh Bignum object. */
+static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src) {
+    if (mpz_fits_slong_p(src)) {
+        long v = mpz_get_si(src);
+        if (FIXABLE((intptr_t)v)) return RESULT_OK(LONG2FIX((intptr_t)v));
+    }
+    KorbBignum *b = korb_alloc(c, slots, sizeof(KorbBignum), KORB_OBJ_BIGNUM);   /* may GC; src is local */
+    mpz_init_set(b->z, src);
+    return RESULT_OK((VALUE)b);
+}
+double korb_big_to_d(VALUE v) { return mpz_get_d(VAL2BIG(v)->z); }
+
+/* Integer +,-,*,/,% (op 0..4) over Fixnum/Bignum; result normalised. */
+RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t line) {
+    mpz_t za, zb, zr;
+    korb_to_mpz(a, za); korb_to_mpz(b, zb); mpz_init(zr);
+    bool ok = true;
+    switch (op) {
+      case 0: mpz_add(zr, za, zb); break;
+      case 1: mpz_sub(zr, za, zb); break;
+      case 2: mpz_mul(zr, za, zb); break;
+      case 3: case 4:
+        if (mpz_sgn(zb) == 0) { ok = false; break; }
+        if (op == 3) mpz_fdiv_q(zr, za, zb);    /* Ruby floor division */
+        else         mpz_fdiv_r(zr, za, zb);    /* floored modulo (sign of divisor) */
+        break;
+      default: ok = false; break;
+    }
+    mpz_clear(za); mpz_clear(zb);
+    if (UNLIKELY(!ok)) { mpz_clear(zr); return korb_raise(c, slots, KORB_E_ZERODIV, line, "divided by 0"); }
+    RESULT r = korb_big_from_mpz(c, slots, zr);
+    mpz_clear(zr);
+    return r;
+}
+/* base ** exp (both Integer).  Negative exp → Rational (delegated by caller for
+ * the Fixnum case; here exp>=0 expected — negative falls back to a float-free
+ * Rational via korb_rat_new). */
+RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line) {
+    (void)line;
+    if (FIXNUM_P(expv) && FIX2LONG(expv) < 0) {           /* a ** -n → Rational(1, a**n) */
+        mpz_t zb, zr; korb_to_mpz(base, zb); mpz_init(zr);
+        mpz_pow_ui(zr, zb, (unsigned long)(-FIX2LONG(expv)));
+        mpz_clear(zb);
+        RESULT denr = korb_big_from_mpz(c, slots, zr);     /* a**n (normalised) */
+        mpz_clear(zr);
+        if (FIXNUM_P(denr.value)) return korb_rat_new(c, slots, 1, FIX2LONG(denr.value));
+        return denr;                                       /* huge denom: best-effort (rare) */
+    }
+    unsigned long e;
+    if (FIXNUM_P(expv)) e = (unsigned long)FIX2LONG(expv);
+    else { mpz_t ze; korb_to_mpz(expv, ze); e = mpz_get_ui(ze); mpz_clear(ze); }
+    mpz_t zb, zr; korb_to_mpz(base, zb); mpz_init(zr);
+    mpz_pow_ui(zr, zb, e);
+    mpz_clear(zb);
+    RESULT r = korb_big_from_mpz(c, slots, zr);
+    mpz_clear(zr);
+    return r;
+}
+/* a << n (n>0) / a >> -n.  `amount` may be negative to shift right. */
+RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, intptr_t amount) {
+    mpz_t za, zr; korb_to_mpz(a, za); mpz_init(zr);
+    if (amount >= 0) mpz_mul_2exp(zr, za, (mp_bitcnt_t)amount);
+    else             mpz_fdiv_q_2exp(zr, za, (mp_bitcnt_t)(-amount));
+    mpz_clear(za);
+    RESULT r = korb_big_from_mpz(c, slots, zr);
+    mpz_clear(zr);
+    return r;
+}
+/* compare two Integers (Fixnum/Bignum) → -1 / 0 / 1. */
+int korb_int_cmp(VALUE a, VALUE b) {
+    if (FIXNUM_P(a) && FIXNUM_P(b)) { intptr_t x = FIX2LONG(a), y = FIX2LONG(b); return x < y ? -1 : x > y ? 1 : 0; }
+    mpz_t za, zb; korb_to_mpz(a, za); korb_to_mpz(b, zb);
+    int r = mpz_cmp(za, zb);
+    mpz_clear(za); mpz_clear(zb);
+    return r < 0 ? -1 : r > 0 ? 1 : 0;
+}
+/* unary minus of a Bignum (normalised). */
+RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v) {
+    mpz_t z; korb_to_mpz(v, z); mpz_neg(z, z);
+    RESULT r = korb_big_from_mpz(c, slots, z);
+    mpz_clear(z);
+    return r;
+}
+
+#endif /* KORB_HAVE_GMP */

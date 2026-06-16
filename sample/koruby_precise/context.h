@@ -20,6 +20,9 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>
+#ifdef KORB_HAVE_GMP
+#include <gmp.h>          /* arbitrary-precision Integer backing (KORB_OBJ_BIGNUM) */
+#endif
 #include <string.h>
 #include <stdlib.h>
 
@@ -143,6 +146,7 @@ enum korb_obj_type {
     KORB_OBJ_METHOD      = 16,  /* bound Method: receiver + method id (needs 5-bit tag) */
     KORB_OBJ_FIBER       = 17,  /* stackful coroutine (separate value/C stacks) */
     KORB_OBJ_ARITHSEQ    = 18,  /* Enumerator::ArithmeticSequence (step/% lazy seq) */
+    KORB_OBJ_BIGNUM      = 19,  /* arbitrary-precision Integer (.class is Integer; no GC edges) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -211,6 +215,17 @@ typedef struct KorbArithSeq {
     VALUE ARO_GC_EDGE a0;
     VALUE ARO_GC_EDGE a1;
 } KorbArithSeq;
+
+#ifdef KORB_HAVE_GMP
+/* Arbitrary-precision Integer.  .class reports Integer (CRuby-unified); the mpz
+ * limbs are external malloc — a moving GC copies this struct (limb pointer stays
+ * valid) but does not free limbs of collected bignums (known leak; revisit with
+ * a finalizer or custom limb-in-GC backing). */
+typedef struct KorbBignum {
+    AroObjectHeader head;            /* KORB_OBJ_BIGNUM */
+    mpz_t z;
+} KorbBignum;
+#endif
 
 /* Set: a thin wrapper over an array of unique elements (dedup by korb_value_eq). */
 typedef struct KorbSet {
@@ -368,6 +383,10 @@ typedef struct KorbClass {
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
 #define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
+#define KORB_BIGNUM_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BIGNUM)
+#define VAL2BIG(v)         ((KorbBignum *)(uintptr_t)(v))
+/* any Integer: immediate Fixnum or heap Bignum */
+#define KORB_INTEGER_P(v)  (FIXNUM_P(v) || KORB_BIGNUM_P(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -712,6 +731,11 @@ struct CTX_struct {
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
+      case KORB_OBJ_BIGNUM:                                                  \
+        /* no VALUE edges; mpz limbs are external malloc (copied as a raw    \
+         * pointer when this object moves). */                               \
+        (void)(payload_size);                                                \
+        break;                                                               \
       case KORB_OBJ_OBJECT: {                                                \
         KorbObject *_ob = (KorbObject *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \
