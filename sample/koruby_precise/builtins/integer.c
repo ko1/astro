@@ -8,6 +8,13 @@ static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (UNLIKELY(!FIXABLE(-n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");
     return RESULT_OK(LONG2FIX(-n));
 }
+/* unary minus `-@` — also the dispatch target node_neg deopts to when a basic
+ * op has been redefined (so a redefined Integer#-@ is honored). */
+static RESULT korb_m_int_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; intptr_t n = -SELF_INT;
+    if (UNLIKELY(!FIXABLE(n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");
+    return RESULT_OK(LONG2FIX(n));
+}
 static RESULT korb_m_int_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; intptr_t n = SELF_INT + 1;
     if (UNLIKELY(!FIXABLE(n))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented in M0)");

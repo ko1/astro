@@ -219,13 +219,8 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     else if (KORB_STRING_P(mv)) mid = korb_intern(vm, VAL2STR(mv)->buf->data, VAL2STR(mv)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(mv));
     VALUE sv = VALUE_REF_GET(self);
-    if (KORB_OBJECT_P(sv) && VAL2OBJ(sv)->klass != KORB_NIL && korb_class_find_method(VAL2OBJ(sv)->klass, mid, NULL))
-        return RESULT_OK(KORB_TRUE);
-    if (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS)) {
-        VALUE ov = korb_klass_override_get(vm, sv);
-        if (ov != KORB_NIL && korb_class_find_method(ov, mid, NULL)) return RESULT_OK(KORB_TRUE);
-    }
-    return RESULT_OK(korb_find_cmethod(vm, korb_class_of(sv), mid) != NULL ? KORB_TRUE : KORB_FALSE);
+    (void)vm;
+    return RESULT_OK(korb_responds_to(c, sv, mid) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);

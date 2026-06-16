@@ -721,9 +721,11 @@ static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
 /* Struct.new(*members) — build an anonymous class with attr_accessor per member
  * and the member list recorded (for positional .new).  Symbol or String members;
  * a trailing keyword_init: hash is ignored (minimal). */
+static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_class e);
+
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
-    slots[0] = UNWRAP(korb_class_new(c, slots, 0, KORB_NIL));   /* anon class, super Object */
+    slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
@@ -803,6 +805,18 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
     return KORB_NIL;
 }
 
+/* const-table index of name_sym (UINT32_MAX if absent).  The table is
+ * append-only, so an index captured once stays valid; const_vals[idx] is
+ * GC-forwarded, so reading through it always yields the live object.  Exported
+ * (non-static) so AOT SDs for node_const can call it. */
+uint32_t
+korb_const_index(const struct korb_vm *vm, uint32_t name_sym)
+{
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == name_sym) return i;
+    return UINT32_MAX;
+}
+
 void
 korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 {
@@ -821,25 +835,55 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
     vm->const_cnt++;
 }
 
+/* find mid in k->methods, or append a fresh slot (grows the libc side-array). */
+static struct korb_method *
+korb_class_method_slot(KorbClass *const k, uint32_t mid)
+{
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i].mid == mid) return &k->methods[i];
+    if (k->method_cnt == k->method_capa) {
+        uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
+        k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
+        if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
+        k->method_capa = nc;
+    }
+    struct korb_method *const m = &k->methods[k->method_cnt++];
+    m->mid = mid;
+    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL;
+    return m;
+}
+
+/* A user redefinition of a node-fastpathed basic op on Integer/Float must deopt
+ * the inline arithmetic/compare/eq/neg nodes (which bypass dispatch) to a real
+ * send so the redefinition is honored (CRuby basic-op-redefined semantics).
+ * Only Integer/Float matter — those are the types the fastpaths handle — so we
+ * don't trip the flag for a redef on any other class (doing so broadly would
+ * kill the fastpaths VM-wide; cf. koruby's note on fib regressing ~5×).  The
+ * other operator-ish methods (** << >> & | ^ [] []=) have no node fastpath, so
+ * they already dispatch and honor reopening without a flag. */
+static void
+korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
+{
+    struct korb_vm *const vm = c->vm;
+    if (vm->basic_op_redefined) return;   /* already deopted */
+    if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
+        klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
+    static const char *const ops[] = {
+        "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "-@",
+    };
+    const char *const nm = korb_sym_name(vm, mid);
+    for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
+        if (strcmp(nm, ops[i]) == 0) { vm->basic_op_redefined = true; return; }
+}
+
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                       uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
 {
+    korb_check_basic_op_redef(c, klass, mid);
     KorbClass *const k = VAL2CLASS(klass);
-    struct korb_method *m = NULL;
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i].mid == mid) { m = &k->methods[i]; break; }
-    if (!m) {
-        if (k->method_cnt == k->method_capa) {
-            uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
-            k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
-            if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
-            k->method_capa = nc;
-        }
-        m = &k->methods[k->method_cnt++];
-        m->mid = mid;
-    }
+    struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = KORB_METHOD_ISEQ;
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
@@ -858,19 +902,7 @@ void
 korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer)
 {
     KorbClass *const k = VAL2CLASS(klass);
-    struct korb_method *m = NULL;
-    for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i].mid == mid) { m = &k->methods[i]; break; }
-    if (!m) {
-        if (k->method_cnt == k->method_capa) {
-            uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
-            k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
-            if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
-            k->method_capa = nc;
-        }
-        m = &k->methods[k->method_cnt++];
-        m->mid = mid;
-    }
+    struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = is_writer ? KORB_METHOD_ATTR_W : KORB_METHOD_ATTR_R;
     m->params_cnt = is_writer ? 1 : 0;
     m->attr_ivar = ivar_sym;
@@ -1051,6 +1083,10 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
 {
     if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be a Class (%s given)", korb_type_name(superclass));
+    /* a class with no explicit superclass derives from Object, so its instances'
+     * MRO reaches the universal Object methods (==, freeze, method, ...). */
+    if (superclass == KORB_NIL && !is_module)
+        superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     VALUE cls = korb_const_get(c->vm, name_sym);
     if (!KORB_CLASS_P(cls)) {
         cls = UNWRAP(korb_class_new(c, slots, name_sym, superclass));
@@ -1191,6 +1227,49 @@ korb_class_obj_of(CTX *c, VALUE self)
     return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
 }
 
+/* O(1) class object for a builtin tag enum (see vm->class_obj_idx). */
+static inline VALUE
+korb_builtin_class_obj(const struct korb_vm *vm, enum korb_class e)
+{
+    const uint32_t idx = vm->class_obj_idx[e];
+    return (idx == UINT32_MAX) ? KORB_NIL : vm->const_vals[idx];
+}
+
+/* Starting class object for receiver dispatch of `self` (the head of its MRO).
+ * Unlike korb_class_obj_of this keeps singleton classes (method lookup must see
+ * singleton/extended methods).  Covers user objects, overridden/extended
+ * builtins, exceptions (by etype), and plain builtins (by tag). */
+static VALUE
+korb_dispatch_class(CTX *c, VALUE self)
+{
+    struct korb_vm *const vm = c->vm;
+    if (KORB_OBJECT_P(self)) {
+        const VALUE k = VAL2OBJ(self)->klass;
+        if (k != KORB_NIL) return k;                 /* user instance */
+        /* `main` (klass==nil) falls through to Object */
+    } else if (AROH_IS_GC_OBJECT(self) &&
+               (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)) {
+        const VALUE ov = korb_klass_override_get(vm, self);   /* raw: singleton kept */
+        if (ov != KORB_NIL) return ov;
+    }
+    if (KORB_EXC_P(self)) {
+        const uint32_t et = VAL2EXC(self)->etype;
+        if (et < 16 && vm->exc_name[et]) {
+            const VALUE k = korb_const_get(vm, vm->exc_name[et]);
+            if (KORB_CLASS_P(k)) return k;
+        }
+    }
+    return korb_builtin_class_obj(vm, korb_class_of(self));
+}
+
+/* True if `self` responds to `mid` (own MRO incl. inherited builtins). */
+static bool
+korb_responds_to(CTX *c, VALUE self, uint32_t mid)
+{
+    const VALUE start = korb_dispatch_class(c, self);
+    return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
+}
+
 /* Build the builtin class objects (Object/Integer/String/...) + register
  * constants + fill vm->class_name[].  Run before exception-class init. */
 void
@@ -1206,18 +1285,23 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
     };
-    VALUE objc = KORB_NIL;
+    for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
+    /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
+     * Object from the (GC-rooted) const table each iteration — a raw VALUE held
+     * across korb_class_new's alloc would go stale under moving GC. */
+    const uint32_t object_sym = korb_intern(vm, "Object", 6);
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
         uint32_t name_sym = korb_intern(vm, defs[i].name, strlen(defs[i].name));
-        VALUE cls = korb_class_new(c, slots, name_sym, objc).value;   /* Object first (objc=nil) */
+        VALUE objc = (defs[i].cls == KORB_C_OBJECT) ? KORB_NIL : korb_const_get(vm, object_sym);
+        VALUE cls = korb_class_new(c, slots, name_sym, objc).value;
         korb_const_define(c, name_sym, cls);
         vm->class_name[defs[i].cls] = name_sym;
-        if (defs[i].cls == KORB_C_OBJECT) objc = cls;                 /* rest inherit Object */
+        vm->class_obj_idx[defs[i].cls] = korb_const_index(vm, name_sym);
     }
     vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
-    { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, objc).value); }
+    { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
      * so is_a?/kind_of? report membership (the comparison/iteration methods
@@ -1273,6 +1357,9 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         korb_const_define(c, name_sym, cls);
         if (defs[i].etype >= 0) vm->exc_name[defs[i].etype] = name_sym;
     }
+    /* Exception is the tag's representative class object (receiver dispatch on a
+     * bare exception value; subclass-specific lookups use exc_name[etype]). */
+    vm->class_obj_idx[KORB_C_EXCEPTION] = korb_const_index(vm, korb_intern(vm, "Exception", 9));
 }
 
 /* ---------------------------------------------------------------------------
@@ -1845,8 +1932,49 @@ static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems);
 static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);
-static const struct korb_cmethod *korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid);
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
+
+/* Invoke a resolved method `m` on the staged receiver (send layout: recv at
+ * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
+ * receiver dispatch funnels through one place. */
+static RESULT
+korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
+                     uint32_t line, uint32_t argc, VALUE def_class,
+                     NODE *block, VALUE *def_env, VALUE *captured_self)
+{
+    VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
+    const VALUE self = *recv_slot;
+    switch (m->kind) {
+      case KORB_METHOD_ATTR_R:
+        return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+      case KORB_METHOD_ATTR_W: {
+        if (UNLIKELY(argc != 1))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected 1)", argc);
+        const VALUE v = slots[-(intptr_t)argc];
+        CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(m->attr_ivar), v));
+        return RESULT_OK(slots[-(intptr_t)argc]);
+      }
+      case KORB_METHOD_CFUNC: {
+        if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+        const VALUE_REF recv = VALUE_REF_AT(recv_slot);
+        const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
+        RESULT r = m->uses_block ? m->rbfn(c, slots, recv, args, block, def_env, captured_self)
+                                 : m->rfn(c, slots, recv, args);
+        if (UNLIKELY(r.state == KORB_RAISE)) {
+            KorbException *e = VAL2EXC(r.value);
+            korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+            e->line = line;
+        }
+        return r;
+      }
+      default: /* KORB_METHOD_ISEQ */
+        return korb_invoke_method(c, slots, m, argc, line, mid, self, def_class,
+                                  block, def_env, KORB_CSELF_VAL(captured_self));
+    }
+}
 static RESULT korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
@@ -1857,15 +1985,10 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
     /* implicit-self send / __send__ / public_send → re-dispatch with self as the
      * receiver (korb_send_impl shifts arg0 = the target method name). */
-    if (UNLIKELY(argc >= 1)) {
-        const char *nm = korb_sym_name(vm, mid);
-        if ((nm[0] == 's' && strcmp(nm, "send") == 0) ||
-            (nm[0] == '_' && strcmp(nm, "__send__") == 0) ||
-            (nm[0] == 'p' && strcmp(nm, "public_send") == 0)) {
-            for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
-            slots[0] = self;                            /* recv below the args */
-            return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
-        }
+    if (UNLIKELY(argc >= 1 && (mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))) {
+        for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+        slots[0] = self;                            /* recv below the args */
+        return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
     }
 
     /* implicit self-call on a user instance → dispatch through its class chain
@@ -1885,24 +2008,23 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
+            if (um->kind == KORB_METHOD_ISEQ)
+                return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
+            /* CFUNC (inherited builtin, e.g. implicit `freeze`) → re-dispatch as send */
+            for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+            slots[0] = self;
+            return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
         }
     }
 
-    /* implicit self-call where self is a builtin (or overridden builtin), e.g.
-     * `upcase` inside a String-subclass method = `self.upcase`.  Resolve as a
-     * method on self (override chain, then tag cmethod); if found, re-dispatch as
-     * a send (stage recv at slots[0], args above it).  Only if NOT found as a
-     * method do we fall through to the global table (p/puts/top-level defs).
-     * `main` (klass=nil KorbObject) is excluded so top-level keeps using globals. */
+    /* implicit self-call where self is a builtin / overridden builtin / class,
+     * e.g. `upcase` inside a String-subclass method = `self.upcase`.  If self
+     * responds to mid via its class-object MRO, re-dispatch as a send (recv at
+     * slots[0], args above).  Otherwise fall through to the global function
+     * table (p/puts/top-level defs).  `main` (klass=nil) is excluded so
+     * top-level keeps using globals. */
     if (AROH_IS_GC_OBJECT(self) && !(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)) {
-        bool found = false;
-        if (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS) {
-            VALUE ov = korb_klass_override_get(vm, self);
-            if (ov != KORB_NIL && korb_class_find_method(ov, mid, NULL) != NULL) found = true;
-        }
-        if (!found && korb_find_cmethod(vm, korb_class_of(self), mid) != NULL) found = true;
-        if (found) {
+        if (korb_responds_to(c, self, mid)) {
             for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
             slots[0] = self;                            /* recv below the args */
             return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
@@ -2095,43 +2217,51 @@ korb_class_name(enum korb_class cls)
     }
 }
 
+/* Register a builtin (C) method as an ordinary KORB_METHOD_CFUNC entry on the
+ * tag's class object, so it lives in the same MRO that user reopens / subclasses
+ * extend — one dispatch path, drop-in reopen semantics.  Run at init, before any
+ * user code or dispatch-cache fill. */
+/* Get a fresh CFUNC slot for `name` on tag `cls`'s class object, or NULL if a
+ * method of that name is already registered.  First registration wins — the old
+ * flat cmethod table was scanned front-to-back, so a duplicate def was shadowed
+ * by the earlier one; keep that exact semantics (a few intentional shadow pairs
+ * rely on it). */
+static struct korb_method *
+korb_cmethod_slot(struct korb_vm *vm, enum korb_class cls, const char *name)
+{
+    const uint32_t mid = korb_intern(vm, name, strlen(name));
+    KorbClass *const k = VAL2CLASS(korb_builtin_class_obj(vm, cls));
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i].mid == mid) return NULL;   /* earlier registration wins */
+    return korb_class_method_slot(k, mid);
+}
+
 void
 korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
                  korb_method_fn fn, int32_t arity)
 {
-    struct korb_vm *const vm = c->vm;
-    uint32_t mid = korb_intern(vm, name, strlen(name));
-    if (vm->cmethod_cnt[cls] == vm->cmethod_capa[cls]) {
-        uint32_t nc = vm->cmethod_capa[cls] ? vm->cmethod_capa[cls] * 2 : 16;
-        vm->cmethods[cls] = realloc(vm->cmethods[cls], sizeof(*vm->cmethods[cls]) * nc);
-        if (!vm->cmethods[cls]) { fprintf(stderr, "koruby_precise: oom (cmethods)\n"); abort(); }
-        vm->cmethod_capa[cls] = nc;
-    }
-    struct korb_cmethod *m = &vm->cmethods[cls][vm->cmethod_cnt[cls]++];
-    m->mid = mid; m->fn = fn; m->bfn = NULL; m->arity = arity; m->takes_block = 0;
+    struct korb_method *const m = korb_cmethod_slot(c->vm, cls, name);
+    if (!m) return;
+    m->kind = KORB_METHOD_CFUNC;
+    m->uses_block = 0;                  /* takes_block */
+    m->params_cnt = arity;
+    m->rfn = fn;
+    m->rbfn = NULL;
+    m->body = NULL;
 }
 
 void
 korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
                      korb_method_blk_fn fn, int32_t arity)
 {
-    korb_def_cmethod(c, cls, name, NULL, arity);             /* grows + fills common fields */
-    struct korb_vm *const vm = c->vm;
-    struct korb_cmethod *m = &vm->cmethods[cls][vm->cmethod_cnt[cls] - 1];
-    m->bfn = fn; m->takes_block = 1;
-}
-
-static const struct korb_cmethod *
-korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid)
-{
-    for (uint32_t i = 0; i < vm->cmethod_cnt[cls]; i++)
-        if (vm->cmethods[cls][i].mid == mid) return &vm->cmethods[cls][i];
-    /* fall back to the universal (Object) table */
-    if (cls != KORB_C_OBJECT) {
-        for (uint32_t i = 0; i < vm->cmethod_cnt[KORB_C_OBJECT]; i++)
-            if (vm->cmethods[KORB_C_OBJECT][i].mid == mid) return &vm->cmethods[KORB_C_OBJECT][i];
-    }
-    return NULL;
+    struct korb_method *const m = korb_cmethod_slot(c->vm, cls, name);
+    if (!m) return;
+    m->kind = KORB_METHOD_CFUNC;
+    m->uses_block = 1;                  /* takes_block */
+    m->params_cnt = arity;
+    m->rfn = NULL;
+    m->rbfn = fn;
+    m->body = NULL;
 }
 
 /* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;
@@ -2147,11 +2277,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 
     /* send / __send__ / public_send: redispatch by the symbol/string name in arg0.
      * Shift recv into arg0's slot so [recv | arg1..] forms an argc-1 call. */
-    if (UNLIKELY(argc >= 1)) {
-        const char *nm = korb_sym_name(vm, mid);
-        if ((nm[0] == 's' && strcmp(nm, "send") == 0) ||
-            (nm[0] == '_' && strcmp(nm, "__send__") == 0) ||
-            (nm[0] == 'p' && strcmp(nm, "public_send") == 0)) {
+    if (UNLIKELY(argc >= 1 && (mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))) {
+        {
             VALUE name = slots[-(intptr_t)argc];           /* arg0 */
             uint32_t rmid;
             if (SYMBOL_P(name)) rmid = SYM2ID(name);
@@ -2166,26 +2293,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
         struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
-        if (um) {
-            if (um->kind == KORB_METHOD_ATTR_R)
-                return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
-            if (um->kind == KORB_METHOD_ATTR_W) {
-                if (UNLIKELY(argc != 1))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                                      "wrong number of arguments (given %u, expected 1)", argc);
-                VALUE v = slots[-(intptr_t)argc];      /* arg0 (returned by writer) */
-                CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
-                return RESULT_OK(slots[-(intptr_t)argc]);
-            }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
-        }
+        if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self);
     }
     /* class receiver → Klass.new (allocate + initialize). */
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == korb_intern(vm, "Fiber", 5) &&
-             strcmp(korb_sym_name(vm, mid), "yield") == 0) {
+    else if (KORB_CLASS_P(self) && mid == vm->mid_yield && VAL2CLASS(self)->name_sym == vm->name_fiber) {
         return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
     }
-    else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
+    else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == korb_intern(vm, "Fiber", 5))
             return korb_fiber_new(c, slots, block, def_env, captured_self);
@@ -2297,53 +2411,21 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(obj);
     }
 
-    /* per-instance class override on a builtin (subclass instance / extended /
-     * singleton method): try the override class's chain first; a miss falls
-     * through to the builtin tag dispatch below (inherited builtin methods). */
-    if (UNLIKELY(AROH_IS_GC_OBJECT(self) &&
-                 (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS))) {
-        VALUE ov = korb_klass_override_get(vm, self);
-        if (ov != KORB_NIL) {
-            VALUE def_class = KORB_NIL;
-            struct korb_method *um = korb_class_find_method(ov, mid, &def_class);
-            if (um) {
-                if (um->kind == KORB_METHOD_ATTR_R)
-                    return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
-                if (um->kind == KORB_METHOD_ATTR_W) {
-                    if (UNLIKELY(argc != 1))
-                        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 1)", argc);
-                    VALUE v = slots[-(intptr_t)argc];
-                    CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
-                    return RESULT_OK(slots[-(intptr_t)argc]);
-                }
-                return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
-            }
-        }
-    }
-
-    enum korb_class cls = korb_class_of(self);
-    const struct korb_cmethod *m = korb_find_cmethod(vm, cls, mid);
+    /* Unified receiver dispatch for builtins, overridden/extended builtins,
+     * exceptions and `main`: resolve `mid` through the receiver's class-object
+     * MRO (which holds the native builtin methods as CFUNC entries, plus any
+     * reopened/redefined user methods and included modules) via the method
+     * cache, then invoke.  One path → drop-in reopen semantics. */
+    const VALUE start_cls = korb_dispatch_class(c, self);
+    VALUE def_class = KORB_NIL;
+    struct korb_method *const m =
+        KORB_CLASS_P(start_cls) ? korb_mcache_find(vm, start_cls, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL)) {
-        /* no builtin method, but an override class (subclass/extend) may still
-         * define it via a module not on the tag's table — already tried above. */
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "undefined method '%s' for %s",
                           korb_sym_name(vm, mid), korb_a_type_name(self));
     }
-    if (UNLIKELY(m->arity >= 0 && (uint32_t)m->arity != argc)) {
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)", argc, m->arity);
-    }
-    const VALUE_REF recv = VALUE_REF_AT(recv_slot);
-    const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
-    RESULT r = m->takes_block ? m->bfn(c, slots, recv, args, block, def_env, captured_self)
-                              : m->fn(c, slots, recv, args);
-    if (UNLIKELY(r.state == KORB_RAISE)) {
-        KorbException *e = VAL2EXC(r.value);
-        korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
-        e->line = line;
-    }
-    return r;
+    return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self);
 }
 
 RESULT
@@ -2397,6 +2479,7 @@ korb_register_core_methods(CTX *c)
 {
     /* Integer */
     korb_def_cmethod(c, KORB_C_INTEGER, "abs", korb_m_int_abs, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "-@", korb_m_int_uminus, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "magnitude", korb_m_int_abs, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "succ", korb_m_int_succ, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "next", korb_m_int_succ, 0);
@@ -3002,6 +3085,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "abs2", korb_m_flt_abs2, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "**", korb_m_flt_pow, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "-@", korb_m_flt_uminus, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "pow", korb_m_flt_pow, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "angle", korb_m_flt_angle, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "arg", korb_m_flt_angle, 0);
@@ -3733,7 +3817,19 @@ korb_ctx_new(void)
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
     korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 
+    /* Builtin class objects must exist before core methods are registered onto
+     * them (korb_def_cmethod attaches CFUNC entries to the class objects). */
+    korb_init_builtin_classes(c, c->slots);
+    korb_init_exception_classes(c, c->slots);
     korb_register_core_methods(c);
+
+    /* resolve dispatch-hot method names once (see struct korb_vm). */
+    c->vm->mid_send        = korb_intern(c->vm, "send", 4);
+    c->vm->mid___send__    = korb_intern(c->vm, "__send__", 8);
+    c->vm->mid_public_send = korb_intern(c->vm, "public_send", 11);
+    c->vm->mid_new         = korb_intern(c->vm, "new", 3);
+    c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
+    c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
 
     return c;
 }

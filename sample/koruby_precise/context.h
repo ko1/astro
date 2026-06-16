@@ -362,9 +362,10 @@ struct Node;
 
 enum korb_method_kind {
     KORB_METHOD_ISEQ = 0,
-    KORB_METHOD_BUILTIN = 1,
+    KORB_METHOD_BUILTIN = 1,  /* global C fn (puts/p/...): bfn(c, slots, args), no self */
     KORB_METHOD_ATTR_R = 2,   /* attr reader: return @ivar */
     KORB_METHOD_ATTR_W = 3,   /* attr writer: @ivar = arg0 */
+    KORB_METHOD_CFUNC = 4,    /* receiver-dispatch C method (Array#push, ...): rfn/rbfn with self ref */
 };
 
 struct CTX_struct;
@@ -407,7 +408,11 @@ struct korb_method {
     struct Node *body;       /* ISEQ */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
-    korb_builtin_fn bfn;     /* BUILTIN */
+    korb_builtin_fn bfn;     /* BUILTIN (global C fn) */
+    /* CFUNC (receiver-dispatch builtin): arity in params_cnt (-1 = variadic),
+     * takes_block in uses_block.  rbfn used when uses_block, else rfn. */
+    korb_method_fn     rfn;
+    korb_method_blk_fn rbfn;
 };
 
 struct korb_bt_entry {       /* one unwind frame for the uncaught-exception report */
@@ -424,6 +429,10 @@ struct korb_vm {
     struct korb_method *methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
+     * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
+     * so the redefinition is honored (CRuby basic-op-redefined semantics). */
+    bool basic_op_redefined;
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
      * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS. */
@@ -452,6 +461,10 @@ struct korb_vm {
     uint32_t  exc_name[16];
     /* korb_class enum → builtin class constant name (Integer/String/...). */
     uint32_t  class_name[KORB_NCLASS];
+    /* korb_class enum → const-table index of its class object (append-only table,
+     * so the index is stable; const_vals[idx] is forwarded by GC).  O(1) access
+     * to a builtin's class object for receiver dispatch. */
+    uint32_t  class_obj_idx[KORB_NCLASS];
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
@@ -486,6 +499,12 @@ struct korb_vm {
     /* object shape table (ivar-layout tree).  shapes[0]=unused, shapes[1]=root. */
     struct korb_shape *shapes;
     uint32_t shape_cnt, shape_capa;
+
+    /* interned ids of dispatch-hot method names, resolved once at init so the
+     * send path tests them with integer compares instead of korb_sym_name+strcmp
+     * on every call (send/__send__/public_send check ran for every arg call). */
+    uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield;
+    uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
 
     const char *script_name; /* for error messages */
 };

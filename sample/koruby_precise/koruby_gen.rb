@@ -268,7 +268,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       def hash_call(val, kind: :horg)
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *'
           '0'   # mutable runtime cache — not part of structure
         when 'uint32_t'
           # `line` is diagnostic metadata (raise-site line number); the SD
@@ -282,7 +282,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       def build_dumper(name)
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *'
           "        fprintf(fp, \"<cc>\");"
         else
           super
@@ -299,7 +299,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           return cn, arg
         end
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *'
           # @ref operand stored inline in the union; pass its address.
           return nil, "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
         when 'const char *'

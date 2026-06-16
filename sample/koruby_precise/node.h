@@ -60,6 +60,14 @@ struct korb_ivcache {
     int32_t  slot;       /* ivar index in the values array */
 };
 
+/* Inline constant cache — embedded in const-read nodes via @ref.  The VM const
+ * table is append-only, so a name's index is permanent once assigned; we cache
+ * idx+1 (0 = empty) and never need to revalidate (const_vals[idx] is re-derived
+ * each read, so reassignment and GC-forwarding are both seen). */
+struct korb_constcache {
+    uint32_t idx_plus1;
+};
+
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
  * ALLOC_* declarations. */
 #include "node_head.h"
@@ -112,6 +120,7 @@ RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VA
 RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
+uint32_t korb_const_index(const struct korb_vm *vm, uint32_t name_sym);  /* UINT32_MAX if absent */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,

@@ -3,6 +3,8 @@
 /* ---- Float methods ------------------------------------------------------- */
 static RESULT korb_m_flt_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_flt_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_to_rat(c, slots, SELF_FLT); }
+/* unary minus `-@` (also node_neg's deopt target under basic-op redefinition). */
+static RESULT korb_m_flt_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, -SELF_FLT); }
 /* Float#rationalize(eps=nil): simplest rational within eps (or within the
  * float's own rounding interval if no eps) of self. */
 static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

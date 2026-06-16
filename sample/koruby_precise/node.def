@@ -193,6 +193,7 @@ NODE_DEF
 node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t s;
@@ -207,6 +208,7 @@ NODE_DEF
 node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t s;
@@ -227,6 +229,7 @@ NODE_DEF
 node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t p;
@@ -242,6 +245,7 @@ NODE_DEF
 node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
@@ -264,6 +268,7 @@ NODE_DEF
 node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
@@ -285,6 +290,7 @@ NODE_DEF
 node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), line, 0); }
     if (LIKELY(FIXNUM_P(v))) {
         intptr_t i = -FIX2LONG(v);
         if (LIKELY(FIXABLE(i)))
@@ -302,6 +308,7 @@ NODE_DEF
 node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l < (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
@@ -312,6 +319,7 @@ NODE_DEF
 node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l <= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
@@ -322,6 +330,7 @@ NODE_DEF
 node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l > (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
@@ -332,24 +341,29 @@ NODE_DEF
 node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
     (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l >= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 3, line);
 }
 
-// == / != never raise in M0 (immediate identity / String content compare).
-NODE_DEF @nogc
+// == / != : immediate identity / String content compare by default.  When a
+// basic op has been redefined on Integer/Float, deopt to a real send so a
+// redefined #== / #!= runs (not @nogc: the send may allocate / GC).
+NODE_DEF
 node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
 {
-    (void)c; (void)n;
+    (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1); }
     return RESULT_OK(korb_value_eq(VALUE_REF_GET(lhs), rhs) ? KORB_TRUE : KORB_FALSE);
 }
 
-NODE_DEF @nogc
+NODE_DEF
 node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
 {
-    (void)c; (void)n;
+    (void)n;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1); }
     return RESULT_OK(korb_value_eq(VALUE_REF_GET(lhs), rhs) ? KORB_FALSE : KORB_TRUE);
 }
 
@@ -550,15 +564,21 @@ node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t 
     return korb_super(c, slots, mid, line, 3, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
 }
 
-// constant read (`Foo`) — classes only for now.
+// constant read (`Foo`) — classes only for now.  Inline cache: the const table
+// is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
+// re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
 NODE_DEF
-node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym)
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, struct korb_constcache *cache@ref)
 {
     (void)n;
-    VALUE v = korb_const_get(c->vm, name_sym);
-    if (UNLIKELY(v == KORB_NIL))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(c->vm, name_sym));
-    return RESULT_OK(v);
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(cache->idx_plus1 != 0))
+        return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+    const uint32_t idx = korb_const_index(vm, name_sym);
+    if (UNLIKELY(idx == UINT32_MAX || vm->const_vals[idx] == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
+    cache->idx_plus1 = idx + 1;
+    return RESULT_OK(vm->const_vals[idx]);
 }
 
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
