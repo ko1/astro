@@ -18,12 +18,12 @@
 #include <ctype.h>
 
 #include "node.h"
+#include "korb_runtime.h"
 #include "precise_gc/gc.h"
 
 /* Frame-push headroom: covers in-frame expression staging without a per-node
  * check.  Deeper-than-slack staging without an intervening call lands on the
  * guard page (the designed last-resort backstop, v2_design §3.5). */
-#define KORB_FRAME_SLACK 1024
 
 /* ---------------------------------------------------------------------------
  * Allocation — publish + alloc (v2_design §3.3).
@@ -163,7 +163,6 @@ static int korb_rat_cmp(VALUE l, VALUE r) {
     if (korb_num_to_d(l, &x) && korb_num_to_d(r, &y)) return (x > y) - (x < y);
     return 2;
 }
-#define SELF_RAT VAL2RAT(VALUE_REF_GET(self))
 static RESULT korb_m_rat_num(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->num)); }
 static RESULT korb_m_rat_den(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->den)); }
 static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, (double)SELF_RAT->num / (double)SELF_RAT->den); }
@@ -177,7 +176,6 @@ static RESULT korb_m_rat_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_rat_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
 static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r)); }
 static RESULT korb_m_rat_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 0 ? KORB_TRUE : KORB_FALSE); }
-#undef SELF_RAT
 
 static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 
@@ -191,7 +189,6 @@ korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im)
     ARO_STORE(c, x, (VALUE *)(uintptr_t)&x->im, slots[1]);
     return RESULT_OK((VALUE)x);
 }
-#define SELF_CPX VAL2CPX(VALUE_REF_GET(self))
 static RESULT korb_m_cpx_real(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->re); }
 static RESULT korb_m_cpx_imag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_CPX->im); }
 static RESULT korb_m_cpx_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -230,7 +227,6 @@ static RESULT korb_m_cpx_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     bool im_zero = korb_num_to_d(x->im, &im) && im == 0.0;
     return RESULT_OK((im_zero && korb_value_eq(x->re, o)) ? KORB_TRUE : KORB_FALSE);
 }
-#undef SELF_CPX
 static RESULT korb_m_int_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_cpx_new(c, slots, LONG2FIX(0), VALUE_REF_GET(self)); }
 static RESULT korb_m_num_conj_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
@@ -2164,7 +2160,6 @@ korb_fmt_int(intptr_t n, int base, char *buf)
 
 /* ---- Integer methods ----------------------------------------------------- */
 
-#define SELF_INT  FIX2LONG(VALUE_REF_GET(self))
 static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; intptr_t n = SELF_INT;
     if (n >= 0) return RESULT_OK(VALUE_REF_GET(self));
@@ -2288,11 +2283,6 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 
 /* floored float modulo (sign follows divisor) — for Integer op Float. */
-static double korb_float_fmod(double s, double f) {
-    double r = fmod(s, f);
-    if (r != 0.0 && ((r < 0) != (f < 0))) r += f;
-    return r;
-}
 static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
@@ -2507,7 +2497,6 @@ static bool korb_flt_simplest_roundtrip(double f, int64_t *restrict pn, int64_t 
     return false;
 }
 /* ---- Float methods ------------------------------------------------------- */
-#define SELF_FLT (VAL2FLT(VALUE_REF_GET(self))->val)
 static RESULT korb_m_flt_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_flt_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_flt_to_rat(c, slots, SELF_FLT); }
 /* Float#rationalize(eps=nil): simplest rational within eps (or within the
@@ -2625,7 +2614,6 @@ static RESULT korb_m_flt_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-#undef SELF_FLT
 
 /* Comparable#between?(min, max): short-circuits like CRuby — compare to min
  * first, return false if self < min before ever touching max (so a bad max with
@@ -2721,7 +2709,6 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* ---- String methods ------------------------------------------------------ */
 
-#define SELF_STR  VAL2STR(VALUE_REF_GET(self))
 static RESULT korb_m_str_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_STR->len)); }
 static RESULT korb_m_str_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_STR->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
@@ -3744,7 +3731,6 @@ static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth)
     free(buf);
     return r;
 }
-#define SELF_ENUM VAL2ENUM(VALUE_REF_GET(self))
 static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ENUM->values); }
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_ENUM->values)->len)); }
 static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -3862,7 +3848,6 @@ static VALUE korb_set_elems_of(VALUE v) {
     if (KORB_ARRAY_P(v)) return v;
     return KORB_NIL;
 }
-#define SELF_SET VAL2SET(VALUE_REF_GET(self))
 static RESULT korb_m_set_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_SET->elems); }
 static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_SET->elems)->len)); }
 static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
@@ -3969,12 +3954,6 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
 static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself);
-#define KORB_SET_DELEG_BLK(name, target) \
-    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { \
-        slots[0] = SELF_SET->elems; return target(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself); }
-#define KORB_SET_DELEG(name, target) \
-    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
-        slots[0] = SELF_SET->elems; return target(c, slots + 1, VALUE_REF_AT(&slots[0]), a); }
 KORB_SET_DELEG_BLK(korb_m_set_map, korb_m_ary_map)
 KORB_SET_DELEG_BLK(korb_m_set_select, korb_m_ary_select)
 KORB_SET_DELEG_BLK(korb_m_set_reject, korb_m_ary_reject)
@@ -4148,7 +4127,6 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 /* ---- Array methods ------------------------------------------------------- */
 
-#define SELF_ARY  VAL2ARY(VALUE_REF_GET(self))
 static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
 static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -4394,13 +4372,8 @@ static RESULT korb_m_str_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_str_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_plus_slow(c, slots, self, VALUE_SLICE_GET(a, 0), 0);  /* String + String → concat */
 }
-#undef SELF_ARY
 
 /* ---- yielding methods (drive a block) ------------------------------------ */
-
-#define REQUIRE_BLOCK(what) \
-    do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
-        what " without a block (Enumerator) is not supported"); } while (0)
 
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
@@ -4615,7 +4588,6 @@ static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* ---- Hash methods -------------------------------------------------------- */
 
-#define SELF_HASH  VAL2HASH(VALUE_REF_GET(self))
 static RESULT korb_m_hash_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
 static RESULT korb_m_hash_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_hash_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
@@ -4838,15 +4810,9 @@ static RESULT korb_m_hash_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_hash_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 1); }
 static RESULT korb_m_hash_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 2); }
 static RESULT korb_m_hash_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_cmp_op(c, slots, self, a, 3); }
-#undef SELF_HASH
-#undef REQUIRE_BLOCK
 
 /* ---- Array enumerable / aggregate methods -------------------------------- */
 
-#define SELF_ARY  VAL2ARY(VALUE_REF_GET(self))
-#define ARY_REQUIRE_BLOCK(what) \
-    do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
-        what " without a block (Enumerator) is not supported"); } while (0)
 
 static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: first truthy-yield index */
@@ -5828,12 +5794,9 @@ static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, 
     }
     return RESULT_OK(slots[0]);
 }
-#undef ARY_REQUIRE_BLOCK
-#undef SELF_ARY
 
 /* ---- Range methods ------------------------------------------------------- */
 
-#define SELF_RANGE  VAL2RANGE(VALUE_REF_GET(self))
 
 /* integer iteration bounds [lo, hi) ; false if endpoints aren't both Integer */
 static bool korb_range_int_bounds(const KorbRange *r, intptr_t *lo, intptr_t *hi) {
@@ -6493,7 +6456,6 @@ static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
-#undef SELF_RANGE
 
 /* ---- more Array (query/mutate) + Integer (bit) methods ------------------- */
 
