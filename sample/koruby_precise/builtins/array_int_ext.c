@@ -333,6 +333,55 @@ static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self,
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Build a key-transformed copy of self into a fresh hash (returned).  An optional
+ * Hash arg renames listed keys; remaining keys go through the block; with neither
+ * the key is kept.  Later collisions overwrite (last wins). */
+static RESULT korb_hash_xform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    const VALUE mapv = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (mapv != KORB_NIL && !KORB_HASH_P(mapv))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Hash)", korb_type_name(mapv));
+    if (UNLIKELY(mapv == KORB_NIL && block == NULL))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#transform_keys without a block is not supported");
+    slots[0] = mapv;                                           /* root the rename map BEFORE any alloc moves it */
+    slots[1] = UNWRAP(korb_hash_new(c, slots + 1, VAL2HASH(VALUE_REF_GET(self))->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[2] = h->items->data[2 * i];                      /* old key */
+        slots[3] = h->items->data[2 * i + 1];                  /* value */
+        slots[4] = slots[2];                                   /* new key (default = old) */
+        bool mapped = false;
+        if (slots[0] != KORB_NIL) {
+            int32_t j = korb_hash_find(VAL2HASH(slots[0]), slots[2]);
+            if (j >= 0) { slots[4] = VAL2HASH(slots[0])->items->data[2 * j + 1]; mapped = true; }
+        }
+        if (!mapped && block != NULL) {
+            RESULT r = korb_block_yield(c, slots + 5, block, def_env, &slots[2], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[4] = r.value;
+        }
+        CHECK(korb_hash_set(c, slots + 5, dst, VALUE_REF_AT(&slots[4]), slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_hash_transform_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_hash_xform_keys(c, slots, self, a, block, def_env, cself);
+}
+/* transform_keys! — rebuild into a temp, then replace self's contents. */
+static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    slots[0] = UNWRAP(korb_hash_xform_keys(c, slots + 1, self, a, block, def_env, cself));   /* result rooted at slots[0] */
+    VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    VAL2HASH(VALUE_REF_GET(self))->len = 0;                     /* clear self (payload kept) */
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *r = VAL2HASH(VALUE_REF_GET(res));
+        if (i >= r->len) break;
+        slots[1] = r->items->data[2 * i];                      /* key */
+        VALUE val = VAL2HASH(VALUE_REF_GET(res))->items->data[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 2, self, VALUE_REF_AT(&slots[1]), val));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */

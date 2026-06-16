@@ -3123,6 +3123,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
     korb_def_cmethod(c, KORB_C_HASH, "minmax", korb_m_hash_minmax, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "transform_values", korb_m_hash_transform_values, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "transform_keys", korb_m_hash_transform_keys, -1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "transform_keys!", korb_m_hash_transform_keys_b, -1);
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc=", korb_m_hash_default_proc_set, 1);
