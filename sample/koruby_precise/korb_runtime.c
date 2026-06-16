@@ -849,7 +849,7 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
     }
     struct korb_method *const m = &k->methods[k->method_cnt++];
     m->mid = mid;
-    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL;
+    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0;
     return m;
 }
 
@@ -895,6 +895,9 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
     m->bfn = NULL;
+    /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
+    m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
+                    req_cnt == params_cnt && !uses_block);
     c->vm->method_serial++;
 }
 
@@ -1073,6 +1076,37 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     else if (UNLIKELY(r.state == KORB_RAISE)) {
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
+        e->line = line;
+    }
+    return r;
+}
+
+/* Streamlined ISEQ invoke for is_simple methods (fixed positional arity, no
+ * rest/opt/post/kw/block) — none of the generic argument machinery, fewer
+ * params.  Caller guarantees m->is_simple.  always_inline so it folds into the
+ * dispatch site (removes a call layer on the hot path). */
+static inline __attribute__((always_inline)) RESULT
+korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
+                   uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
+{
+    if (UNLIKELY(argc != (uint32_t)m->params_cnt))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+    VALUE *const base = slots - argc;
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    if (locals_cnt > argc) memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));
+    base[locals_cnt - 1] = self;
+    base[locals_cnt - 2] = def_class;        /* def_class for `super`; nil for global/simple */
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) r.state = KORB_NORMAL;
+    else if (UNLIKELY(r.state == KORB_RAISE)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;
     }
     return r;
@@ -1796,6 +1830,8 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
     m->bfn = NULL;
+    m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
+                    req_cnt == params_cnt && !uses_block);
     c->vm->method_serial++;   /* invalidate call caches */
 }
 
@@ -1971,6 +2007,8 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         return r;
       }
       default: /* KORB_METHOD_ISEQ */
+        if (LIKELY(m->is_simple))
+            return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
         return korb_invoke_method(c, slots, m, argc, line, mid, self, def_class,
                                   block, def_env, KORB_CSELF_VAL(captured_self));
     }
@@ -2008,8 +2046,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            if (um->kind == KORB_METHOD_ISEQ)
+            if (um->kind == KORB_METHOD_ISEQ) {
+                if (LIKELY(um->is_simple))
+                    return korb_invoke_simple(c, slots, um, argc, line, mid, self, def_class);
                 return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
+            }
             /* CFUNC (inherited builtin, e.g. implicit `freeze`) → re-dispatch as send */
             for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
             slots[0] = self;
@@ -2067,6 +2108,8 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     }
 
     /* ISEQ global function: no defining class (super in a global fn has none). */
+    if (LIKELY(m->is_simple))
+        return korb_invoke_simple(c, slots, m, argc, line, mid, self, KORB_NIL);
     return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
                               block, def_env, KORB_CSELF_VAL(captured_self));
 }

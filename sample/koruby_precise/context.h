@@ -399,6 +399,8 @@ struct korb_method {
     uint32_t mid;            /* interned name */
     uint8_t  kind;           /* enum korb_method_kind */
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
+    uint8_t  is_simple;      /* ISEQ: fixed positional arity, no rest/opt/post/kw/block —
+                              * eligible for the streamlined korb_invoke_simple path. */
     int32_t  params_cnt;     /* total positional (req+opt); -1 = variadic (builtins only) */
     uint32_t req_cnt;        /* ISEQ: required positional count (== params_cnt if no opts) */
     uint32_t post_cnt;       /* ISEQ: post (after-rest) required params; slots at rest_slot+1.. */
