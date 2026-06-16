@@ -424,6 +424,21 @@ static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self,
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* transform_values! — replace each value in place with block(value); keys unchanged. */
+static RESULT korb_m_hash_transform_values_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#transform_values! without a block is not supported");
+    for (uint32_t i = 0; ; i++) {
+        KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[0] = h->items->data[2 * i + 1];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        h = VAL2HASH(VALUE_REF_GET(self));                 /* re-read after yield */
+        ARO_STORE(c, h->items, &h->items->data[2 * i + 1], r.value);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */

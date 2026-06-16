@@ -3129,6 +3129,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">", korb_m_hash_gt, 1);
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "to_hash", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "entries", korb_m_hash_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_entry", korb_m_hash_each, 0);
@@ -3157,6 +3158,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "compact", korb_m_hash_compact, 0);
     korb_def_cmethod(c, KORB_C_HASH, "minmax", korb_m_hash_minmax, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "transform_values", korb_m_hash_transform_values, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "transform_values!", korb_m_hash_transform_values_b, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "transform_keys", korb_m_hash_transform_keys, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "transform_keys!", korb_m_hash_transform_keys_b, -1);
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
