@@ -1047,6 +1047,28 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         if (defs[i].cls == KORB_C_OBJECT) objc = cls;                 /* rest inherit Object */
     }
     vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
+
+    /* Comparable / Enumerable as builtin modules, mixed into the relevant types
+     * so is_a?/kind_of? report membership (the comparison/iteration methods
+     * already exist natively on those types). */
+    uint32_t comp_sym = korb_intern(vm, "Comparable", 10);
+    korb_const_define(c, comp_sym, KORB_NIL);                     /* reserve a const slot (rooted) */
+    { VALUE comp = korb_class_new(c, slots, comp_sym, KORB_NIL).value; VAL2CLASS(comp)->is_module = 1; korb_const_define(c, comp_sym, comp); }
+    uint32_t enum_sym = korb_intern(vm, "Enumerable", 10);
+    korb_const_define(c, enum_sym, KORB_NIL);
+    { VALUE enm = korb_class_new(c, slots, enum_sym, KORB_NIL).value; VAL2CLASS(enm)->is_module = 1; korb_const_define(c, enum_sym, enm); }
+    static const int comp_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_RATIONAL };
+    for (size_t i = 0; i < sizeof(comp_in)/sizeof(comp_in[0]); i++) {
+        slots[0] = korb_const_get(vm, comp_sym);
+        VALUE k = korb_const_get(vm, vm->class_name[comp_in[i]]);
+        (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
+    }
+    static const int enum_in[] = { KORB_C_ARRAY, KORB_C_HASH, KORB_C_RANGE, KORB_C_SET, KORB_C_ENUMERATOR };
+    for (size_t i = 0; i < sizeof(enum_in)/sizeof(enum_in[0]); i++) {
+        slots[0] = korb_const_get(vm, enum_sym);
+        VALUE k = korb_const_get(vm, vm->class_name[enum_in[i]]);
+        (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
+    }
 }
 
 /* Build the builtin Exception class hierarchy + register constants.  `slots` is
