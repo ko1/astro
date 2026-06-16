@@ -43,7 +43,37 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
     # slot_count = staged (VALUE_REF) children + $tmp slots.  Register
     # children are excluded — they never touch the slot area.
+    def children_op = @operands.find(&:children?)
+
+    # Same as the base, but the operand-name suffix set also accepts @children
+    # (placed before @child so it wins the alternation on "@children").
+    def parse_operands(str)
+      suffix_re = /(?:@ref|@children|@child)?/
+      owner = self
+      @operands = str.split(',').tap do
+        @prefix_args = it.shift(common_param_count)
+      end.map do
+        case it.strip
+        when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*#{suffix_re.source})$/
+          op = self.class::Operand.new $1, $2
+        when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*#{suffix_re.source})$/
+          op = self.class::Operand.new $1, $2
+        else
+          raise "ill-formed field: #{it}"
+        end
+        op.owner = owner
+        op
+      end
+    end
+
     def compute_slot_count
+      if children_op
+        raise "#{@name}: @children must be the only staged operand" unless @operands.none?(&:child?)
+        has_tmp = false
+        scan_body(@body || "") { |m| has_tmp ||= m.start_with?('$') }
+        raise "#{@name}: @children node may not use $tmp slots" if has_tmp
+        return 0   # the staged count is dynamic; the prologue advances by it
+      end
       validate_children!
       tmp_names = []
       child_names = @operands.select(&:child?).map(&:name)
@@ -127,7 +157,33 @@ class KorubyNodeDef < ASTroGen::NodeDef
     #   VALUE_REF — `slots[off] = UNWRAP(dispatch(child));`  (staged)
     #   VALUE     — `VALUE _c<i> = UNWRAP(dispatch(child));` (register)
     # Body args: VALUE_REF_AT(&slots[off]) / _c<i>.
+    # DISPATCH for a @children node: dynamic cursor advance + a staging loop
+    # (one EVAL/SD per node-type; the SD unrolls with a baked count).
+    def build_children_dispatch(kids)
+      f = "n->u.#{@name}.#{kids.name}"
+      body_args = comma_operands(@operands.map do |op|
+        if op.children?       then "_cnt"
+        elsif op.ref?         then "&n->u.#{@name}.#{op.name}"
+        elsif op.node?        then "n->u.#{@name}.#{op.name}, n->u.#{@name}.#{op.name}->head.dispatcher"
+        else                       "n->u.#{@name}.#{op.name}"
+        end
+      end)
+      <<~C
+      static __attribute__((no_stack_protector)) #{result_type}
+      DISPATCH_#{@name}(#{@prefix_args.join(', ')})
+      {
+          const uint32_t _cnt = #{f}_cnt;
+          NODE *const *const _av = #{f};
+          slots += _cnt;
+          for (uint32_t _i = 0; _i < _cnt; _i++)
+              slots[(intptr_t)_i - (intptr_t)_cnt] = UNWRAP((*_av[_i]->head.dispatcher)(c, _av[_i], slots));
+          return EVAL_#{@name}(#{prefix_call_args.join(', ')}#{body_args});
+      }
+      C
+    end
+
     def build_eval_dispatch
+      return build_children_dispatch(children_op) if children_op
       child_ops = @operands.select(&:child?)
       if child_ops.empty?
         return super
@@ -173,8 +229,127 @@ class KorubyNodeDef < ASTroGen::NodeDef
       C
     end
 
+    # Allocator: identical to the base, but @children operands need two field
+    # assignments (array ptr + count) — done via Operand#alloc_assignment.
+    def build_allocator
+      return super unless children_op
+      alloc_ops = @operands.reject { |o| o.ref? || o.storageless? }
+      ref_ops = @operands.select(&:ref?)
+      sname = "#{@name}_struct"
+      <<~C
+      NODE *
+      ALLOC_#{name}(#{alloc_ops.empty? ? 'void' : alloc_ops.map { it.join }.join(', ')}) {
+          NODE *_n = node_allocate(sizeof(struct NodeHead) + sizeof(struct #{sname}));
+          _n->head.dispatcher = #{alloc_dispatcher_expr};
+          _n->head.dispatcher_name = "DISPATCH_#{@name}";
+          _n->head.kind = &kind_#{@name};
+      #ifdef ASTRO_NODEHEAD_SLOT_COUNT
+          _n->head.slot_count = #{slot_count};
+      #endif
+      #ifdef ASTRO_NODEHEAD_PARENT
+          _n->head.parent = NULL;
+      #endif
+      #ifdef ASTRO_NODEHEAD_JIT_STATUS
+          _n->head.jit_status = JIT_STATUS_Unknown;
+      #endif
+      #ifdef ASTRO_NODEHEAD_DISPATCH_CNT
+          _n->head.dispatch_cnt = 0;
+      #endif
+          _n->head.flags.has_hash_value = false;
+          _n->head.flags.is_specialized = false;
+          _n->head.flags.is_specializing = false;
+          _n->head.flags.is_dumping = false;
+          _n->head.flags.no_inline = #{no_inline? ? true : false};
+      #{alloc_ops.map { it.alloc_assignment(name) }.join("\n")}
+      #{ref_ops.map { "    memset(&_n->u.#{name}.#{it.name}, 0, sizeof(_n->u.#{name}.#{it.name}));" }.join("\n")}
+          OPTIMIZE(_n);
+          if (OPTION.record_all) code_repo_add(NULL, _n, false);
+          return _n;
+      }
+      C
+    end
+
+    # Structural hash: @children hashes each child + the count via a C loop
+    # (the base emits one hash_merge per operand, which can't express a loop).
+    def build_hash_func
+      return super unless children_op
+      lines = @operands.reject(&:storageless?).map do |op|
+        if op.children?
+          fld = "n->u.#{@name}.#{op.name}"
+          "    for (uint32_t _i = 0; _i < #{fld}_cnt; _i++) h = hash_merge(h, hash_node(#{fld}[_i]));\n" \
+          "    h = hash_merge(h, hash_uint32(#{fld}_cnt));"
+        else
+          "    h = hash_merge(h, #{op.hash_call("n->u.#{@name}.#{op.name}", kind: :horg)});"
+        end
+      end
+      <<~C
+      static node_hash_t
+      HASH_#{name}(NODE *n)
+      {
+          node_hash_t h = hash_cstr(#{canonical_name.dump});
+      #{lines.join("\n")}
+          return h;
+      }
+      C
+    end
+
+    # SD for a @children node: recursively specialize each child, then emit a
+    # dispatcher that unrolls the staging with the baked count.
+    def build_children_specializer(kids)
+      f = "n->u.#{@name}.#{kids.name}"
+      args = @operands.map do |op|
+        if op.children?
+          'fprintf(fp, "        %u", _cnt);'
+        else
+          _cn, arg = op.build_specializer(@name)
+          arg
+        end
+      end
+      <<~C
+      static void
+      SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
+      {
+          const uint32_t _cnt = #{f}_cnt;
+          for (uint32_t _i = 0; _i < _cnt; _i++) SPECIALIZE(fp, #{f}[_i]);
+          const char *dispatcher_name = alloc_dispatcher_name(n);
+          n->head.dispatcher_name = dispatcher_name;
+
+          if (astro_emit_sd_comments_p()) {
+              fprintf(fp, "// ");
+              DUMP(fp, n, true);
+              fprintf(fp, "\\n");
+          }
+
+          for (uint32_t _i = 0; _i < _cnt; _i++)
+              if (!#{f}[_i]->head.flags.no_inline)
+                  fprintf(fp, "static inline #{result_type} %s(#{@prefix_args.join(', ')});\\n", #{f}[_i]->head.dispatcher_name);
+
+          if (!is_public) fprintf(fp, "static inline #{@option.include?('@always_inline') ? '__attribute__((always_inline)) ' : ''}");
+          fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
+          fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
+          fprintf(fp, "{\\n");
+          fprintf(fp, "    slots += %u;\\n", _cnt);
+          for (uint32_t _i = 0; _i < _cnt; _i++) {
+              /* no_inline child → indirect call via its stored dispatcher (index
+               * baked); inlinable child → direct call to its baked SD name. */
+              if (#{f}[_i]->head.flags.no_inline)
+                  fprintf(fp, "    slots[%d] = UNWRAP(#{f}[%u]->head.dispatcher(c, #{f}[%u], slots));\\n",
+                          (int)_i - (int)_cnt, _i, _i);
+              else
+                  fprintf(fp, "    slots[%d] = UNWRAP(%s(c, #{f}[%u], slots));\\n",
+                          (int)_i - (int)_cnt, #{f}[_i]->head.dispatcher_name, _i);
+          }
+          fprintf(fp, "    return EVAL_#{@name}(#{prefix_call_args.join(', ')}, \\n");
+      #{ args.map { |a| "    " + a }.join("\n    fprintf(fp, \",\\n\");\n") }
+          fprintf(fp, "\\n    );\\n");
+          fprintf(fp, "}\\n\\n");
+      }
+      C
+    end
+
     # ---- SD emission: same shape, children direct-called by SD name ----
     def build_specializer
+      return build_children_specializer(children_op) if children_op
       child_ops = @operands.select(&:child?)
       ref_slot = {}
       ref_children.each_with_index { |op, i| ref_slot[op.name] = i }
@@ -266,6 +441,51 @@ class KorubyNodeDef < ASTroGen::NodeDef
     class Operand < ASTroGen::NodeDef::Node::Operand
       attr_reader :type
 
+      # `@children` — a variadic run of child nodes staged into consecutive
+      # slots (slots ABI only).  Storage is `NODE **<name>` + `uint32_t
+      # <name>_cnt`; the body receives only the count (`uint32_t <name>_cnt`),
+      # reading the staged values from `slots`.  Lets one node cover any arity
+      # (replaces the send0..3 family).  Must be the sole staged operand.
+      def initialize(type, name)
+        @children = name.end_with?('@children')
+        name = name.sub(/@children$/, '') if @children
+        super(type, name)
+      end
+
+      def children? = @children
+
+      def storage_type = children? ? 'NODE **' : super
+
+      def struct_field_join
+        return "NODE **#{name}; uint32_t #{name}_cnt" if children?
+        super
+      end
+
+      # allocator parameter list contribution (array ptr + count).
+      def join
+        return "NODE **#{name}, uint32_t #{name}_cnt" if children?
+        super
+      end
+
+      # body sees only the count; the values live in `slots`.
+      def eval_param
+        return "uint32_t #{name}_cnt" if children?
+        super
+      end
+
+      # not a single NODE* — structural passes handle it via the count loop.
+      def node? = children? ? false : super
+
+      # allocator assignments (two fields for @children).
+      def alloc_assignment(node_name)
+        if children?
+          "    _n->u.#{node_name}.#{name} = #{name};\n" \
+          "    _n->u.#{node_name}.#{name}_cnt = #{name}_cnt;"
+        else
+          "    _n->u.#{node_name}.#{name} = #{name};"
+        end
+      end
+
       def hash_call(val, kind: :horg)
         case @type
         when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *', 'struct korb_inlcache *'
@@ -280,7 +500,13 @@ class KorubyNodeDef < ASTroGen::NodeDef
         end
       end
 
-      def build_dumper(name)
+      def build_dumper(node_name)
+        if children?
+          f = "n->u.#{node_name}.#{name}"
+          return "        fprintf(fp, \"[\");\n" \
+                 "        for (uint32_t _i = 0; _i < #{f}_cnt; _i++) { if (_i) fprintf(fp, \", \"); DUMP(fp, #{f}[_i], oneline); }\n" \
+                 "        fprintf(fp, \"]\");"
+        end
         case @type
         when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *', 'struct korb_inlcache *'
           "        fprintf(fp, \"<cc>\");"

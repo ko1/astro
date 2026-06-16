@@ -62,6 +62,27 @@ struct kp_ctx {
 
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
 
+/* node_send takes a parse-time NODE* array [recv, args...]; these build the
+ * common small-arity synthetic sends used throughout the parser (op-assign,
+ * []/[]= desugar, case/when ===, ...).  The staging depth a caller must reserve
+ * is the element count (recv + args). */
+static NODE *kp_send0(uint32_t mid, uint32_t line, NODE *recv) {
+    NODE **argv = malloc(sizeof(NODE *)); if (!argv) abort();
+    argv[0] = recv;
+    return ALLOC_node_send(mid, line, argv, 1);
+}
+static NODE *kp_send1(uint32_t mid, uint32_t line, NODE *recv, NODE *a0) {
+    NODE **argv = malloc(sizeof(NODE *) * 2); if (!argv) abort();
+    argv[0] = recv; argv[1] = a0;
+    return ALLOC_node_send(mid, line, argv, 2);
+}
+static NODE *kp_send2(uint32_t mid, uint32_t line, NODE *recv, NODE *a0, NODE *a1) {
+    NODE **argv = malloc(sizeof(NODE *) * 3); if (!argv) abort();
+    argv[0] = recv; argv[1] = a0; argv[2] = a1;
+    return ALLOC_node_send(mid, line, argv, 3);
+}
+#define KP_SEND1_SC 2u   /* staging depth of a recv+1arg send */
+
 /* ---------------------------------------------------------------------- */
 
 static uint32_t
@@ -310,7 +331,6 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
-extern const struct NodeKind kind_node_send1;        /* op-assign fallback (&= |= ...) */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
@@ -472,7 +492,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     push_frame(tc, &fake);
     NODE *recv;
     WITH_CHAIN(tc, 1, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
-    NODE *body = ALLOC_node_send0(sym_id, 0, recv);
+    NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
     NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0);
     code_repo_add("symblock", entry, true);
@@ -684,9 +704,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         bake_add(tc, &call->u.node_send_blk2.def_env_off);
         return call;
     }
-    /* splat receiver call recv.m(*arr) or >3 plain args: build args Array, dynamic dispatch */
+    /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
     {
-        bool has_splat = argc > 3;
+        bool has_splat = false;
         for (size_t i = 0; i < argc; i++)
             if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
         if (has_splat) {
@@ -696,13 +716,10 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             return ALLOC_node_send_splat(mid, line, recv, arr);
         }
     }
-    if (argc > 3) {
-        return kp_unsupported(tc, (const pm_node_t *)cn, "receiver method call with >3 args");
-    }
-    uint32_t sc = 1u + (uint32_t)argc;     /* recv + args staging */
-    NODE *recv, *a[3];
+    uint32_t sc = 1u + (uint32_t)argc;     /* recv + args staging depth */
     /* safe navigation `recv&.m(args)`: if recv is nil, yield nil w/o dispatch */
     if ((cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) && argc <= 2) {
+        NODE *recv, *a[2];
         switch (argc) {
           case 0:
             WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
@@ -718,25 +735,19 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             return ALLOC_node_send_safe2(mid, line, recv, a[0], a[1]);
         }
     }
-    switch (argc) {
-      case 0:
-        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
-        return ALLOC_node_send0(mid, line, recv);
-      case 1:
-        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0])));
-        return ALLOC_node_send1(mid, line, recv, a[0]);
-      case 2:
-        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
-                            a[1] = transduce(tc, cn->arguments->arguments.nodes[1])));
-        return ALLOC_node_send2(mid, line, recv, a[0], a[1]);
-      default:
-        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                            a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
-                            a[1] = transduce(tc, cn->arguments->arguments.nodes[1]),
-                            a[2] = transduce(tc, cn->arguments->arguments.nodes[2])));
-        return ALLOC_node_send3(mid, line, recv, a[0], a[1], a[2]);
+    /* unified send (any fixed arity): stage [recv, arg0..] into a parse-time
+     * NODE* array; node_send stages them into consecutive slots at eval. */
+    {
+        uint32_t cnt = 1u + (uint32_t)argc;
+        NODE **argv = malloc(sizeof(NODE *) * cnt);
+        if (!argv) abort();
+        int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)sc;
+        argv[0] = transduce(tc, cn->receiver);
+        for (size_t i = 0; i < argc; i++)
+            argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+        tc->chain = saved;
+        return ALLOC_node_send(mid, line, argv, cnt);
     }
 }
 
@@ -928,7 +939,7 @@ mw_index_get(struct kp_ctx *tc, uint32_t t, uint32_t i, uint32_t aref, uint32_t 
 {
     NODE *r, *k;
     WITH_CHAIN(tc, 2, (r = bake_lget(tc, t), k = ALLOC_node_lit(LONG2FIX((intptr_t)i))));
-    return ALLOC_node_send1(aref, line, r, k);
+    return kp_send1(aref, line, r, k);
 }
 
 /* `module Name ... end` → node_module (own scope, run with self = the module). */
@@ -1151,9 +1162,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                                        rhs = transduce(tc, ow->value)));
             comb = alloc_binop(op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
-            WITH_CHAIN(tc, kind_node_send1.slot_count, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
                                                         rhs = transduce(tc, ow->value)));
-            comb = ALLOC_node_send1(opmid, line, lhs, rhs);
+            comb = kp_send1(opmid, line, lhs, rhs);
         }
         return ALLOC_node_ivar_set(-1 - tc->chain, name, comb);
       }
@@ -1211,7 +1222,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t to_sym = korb_intern(tc->c->vm, "to_sym", 6);
         NODE *str;
         WITH_CHAIN(tc, 1, (str = build_dstr(tc, in->parts.nodes, in->parts.size)));
-        return ALLOC_node_send0(to_sym, kp_line(tc, node), str);
+        return kp_send0(to_sym, kp_line(tc, node), str);
       }
       case PM_EMBEDDED_STATEMENTS_NODE: {
         const pm_embedded_statements_node_t *en = (const pm_embedded_statements_node_t *)node;
@@ -1296,7 +1307,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                         NODE *r, *v;
                         WITH_CHAIN(tc, 2, (r = transduce(tc, ct->receiver),
                                            v = mw_index_get(tc, tmp, i, aref, line)));
-                        assign = ALLOC_node_send1(setter, line, r, v);
+                        assign = kp_send1(setter, line, r, v);
                     }
                     acc = ALLOC_node_seq(acc, assign);
                 }
@@ -1378,9 +1389,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                                        rhs = transduce(tc, ow->value)));
             comb = alloc_binop(op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
-            WITH_CHAIN(tc, kind_node_send1.slot_count, (lhs = lvar_read(tc, node, ow->name, ow->depth),
+            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = lvar_read(tc, node, ow->name, ow->depth),
                                                         rhs = transduce(tc, ow->value)));
-            comb = ALLOC_node_send1(opmid, line, lhs, rhs);
+            comb = kp_send1(opmid, line, lhs, rhs);
         }
         return lvar_write(tc, node, ow->name, ow->depth, comb);
       }
@@ -1410,11 +1421,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
         NODE *g_recv, *g_key;
         WITH_CHAIN(tc, 2, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
-        NODE *get = ALLOC_node_send1(aref, line, g_recv, g_key);
+        NODE *get = kp_send1(aref, line, g_recv, g_key);
         NODE *s_recv, *s_key, *s_val;
         WITH_CHAIN(tc, 3, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1),
                            s_val  = transduce(tc, iw->value)));
-        NODE *set = ALLOC_node_send2(aset, line, s_recv, s_key, s_val);
+        NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
         return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, ALLOC_node_or(get, set)));
       }
 
@@ -1460,7 +1471,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 if (has_subj) {
                     NODE *vn, *targ; uint32_t line = kp_line(tc, cv);
                     WITH_CHAIN(tc, 2, (vn = transduce(tc, cv), targ = bake_lget(tc, tmp)));
-                    test = ALLOC_node_send1(eqq, line, vn, targ);   /* v === subj */
+                    test = kp_send1(eqq, line, vn, targ);   /* v === subj */
                 } else {
                     test = transduce(tc, cv);                       /* plain truthiness */
                 }
