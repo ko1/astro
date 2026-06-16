@@ -431,6 +431,37 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     free(buf);
     return r;
 }
+/* tr_s: like tr, but runs of *translated* chars that map to the same output are
+ * squeezed to one.  Pre-existing runs (untranslated) are left intact. */
+static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE fv = VALUE_SLICE_GET(a, 0), tv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
+    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    unsigned char fromx[512], tox[512];
+    uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
+    uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));      /* no GC during the scan */
+    bool prev_tr = false; int prev_out = -1;
+    for (uint32_t i = 0; i < s->len; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i];
+        int idx = -1;
+        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
+        bool match = neg ? (idx < 0) : (idx >= 0);
+        if (!match) { fputc(ch, ms); prev_tr = false; prev_out = -1; continue; }
+        if (tn == 0) { prev_tr = false; prev_out = -1; continue; }   /* delete */
+        int outc = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
+        if (prev_tr && prev_out == outc) continue;                   /* squeeze translated run */
+        fputc(outc, ms); prev_tr = true; prev_out = outc;
+    }
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
+    free(buf);
+    return r;
+}
 /* gsub/sub with a literal String pattern + String replacement (no regex/block). */
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place) {
     VALUE pv = VALUE_SLICE_GET(a, 0), rv = VALUE_SLICE_GET(a, 1);
@@ -979,6 +1010,9 @@ static RESULT korb_m_str_succ_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_str_tr_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), true);
+}
+static RESULT korb_m_str_tr_s_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_str_bang_from(c, slots, self, korb_m_str_tr_s(c, slots, self, a), true);
 }
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
