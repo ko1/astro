@@ -21,6 +21,10 @@ class File
     (i && i > 0) ? b[i..-1] : ""
   end
 end
+module Process
+  CLOCK_MONOTONIC = 1
+  def self.clock_gettime(clk) = __clock_gettime
+end
 SHIM
   # require-order: opt.rb (CodeOptimizationHelper) before cpu/ppu; mappers after
   # rom.rb (loaded at runtime by rom).  :none driver pulls no driver/*.

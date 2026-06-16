@@ -141,6 +141,7 @@ enum korb_obj_type {
     KORB_OBJ_SET         = 14,  /* Set: backed by an array of unique elements */
     KORB_OBJ_REGEXP      = 15,  /* Regexp: source string + flags (matching via astrogre .so) */
     KORB_OBJ_METHOD      = 16,  /* bound Method: receiver + method id (needs 5-bit tag) */
+    KORB_OBJ_FIBER       = 17,  /* stackful coroutine (separate value/C stacks) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -210,6 +211,31 @@ typedef struct KorbMethod {
     VALUE ARO_GC_EDGE recv;          /* bound receiver */
     uint32_t mid;                    /* interned method name */
 } KorbMethod;
+
+/* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
+ * mutable state + GC roots live in a libc-malloc'd (stable) KorbFiberRep, so
+ * the VM's C-side fiber pointers never dangle when the handle moves. */
+typedef struct KorbFiberRep {
+    VALUE transfer;                  /* value passed across resume/yield (root) */
+    VALUE captured_self;             /* the block's lexical self (root) */
+    VALUE *vslots;                   /* fiber value-stack base (fixed mmap) */
+    VALUE *vslots_top;               /* saved scan top while suspended */
+    VALUE *vslots_limit;
+    VALUE *vslots_hw;                /* saved high-water while suspended */
+    VALUE *def_env;                  /* block's def_env (creator stack, non-moving) */
+    struct Node *body;               /* block entry (node_entry, immortal) */
+    void  *uctx;                     /* ucontext_t * (fiber's saved context) */
+    void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
+    void  *cstack;                   /* malloc'd native stack for the fiber */
+    uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
+    uint8_t raised;                  /* block raised → resume re-raises transfer */
+    struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */
+} KorbFiberRep;
+
+typedef struct KorbFiber {
+    AroObjectHeader head;            /* KORB_OBJ_FIBER (no GC edges; rep is libc) */
+    struct KorbFiberRep *rep;
+} KorbFiber;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -306,6 +332,8 @@ typedef struct KorbClass {
 #define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)(v))
 #define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
 #define VAL2METH(v)        ((KorbMethod *)(uintptr_t)(v))
+#define KORB_FIBER_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER)
+#define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -337,7 +365,7 @@ enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
-    KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD,
+    KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -423,6 +451,14 @@ struct korb_vm {
     struct korb_bt_entry *bt;
     uint32_t bt_cnt, bt_capa;
 
+    /* Fiber support: list of all live fibers (suspended ones' value-stacks are
+     * GC roots), the currently-running fiber (NULL = main), the main stack's
+     * saved scan bounds while a fiber runs, and the trampoline hand-off. */
+    struct KorbFiberRep *fiber_list;
+    struct KorbFiberRep *running_fiber;
+    struct KorbFiberRep *starting_fiber;
+    VALUE *main_slots, *main_slots_top;
+
     const char *script_name; /* for error messages */
 };
 
@@ -482,6 +518,23 @@ struct CTX_struct {
     for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
+    }                                                                        \
+    /* main value-stack, suspended while a fiber runs (active stack scanned   \
+     * above as c->slots..slots_top). */                                      \
+    if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
+        for (VALUE *_p = (c)->vm->main_slots; _p < (c)->vm->main_slots_top; _p++) \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
+    }                                                                        \
+    /* every live fiber's transfer/captured_self roots + (suspended) value    \
+     * stack.  The rep is libc-stable; the active fiber's stack is the         \
+     * c->slots scan above. */                                                \
+    for (struct KorbFiberRep *_fr = (c)->vm->fiber_list; _fr; _fr = _fr->link) { \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
+        if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
+            for (VALUE *_p = _fr->vslots; _p < _fr->vslots_top; _p++)         \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
+        }                                                                    \
     }                                                                        \
 } while (0)
 
@@ -564,6 +617,10 @@ struct CTX_struct {
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
+      case KORB_OBJ_FIBER:                                                   \
+        /* handle only; rep (libc) roots scanned via the vm fiber list */    \
+        (void)(payload_size);                                               \
+        break;                                                               \
       case KORB_OBJ_OBJECT: {                                                \
         KorbObject *_ob = (KorbObject *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \

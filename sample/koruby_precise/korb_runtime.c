@@ -17,6 +17,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <errno.h>
+#include <ucontext.h>
 #include <dlfcn.h>
 
 #include "node.h"
@@ -1120,7 +1121,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
-        { "Method", KORB_C_METHOD },
+        { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -1762,6 +1763,8 @@ static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);
 static const struct korb_cmethod *korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid);
+static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
+static RESULT korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -1977,6 +1980,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_SET: return KORB_C_SET;
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
           case KORB_OBJ_METHOD: return KORB_C_METHOD;
+          case KORB_OBJ_FIBER:  return KORB_C_FIBER;
         }
     }
     return KORB_C_OBJECT;
@@ -2000,6 +2004,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_SET: return "Set";
       case KORB_C_REGEXP: return "Regexp";
       case KORB_C_METHOD: return "Method";
+      case KORB_C_FIBER:  return "Fiber";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -2093,8 +2098,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
     }
     /* class receiver → Klass.new (allocate + initialize). */
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == korb_intern(vm, "Fiber", 5) &&
+             strcmp(korb_sym_name(vm, mid), "yield") == 0) {
+        return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+    }
     else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
+        if (cname == korb_intern(vm, "Fiber", 5))
+            return korb_fiber_new(c, slots, block, def_env, captured_self);
         if (cname == korb_intern(vm, "Struct", 6) && VAL2CLASS(self)->members == KORB_NIL)
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));   /* Struct.new(*members) → class */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) → positional init */
@@ -2297,6 +2308,7 @@ korb_fmt_int(intptr_t n, int base, char *buf)
 #include "builtins/array_int_ext.c"
 #include "builtins/array_ext.c"
 #include "builtins/int_float_ext.c"
+#include "builtins/fiber.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -2846,6 +2858,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
+    korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
+    korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
@@ -3507,6 +3521,16 @@ korb_bi_binread(CTX *c, VALUE *slots, VALUE_SLICE args)
     return r;
 }
 
+/* __clock_gettime() — monotonic seconds as Float (backs Process.clock_gettime). */
+static RESULT
+korb_bi_clock_gettime(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)args;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return korb_float_new(c, slots, (double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
+}
+
 static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -3611,6 +3635,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
+    korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
