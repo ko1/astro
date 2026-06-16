@@ -805,6 +805,47 @@ static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {      /* Regexp#source */
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source);
 }
+/* String#match?(pat) — pat is a Regexp or a String (literal pattern); true if it
+ * matches anywhere.  (Whole-match only; group captures need astrogre — see
+ * project_regexp_astrorge.) */
+static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    VALUE re;
+    if (KORB_REGEXP_P(pv)) re = pv;
+    else if (KORB_STRING_P(pv)) { slots[0] = pv; re = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0)); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
+    RESULT r = korb_re_match_index(c, slots + 1, re, VALUE_REF_GET(self));
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
+}
+/* String#scan(pat) — array of all (whole) matches.  Group captures unsupported
+ * (engine returns whole-match only); no-group patterns are exact. */
+static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    uint8_t ci = 0; VALUE patstr;
+    if (KORB_REGEXP_P(pv)) { patstr = VAL2RE(pv)->source; ci = VAL2RE(pv)->ci; }
+    else if (KORB_STRING_P(pv)) patstr = pv;
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
+    korb_re_fn_t fn = korb_re_load(c->vm);
+    if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
+    slots[0] = patstr;                                   /* root pattern across allocs */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));    /* result */
+    VALUE_REF res = VALUE_REF_AT(&slots[1]);
+    long off = 0;
+    for (;;) {
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+        const KorbString *p = VAL2STR(slots[0]);
+        if (off > (long)s->len) break;
+        long ms = 0, me = 0;
+        int rc = fn(p->buf->data, p->len, s->buf->data + off, (size_t)((long)s->len - off), ci, &ms, &me);
+        if (rc != 1) break;
+        long abss = off + ms, abse = off + me;
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, VAL2STR(VALUE_REF_GET(self))->buf->data + abss, (uint32_t)(abse - abss)));
+        CHECK(korb_ary_push_val(c, slots + 3, res, slots[2]));
+        off = (abse > abss) ? abse : abss + 1;           /* empty match → advance 1 */
+    }
+    return RESULT_OK(VALUE_REF_GET(res));
+}
 
 VALUE
 korb_const_get(struct korb_vm *vm, uint32_t name_sym)
@@ -2994,6 +3035,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_slice", korb_m_ary_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_cons", korb_m_ary_each_cons, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "chunk_while", korb_m_ary_chunk_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "chunk", korb_m_ary_chunk, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "slice_when", korb_m_ary_slice_when, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "map", korb_m_ary_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "collect", korb_m_ary_map, 0);
@@ -3212,6 +3254,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod(c, KORB_C_STRING, "=~", korb_m_str_match_op, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "match?", korb_m_str_match_q, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_match_q, 1);

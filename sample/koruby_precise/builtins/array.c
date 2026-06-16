@@ -381,6 +381,48 @@ static RESULT korb_ary_chunk_impl(CTX *c, VALUE *slots, VALUE_REF self, NODE *bl
 static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; return korb_ary_chunk_impl(c, slots, self, block, def_env, captured_self, false, "chunk_while");
 }
+/* chunk{|e| key} → Enumerator of [key, [consecutive elems with == key]] runs. */
+static RESULT korb_m_ary_chunk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    if (UNLIKELY(block == NULL)) {
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "chunk"));
+        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));       /* pairs (result) */
+    VALUE_REF pairs = VALUE_REF_AT(&slots[0]);
+    slots[1] = KORB_NIL;                                /* current run array */
+    slots[2] = KORB_NIL;                                /* current key */
+    bool have = false;
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[3] = ary->items->data[i];                /* elem (root across yield) */
+        RESULT kr = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, cself);
+        if (UNLIKELY(kr.state != KORB_NORMAL)) return kr;
+        slots[4] = kr.value;                           /* key (root) */
+        if (!have || !korb_value_eq(slots[2], slots[4])) {
+            if (have) {                                /* flush previous [key, run] */
+                slots[5] = UNWRAP(korb_ary_new(c, slots + 5, 2));
+                CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[2]));
+                CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[1]));
+                CHECK(korb_ary_push_val(c, slots + 6, pairs, slots[5]));
+            }
+            slots[2] = slots[4];                       /* new key */
+            slots[1] = UNWRAP(korb_ary_new(c, slots + 5, 4));   /* new run */
+            have = true;
+        }
+        slots[5] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* re-read elem (GC) */
+        CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[1]), slots[5]));
+    }
+    if (have) {                                        /* flush last run */
+        slots[5] = UNWRAP(korb_ary_new(c, slots + 5, 2));
+        CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 6, VALUE_REF_AT(&slots[5]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 6, pairs, slots[5]));
+    }
+    slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "chunk"));
+    return korb_enum_new(c, slots + 2, VALUE_REF_GET(pairs), slots[1]);
+}
 static RESULT korb_m_ary_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; return korb_ary_chunk_impl(c, slots, self, block, def_env, captured_self, true, "slice_when");
 }
