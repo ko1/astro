@@ -53,7 +53,10 @@ OPTIMIZE(NODE *n)
 void
 INIT(void)
 {
-    astro_cs_init("code_store", ".", 0);
+    /* src_dir must be absolute (KORUBY_SRC_DIR): generated SDs `#include` node.h
+     * via this path, and the binary may run from any CWD (e.g. optcarrot from the
+     * ROM dir).  A "." here only worked when run from the source dir. */
+    astro_cs_init("code_store", KORUBY_SRC_DIR, 0);
 }
 
 /* --- code repository ------------------------------------------------------
