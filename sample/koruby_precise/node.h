@@ -174,6 +174,9 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
 RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         struct korb_inlcache *ic);
+RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+                        struct korb_callcache *cc, struct korb_inlcache *ic,
+                        uint32_t argc, VALUE self);
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,

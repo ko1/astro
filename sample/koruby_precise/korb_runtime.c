@@ -2134,6 +2134,71 @@ korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
 }
 
+/* Invoke a resolved user-instance method with EXPLICIT self (implicit-call
+ * layout: args at slots[-argc..], self separate — NOT staged below).  Handles
+ * the less-common ATTR + non-simple ISEQ kinds; the hot ISEQ-simple case is
+ * handled inline by korb_call_cached.  Returns false for CFUNC (caller falls to
+ * korb_call_impl). */
+static bool
+korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
+                 uint32_t line, uint32_t mid, VALUE self, VALUE def_class, RESULT *out)
+{
+    switch (m->kind) {
+      case KORB_METHOD_ATTR_R:
+        *out = RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+        return true;
+      case KORB_METHOD_ATTR_W:
+        if (UNLIKELY(argc != 1)) {
+            *out = korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 1)", argc);
+            return true;
+        }
+        slots[0] = self;
+        { VALUE v = slots[-(intptr_t)argc];
+          RESULT chk = korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(m->attr_ivar), v);
+          if (UNLIKELY(chk.state != KORB_NORMAL)) { *out = chk; return true; } }
+        *out = RESULT_OK(slots[-(intptr_t)argc]);
+        return true;
+      case KORB_METHOD_ISEQ:   /* non-simple (rest/opt/post/kw/block) */
+        *out = korb_invoke_method(c, slots, m, argc, line, mid, self, def_class, NULL, NULL, KORB_NIL);
+        return true;
+      default:                 /* CFUNC (inherited builtin via implicit self) */
+        return false;
+    }
+}
+
+/* Per-call-site cached implicit-self call (no block).  Monomorphic user-instance
+ * sites shortcut to korb_invoke_simple directly (inlines), skipping korb_call_impl's
+ * prologue + send/__send__ probe + mcache hash.  Everything else (main/global via
+ * cc, builtin self, CFUNC, method_missing) falls to korb_call_impl; those sites
+ * don't fill `ic`. */
+RESULT
+korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+                 struct korb_callcache *cc, struct korb_inlcache *ic,
+                 uint32_t argc, VALUE self)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL)) {
+        const VALUE klass = VAL2OBJ(self)->klass;
+        struct korb_method *m;
+        VALUE def_class;
+        if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+            m = ic->m; def_class = ic->def_class;
+        } else {
+            def_class = KORB_NIL;
+            m = korb_mcache_find(vm, klass, mid, &def_class);
+            if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+            ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+        }
+        if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines */
+            return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+        RESULT r;
+        if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
+            return r;   /* ATTR / non-simple ISEQ */
+        /* CFUNC → fall through to korb_call_impl */
+    }
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+}
+
 RESULT
 korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,

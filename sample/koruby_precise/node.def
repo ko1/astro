@@ -601,10 +601,10 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, VALUE val@child
 // implicit-self call `mid(args...)` (any fixed arity).  argv@children stages the
 // args (no recv — self is slots[self_off]); replaces the call0..3 family.
 NODE_DEF
-node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE **argv@children)
+node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
-    return korb_call(c, slots, mid, line, cc, argv_cnt, slots[self_off]);
+    return korb_call_cached(c, slots, mid, line, cc, ic, argv_cnt, slots[self_off]);
 }
 
 // ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
