@@ -138,13 +138,15 @@ enum korb_obj_type {
     KORB_OBJ_ENUMERATOR  = 13,  /* eager Enumerator: materialized values + inspect desc */
     KORB_OBJ_SET         = 14,  /* Set: backed by an array of unique elements */
     KORB_OBJ_REGEXP      = 15,  /* Regexp: source string + flags (matching via astrogre .so) */
+    KORB_OBJ_METHOD      = 16,  /* bound Method: receiver + method id (needs 5-bit tag) */
 };
-/* `flags` is a dedicated 16-bit sample-owned field; low 4 bits = type tag. */
-#define KORB_OBJ_TYPE_MASK 0x0Fu
-/* bit 4: this heap object has a per-instance class override (subclass instance /
+/* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
+ * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
+#define KORB_OBJ_TYPE_MASK 0x1Fu
+/* bit 5: this heap object has a per-instance class override (subclass instance /
  * extended / singleton-method'd) recorded in the VM's sklass table.  Gates both
  * class lookup and dispatch so the common (no-override) path pays only a bit test. */
-#define KORB_FL_HAS_KLASS  0x10u
+#define KORB_FL_HAS_KLASS  0x20u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
@@ -196,6 +198,13 @@ typedef struct KorbRegexp {
     VALUE ARO_GC_EDGE source;        /* the pattern as a String */
     uint8_t ci;                      /* case-insensitive flag */
 } KorbRegexp;
+
+/* bound Method object (obj.method(:sym)): receiver + interned method id. */
+typedef struct KorbMethod {
+    AroObjectHeader head;            /* KORB_OBJ_METHOD */
+    VALUE ARO_GC_EDGE recv;          /* bound receiver */
+    uint32_t mid;                    /* interned method name */
+} KorbMethod;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -290,6 +299,8 @@ typedef struct KorbClass {
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)(v))
 #define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
 #define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)(v))
+#define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
+#define VAL2METH(v)        ((KorbMethod *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -321,7 +332,7 @@ enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
-    KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP,
+    KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -539,6 +550,12 @@ struct CTX_struct {
       case KORB_OBJ_REGEXP: {                                                \
         KorbRegexp *_re = (KorbRegexp *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->source);                 \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_METHOD: {                                                \
+        KorbMethod *_m = (KorbMethod *)(payload);                           \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_m->recv);                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

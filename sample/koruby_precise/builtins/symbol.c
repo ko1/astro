@@ -56,6 +56,30 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (!KORB_OBJECT_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(VALUE_REF_GET(self), sym));
 }
+/* Object#method(:sym) → bound Method. */
+static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE name = VALUE_SLICE_GET(a, 0);
+    uint32_t mid;
+    if (SYMBOL_P(name)) mid = SYM2ID(name);
+    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); mid = korb_intern(c->vm, s->buf->data, s->len); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Symbol", korb_type_name(name));
+    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);
+}
+/* Method#call / #[] — re-dispatch to recv.mid(*args).  Stage [recv | args...]
+ * below a fresh cursor and reuse the send machinery (polymorphic with Array#[]). */
+static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
+    uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a);
+    slots[0] = m->recv;                                  /* recv below the args */
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
+}
+static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2METH(VALUE_REF_GET(self))->recv);
+}
+static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a; return RESULT_OK(ID2SYM(VAL2METH(VALUE_REF_GET(self))->mid));
+}
 
 /* generic to_s / inspect — render via the printer into a fresh String.
  * Specific types (Integer#to_s, String#to_s, ...) override via their own table. */

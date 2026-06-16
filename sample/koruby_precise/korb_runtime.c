@@ -695,6 +695,14 @@ RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint8_t ci) {
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->source, VALUE_REF_GET(sref));
     return RESULT_OK((VALUE)r);
 }
+/* obj.method(:sym) → a bound Method object (receiver + method id). */
+RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
+    VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
+    KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
+    m->mid = mid;
+    ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
+    return RESULT_OK((VALUE)m);
+}
 /* `re =~ str` core: returns the match's CHARACTER index (Integer) or nil. */
 static RESULT korb_re_match_index(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) return RESULT_OK(KORB_NIL);
@@ -1112,6 +1120,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
+        { "Method", KORB_C_METHOD },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -1952,6 +1961,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
           case KORB_OBJ_SET: return KORB_C_SET;
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
+          case KORB_OBJ_METHOD: return KORB_C_METHOD;
         }
     }
     return KORB_C_OBJECT;
@@ -1974,6 +1984,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_ENUMERATOR: return "Enumerator";
       case KORB_C_SET: return "Set";
       case KORB_C_REGEXP: return "Regexp";
+      case KORB_C_METHOD: return "Method";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -2809,6 +2820,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
+    korb_def_cmethod(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
+    korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
+    korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
+    korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
