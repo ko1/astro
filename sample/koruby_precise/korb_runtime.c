@@ -2849,6 +2849,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints, 0);
     korb_def_cmethod(c, KORB_C_STRING, "succ", korb_m_str_succ, 0);
     korb_def_cmethod(c, KORB_C_STRING, "next", korb_m_str_succ, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "succ!", korb_m_str_succ_bang, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "next!", korb_m_str_succ_bang, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "tr!", korb_m_str_tr_bang, 2);
     korb_def_cmethod(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);

@@ -923,6 +923,25 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     free(buf);
     return r;
 }
+/* In-place mutate self from a computed new-string `newr`.  nil_if_unchanged:
+ * return nil when the content is identical (tr!/sub! style); else return self
+ * (succ! style).  The new string is rooted across the rewrite. */
+static RESULT korb_str_bang_from(CTX *c, VALUE *slots, VALUE_REF self, RESULT newr, bool nil_if_unchanged) {
+    if (UNLIKELY(newr.state != KORB_NORMAL)) return newr;
+    slots[0] = newr.value;
+    const KorbString *ns = VAL2STR(slots[0]), *os = VAL2STR(VALUE_REF_GET(self));
+    if (nil_if_unchanged && ns->len == os->len &&
+        (ns->len == 0 || memcmp(ns->buf->data, os->buf->data, ns->len) == 0))
+        return RESULT_OK(KORB_NIL);
+    VAL2STR(VALUE_REF_GET(self))->len = 0;
+    return korb_str_append_str(c, slots + 1, self, VALUE_REF_AT(&slots[0]));
+}
+static RESULT korb_m_str_succ_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_str_bang_from(c, slots, self, korb_m_str_succ(c, slots, self, a), false);
+}
+static RESULT korb_m_str_tr_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), true);
+}
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
