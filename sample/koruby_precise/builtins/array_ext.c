@@ -2,6 +2,32 @@
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- more Array methods -------------------------------------------------- */
 
+/* Array#pack — only the `C*` / `C<count>` directive (each element → one byte,
+ * low 8 bits).  Enough for optcarrot's `pixels.pack("C*")` checksum path. */
+static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE tv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(tv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(tv));
+    const KorbString *t = VAL2STR(tv);
+    if (UNLIKELY(t->len < 1 || t->buf->data[0] != 'C'))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#pack supports only the C directive");
+    const KorbArray *ary = SELF_ARY;
+    uint32_t n;                                          /* element count to emit */
+    if (t->len >= 2 && t->buf->data[1] == '*') n = ary->len;
+    else if (t->len >= 2) { n = (uint32_t)strtoul(t->buf->data + 1, NULL, 10); if (n > ary->len) n = ary->len; }
+    else n = 1 > ary->len ? ary->len : 1;
+    char *const buf = malloc(n ? n : 1);
+    if (!buf) abort();
+    for (uint32_t i = 0; i < n; i++) {                   /* no alloc in this loop */
+        VALUE e = ary->items->data[i];
+        intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
+        buf[i] = (char)(unsigned char)(b & 0xFF);
+    }
+    RESULT r = korb_str_new(c, slots, buf, n);
+    free(buf);
+    return r;
+}
+
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     intptr_t n;

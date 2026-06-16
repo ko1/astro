@@ -1862,7 +1862,9 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,
               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
-    return korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
+    RESULT r = korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
+    if (r.state == KORB_BREAK) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value */
+    return r;
 }
 
 /* ---- node_entry accessors + yield ----------------------------------------- */
@@ -2247,7 +2249,9 @@ RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
-    return korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
+    RESULT r = korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
+    if (r.state == KORB_BREAK) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value */
+    return r;
 }
 
 /* ---- integer formatting (to_s / chr helpers) ----------------------------- */
@@ -2580,6 +2584,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sum", korb_m_ary_sum, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "pack", korb_m_ary_pack, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "minmax", korb_m_ary_minmax, 0);

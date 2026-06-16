@@ -424,9 +424,21 @@ node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negat
     for (;;) {
         VALUE cv = UNWRAP(EVAL_ARG(c, cond));
         if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
-        CHECK(EVAL_ARG(c, body));
+        RESULT br = EVAL_ARG(c, body);
+        if (UNLIKELY(br.state != KORB_NORMAL)) {
+            if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
+            return br;                                                 /* return / raise / next propagate */
+        }
     }
     return RESULT_OK(KORB_NIL);
+}
+
+// `break [v]` — unwind to the nearest loop (node_while) or block-call boundary.
+NODE_DEF @nogc
+node_break(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
+{
+    (void)c; (void)n; (void)slots;
+    return RESULT_BREAK_(v);
 }
 
 NODE_DEF @nogc

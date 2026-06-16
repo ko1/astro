@@ -1127,6 +1127,36 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val = transduce(tc, iw->value);    /* register child, current chain */
         return ALLOC_node_ivar_set(-1 - tc->chain, name, val);
       }
+      case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: {   /* @x op= v */
+        const pm_instance_variable_operator_write_node_t *ow =
+            (const pm_instance_variable_operator_write_node_t *)node;
+        const char *opname = kp_cid_cstr(tc, ow->binary_operator);
+        enum kp_binop op = kp_binop_kind(opname);
+        if (op == KP_BINOP_NONE) {
+            char what[64]; snprintf(what, sizeof(what), "operator '%s='", opname);
+            return kp_unsupported(tc, node, strdup(what));
+        }
+        uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
+        uint32_t n_slots = kind_node_plus.slot_count;
+        NODE *lhs, *rhs;
+        WITH_CHAIN(tc, n_slots, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+                                 rhs = transduce(tc, ow->value)));
+        return ALLOC_node_ivar_set(-1 - tc->chain, name, alloc_binop(op, lhs, rhs, line));
+      }
+      case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: {        /* @x &&= v */
+        const pm_instance_variable_and_write_node_t *aw =
+            (const pm_instance_variable_and_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, aw->name);
+        return ALLOC_node_and(ALLOC_node_ivar_get(-1 - tc->chain, name),
+                              ALLOC_node_ivar_set(-1 - tc->chain, name, transduce(tc, aw->value)));
+      }
+      case PM_INSTANCE_VARIABLE_OR_WRITE_NODE: {         /* @x ||= v */
+        const pm_instance_variable_or_write_node_t *ow =
+            (const pm_instance_variable_or_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, ow->name);
+        return ALLOC_node_or(ALLOC_node_ivar_get(-1 - tc->chain, name),
+                             ALLOC_node_ivar_set(-1 - tc->chain, name, transduce(tc, ow->value)));
+      }
 
       case PM_ARRAY_NODE: {
         const pm_array_node_t *an = (const pm_array_node_t *)node;
@@ -1463,6 +1493,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         else if (nn->arguments->arguments.size == 1) v = transduce(tc, nn->arguments->arguments.nodes[0]);
         else { size_t cnt = nn->arguments->arguments.size; v = build_array(tc, nn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `next a, b` → [a, b] */
         return ALLOC_node_next(v);
+      }
+      case PM_BREAK_NODE: {
+        const pm_break_node_t *bn = (const pm_break_node_t *)node;
+        NODE *v;
+        if (bn->arguments == NULL || bn->arguments->arguments.size == 0) v = lit_nil();
+        else if (bn->arguments->arguments.size == 1) v = transduce(tc, bn->arguments->arguments.nodes[0]);
+        else { size_t cnt = bn->arguments->arguments.size; v = build_array(tc, bn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `break a, b` → [a, b] */
+        return ALLOC_node_break(v);
       }
 
       /* ---- calls / def ---- */
