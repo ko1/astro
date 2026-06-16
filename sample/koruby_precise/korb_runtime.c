@@ -2780,7 +2780,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "bit_length", korb_m_int_bit_length, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "<<", korb_m_int_lshift, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, ">>", korb_m_int_rshift, 1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "[]", korb_m_int_bitref, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "[]", korb_m_int_bitref, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "&", korb_m_int_and, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "|", korb_m_int_or, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "^", korb_m_int_xor, 1);

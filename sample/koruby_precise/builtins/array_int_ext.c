@@ -117,13 +117,48 @@ static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t r = sh >= 0 ? (sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)) : (sh > -62 ? (n << -sh) : 0);
     return RESULT_OK(LONG2FIX(r));
 }
+/* Integer#[] — bit reference: int[i] (single bit), int[i, len] (len-bit field),
+ * int[range] (bits in range).  Two's-complement semantics for negatives. */
 static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!FIXNUM_P(o)) return RESULT_OK(LONG2FIX(0));
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self)), i = FIX2LONG(o);
-    if (i < 0 || i >= 63) return RESULT_OK(LONG2FIX(n < 0 && i >= 63 ? 1 : 0));
-    return RESULT_OK(LONG2FIX((n >> i) & 1));
+    VALUE selfv = VALUE_REF_GET(self);
+    intptr_t i = 0, len = 0; bool have_len = false;
+    if (VALUE_SLICE_LEN(a) >= 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* int[i..j] */
+        const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        if (!FIXNUM_P(rg->rbegin)) return RESULT_OK(LONG2FIX(0));
+        i = FIX2LONG(rg->rbegin);
+        if (rg->rend != KORB_NIL && FIXNUM_P(rg->rend)) { intptr_t j = FIX2LONG(rg->rend); len = j - i + (rg->exclude_end ? 0 : 1); have_len = true; if (len < 0) len = 0; }
+    } else {
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (VALUE_SLICE_LEN(a) >= 2) {
+            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            have_len = true;
+        }
+    }
+#ifdef KORB_HAVE_GMP
+    {
+        mpz_t z, r; korb_to_mpz(selfv, z); mpz_init(r);
+        if (i >= 0) mpz_fdiv_q_2exp(r, z, (mp_bitcnt_t)i);     /* self >> i (arith) */
+        else        mpz_mul_2exp(r, z, (mp_bitcnt_t)(-i));     /* self << -i */
+        if (have_len) {
+            if (len <= 0) mpz_set_ui(r, 0);
+            else { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
+        } else {
+            mpz_t one; mpz_init_set_ui(one, 1); mpz_and(r, r, one); mpz_clear(one);   /* single bit */
+        }
+        mpz_clear(z);
+        RESULT res = korb_big_from_mpz(c, slots, r); mpz_clear(r); return res;
+    }
+#else
+    intptr_t n = FIX2LONG(selfv);
+    if (!have_len) {
+        if (i < 0 || i >= 63) return RESULT_OK(LONG2FIX(n < 0 && i >= 63 ? 1 : 0));
+        return RESULT_OK(LONG2FIX((n >> i) & 1));
+    }
+    if (len <= 0) return RESULT_OK(LONG2FIX(0));
+    intptr_t shifted = i >= 0 ? (i < 63 ? (n >> i) : (n < 0 ? -1 : 0)) : (n << (-i));
+    intptr_t mask = len >= 63 ? -1 : ((intptr_t)1 << len) - 1;
+    return RESULT_OK(LONG2FIX(shifted & mask));
+#endif
 }
 /* bitwise & | ^ (kind 0/1/2) */
 static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int kind) {
