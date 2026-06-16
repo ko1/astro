@@ -134,6 +134,17 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t bn = s->len;
     VALUE iv = VALUE_SLICE_GET(a, 0);
+    if (KORB_RANGE_P(iv)) {                            /* byteslice(range) */
+        const KorbRange *r = VAL2RANGE(iv);
+        intptr_t b = 0, e;
+        if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (b < 0) b += bn;
+        if (b < 0 || b > (intptr_t)bn) return RESULT_OK(KORB_NIL);
+        if (r->rend == KORB_NIL) e = bn;
+        else { if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += bn; if (!r->exclude_end) e += 1; }
+        intptr_t len = e - b; if (len < 0) len = 0; if (b + len > (intptr_t)bn) len = (intptr_t)bn - b;
+        return korb_str_slice_new(c, slots, self, (uint32_t)b, (uint32_t)len);
+    }
     intptr_t i;
     if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     if (i < 0) i += bn;
@@ -143,6 +154,42 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (len < 0) return RESULT_OK(KORB_NIL);
     if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
     return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
+}
+/* String#bytesplice(index, length, str) / (range, str) — replace bytes in place,
+ * return self. */
+static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t bn = s->len;
+    intptr_t start = 0, dellen = 0; VALUE repl;
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
+        const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (start < 0) start += bn;
+        intptr_t e; if (r->rend == KORB_NIL) e = bn; else { if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += bn; if (!r->exclude_end) e += 1; }
+        dellen = e - start;
+        repl = VALUE_SLICE_GET(a, 1);
+    } else {
+        if (UNLIKELY(VALUE_SLICE_LEN(a) < 3 || !korb_to_index(VALUE_SLICE_GET(a, 0), &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (start < 0) start += bn;
+        repl = VALUE_SLICE_GET(a, 2);
+    }
+    if (UNLIKELY(start < 0 || start > (intptr_t)bn)) return korb_raise(c, slots, KORB_E_RANGE, 0, "index %ld out of string", (long)start);
+    if (dellen < 0) dellen = 0;
+    if (start + dellen > (intptr_t)bn) dellen = (intptr_t)bn - start;
+    if (UNLIKELY(!KORB_STRING_P(repl))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(repl));
+    const KorbString *rs = VAL2STR(repl); uint32_t rn = rs->len;
+    uint32_t sufoff = (uint32_t)(start + dellen), suflen = bn - sufoff;
+    uint32_t newlen = (uint32_t)start + rn + suflen;
+    char *out = malloc(newlen ? newlen : 1);                /* assemble full new content (no GC) */
+    s = VAL2STR(VALUE_REF_GET(self));
+    memcpy(out, s->buf->data, (size_t)start);
+    memcpy(out + start, VAL2STR(repl)->buf->data, rn);
+    memcpy(out + start + rn, s->buf->data + sufoff, suflen);
+    KorbString *ns = korb_str_ensure(c, slots, self, newlen);   /* may move; out is libc-stable */
+    memcpy(ns->buf->data, out, newlen); ns->len = newlen; ns->buf->data[newlen] = '\0';
+    free(out);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;

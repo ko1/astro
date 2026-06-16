@@ -2893,6 +2893,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "casecmp?", korb_m_str_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "byteslice", korb_m_str_byteslice, -1);
     korb_def_cmethod(c, KORB_C_STRING, "getbyte", korb_m_str_getbyte, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "bytesplice", korb_m_str_bytesplice, -1);
     korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
     korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);

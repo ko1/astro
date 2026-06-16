@@ -282,6 +282,7 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     uint32_t n = s->len;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp!(sep) */
         VALUE sv = VALUE_SLICE_GET(a, 0);
+        if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
         if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
         const KorbString *sep = VAL2STR(sv);
         if (sep->len == 0) { while (n >= 1 && s->buf->data[n-1] == '\n') { if (n >= 2 && s->buf->data[n-2] == '\r') n--; n--; } }
@@ -362,11 +363,19 @@ static RESULT korb_m_str_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(lo) || !KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+    VALUE lo, hi;
+    if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(min..max) */
+        const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0)); lo = r->rbegin; hi = r->rend;
+    } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
     VALUE s = VALUE_REF_GET(self);
-    if (korb_cmp_values(s, lo) < 0) return RESULT_OK(lo);
-    if (korb_cmp_values(s, hi) > 0) return RESULT_OK(hi);
+    if (lo != KORB_NIL) {                              /* nil bound = unbounded that side */
+        if (UNLIKELY(!KORB_STRING_P(lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (korb_cmp_values(s, lo) < 0) return RESULT_OK(lo);
+    }
+    if (hi != KORB_NIL) {
+        if (UNLIKELY(!KORB_STRING_P(hi))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (korb_cmp_values(s, hi) > 0) return RESULT_OK(hi);
+    }
     return RESULT_OK(s);
 }
 /* delete: remove chars present in ALL set args. (in_place → delete!) */
@@ -856,6 +865,7 @@ static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t len = s->len;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp(sep) */
         VALUE sv = VALUE_SLICE_GET(a, 0);
+        if (sv == KORB_NIL) return korb_str_slice_new(c, slots, self, 0, len);   /* nil sep → unchanged copy */
         if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
         const KorbString *sep = VAL2STR(sv);
         if (sep->len == 0) {                          /* "" → strip all trailing \n / \r\n */
