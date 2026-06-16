@@ -4,9 +4,20 @@
 # is tracked through a marker file so `make GC=foo` after `make GC=bar`
 # relinks even when no source changed.
 
-all: koruby_precise
+all: koruby_precise koruby_regex.so
 
 .PHONY: all run clean
+
+# Regexp engine — astrogre compiled into a SEPARATE .so (its generic ASTro
+# symbols hidden so they don't clash with koruby's).  koruby dlopen()s it.
+ASTROGRE = ../astrogre
+koruby_regex.so: regex_bridge.c $(ASTROGRE)/node.c $(ASTROGRE)/parse.c $(ASTROGRE)/match.c \
+                 $(ASTROGRE)/backend_astrogre.c $(ASTROGRE)/aho_corasick.c $(ASTROGRE)/node.def
+	$(MAKE) -C $(ASTROGRE) node_eval.c >/dev/null 2>&1 || true
+	cc -shared -fPIC -fvisibility=hidden -O2 -mavx2 -I$(ASTROGRE) -I$(RUNTIME) \
+	    $(ASTROGRE)/node.c $(ASTROGRE)/parse.c $(ASTROGRE)/match.c \
+	    $(ASTROGRE)/backend_astrogre.c $(ASTROGRE)/aho_corasick.c regex_bridge.c \
+	    -o koruby_regex.so
 
 NODE_GENFILES = node_eval.c \
                 node_dispatch.c \

@@ -137,6 +137,7 @@ enum korb_obj_type {
     KORB_OBJ_COMPLEX     = 12,  /* complex re + im*i (re/im are GC edges) */
     KORB_OBJ_ENUMERATOR  = 13,  /* eager Enumerator: materialized values + inspect desc */
     KORB_OBJ_SET         = 14,  /* Set: backed by an array of unique elements */
+    KORB_OBJ_REGEXP      = 15,  /* Regexp: source string + flags (matching via astrogre .so) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 4 bits = type tag. */
 #define KORB_OBJ_TYPE_MASK 0x0Fu
@@ -189,6 +190,12 @@ typedef struct KorbSet {
     AroObjectHeader head;            /* KORB_OBJ_SET */
     VALUE ARO_GC_EDGE elems;         /* KorbArray of unique members */
 } KorbSet;
+
+typedef struct KorbRegexp {
+    AroObjectHeader head;            /* KORB_OBJ_REGEXP */
+    VALUE ARO_GC_EDGE source;        /* the pattern as a String */
+    uint8_t ci;                      /* case-insensitive flag */
+} KorbRegexp;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -281,6 +288,8 @@ typedef struct KorbClass {
 #define VAL2ENUM(v)        ((KorbEnumerator *)(uintptr_t)(v))
 #define KORB_SET_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_SET)
 #define VAL2SET(v)         ((KorbSet *)(uintptr_t)(v))
+#define KORB_REGEXP_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP)
+#define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -312,7 +321,7 @@ enum korb_class {
     KORB_C_INTEGER = 0, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_ARRAY, KORB_C_HASH,
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
-    KORB_C_ENUMERATOR, KORB_C_SET,
+    KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -373,6 +382,10 @@ struct korb_vm {
     VALUE    *sklass_obj;
     VALUE    *sklass_cls;
     uint32_t  sklass_cnt, sklass_capa;
+
+    /* Regexp engine: lazily dlopen'd koruby_regex.so (astrogre).  re_fn is the
+     * koruby_re_search entry, or (void*)-1 if the .so failed to load. */
+    void     *re_fn;
 
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */
@@ -520,6 +533,12 @@ struct CTX_struct {
       case KORB_OBJ_SET: {                                                   \
         KorbSet *_st = (KorbSet *)(payload);                                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_st->elems);                  \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_REGEXP: {                                                \
+        KorbRegexp *_re = (KorbRegexp *)(payload);                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->source);                 \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

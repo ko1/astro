@@ -32,6 +32,16 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// Regexp literal `/pat/` — fresh Regexp(source, flags) per evaluation.
+NODE_DEF
+node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t ci)
+{
+    (void)n;
+    VALUE src = UNWRAP(korb_str_new(c, slots, bytes, len));
+    slots[0] = src;
+    return korb_regexp_new(c, slots + 1, slots[0], (uint8_t)ci);
+}
+
 // Float literal (heap-boxed at eval time).
 NODE_DEF
 node_float(CTX *c, NODE *n, VALUE *slots, double v)

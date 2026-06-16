@@ -1,0 +1,12 @@
+# Regexp via astrogre (oracle = CRuby) — String#=~ / Regexp#=~/match?/===/source.
+p("-b" =~ /\A-(\w{2,})\z/)
+p("-abc" =~ /\A-(\w{2,})\z/)
+p("a1b" =~ /\d+/)
+p("no digits" =~ /\d+/)
+p(/foo/ =~ "xfooy")
+p(/foo/.match?("xfooy"))
+p(/foo/.match?("bar"))
+p(/x/ === "axb")
+p(/x/ === "yz")
+p(/[A-Z]+/i =~ "abc")
+p(/word/.source)

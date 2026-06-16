@@ -1063,6 +1063,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
         return ALLOC_node_str(bytes, len);
       }
+      case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
+        const pm_regular_expression_node_t *rn = (const pm_regular_expression_node_t *)node;
+        uint32_t len;
+        const char *bytes = kp_strdup_pm(&rn->unescaped, &len);
+        uint32_t ci = (rn->base.flags & PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE) ? 1u : 0u;
+        return ALLOC_node_regexp(bytes, len, ci);
+      }
       case PM_SYMBOL_NODE: {
         const pm_symbol_node_t *sn = (const pm_symbol_node_t *)node;
         size_t len = pm_string_length(&sn->unescaped);

@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <math.h>
 #include <ctype.h>
+#include <dlfcn.h>
 
 #include "node.h"
 #include "korb_runtime.h"
@@ -676,6 +677,51 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a) {
     return RESULT_OK(VALUE_REF_GET(cls));
 }
 
+/* ---- Regexp (matching via the astrogre engine in koruby_regex.so) -------- */
+typedef int (*korb_re_fn_t)(const char *, size_t, const char *, size_t, int, long *, long *);
+static korb_re_fn_t korb_re_load(struct korb_vm *vm) {
+    if (vm->re_fn == NULL) {
+        void *h = dlopen(KORUBY_SRC_DIR "/koruby_regex.so", RTLD_NOW | RTLD_LOCAL);
+        vm->re_fn = h ? dlsym(h, "koruby_re_search") : NULL;
+        if (vm->re_fn == NULL) vm->re_fn = (void *)(intptr_t)-1;   /* mark load failure */
+    }
+    return vm->re_fn == (void *)(intptr_t)-1 ? NULL : (korb_re_fn_t)vm->re_fn;
+}
+RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint8_t ci) {
+    VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
+    KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
+    r->ci = ci;
+    ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->source, VALUE_REF_GET(sref));
+    return RESULT_OK((VALUE)r);
+}
+/* `re =~ str` core: returns the match's CHARACTER index (Integer) or nil. */
+static RESULT korb_re_match_index(CTX *c, VALUE *slots, VALUE re, VALUE str) {
+    if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) return RESULT_OK(KORB_NIL);
+    korb_re_fn_t fn = korb_re_load(c->vm);
+    if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
+    const KorbString *pat = VAL2STR(VAL2RE(re)->source), *s = VAL2STR(str);
+    long ms = 0, me = 0;
+    int rc = fn(pat->buf->data, pat->len, s->buf->data, s->len, VAL2RE(re)->ci, &ms, &me);
+    if (rc != 1) return RESULT_OK(KORB_NIL);
+    long cidx = 0;                                        /* byte offset → char index (UTF-8) */
+    for (long i = 0; i < ms; i++) if (((unsigned char)s->buf->data[i] & 0xC0) != 0x80) cidx++;
+    return RESULT_OK(LONG2FIX(cidx));
+}
+static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* String#=~ */
+    return korb_re_match_index(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self));
+}
+static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {    /* Regexp#=~ */
+    return korb_re_match_index(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0));
+}
+static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {     /* Regexp#match? / === */
+    RESULT r = korb_re_match_index(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
+}
+static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {      /* Regexp#source */
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source);
+}
+
 VALUE
 korb_const_get(struct korb_vm *vm, uint32_t name_sym)
 {
@@ -1064,7 +1110,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Hash", KORB_C_HASH }, { "Range", KORB_C_RANGE }, { "NilClass", KORB_C_NIL },
         { "TrueClass", KORB_C_TRUE }, { "FalseClass", KORB_C_FALSE }, { "Class", KORB_C_CLASS },
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
-        { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET },
+        { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
     };
     VALUE objc = KORB_NIL;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
@@ -1904,6 +1950,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
           case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
           case KORB_OBJ_SET: return KORB_C_SET;
+          case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
         }
     }
     return KORB_C_OBJECT;
@@ -1925,6 +1972,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_COMPLEX:  return "Complex";
       case KORB_C_ENUMERATOR: return "Enumerator";
       case KORB_C_SET: return "Set";
+      case KORB_C_REGEXP: return "Regexp";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -2763,6 +2811,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "=~", korb_m_str_match_op, 1);
+    korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
+    korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
+    korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_match_q, 1);
+    korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);

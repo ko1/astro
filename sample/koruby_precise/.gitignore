@@ -13,3 +13,5 @@
 /node_emit_ast.c
 /node_head.h
 /.built_gc
+koruby_regex.so
+code_store/
