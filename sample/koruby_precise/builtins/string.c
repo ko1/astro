@@ -743,6 +743,71 @@ static RESULT korb_m_str_oct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX(korb_str_radix(s->buf->data, s->len, 8, true)));
 }
 
+/* String#to_r — lenient parse of [ws][sign]int['/'int | '.'frac]; non-numeric → (0/1). */
+static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    const char *const d = s->buf->data; const uint32_t len = s->len; uint32_t i = 0;
+    while (i < len && isspace((unsigned char)d[i])) i++;
+    intptr_t sign = 1;
+    if (i < len && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
+    intptr_t num = 0; bool any = false;
+    while (i < len && d[i] >= '0' && d[i] <= '9') { num = num * 10 + (d[i] - '0'); i++; any = true; }
+    intptr_t den = 1;
+    if (any && i < len && d[i] == '/') {
+        i++; intptr_t dv = 0; bool dany = false;
+        while (i < len && d[i] >= '0' && d[i] <= '9') { dv = dv * 10 + (d[i] - '0'); i++; dany = true; }
+        if (dany) den = dv;                                  /* korb_rat_new raises on den 0 */
+    } else if (any && i < len && d[i] == '.') {
+        i++;
+        while (i < len && d[i] >= '0' && d[i] <= '9') { num = num * 10 + (d[i] - '0'); den *= 10; i++; }
+    }
+    if (!any) return korb_rat_new(c, slots, 0, 1);
+    return korb_rat_new(c, slots, sign * num, den);
+}
+/* parse one base-10 number (int or decimal float) at d[*pi]; store its VALUE into
+ * *outslot (rooted there), advance *pi, return true.  false if no digits. */
+static bool korb_str_parse_num(CTX *c, VALUE *outslot, const char *const d, uint32_t len, uint32_t *pi) {
+    uint32_t i = *pi; intptr_t sg = 1;
+    if (i < len && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sg = -1; i++; }
+    intptr_t ip = 0; bool dg = false;
+    while (i < len && d[i] >= '0' && d[i] <= '9') { ip = ip * 10 + (d[i] - '0'); i++; dg = true; }
+    intptr_t frac = 0, fden = 1; bool isf = false;
+    if (i < len && d[i] == '.') {
+        uint32_t j = i + 1; bool fdg = false;
+        while (j < len && d[j] >= '0' && d[j] <= '9') { frac = frac * 10 + (d[j] - '0'); fden *= 10; j++; fdg = true; }
+        if (fdg) { isf = true; i = j; }
+    }
+    if (!dg && !isf) return false;
+    if (isf) *outslot = korb_float_new(c, outslot, (double)sg * ((double)ip + (double)frac / (double)fden)).value;
+    else     *outslot = LONG2FIX(sg * ip);
+    *pi = i;
+    return true;
+}
+/* String#to_c — parse real[+imag i] / imag-only "Ni"; non-numeric → (0+0i). */
+static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    const char *const d = s->buf->data; const uint32_t len = s->len; uint32_t i = 0;
+    while (i < len && isspace((unsigned char)d[i])) i++;
+    slots[0] = LONG2FIX(0);                                  /* re */
+    slots[1] = LONG2FIX(0);                                  /* im */
+    if (korb_str_parse_num(c, &slots[2], d, len, &i)) {      /* first number → slots[2] */
+        if (i < len && (d[i] | 0x20) == 'i') {               /* "Ni" → pure imaginary */
+            slots[1] = slots[2]; i++;
+        } else {
+            slots[0] = slots[2];                             /* real part */
+            if (i < len && (d[i] == '+' || d[i] == '-')) {   /* "+Ni" / "-Ni" imaginary */
+                uint32_t save = i;
+                if (korb_str_parse_num(c, &slots[2], d, len, &i) && i < len && (d[i] | 0x20) == 'i') {
+                    slots[1] = slots[2]; i++;
+                } else i = save;
+            }
+        }
+    }
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
+
 /* trim: mode 0=both 1=left 2=right */
 /* mode: 0=both 1=left 2=right. With a charset arg (Ruby 4.0), strip those chars
  * (delete/count-style set with ranges + ^) instead of whitespace. */

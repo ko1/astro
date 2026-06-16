@@ -2790,6 +2790,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "to_i", korb_m_str_to_i, 0);
     korb_def_cmethod(c, KORB_C_STRING, "hex", korb_m_str_hex, 0);
     korb_def_cmethod(c, KORB_C_STRING, "oct", korb_m_str_oct, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_r", korb_m_str_to_r, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "to_c", korb_m_str_to_c, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_sym", korb_m_str_to_sym, 0);
     korb_def_cmethod(c, KORB_C_STRING, "intern", korb_m_str_to_sym, 0);
     korb_def_cmethod(c, KORB_C_STRING, "upcase", korb_m_str_upcase, 0);
