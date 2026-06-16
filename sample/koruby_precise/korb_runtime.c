@@ -4107,6 +4107,13 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(slots[0]);
 }
+/* Module#private/public/protected/module_function — koruby doesn't enforce
+ * visibility, so these are no-ops returning the arg (for `private :foo` /
+ * `private def foo`) or nil (bare `private`). */
+static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)self;
+    return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
+}
 /* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
 static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
@@ -8919,6 +8926,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);

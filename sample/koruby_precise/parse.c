@@ -1327,6 +1327,42 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
         return ALLOC_node_const(kp_intern_cid(tc, cr->name));
       }
+      case PM_CONSTANT_PATH_NODE: {       /* `A::B` — koruby's const table is flat,
+                                           * so resolve the rightmost name; the
+                                           * namespace parent is a pure path. */
+        const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)node;
+        if (cp->parent != NULL &&
+            !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE) &&
+            !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_PATH_NODE))
+            return kp_unsupported(tc, node, "constant path with a non-namespace parent");
+        return ALLOC_node_const(kp_intern_cid(tc, cp->name));
+      }
+
+      /* Global variables `$x` reuse the flat const table — the `$` in the name
+       * keeps them in a distinct namespace from constants.  Unset reads → nil. */
+      case PM_GLOBAL_VARIABLE_READ_NODE:
+        return ALLOC_node_const(kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name));
+      case PM_GLOBAL_VARIABLE_WRITE_NODE: {
+        const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, gw->name);
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
+        return ALLOC_node_const_set(name, val);
+      }
+      case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {     /* `$x op= v` */
+        const pm_global_variable_operator_write_node_t *gw =
+            (const pm_global_variable_operator_write_node_t *)node;
+        enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, gw->binary_operator));
+        if (op == KP_BINOP_NONE) return kp_unsupported(tc, node, "global operator-assign");
+        uint32_t name = kp_intern_cid(tc, gw->name), line = kp_line(tc, node);
+        NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
+            NODE *lhs, *rhs;
+            WITH_CHAIN(tc, kind_node_plus.slot_count,
+                       (lhs = ALLOC_node_const(name), rhs = transduce(tc, gw->value)));
+            alloc_binop(op, lhs, rhs, line);
+        }));
+        return ALLOC_node_const_set(name, binop);
+      }
 
       case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
         const pm_constant_write_node_t *cw = (const pm_constant_write_node_t *)node;
