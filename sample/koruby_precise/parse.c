@@ -1140,6 +1140,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_interpolated_string_node_t *in = (const pm_interpolated_string_node_t *)node;
         return build_dstr(tc, in->parts.nodes, in->parts.size);
       }
+      case PM_INTERPOLATED_SYMBOL_NODE: {     /* :"...#{ }..." → dstr.to_sym */
+        const pm_interpolated_symbol_node_t *in = (const pm_interpolated_symbol_node_t *)node;
+        uint32_t to_sym = korb_intern(tc->c->vm, "to_sym", 6);
+        NODE *str;
+        WITH_CHAIN(tc, 1, (str = build_dstr(tc, in->parts.nodes, in->parts.size)));
+        return ALLOC_node_send0(to_sym, kp_line(tc, node), str);
+      }
       case PM_EMBEDDED_STATEMENTS_NODE: {
         const pm_embedded_statements_node_t *en = (const pm_embedded_statements_node_t *)node;
         if (!en->statements) return ALLOC_node_lit(KORB_NIL);   /* #{} → "" via nil.to_s */

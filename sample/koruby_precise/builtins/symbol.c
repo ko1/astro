@@ -33,6 +33,29 @@ static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
+/* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
+static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
+    if (SYMBOL_P(name)) { *out = name; return true; }
+    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, s->buf->data, s->len)); return true; }
+    return false;
+}
+static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sym, name = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
+    CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));
+    return RESULT_OK(VALUE_SLICE_GET(a, 1));
+}
+static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sym, name = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    (void)slots;
+    if (!KORB_OBJECT_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(korb_ivar_get(VALUE_REF_GET(self), sym));
+}
 
 /* generic to_s / inspect — render via the printer into a fresh String.
  * Specific types (Integer#to_s, String#to_s, ...) override via their own table. */
