@@ -1245,8 +1245,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             } while (0)
 
         const bool has_splat = mw->rest && PM_NODE_TYPE_P(mw->rest, PM_SPLAT_NODE);
-        if (mw->rest && !has_splat)
-            return kp_unsupported(tc, node, "multi-assign with implicit/anonymous rest");
+        /* `a, b, = rhs` (trailing comma → implicit rest) just discards extra rhs
+         * elements, which the non-splat path already does — treat as no rest. */
+        if (mw->rest && !has_splat && !PM_NODE_TYPE_P(mw->rest, PM_IMPLICIT_REST_NODE))
+            return kp_unsupported(tc, node, "multi-assign with anonymous rest");
 
         if (!has_splat) {
             uint32_t nt = (uint32_t)mw->lefts.size;

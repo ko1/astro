@@ -153,6 +153,9 @@ enum korb_obj_type {
 /* bit 6: object has been frozen (koruby does not enforce immutability, but
  * tracks the bit so frozen? is accurate). */
 #define KORB_FL_FROZEN     0x40u
+/* bit 7 (Hash only): compare_by_identity — key lookup uses object identity (==)
+ * instead of value equality. */
+#define KORB_FL_CMP_BY_ID  0x80u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {

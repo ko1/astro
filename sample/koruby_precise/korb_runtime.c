@@ -514,6 +514,11 @@ static int32_t
 korb_hash_find(const KorbHash *h, VALUE key)
 {
     const VALUE *const d = h->items->data;
+    if (h->head.flags & KORB_FL_CMP_BY_ID) {        /* compare_by_identity */
+        for (uint32_t i = 0; i < h->len; i++)
+            if (d[2 * i] == key) return (int32_t)i;
+        return -1;
+    }
     for (uint32_t i = 0; i < h->len; i++)
         if (korb_value_eq(d[2 * i], key)) return (int32_t)i;
     return -1;
@@ -2682,6 +2687,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "[]=", korb_m_hash_aset, 2);
     korb_def_cmethod(c, KORB_C_HASH, "store", korb_m_hash_aset, 2);
     korb_def_cmethod(c, KORB_C_HASH, "size", korb_m_hash_size, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity", korb_m_hash_cmp_by_id, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity?", korb_m_hash_cmp_by_id_q, 0);
     korb_def_cmethod(c, KORB_C_HASH, "length", korb_m_hash_size, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "count", korb_m_hash_count, -1);
     korb_def_cmethod(c, KORB_C_HASH, "empty?", korb_m_hash_empty, 0);

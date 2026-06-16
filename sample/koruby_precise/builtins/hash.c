@@ -7,6 +7,16 @@ static RESULT korb_m_hash_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_hash_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->default_val); }
 
+static RESULT korb_m_hash_cmp_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    VALUE v = VALUE_REF_GET(self);
+    ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_CMP_BY_ID;
+    return RESULT_OK(v);
+}
+static RESULT korb_m_hash_cmp_by_id_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK((((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_CMP_BY_ID) ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     const KorbHash *h = SELF_HASH;
