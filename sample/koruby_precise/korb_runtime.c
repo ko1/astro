@@ -2821,6 +2821,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_frozen_q, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
@@ -3460,6 +3462,33 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(a0));
 }
 
+/* __binread(path) — read a whole file as a binary String (the one file-I/O
+ * primitive; the `File` class methods are layered on top in Ruby). */
+static RESULT
+korb_bi_binread(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    VALUE pv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    const KorbString *ps = VAL2STR(pv);
+    char path[4096];
+    if (UNLIKELY(ps->len >= sizeof(path)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "path too long");
+    memcpy(path, ps->buf->data, ps->len); path[ps->len] = '\0';
+    FILE *const f = fopen(path, "rb");
+    if (UNLIKELY(!f))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory - %s", path);
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (UNLIKELY(sz < 0)) { fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "ftell failed - %s", path); }
+    char *const buf = malloc((size_t)sz ? (size_t)sz : 1);
+    if (!buf) { fclose(f); abort(); }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)rd);
+    free(buf);
+    return r;
+}
+
 static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -3563,6 +3592,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);

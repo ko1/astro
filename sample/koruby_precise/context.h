@@ -147,6 +147,9 @@ enum korb_obj_type {
  * extended / singleton-method'd) recorded in the VM's sklass table.  Gates both
  * class lookup and dispatch so the common (no-override) path pays only a bit test. */
 #define KORB_FL_HAS_KLASS  0x20u
+/* bit 6: object has been frozen (koruby does not enforce immutability, but
+ * tracks the bit so frozen? is accurate). */
+#define KORB_FL_FROZEN     0x40u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {

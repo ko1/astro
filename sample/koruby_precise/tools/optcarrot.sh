@@ -8,6 +8,20 @@ FRAMES=${1:-30}
 BIN=${2:-$HERE/koruby_precise}
 BUNDLE=/tmp/optc_bundle.rb
 {
+  # File shim: koruby_precise has only the __binread C primitive; layer File's
+  # class methods on top in Ruby (basename/extname are pure string ops).
+  cat <<'SHIM'
+class File
+  def self.binread(path) = __binread(path)
+  def self.read(path) = __binread(path)
+  def self.basename(p) = (p.split("/").last || p)
+  def self.extname(p)
+    b = p.split("/").last || ""
+    i = b.rindex(".")
+    (i && i > 0) ? b[i..-1] : ""
+  end
+end
+SHIM
   # require-order: opt.rb (CodeOptimizationHelper) before cpu/ppu; mappers after
   # rom.rb (loaded at runtime by rom).  :none driver pulls no driver/*.
   for f in lib/optcarrot.rb lib/optcarrot/opt.rb lib/optcarrot/nes.rb \

@@ -32,6 +32,18 @@ static RESULT korb_m_obj_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_FALSE : KORB_TRUE); }
 static RESULT korb_m_obj_equal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(VALUE_REF_GET(self) == VALUE_SLICE_GET(a,0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+/* freeze: no-op (koruby has no frozen state) → self.  frozen?: true only for
+ * immediates (Integer/Symbol/nil/true/false), false otherwise. */
+static RESULT korb_m_obj_freeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+    if (AROH_IS_GC_OBJECT(v)) ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
+    return RESULT_OK(v);
+}
+static RESULT korb_m_obj_frozen_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
+    if (!AROH_IS_GC_OBJECT(v)) return RESULT_OK(KORB_TRUE);   /* immediates are frozen */
+    return RESULT_OK((((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
 /* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
 static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
