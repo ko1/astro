@@ -674,6 +674,44 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(LONG2FIX(sign * n));
 }
 
+/* Lenient radix parse for String#hex / #oct: skip ws + sign, optional base
+ * prefix (0x/0b/0o/0d — overrides `base` when `any_prefix`, else only the
+ * prefix matching `base`), then digits up to the first invalid char (`_`
+ * separators allowed between digits).  Returns 0 when nothing parses. */
+static intptr_t korb_str_radix(const char *const s, uint32_t len, int base, bool any_prefix) {
+    uint32_t i = 0, end = len;
+    while (i < end && isspace((unsigned char)s[i])) i++;
+    intptr_t sign = 1;
+    if (i < end && (s[i] == '+' || s[i] == '-')) { if (s[i] == '-') sign = -1; i++; }
+    if (i + 1 < end && s[i] == '0') {
+        const char p = s[i + 1] | 0x20;
+        const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
+        if (pb && (any_prefix || pb == base)) { base = pb; i += 2; }
+    }
+    intptr_t acc = 0; bool any = false, prev_us = false;
+    for (; i < end; i++) {
+        const char ch = s[i];
+        if (ch == '_') { if (!any || prev_us) break; prev_us = true; continue; }
+        prev_us = false;
+        int d;
+        if (ch >= '0' && ch <= '9') d = ch - '0';
+        else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') d = (ch | 0x20) - 'a' + 10;
+        else break;
+        if (d >= base) break;
+        acc = acc * base + d;
+        any = true;
+    }
+    return sign * acc;
+}
+static RESULT korb_m_str_hex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    return RESULT_OK(LONG2FIX(korb_str_radix(s->buf->data, s->len, 16, false)));
+}
+static RESULT korb_m_str_oct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    return RESULT_OK(LONG2FIX(korb_str_radix(s->buf->data, s->len, 8, true)));
+}
+
 /* trim: mode 0=both 1=left 2=right */
 /* mode: 0=both 1=left 2=right. With a charset arg (Ruby 4.0), strip those chars
  * (delete/count-style set with ranges + ^) instead of whitespace. */
