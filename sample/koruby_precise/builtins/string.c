@@ -462,16 +462,34 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     free(buf);
     return r;
 }
-/* gsub/sub with a literal String pattern + String replacement (no regex/block). */
+/* gsub/sub with a literal String pattern + String|Hash replacement (no regex/block). */
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place) {
-    VALUE pv = VALUE_SLICE_GET(a, 0), rv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(pv) || !KORB_STRING_P(rv)))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub supports only (String, String)");
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))                 /* regex pattern → deferred (astrogre) */
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub supports only a String pattern");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub without a replacement (Enumerator) is not supported");
+    VALUE rv = VALUE_SLICE_GET(a, 1);
     /* snapshot pattern + replacement bytes into stable C buffers (survive grows) */
     const KorbString *ps = VAL2STR(pv);
     uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
-    const KorbString *rs = VAL2STR(rv);
-    uint32_t rn = rs->len; char *rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn);
+    char *rep; uint32_t rn;
+    if (KORB_STRING_P(rv)) {
+        const KorbString *rs = VAL2STR(rv);
+        rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn);
+    } else if (KORB_HASH_P(rv)) {                     /* hash: matched substring → hash[match].to_s ("" if absent) */
+        int32_t idx = korb_hash_find(VAL2HASH(rv), pv);   /* literal pattern → key is the whole match */
+        if (idx < 0) { rn = 0; rep = malloc(1); }
+        else {
+            VALUE val = VAL2HASH(rv)->items->data[2 * idx + 1];
+            char *b = NULL; size_t z = 0; FILE *m = open_memstream(&b, &z);
+            if (m) { korb_fprint_to_s(c, m, val); fclose(m); }
+            rn = (uint32_t)z; rep = malloc(rn ? rn : 1); if (rn) memcpy(rep, b, rn); free(b);
+        }
+    } else {
+        free(pat);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv));
+    }
     /* build result into a C buffer (no GC during the scan) */
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { free(pat); free(rep); fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
