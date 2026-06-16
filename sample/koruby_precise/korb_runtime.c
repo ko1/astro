@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <math.h>
 #include <ctype.h>
+#include <errno.h>
 #include <dlfcn.h>
 
 #include "node.h"
@@ -3339,6 +3340,105 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(n > 0 ? VALUE_SLICE_GET(args, 0) : KORB_NIL);
 }
 
+/* strict string→integer parse for Integer():  optional surrounding whitespace,
+ * sign, base prefix (0x/0b/0o/0d, leading-0 octal when base auto), and `_`
+ * digit separators (single, between digits).  base==0 = auto-detect.  Returns
+ * false on any malformation or fixnum overflow. */
+static bool
+korb_str_to_int(const char *s, uint32_t len, int base, intptr_t *out)
+{
+    uint32_t i = 0, end = len;
+    while (i < end && isspace((unsigned char)s[i])) i++;
+    while (end > i && isspace((unsigned char)s[end - 1])) end--;
+    if (i >= end) return false;
+    int sign = 1;
+    if (s[i] == '+' || s[i] == '-') { if (s[i] == '-') sign = -1; i++; }
+    if (i < end && s[i] == '0' && i + 1 < end) {           /* prefix? */
+        char p = s[i + 1] | 0x20;
+        int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
+        if (pb && (base == 0 || base == pb)) { base = pb; i += 2; }
+        else if (base == 0) base = 8;                      /* leading 0 → octal */
+    }
+    if (base == 0) base = 10;
+    intptr_t acc = 0; bool any = false, prev_us = false;
+    for (; i < end; i++) {
+        char ch = s[i];
+        if (ch == '_') { if (!any || prev_us) return false; prev_us = true; continue; }
+        prev_us = false;
+        int d;
+        if (ch >= '0' && ch <= '9') d = ch - '0';
+        else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') d = (ch | 0x20) - 'a' + 10;
+        else return false;
+        if (d >= base) return false;
+        if (__builtin_mul_overflow(acc, base, &acc) ||
+            __builtin_add_overflow(acc, d, &acc)) return false;
+        any = true;
+    }
+    if (!any || prev_us) return false;
+    acc *= sign;
+    if (!FIXABLE(acc)) return false;
+    *out = acc;
+    return true;
+}
+
+/* Integer(arg[, base]) — Kernel conversion.  Integer→itself, Float→truncate
+ * toward zero, String→strict parse (ArgumentError on garbage). */
+static RESULT
+korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    if (UNLIKELY(n < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (FIXNUM_P(a0)) return RESULT_OK(a0);
+    if (KORB_FLOAT_P(a0)) {
+        double d = VAL2FLT(a0)->val;
+        if (UNLIKELY(!isfinite(d) || !FIXABLE((intptr_t)d)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "Integer(): value out of range");
+        return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */
+    }
+    if (KORB_STRING_P(a0)) {
+        int base = 0;
+        if (n >= 2) {
+            VALUE b = VALUE_SLICE_GET(args, 1);
+            if (UNLIKELY(!FIXNUM_P(b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
+            base = (int)FIX2LONG(b);
+        }
+        const KorbString *s = VAL2STR(a0);
+        intptr_t v;
+        if (UNLIKELY(!korb_str_to_int(s->buf->data, s->len, base, &v)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
+        return RESULT_OK(LONG2FIX(v));
+    }
+    if (a0 == KORB_NIL)
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert nil into Integer");
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(a0));
+}
+
+/* Float(arg) — Kernel conversion.  Float→itself, Integer→to f, String→strict. */
+static RESULT
+korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (KORB_FLOAT_P(a0)) return RESULT_OK(a0);
+    if (FIXNUM_P(a0)) return korb_float_new(c, slots, (double)FIX2LONG(a0));
+    if (KORB_STRING_P(a0)) {
+        const KorbString *s = VAL2STR(a0);
+        char buf[64];
+        if (s->len >= sizeof(buf)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
+        memcpy(buf, s->buf->data, s->len); buf[s->len] = '\0';
+        char *endp; errno = 0;
+        double d = strtod(buf, &endp);
+        while (*endp && isspace((unsigned char)*endp)) endp++;
+        if (UNLIKELY(endp == buf || *endp != '\0'))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
+        return korb_float_new(c, slots, d);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(a0));
+}
+
 static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -3442,6 +3542,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "Integer", korb_bi_integer, -1);
+    korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
     korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 
