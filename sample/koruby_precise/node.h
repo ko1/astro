@@ -52,6 +52,13 @@ struct korb_callcache {
     struct korb_method *m;
 };
 
+/* Inline ivar slot-cache — embedded in @ivar nodes via @ref.  Monomorphic:
+ * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
+ * GC-safe (no class pointer) and self-correcting across object layouts. */
+struct korb_ivcache {
+    int32_t slot;
+};
+
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
  * ALLOC_* declarations. */
 #include "node_head.h"
@@ -94,6 +101,8 @@ RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t 
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
 VALUE  korb_ivar_get(VALUE self, VALUE name_sym);
+/* write val into an existing ivar slot (cache-hit fast path; routes the WB). */
+void   korb_ivar_store_at(CTX *c, struct KorbObject *o, uint32_t slot, VALUE val);
 RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val);
 
 /* Classes + constants (korb_runtime.c) */

@@ -604,6 +604,12 @@ korb_ivar_get(VALUE self, VALUE name_sym)
     return KORB_NIL;
 }
 
+void
+korb_ivar_store_at(CTX *c, KorbObject *o, uint32_t slot, VALUE val)
+{
+    ARO_STORE(c, o->ivars, &o->ivars->data[2 * slot + 1], val);
+}
+
 RESULT
 korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val)
 {

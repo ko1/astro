@@ -876,22 +876,43 @@ node_self(CTX *c, NODE *n, VALUE *slots, int32_t self_off)
     return RESULT_OK(slots[self_off]);
 }
 
-NODE_DEF
-node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name)
+NODE_DEF @nogc
+node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, struct korb_ivcache *ic@ref)
 {
-    (void)n;
+    (void)n; (void)c;
     VALUE self = slots[self_off];
     if (!KORB_OBJECT_P(self)) return RESULT_OK(KORB_NIL);   /* @x on non-object self → nil */
-    return RESULT_OK(korb_ivar_get(self, ID2SYM(name)));
+    const KorbObject *const o = VAL2OBJ(self);
+    if (UNLIKELY(!o->ivars)) return RESULT_OK(KORB_NIL);
+    const VALUE sym = ID2SYM(name);
+    const int32_t s = ic->slot;                            /* inline cache: validated by name match */
+    if (LIKELY(s >= 0 && (uint32_t)s < o->ivar_len && o->ivars->data[2 * s] == sym))
+        return RESULT_OK(o->ivars->data[2 * s + 1]);
+    for (uint32_t i = 0; i < o->ivar_len; i++)             /* miss → scan + refill */
+        if (o->ivars->data[2 * i] == sym) { ic->slot = (int32_t)i; return RESULT_OK(o->ivars->data[2 * i + 1]); }
+    return RESULT_OK(KORB_NIL);
 }
 
 NODE_DEF
-node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VALUE val@child)
+node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VALUE val@child, struct korb_ivcache *ic@ref)
 {
     (void)n;
     if (UNLIKELY(!KORB_OBJECT_P(slots[self_off])))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "instance variable set on a non-object self");
-    return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
+    KorbObject *const o = VAL2OBJ(slots[self_off]);
+    const VALUE sym = ID2SYM(name);
+    const int32_t s = ic->slot;
+    if (LIKELY(o->ivars && s >= 0 && (uint32_t)s < o->ivar_len && o->ivars->data[2 * s] == sym)) {
+        korb_ivar_store_at(c, o, (uint32_t)s, val);   /* cache hit: in-place (WB) */
+        return RESULT_OK(val);
+    }
+    RESULT r = korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), sym, val);  /* miss: scan/append (may grow) */
+    if (LIKELY(r.state == KORB_NORMAL)) {                  /* refill cache from the (re-read) object */
+        const KorbObject *const o2 = VAL2OBJ(slots[self_off]);
+        for (uint32_t i = 0; i < o2->ivar_len; i++)
+            if (o2->ivars->data[2 * i] == sym) { ic->slot = (int32_t)i; break; }
+    }
+    return r;
 }
 
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------
