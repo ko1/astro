@@ -32,6 +32,7 @@ struct kp_frame {
     int32_t saved_chain;
     uint32_t synth_cnt;       /* synthetic temporaries appended after prism locals (e.g. case subject) */
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
+    bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     struct kp_frame *prev;
@@ -121,6 +122,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->saved_chain = tc->chain;
     f->synth_cnt = 0;
     f->uses_block = false;
+    f->module_function_mode = false;
     f->method_mid = 0;
     f->method_params = 0;
     f->prev = tc->frame;
@@ -532,6 +534,14 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_block_given(-5 - tc->chain);   /* block_entry cell (fs-5) */
     }
 
+    /* bare `module_function` — promote subsequent defs to module (singleton)
+     * methods too.  (The `module_function :sym` arg form stays a runtime no-op.) */
+    if (argc == 0 && cn->block == NULL &&
+        strcmp(kp_cid_cstr(tc, cn->name), "module_function") == 0) {
+        tc->frame->module_function_mode = true;
+        return lit_nil();
+    }
+
     /* attr_reader/writer/accessor :sym... → node_attr (defines getters/setters
      * on self = the enclosing class). */
     if (cn->block == NULL && argc > 0) {
@@ -738,7 +748,11 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
      * scope (staged as the node's child, like node_class's super); attach to its
      * singleton class. */
     NODE *recv_node = NULL;
-    if (dn->receiver) WITH_CHAIN(tc, 1, (recv_node = transduce(tc, dn->receiver)));
+    /* `module_function` mode: an instance def also becomes a singleton method on
+     * self (the module).  recv_node = self for the singleton copy. */
+    bool mod_func = !dn->receiver && tc->frame->module_function_mode;
+    if (dn->receiver)   WITH_CHAIN(tc, 1, (recv_node = transduce(tc, dn->receiver)));
+    else if (mod_func)  WITH_CHAIN(tc, 1, (recv_node = ALLOC_node_self(-1 - tc->chain)));
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
@@ -858,9 +872,17 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = recv_node
-        ? ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node)
-        : ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+    NODE *def;
+    if (mod_func) {
+        /* module_function: define as instance method AND as a singleton on self. */
+        NODE *idef = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+        NODE *sdef = ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node);
+        def = ALLOC_node_seq(idef, sdef);
+    } else {
+        def = recv_node
+            ? ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node)
+            : ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+    }
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */
