@@ -310,6 +310,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
+extern const struct NodeKind kind_node_send1;        /* op-assign fallback (&= |= ...) */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
@@ -1142,16 +1143,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             (const pm_instance_variable_operator_write_node_t *)node;
         const char *opname = kp_cid_cstr(tc, ow->binary_operator);
         enum kp_binop op = kp_binop_kind(opname);
-        if (op == KP_BINOP_NONE) {
-            char what[64]; snprintf(what, sizeof(what), "operator '%s='", opname);
-            return kp_unsupported(tc, node, strdup(what));
-        }
+        uint32_t opmid = kp_intern_cid(tc, ow->binary_operator);
         uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
-        uint32_t n_slots = kind_node_plus.slot_count;
-        NODE *lhs, *rhs;
-        WITH_CHAIN(tc, n_slots, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
-                                 rhs = transduce(tc, ow->value)));
-        return ALLOC_node_ivar_set(-1 - tc->chain, name, alloc_binop(op, lhs, rhs, line));
+        NODE *lhs, *rhs, *comb;
+        if (op != KP_BINOP_NONE) {
+            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+                                                       rhs = transduce(tc, ow->value)));
+            comb = alloc_binop(op, lhs, rhs, line);
+        } else {   /* &= |= ^= <<= >>= → method send */
+            WITH_CHAIN(tc, kind_node_send1.slot_count, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+                                                        rhs = transduce(tc, ow->value)));
+            comb = ALLOC_node_send1(opmid, line, lhs, rhs);
+        }
+        return ALLOC_node_ivar_set(-1 - tc->chain, name, comb);
       }
       case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: {        /* @x &&= v */
         const pm_instance_variable_and_write_node_t *aw =
@@ -1364,17 +1368,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             (const pm_local_variable_operator_write_node_t *)node;
         const char *opname = kp_cid_cstr(tc, ow->binary_operator);
         enum kp_binop op = kp_binop_kind(opname);
-        if (op == KP_BINOP_NONE) {
-            char what[64];
-            snprintf(what, sizeof(what), "operator '%s='", opname);
-            return kp_unsupported(tc, node, strdup(what));
-        }
+        uint32_t opmid = kp_intern_cid(tc, ow->binary_operator);
         uint32_t line = kp_line(tc, node);
-        uint32_t n_slots = kind_node_plus.slot_count;
-        NODE *lhs, *rhs;
-        WITH_CHAIN(tc, n_slots, (lhs = lvar_read(tc, node, ow->name, ow->depth),
-                                 rhs = transduce(tc, ow->value)));
-        return lvar_write(tc, node, ow->name, ow->depth, alloc_binop(op, lhs, rhs, line));
+        NODE *lhs, *rhs, *comb;
+        if (op != KP_BINOP_NONE) {
+            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = lvar_read(tc, node, ow->name, ow->depth),
+                                                       rhs = transduce(tc, ow->value)));
+            comb = alloc_binop(op, lhs, rhs, line);
+        } else {   /* &= |= ^= <<= >>= → method send */
+            WITH_CHAIN(tc, kind_node_send1.slot_count, (lhs = lvar_read(tc, node, ow->name, ow->depth),
+                                                        rhs = transduce(tc, ow->value)));
+            comb = ALLOC_node_send1(opmid, line, lhs, rhs);
+        }
+        return lvar_write(tc, node, ow->name, ow->depth, comb);
       }
       case PM_LOCAL_VARIABLE_AND_WRITE_NODE: {
         const pm_local_variable_and_write_node_t *aw =
