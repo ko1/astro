@@ -135,6 +135,26 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* Hash#shift — remove & return the first [k,v] pair (insertion order); nil if empty. */
+static RESULT korb_m_hash_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (VAL2HASH(VALUE_REF_GET(self))->len == 0) return RESULT_OK(KORB_NIL);
+    slots[0] = VAL2HASH(VALUE_REF_GET(self))->items->data[0];   /* key */
+    slots[1] = VAL2HASH(VALUE_REF_GET(self))->items->data[1];   /* val */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));           /* [k,v] (may GC) */
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(self));               /* re-read after alloc */
+    KorbArrayItems *it = h->items;
+    for (uint32_t i = 1; i < h->len; i++) {                    /* shift pairs down by one */
+        ARO_STORE(c, it, &it->data[2 * (i - 1)],     it->data[2 * i]);
+        ARO_STORE(c, it, &it->data[2 * (i - 1) + 1], it->data[2 * i + 1]);
+    }
+    h->len--;
+    ARO_STORE(c, it, &it->data[2 * h->len],     KORB_NIL);
+    ARO_STORE(c, it, &it->data[2 * h->len + 1], KORB_NIL);
+    return RESULT_OK(slots[2]);
+}
 /* Hash#each_value / each_key — yield each value (resp. key); return self. */
 static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want_key) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each_value/each_key without a block (Enumerator) is not supported");
