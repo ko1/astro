@@ -2877,8 +2877,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "chomp", korb_m_str_chomp, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chop", korb_m_str_chop, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "split", korb_m_str_split, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "chars", korb_m_str_chars_b, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "succ", korb_m_str_succ, 0);
     korb_def_cmethod(c, KORB_C_STRING, "next", korb_m_str_succ, 0);
     korb_def_cmethod(c, KORB_C_STRING, "succ!", korb_m_str_succ_bang, 0);
@@ -2914,9 +2914,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "lines", korb_m_str_lines, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "lines", korb_m_str_lines_b, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "bytes", korb_m_str_bytes, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "bytes", korb_m_str_bytes_b, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
     /* Symbol */

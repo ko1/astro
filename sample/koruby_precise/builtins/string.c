@@ -1219,4 +1219,22 @@ static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* bytes/chars/lines/codepoints WITH a block behave like each_* (yield, return
+ * self); without a block they return the array. */
+static RESULT korb_m_str_bytes_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block) return korb_m_str_each_byte(c, slots, self, a, block, def_env, cself);
+    return korb_m_str_bytes(c, slots, self, a);
+}
+static RESULT korb_m_str_chars_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block) return korb_m_str_each_char(c, slots, self, a, block, def_env, cself);
+    return korb_m_str_chars(c, slots, self, a);
+}
+static RESULT korb_m_str_lines_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block) return korb_m_str_each_line(c, slots, self, a, block, def_env, cself);
+    return korb_m_str_lines(c, slots, self, a);
+}
+static RESULT korb_m_str_codepoints_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block) return korb_m_str_each_codepoint(c, slots, self, a, block, def_env, cself);
+    return korb_m_str_codepoints(c, slots, self, a);
+}
 
