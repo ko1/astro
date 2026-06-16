@@ -4053,31 +4053,32 @@ static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)) == target ? KORB_TRUE : KORB_FALSE);
 }
-/* Object#extend(*mods) — mix the modules into the object's singleton class (a
- * per-instance class whose superclass is the object's current class).  Recorded
- * in the override table; .class stays transparent (singleton is skipped). */
-static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* Get-or-create obj's singleton class (a per-instance class whose superclass is
+ * obj's current class, is_singleton=1), recorded in the override table.  obj must
+ * be a heap object.  Returns the singleton (rooted via the table). */
+RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     struct korb_vm *const vm = c->vm;
+    if (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS) {
+        VALUE ov = korb_klass_override_get(vm, obj);
+        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) return RESULT_OK(ov);   /* reuse */
+    }
+    slots[0] = obj;                                                              /* root self across class alloc */
+    VALUE cur = (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS)
+                  ? korb_klass_override_get(vm, obj) : korb_class_obj_of(c, obj);
+    slots[1] = cur;
+    VALUE sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));               /* anonymous, super=cur */
+    VAL2CLASS(sing)->is_singleton = 1;
+    slots[2] = sing;
+    korb_klass_override_set(c, slots[0], slots[2]);                               /* obj/sing rooted, no GC in set */
+    return RESULT_OK(slots[2]);
+}
+/* Object#extend(*mods) — mix the modules into the object's singleton class. */
+static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_REF_GET(self);
     if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
-    VALUE sing = KORB_NIL;
-    if (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS) {
-        VALUE ov = korb_klass_override_get(vm, sv);
-        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) sing = ov;          /* reuse existing singleton */
-    }
-    if (sing == KORB_NIL) {                                                       /* create one, super = current class */
-        slots[0] = sv;
-        VALUE cur = (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS)
-                      ? korb_klass_override_get(vm, sv) : korb_class_obj_of(c, sv);
-        slots[1] = cur;
-        sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));                 /* anonymous, super=cur */
-        VAL2CLASS(sing)->is_singleton = 1;
-        slots[2] = sing;
-        korb_klass_override_set(c, slots[0], slots[2]);                           /* sv/sing rooted, no GC in set */
-        sv = slots[0]; sing = slots[2];
-    }
-    slots[0] = sv; slots[1] = sing;
+    slots[0] = sv;                                                               /* root self */
+    slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
         slots[2] = VALUE_SLICE_GET(a, i);
         CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));

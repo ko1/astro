@@ -724,7 +724,11 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 static NODE *
 transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 {
-    if (dn->receiver) return kp_unsupported(tc, (const pm_node_t *)dn, "singleton method (def self.x)");
+    /* `def recv.name` — singleton method.  Evaluate the receiver in the enclosing
+     * scope (staged as the node's child, like node_class's super); attach to its
+     * singleton class. */
+    NODE *recv_node = NULL;
+    if (dn->receiver) WITH_CHAIN(tc, 1, (recv_node = transduce(tc, dn->receiver)));
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
@@ -842,7 +846,9 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
     /* self at the def site (enclosing frame) = the default definee */
-    NODE *def = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+    NODE *def = recv_node
+        ? ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node)
+        : ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
 
     /* Every method body is its own AOT entry: call sites reach it through
      * body->head.dispatcher at runtime (specializer can't fold that). */

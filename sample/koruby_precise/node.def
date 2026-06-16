@@ -418,6 +418,18 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t param
     return RESULT_OK(ID2SYM(mid));
 }
 
+// `def recv.name ... end` — singleton method: attach to recv's singleton class.
+NODE_DEF @noinline
+node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, VALUE_REF recv@child)
+{
+    (void)n; (void)body_dispatcher;
+    VALUE obj = VALUE_REF_GET(recv);
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
+    VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
+    korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info);
+    return RESULT_OK(ID2SYM(mid));
+}
+
 // `class Name ... end` — create/find the class + run its body with self=class.
 // @noinline: body is a per-process node_entry pointer (not bakeable).
 NODE_DEF @noinline

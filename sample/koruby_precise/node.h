@@ -98,6 +98,7 @@ RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VA
 RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
+RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info);
