@@ -1769,6 +1769,19 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 {
     struct korb_vm *const vm = c->vm;
 
+    /* implicit-self send / __send__ / public_send → re-dispatch with self as the
+     * receiver (korb_send_impl shifts arg0 = the target method name). */
+    if (UNLIKELY(argc >= 1)) {
+        const char *nm = korb_sym_name(vm, mid);
+        if ((nm[0] == 's' && strcmp(nm, "send") == 0) ||
+            (nm[0] == '_' && strcmp(nm, "__send__") == 0) ||
+            (nm[0] == 'p' && strcmp(nm, "public_send") == 0)) {
+            for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+            slots[0] = self;                            /* recv below the args */
+            return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
+        }
+    }
+
     /* implicit self-call on a user instance → dispatch through its class chain
      * (a miss falls through to the global function table). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {

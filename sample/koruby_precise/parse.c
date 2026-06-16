@@ -1474,19 +1474,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_WHILE_NODE: {
         const pm_while_node_t *wn = (const pm_while_node_t *)node;
-        if (PM_NODE_FLAG_P(wn, PM_LOOP_FLAGS_BEGIN_MODIFIER))
-            return kp_unsupported(tc, node, "begin...end while (post-test loop)");
+        uint32_t post = PM_NODE_FLAG_P(wn, PM_LOOP_FLAGS_BEGIN_MODIFIER) ? 1u : 0u;
         NODE *cond = transduce(tc, wn->predicate);
         NODE *body = transduce_statements(tc, wn->statements);
-        return ALLOC_node_while(cond, body, 0);
+        return ALLOC_node_while(cond, body, 0, post);
       }
       case PM_UNTIL_NODE: {
         const pm_until_node_t *un = (const pm_until_node_t *)node;
-        if (PM_NODE_FLAG_P(un, PM_LOOP_FLAGS_BEGIN_MODIFIER))
-            return kp_unsupported(tc, node, "begin...end until (post-test loop)");
+        uint32_t post = PM_NODE_FLAG_P(un, PM_LOOP_FLAGS_BEGIN_MODIFIER) ? 1u : 0u;
         NODE *cond = transduce(tc, un->predicate);
         NODE *body = transduce_statements(tc, un->statements);
-        return ALLOC_node_while(cond, body, 1);
+        return ALLOC_node_while(cond, body, 1, post);
       }
       case PM_AND_NODE: {
         const pm_and_node_t *an = (const pm_and_node_t *)node;

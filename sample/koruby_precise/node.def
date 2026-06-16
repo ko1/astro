@@ -416,18 +416,25 @@ node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescue_class, NODE *
     return r;
 }
 
-// while (negate=0) / until (negate=1).  Result is nil.
+// while (negate=0) / until (negate=1).  `post`=1 → begin..end while (test after
+// the body, body always runs once).  Result is nil.
 NODE_DEF @nogc
-node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate)
+node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate, uint32_t post)
 {
     (void)n;
     for (;;) {
-        VALUE cv = UNWRAP(EVAL_ARG(c, cond));
-        if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
+        if (!post) {
+            VALUE cv = UNWRAP(EVAL_ARG(c, cond));
+            if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
+        }
         RESULT br = EVAL_ARG(c, body);
         if (UNLIKELY(br.state != KORB_NORMAL)) {
             if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
             return br;                                                 /* return / raise / next propagate */
+        }
+        if (post) {
+            VALUE cv = UNWRAP(EVAL_ARG(c, cond));
+            if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
         }
     }
     return RESULT_OK(KORB_NIL);
