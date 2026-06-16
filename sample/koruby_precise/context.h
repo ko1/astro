@@ -313,7 +313,7 @@ typedef struct KorbClass {
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
-    struct korb_method *methods;     /* libc side-array (no GC edges) */
+    struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
     VALUE ARO_GC_EDGE members;       /* Struct member-name Array (symbols), or nil */
@@ -428,7 +428,7 @@ struct korb_vm {
     uint32_t sym_cnt, sym_capa;
 
     /* global function table (no-receiver calls: puts, p, user `def foo`) */
-    struct korb_method *methods;
+    struct korb_method **methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)

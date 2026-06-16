@@ -844,20 +844,28 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
     vm->const_cnt++;
 }
 
-/* find mid in k->methods, or append a fresh slot (grows the libc side-array). */
+/* find mid in k->methods, or append a fresh entry.  Entries are individually
+ * calloc'd immortal objects (never moved/freed) so a frame- or cache-held
+ * korb_method* stays valid across method-table growth; the table itself is a
+ * realloc'able libc array of entry pointers. */
 static struct korb_method *
 korb_class_method_slot(KorbClass *const k, uint32_t mid)
 {
+    struct korb_method *m = NULL;
     for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i].mid == mid) return &k->methods[i];
-    if (k->method_cnt == k->method_capa) {
-        uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
-        k->methods = realloc(k->methods, sizeof(struct korb_method) * nc);
-        if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
-        k->method_capa = nc;
+        if (k->methods[i]->mid == mid) { m = k->methods[i]; break; }
+    if (!m) {
+        if (k->method_cnt == k->method_capa) {
+            uint32_t nc = k->method_capa ? k->method_capa * 2 : 8;
+            k->methods = realloc(k->methods, sizeof(struct korb_method *) * nc);
+            if (!k->methods) { fprintf(stderr, "koruby_precise: oom (methods)\n"); abort(); }
+            k->method_capa = nc;
+        }
+        m = calloc(1, sizeof(struct korb_method));
+        if (!m) { fprintf(stderr, "koruby_precise: oom (method entry)\n"); abort(); }
+        m->mid = mid;
+        k->methods[k->method_cnt++] = m;
     }
-    struct korb_method *const m = &k->methods[k->method_cnt++];
-    m->mid = mid;
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0;
     return m;
 }
@@ -935,7 +943,7 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
     while (KORB_CLASS_P(klass)) {
         KorbClass *k = VAL2CLASS(klass);
         for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i].mid == mid) { if (out_def) *out_def = klass; return &k->methods[i]; }
+            if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
         /* included modules, most-recently-included first (nearest ancestor) */
         if (k->included != KORB_NIL) {
             const KorbArray *inc = VAL2ARY(k->included);
@@ -944,7 +952,7 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
                 if (!KORB_CLASS_P(mod)) continue;
                 KorbClass *mk = VAL2CLASS(mod);
                 for (uint32_t i = 0; i < mk->method_cnt; i++)
-                    if (mk->methods[i].mid == mid) { if (out_def) *out_def = mod; return &mk->methods[i]; }
+                    if (mk->methods[i]->mid == mid) { if (out_def) *out_def = mod; return mk->methods[i]; }
             }
         }
         klass = k->superclass;
@@ -1183,7 +1191,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 if (!KORB_CLASS_P(mod)) continue;
                 KorbClass *mk = VAL2CLASS(mod);
                 for (uint32_t i = 0; i < mk->method_cnt; i++)
-                    if (mk->methods[i].mid == mid) { m = &mk->methods[i]; found_def = mod; break; }
+                    if (mk->methods[i]->mid == mid) { m = mk->methods[i]; found_def = mod; break; }
             }
         }
         if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
@@ -1813,16 +1821,17 @@ korb_method_slot(CTX *c, uint32_t mid)
 {
     struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->method_cnt; i++) {
-        if (vm->methods[i].mid == mid) return &vm->methods[i];
+        if (vm->methods[i]->mid == mid) return vm->methods[i];
     }
     if (vm->method_cnt == vm->method_capa) {
         vm->method_capa = vm->method_capa ? vm->method_capa * 2 : 32;
-        vm->methods = realloc(vm->methods, sizeof(struct korb_method) * vm->method_capa);
+        vm->methods = realloc(vm->methods, sizeof(struct korb_method *) * vm->method_capa);
         if (!vm->methods) { fprintf(stderr, "koruby_precise: out of memory (methods)\n"); abort(); }
     }
-    struct korb_method *m = &vm->methods[vm->method_cnt++];
-    memset(m, 0, sizeof(*m));
+    struct korb_method *m = calloc(1, sizeof(struct korb_method));   /* immortal entry */
+    if (!m) { fprintf(stderr, "koruby_precise: out of memory (method entry)\n"); abort(); }
     m->mid = mid;
+    vm->methods[vm->method_cnt++] = m;
     return m;
 }
 
@@ -1865,7 +1874,7 @@ static struct korb_method *
 korb_method_lookup(struct korb_vm *vm, uint32_t mid)
 {
     for (uint32_t i = 0; i < vm->method_cnt; i++) {
-        if (vm->methods[i].mid == mid) return &vm->methods[i];
+        if (vm->methods[i]->mid == mid) return vm->methods[i];
     }
     return NULL;
 }
@@ -2353,7 +2362,7 @@ korb_cmethod_slot(struct korb_vm *vm, enum korb_class cls, const char *name)
     const uint32_t mid = korb_intern(vm, name, strlen(name));
     KorbClass *const k = VAL2CLASS(korb_builtin_class_obj(vm, cls));
     for (uint32_t i = 0; i < k->method_cnt; i++)
-        if (k->methods[i].mid == mid) return NULL;   /* earlier registration wins */
+        if (k->methods[i]->mid == mid) return NULL;   /* earlier registration wins */
     return korb_class_method_slot(k, mid);
 }
 
