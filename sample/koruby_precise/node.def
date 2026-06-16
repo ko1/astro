@@ -649,31 +649,31 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
 // korb_send resolves (class_of(recv), mid) → built-in method fn.
 
 NODE_DEF
-node_send0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child)
+node_send0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, struct korb_inlcache *ic@ref)
 {
     (void)n; (void)recv;
-    return korb_send(c, slots, mid, line, 0);
+    return korb_send_cached(c, slots, mid, line, 0, ic);
 }
 
 NODE_DEF
-node_send1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child)
+node_send1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child, struct korb_inlcache *ic@ref)
 {
     (void)n; (void)recv; (void)a0;
-    return korb_send(c, slots, mid, line, 1);
+    return korb_send_cached(c, slots, mid, line, 1, ic);
 }
 
 NODE_DEF
-node_send2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child)
+node_send2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child, struct korb_inlcache *ic@ref)
 {
     (void)n; (void)recv; (void)a0; (void)a1;
-    return korb_send(c, slots, mid, line, 2);
+    return korb_send_cached(c, slots, mid, line, 2, ic);
 }
 
 NODE_DEF
-node_send3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
+node_send3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child, struct korb_inlcache *ic@ref)
 {
     (void)n; (void)recv; (void)a0; (void)a1; (void)a2;
-    return korb_send(c, slots, mid, line, 3);
+    return korb_send_cached(c, slots, mid, line, 3, ic);
 }
 
 // safe navigation `recv&.m(args)`: if recv is nil, yield nil without dispatch.

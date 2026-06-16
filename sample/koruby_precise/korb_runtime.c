@@ -2434,6 +2434,38 @@ korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
     return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
 }
 
+/* Per-call-site cached plain send (no block).  A monomorphic site resolves the
+ * receiver's dispatch class, and on a serial+class match invokes the cached
+ * method directly — skipping korb_send_impl's prologue, special-case probes and
+ * the mcache hash.  Special receivers (a class via new/yield/..., the send
+ * family) and lookup misses fall through to korb_send_impl for full handling;
+ * those never fill the cache, so such sites simply stay on the slow path.  Only
+ * normal-receiver, normal-method sites cache. */
+RESULT
+korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                 struct korb_inlcache *ic)
+{
+    struct korb_vm *const vm = c->vm;
+    const VALUE recv = slots[-(intptr_t)argc - 1];
+    /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
+     * send/__send__/public_send family need korb_send_impl's special handling. */
+    if (UNLIKELY(KORB_CLASS_P(recv) ||
+                 mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))
+        return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+
+    const VALUE klass = korb_dispatch_class(c, recv);
+    if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass))
+        return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+
+    VALUE def_class = KORB_NIL;
+    struct korb_method *const m =
+        KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
+    if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
+        return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+    ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+    return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+}
+
 RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self)

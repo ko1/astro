@@ -68,6 +68,17 @@ struct korb_constcache {
     uint32_t idx_plus1;
 };
 
+/* Per-call-site monomorphic method cache — embedded in send nodes via @ref.
+ * `klass` is the receiver's dispatch-start class object; valid while serial ==
+ * vm->method_serial (bumped on def AND GC, so a moved/reused class pointer can
+ * never false-hit — same safety model as the VM mcache). */
+struct korb_inlcache {
+    uint64_t serial;
+    VALUE    klass;
+    struct korb_method *m;
+    VALUE    def_class;
+};
+
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
  * ALLOC_* declarations. */
 #include "node_head.h"
@@ -160,6 +171,8 @@ void   korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
                             korb_method_blk_fn fn, int32_t arity);
 /* Dispatch `recv.mid(args)`: recv at slots[-argc-1], args at slots[-argc..]. */
 RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc);
+RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                        struct korb_inlcache *ic);
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
