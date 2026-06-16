@@ -155,12 +155,13 @@ static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_str_setbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE iv = VALUE_SLICE_GET(a, 0), bv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!FIXNUM_P(iv) || !FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    intptr_t i, b;                                          /* index/value coerce via to_int (Float truncates) */
+    if (UNLIKELY(!korb_to_index(iv, &i) || !korb_to_index(bv, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    intptr_t i = FIX2LONG(iv); if (i < 0) i += s->len;
-    if (UNLIKELY(i < 0 || (uint32_t)i >= s->len)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld out of string", (long)FIX2LONG(iv));
-    s->buf->data[i] = (char)(FIX2LONG(bv) & 0xFF);
-    return RESULT_OK(bv);
+    intptr_t idx = i; if (idx < 0) idx += s->len;
+    if (UNLIKELY(idx < 0 || (uint32_t)idx >= s->len)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld out of string", (long)i);
+    s->buf->data[idx] = (char)(b & 0xFF);
+    return RESULT_OK(bv);                                   /* returns the original value argument */
 }
 static RESULT korb_m_sym_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));

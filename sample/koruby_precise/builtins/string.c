@@ -867,8 +867,30 @@ static RESULT korb_m_str_chop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* String#split(sep=nil): nil/" " → whitespace runs; string sep → that literal
  * (trailing empty fields dropped). */
-static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* with a block, yield each field then return self; otherwise return the array. */
+static RESULT korb_split_finish(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF dst, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(dst));
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
+        if (i >= d->len) break;
+        VALUE e = d->items->data[i];
+        RESULT r = korb_block_yield(c, slots, block, def_env, &e, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE sepv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    /* limit: 0/omitted = unlimited + drop trailing empties; <0 = unlimited keep;
+     * >0 = at most `limit` fields (last = remainder).  limit==1 → [self] verbatim. */
+    intptr_t limit = 0;
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) (void)korb_to_index(VALUE_SLICE_GET(a, 1), &limit);
+    if (limit == 1) {                                         /* whole string, separator untouched */
+        VALUE_REF d1 = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
+        const uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
+        CHECK(korb_ary_push_val(c, slots + 1, d1, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, slen))));
+        return korb_split_finish(c, slots + 1, self, d1, block, def_env, cself);
+    }
     bool ws = (sepv == KORB_NIL);
     if (!ws) {
         if (UNLIKELY(!KORB_STRING_P(sepv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
@@ -881,16 +903,18 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     for (;;) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read each iter */
         uint32_t slen = s->len;
+        bool last_field = (limit > 0 && VAL2ARY(VALUE_REF_GET(dst))->len == (uint32_t)limit - 1);
         if (ws) {
             while (pos < slen && korb_is_ws((unsigned char)s->buf->data[pos])) pos++;
             if (pos >= slen) break;
             uint32_t start = pos;
+            if (last_field) { CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, slen - start)))); break; }
             while (pos < slen && !korb_is_ws((unsigned char)s->buf->data[pos])) pos++;
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, pos - start))));
         } else {
             const KorbString *sep = VAL2STR(VALUE_REF_GET(sepref));
             uint32_t seplen = sep->len;
-            int32_t found = (pos <= slen) ? korb_byte_find(s->buf->data + pos, slen - pos, sep->buf->data, seplen) : -1;
+            int32_t found = (!last_field && pos <= slen) ? korb_byte_find(s->buf->data + pos, slen - pos, sep->buf->data, seplen) : -1;
             if (found < 0) {
                 CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos))));
                 break;
@@ -900,13 +924,13 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             pos = end + (seplen ? seplen : 1);
         }
     }
-    if (!ws) {   /* CRuby drops trailing empty fields for an explicit separator */
+    if (!ws && limit == 0) {   /* CRuby drops trailing empty fields only when limit is 0/omitted */
         KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
         while (d->len > 0 && KORB_STRING_P(d->items->data[d->len-1]) && VAL2STR(d->items->data[d->len-1])->len == 0) {
             ARO_STORE(c, d->items, &d->items->data[--d->len], KORB_NIL);
         }
     }
-    return RESULT_OK(VALUE_REF_GET(dst));
+    return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
 }
 
 static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

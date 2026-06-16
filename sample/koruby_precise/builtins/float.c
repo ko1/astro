@@ -174,13 +174,14 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         lo = r->rbegin; hi = r->rend;
     } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
     intptr_t n = SELF_INT;
+    double lod, hid;
     if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
-        if (UNLIKELY(!FIXNUM_P(lo))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
-        if (n < FIX2LONG(lo)) return RESULT_OK(lo);
+        if (FIXNUM_P(lo)) { if (n < FIX2LONG(lo)) return RESULT_OK(lo); }
+        else { if (UNLIKELY(!korb_num_to_d(lo, &lod))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed"); if ((double)n < lod) return RESULT_OK(lo); }
     }
     if (hi != KORB_NIL) {
-        if (UNLIKELY(!FIXNUM_P(hi))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
-        if (n > FIX2LONG(hi)) return RESULT_OK(hi);
+        if (FIXNUM_P(hi)) { if (n > FIX2LONG(hi)) return RESULT_OK(hi); }
+        else { if (UNLIKELY(!korb_num_to_d(hi, &hid))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed"); if ((double)n > hid) return RESULT_OK(hi); }
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }

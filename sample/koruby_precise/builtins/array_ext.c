@@ -2,28 +2,56 @@
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- more Array methods -------------------------------------------------- */
 
-/* Array#pack — only the `C*` / `C<count>` directive (each element → one byte,
- * low 8 bits).  Enough for optcarrot's `pixels.pack("C*")` checksum path. */
+/* Array#pack — supports C/c (byte), x (null fill), a/A (ASCII string, null/space
+ * pad) directives, each with an optional count or `*`.  Covers optcarrot's
+ * `pixels.pack("C*")` checksum path plus the common x/a forms. */
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE tv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(tv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(tv));
     const KorbString *t = VAL2STR(tv);
-    if (UNLIKELY(t->len < 1 || t->buf->data[0] != 'C'))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#pack supports only the C directive");
     const KorbArray *ary = SELF_ARY;
-    uint32_t n;                                          /* element count to emit */
-    if (t->len >= 2 && t->buf->data[1] == '*') n = ary->len;
-    else if (t->len >= 2) { n = (uint32_t)strtoul(t->buf->data + 1, NULL, 10); if (n > ary->len) n = ary->len; }
-    else n = 1 > ary->len ? ary->len : 1;
-    char *const buf = malloc(n ? n : 1);
-    if (!buf) abort();
-    for (uint32_t i = 0; i < n; i++) {                   /* no alloc in this loop */
-        VALUE e = ary->items->data[i];
-        intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
-        buf[i] = (char)(unsigned char)(b & 0xFF);
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    uint32_t ti = 0, ai = 0;                             /* template / array cursors */
+    unsigned errtype = 0; const char *errmsg = NULL; char bad = 0;
+    while (ti < t->len) {
+        const char d = t->buf->data[ti++];
+        if (d == ' ' || d == '\t' || d == '\n') continue;
+        bool star = false; long cnt = 1;
+        if (ti < t->len && t->buf->data[ti] == '*') { star = true; ti++; }
+        else if (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') {
+            cnt = 0; while (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') cnt = cnt * 10 + (t->buf->data[ti++] - '0');
+        }
+        if (d == 'C' || d == 'c') {
+            uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t k = 0; k < emit; k++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                VALUE e = ary->items->data[ai++];
+                intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
+                fputc((int)(unsigned char)(b & 0xFF), ms);
+            }
+        } else if (d == 'x') {
+            uint32_t emit = star ? 0 : (uint32_t)cnt;
+            for (uint32_t k = 0; k < emit; k++) fputc(0, ms);
+        } else if (d == 'a' || d == 'A') {
+            if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+            VALUE e = ary->items->data[ai++];
+            if (UNLIKELY(!KORB_STRING_P(e))) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+            const KorbString *es = VAL2STR(e);
+            uint32_t want = star ? es->len : (uint32_t)cnt;
+            const char pad = (d == 'A') ? ' ' : '\0';
+            for (uint32_t k = 0; k < want; k++) fputc(k < es->len ? es->buf->data[k] : pad, ms);
+        } else {
+            bad = d; break;
+        }
+        if (errmsg) break;
     }
-    RESULT r = korb_str_new(c, slots, buf, n);
+    fclose(ms);
+    if (errmsg) { free(buf); return korb_raise(c, slots, errtype, 0, "%s", errmsg); }
+    if (bad)    { free(buf); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#pack: directive '%c' not supported", bad); }
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
     return r;
 }

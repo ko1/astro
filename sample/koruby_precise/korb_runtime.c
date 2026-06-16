@@ -2851,7 +2851,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "rstrip", korb_m_str_rstrip, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chomp", korb_m_str_chomp, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chop", korb_m_str_chop, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "split", korb_m_str_split, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "split", korb_m_str_split, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chars", korb_m_str_chars, 0);
     korb_def_cmethod(c, KORB_C_STRING, "codepoints", korb_m_str_codepoints, 0);
     korb_def_cmethod(c, KORB_C_STRING, "succ", korb_m_str_succ, 0);
