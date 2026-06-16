@@ -30,6 +30,7 @@ struct kp_frame {
     const pm_constant_id_list_t *locals;
     uint32_t bake_base;
     int32_t saved_chain;
+    uint32_t synth_cnt;       /* synthetic temporaries appended after prism locals (e.g. case subject) */
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
@@ -118,6 +119,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->locals = locals;
     f->bake_base = tc->bake_cnt;
     f->saved_chain = tc->chain;
+    f->synth_cnt = 0;
     f->uses_block = false;
     f->method_mid = 0;
     f->method_params = 0;
@@ -135,7 +137,7 @@ static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    uint32_t frame_size = (uint32_t)f->locals->size + 2u + (f->uses_block ? 3u : 0u);
+    uint32_t frame_size = (uint32_t)f->locals->size + f->synth_cnt + 2u + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
@@ -188,6 +190,14 @@ bake_lget(struct kp_ctx *tc, uint32_t index)
     NODE *n = ALLOC_node_lget((int32_t)index - tc->chain);
     bake_add(tc, &n->u.node_lget.off);
     return n;
+}
+
+/* Reserve a synthetic temporary in the current frame, appended after prism
+ * locals.  Returns its local index (usable with bake_lget/bake_lset). */
+static uint32_t
+alloc_synth_local(struct kp_ctx *tc)
+{
+    return (uint32_t)tc->frame->locals->size + tc->frame->synth_cnt++;
 }
 
 static NODE *
@@ -1286,6 +1296,47 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_ELSE_NODE: {
         const pm_else_node_t *en = (const pm_else_node_t *)node;
         return transduce_statements(tc, en->statements);
+      }
+      case PM_CASE_NODE: {
+        /* `case subj; when a, b; body; ...; else e; end` desugared to an if/elsif
+         * chain.  With a subject, each `when v` tests `v === subj`, the subject
+         * evaluated once into a synthetic temp.  Without a subject, each `when c`
+         * is a plain truthiness test. */
+        const pm_case_node_t *cn = (const pm_case_node_t *)node;
+        const bool has_subj = cn->predicate != NULL;
+        NODE *assign = NULL;
+        uint32_t tmp = 0;
+        if (has_subj) {
+            tmp = alloc_synth_local(tc);
+            NODE *subj = transduce(tc, cn->predicate);   /* register child: no staging */
+            assign = bake_lset(tc, tmp, subj);
+        }
+        uint32_t eqq = korb_intern(tc->c->vm, "===", 3);
+        NODE *chain = cn->else_clause
+            ? transduce_statements(tc, cn->else_clause->statements)
+            : lit_nil();
+        for (size_t wi = cn->conditions.size; wi-- > 0; ) {  /* fold last → first */
+            const pm_when_node_t *wn = (const pm_when_node_t *)cn->conditions.nodes[wi];
+            NODE *body = transduce_statements(tc, wn->statements);
+            NODE *cond = NULL;
+            for (size_t ci = 0; ci < wn->conditions.size; ci++) {
+                const pm_node_t *cv = wn->conditions.nodes[ci];
+                if (PM_NODE_TYPE_P(cv, PM_SPLAT_NODE))
+                    return kp_unsupported(tc, cv, "when with splat");
+                NODE *test;
+                if (has_subj) {
+                    NODE *vn, *targ; uint32_t line = kp_line(tc, cv);
+                    WITH_CHAIN(tc, 2, (vn = transduce(tc, cv), targ = bake_lget(tc, tmp)));
+                    test = ALLOC_node_send1(eqq, line, vn, targ);   /* v === subj */
+                } else {
+                    test = transduce(tc, cv);                       /* plain truthiness */
+                }
+                cond = cond ? ALLOC_node_or(cond, test) : test;
+            }
+            if (cond == NULL) cond = lit_nil();
+            chain = ALLOC_node_if(cond, body, chain);
+        }
+        return has_subj ? ALLOC_node_seq(assign, chain) : chain;
       }
       case PM_UNLESS_NODE: {
         const pm_unless_node_t *un = (const pm_unless_node_t *)node;

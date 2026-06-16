@@ -252,7 +252,7 @@ static RESULT korb_m_str_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
-static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the elements */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "each"));
@@ -268,7 +268,7 @@ static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; REQUIRE_BLOCK("Array#reverse_each");
     uint32_t i = VAL2ARY(VALUE_REF_GET(self))->len;
     while (i > 0) {
@@ -285,7 +285,7 @@ static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALU
 /* each_slice(n): consecutive n-element slices.  block → yield each slice (nil);
  * no block → an Enumerator over the slices.  The slices are pre-built into a
  * rooted array so yielding is GC-safe. */
-static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     intptr_t n;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -294,7 +294,7 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
      * slice-building allocs, else STRESS GC moves `main` and the later yield uses a
      * stale self), slots[2]=current slice, yield/scratch at slots+3. */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* array of slices */
-    slots[1] = captured_self;
+    slots[1] = KORB_CSELF_VAL(captured_self);
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i += (uint32_t)n) {
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, (uint32_t)n));   /* one slice; slots_top now covers [0..2] */
@@ -309,20 +309,20 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE sl = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &sl, 1, slots[1]);   /* rooted self */
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &sl, 1, &slots[1]);   /* rooted self */
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));    /* Ruby 4.0: block form returns the receiver */
 }
 /* each_cons(n): overlapping n-element windows.  block → yield each (nil); no block
  * → Enumerator.  Windows pre-built into a rooted array (GC-safe yields). */
-static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     intptr_t n;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid size");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
-    slots[1] = captured_self;                                    /* rooted across the build allocs */
+    slots[1] = KORB_CSELF_VAL(captured_self);                                    /* rooted across the build allocs */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i + (uint32_t)n <= VAL2ARY(VALUE_REF_GET(self))->len; i++) {
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, (uint32_t)n));   /* one window */
@@ -337,7 +337,7 @@ static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
         VALUE w = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
-        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &w, 1, slots[1]);
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &w, 1, &slots[1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));    /* Ruby 4.0: block form returns the receiver */
@@ -348,12 +348,12 @@ static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 /* shared engine: chunk_while closes a chunk where the block is FALSE; slice_when
  * closes where it is TRUE (slice_when = chunk_while with the predicate negated). */
-static RESULT korb_ary_chunk_impl(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, bool slice_when, const char *desc) {
+static RESULT korb_ary_chunk_impl(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool slice_when, const char *desc) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block given");
     /* slots[0]=out (chunks), slots[1]=captured_self (root across yields/allocs),
      * slots[2]=current chunk, yield args + scratch at slots+3. */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
-    slots[1] = captured_self;
+    slots[1] = KORB_CSELF_VAL(captured_self);
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if (len > 0) {
@@ -363,7 +363,7 @@ static RESULT korb_ary_chunk_impl(CTX *c, VALUE *slots, VALUE_REF self, NODE *bl
         for (uint32_t i = 1; i < len; i++) {
             VALUE argv[2] = { VAL2ARY(VALUE_REF_GET(self))->items->data[i - 1],
                               VAL2ARY(VALUE_REF_GET(self))->items->data[i] };
-            RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, slots[1]);
+            RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, &slots[1]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             bool boundary = KORB_TRUTHY(r.value) ? slice_when : !slice_when;
             if (boundary) {                                         /* close chunk */
@@ -378,13 +378,13 @@ static RESULT korb_ary_chunk_impl(CTX *c, VALUE *slots, VALUE_REF self, NODE *bl
     slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), desc));
     return korb_enum_new(c, slots + 3, VALUE_REF_GET(out), slots[2]);
 }
-static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; return korb_ary_chunk_impl(c, slots, self, block, def_env, captured_self, false, "chunk_while");
 }
-static RESULT korb_m_ary_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; return korb_ary_chunk_impl(c, slots, self, block, def_env, captured_self, true, "slice_when");
 }
-static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator of [elem, index] pairs */
         slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(self))->len));
@@ -411,7 +411,7 @@ static RESULT korb_m_ary_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
-static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the elements (for .with_index) */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "map"));
@@ -430,7 +430,7 @@ static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; REQUIRE_BLOCK("Integer#times");
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     for (intptr_t i = 0; i < n; i++) {
@@ -442,7 +442,7 @@ static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* up==true: self upto to (ascending); else downto (descending). */
-static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself, bool up, const char *meth) {
+static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool up, const char *meth) {
     VALUE lv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
     intptr_t to = FIX2LONG(lv), from = FIX2LONG(VALUE_REF_GET(self));
@@ -458,6 +458,6 @@ static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     else    for (intptr_t i = from; i >= to; i--) { VALUE iv = LONG2FIX(i); RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, true, "upto"); }
-static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, false, "downto"); }
+static RESULT korb_m_int_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, true, "upto"); }
+static RESULT korb_m_int_downto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_int_iter(c, slots, self, a, block, def_env, cself, false, "downto"); }
 

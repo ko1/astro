@@ -332,7 +332,7 @@ typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  * korb_block_yield. */
 typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
                                      VALUE_SLICE args, struct Node *block, VALUE *def_env,
-                                     VALUE captured_self);
+                                     VALUE *captured_self);
 
 struct korb_method {
     uint32_t mid;            /* interned name */

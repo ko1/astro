@@ -775,14 +775,14 @@ NODE_DEF @noinline
 node_call_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off)
 {
     (void)n; (void)block_dispatcher;
-    return korb_call_blk(c, slots, mid, line, cc, 0, slots[self_off], block, &slots[def_env_off], slots[self_off]);
+    return korb_call_blk(c, slots, mid, line, cc, 0, slots[self_off], block, &slots[def_env_off], &slots[self_off]);
 }
 
 NODE_DEF @noinline
 node_call_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF a0@child)
 {
     (void)n; (void)block_dispatcher; (void)a0;
-    return korb_call_blk(c, slots, mid, line, cc, 1, slots[self_off], block, &slots[def_env_off], slots[self_off]);
+    return korb_call_blk(c, slots, mid, line, cc, 1, slots[self_off], block, &slots[def_env_off], &slots[self_off]);
 }
 
 // Receiver method call with a literal block (arr.each { ... }).  Like
@@ -793,21 +793,21 @@ NODE_DEF @noinline
 node_send_blk0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child)
 {
     (void)n; (void)block_dispatcher; (void)recv;
-    return korb_send_blk(c, slots, mid, line, 0, block, &slots[def_env_off], slots[self_off]);
+    return korb_send_blk(c, slots, mid, line, 0, block, &slots[def_env_off], &slots[self_off]);
 }
 
 NODE_DEF @noinline
 node_send_blk1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child)
 {
     (void)n; (void)block_dispatcher; (void)recv; (void)a0;
-    return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off], slots[self_off]);
+    return korb_send_blk(c, slots, mid, line, 1, block, &slots[def_env_off], &slots[self_off]);
 }
 
 NODE_DEF @noinline
 node_send_blk2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF a0@child, VALUE_REF a1@child)
 {
     (void)n; (void)block_dispatcher; (void)recv; (void)a0; (void)a1;
-    return korb_send_blk(c, slots, mid, line, 2, block, &slots[def_env_off], slots[self_off]);
+    return korb_send_blk(c, slots, mid, line, 2, block, &slots[def_env_off], &slots[self_off]);
 }
 
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
@@ -817,14 +817,14 @@ NODE_DEF
 node_yield0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
 {
     (void)n;
-    return korb_yield(c, slots, 0, line, slots[biseq_off], slots[def_env_off], slots[cself_off]);
+    return korb_yield(c, slots, 0, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
 }
 
 NODE_DEF
 node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
-    return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off], slots[cself_off]);
+    return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
 }
 
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was

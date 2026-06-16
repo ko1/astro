@@ -965,7 +965,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         korb_const_define(c, name_sym, cls);    /* now rooted in the const table */
     }
     slots[0] = cls;                              /* root for the body run + capture */
-    return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, slots[0]);
+    return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
 }
 
 /* `include mod...` in a class/module body: append each module to klass->included
@@ -1750,12 +1750,12 @@ static VALUE  korb_set_elems_of(VALUE v);
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems);
 static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE captured_self);
+                             NODE *block, VALUE *def_env, VALUE *captured_self);
 static const struct korb_cmethod *korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
-               VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     struct korb_vm *const vm = c->vm;
 
@@ -1776,7 +1776,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
         }
     }
 
@@ -1837,20 +1837,20 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
     /* ISEQ global function: no defining class (super in a global fn has none). */
     return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
-                              block, def_env, captured_self);
+                              block, def_env, KORB_CSELF_VAL(captured_self));
 }
 
 RESULT
 korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
           struct korb_callcache *cc, uint32_t argc, VALUE self)
 {
-    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, KORB_NIL);
+    return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
 }
 
 RESULT
 korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               struct korb_callcache *cc, uint32_t argc,
-              VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+              VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     return korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
 }
@@ -1858,7 +1858,7 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 /* ---- node_entry accessors + yield ----------------------------------------- */
 
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                             NODE *block, VALUE *def_env, VALUE captured_self);
+                             NODE *block, VALUE *def_env, VALUE *captured_self);
 
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
@@ -1872,7 +1872,7 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
 RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                 const VALUE *argv, uint32_t argc, VALUE captured_self)
+                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
     /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals,
@@ -1905,7 +1905,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     }
-    bf[blocals] = captured_self;                        /* block's lexical self */
+    bf[blocals] = *captured_self;                       /* block's lexical self (re-read fresh) */
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
@@ -1914,7 +1914,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
 RESULT
 korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-           VALUE block_cell, VALUE def_env_cell, VALUE captured_self)
+           VALUE block_cell, VALUE def_env_cell, VALUE *captured_self)
 {
     /* Frame cells are odd-tagged when a block is present; nil (0) = none. */
     if (UNLIKELY(((uintptr_t)block_cell & 1u) == 0)) {
@@ -2024,7 +2024,7 @@ korb_find_cmethod(struct korb_vm *vm, enum korb_class cls, uint32_t mid)
  * ignored (CRuby); a yielding method called without a block gets NULL. */
 static RESULT
 korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-               NODE *block, VALUE *def_env, VALUE captured_self)
+               NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     struct korb_vm *const vm = c->vm;
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
@@ -2062,7 +2062,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
                 return RESULT_OK(slots[-(intptr_t)argc]);
             }
-            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
+            return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
         }
     }
     /* class receiver → Klass.new (allocate + initialize). */
@@ -2151,7 +2151,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
                 if (uinit) {
                     VALUE *ibase = slots - argc;
-                    RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, captured_self);
+                    RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                     return RESULT_OK(ibase[uinit->locals_cnt - 1]);   /* the (possibly moved) instance */
                 }
@@ -2166,7 +2166,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         struct korb_method *init = korb_class_find_method(*recv_slot, init_mid, &init_def);
         if (init) {
             VALUE *base = slots - argc;
-            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, init_def, block, def_env, captured_self);
+            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, init_def, block, def_env, KORB_CSELF_VAL(captured_self));
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
             return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
         }
@@ -2195,7 +2195,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(um->attr_ivar), v));
                     return RESULT_OK(slots[-(intptr_t)argc]);
                 }
-                return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, captured_self);
+                return korb_invoke_method(c, slots, um, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
             }
         }
     }
@@ -2228,12 +2228,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 RESULT
 korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
 {
-    return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, KORB_NIL);
+    return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
 }
 
 RESULT
 korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-              uint32_t argc, NODE *block, VALUE *def_env, VALUE captured_self)
+              uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     return korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
 }
@@ -2801,6 +2801,7 @@ korb_register_core_methods(CTX *c)
     /* Object (universal fallback) */
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_eq, 1);   /* default: same as == (Class/Range/Regexp/Set override) */
     korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);

@@ -16,6 +16,12 @@
  * check (v2_design §3.5). */
 #define KORB_FRAME_SLACK 1024
 
+/* captured_self is threaded as a POINTER to the defining frame's (scanned,
+ * GC-stable) self cell so it never goes stale across the GCs a block-iterating
+ * builtin triggers.  NULL = no block context (ordinary call); deref yields the
+ * always-fresh self.  KORB_CSELF_VAL guards the NULL case for VALUE consumers. */
+#define KORB_CSELF_VAL(cs) ((cs) ? *(cs) : KORB_NIL)
+
 /* ---- receiver accessors -------------------------------------------------- *
  * In every builtin method `self` is the rooted VALUE_REF receiver; SELF_<T>
  * decodes it to the concrete payload (or scalar for Int/Float). */
@@ -42,7 +48,7 @@
  * Define a Set method that forwards to the Array method over the backing
  * elements array (Set is array-backed). */
 #define KORB_SET_DELEG_BLK(name, target) \
-    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { \
+    static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { \
         slots[0] = SELF_SET->elems; return target(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself); }
 #define KORB_SET_DELEG(name, target) \
     static RESULT name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \

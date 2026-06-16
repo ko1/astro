@@ -84,7 +84,7 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(removed);
 }
 
-static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (UNLIKELY(block == NULL))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each without a block (Enumerator) is not supported");
@@ -113,7 +113,7 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* Hash#each_value / each_key — yield each value (resp. key); return self. */
-static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want_key) {
+static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want_key) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each_value/each_key without a block (Enumerator) is not supported");
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = SELF_HASH;
@@ -124,16 +124,16 @@ static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *bloc
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_hash_each_value(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_hash_each_value(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_hash_each_kv(c, slots, self, block, def_env, cself, 0);
 }
-static RESULT korb_m_hash_each_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_hash_each_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_hash_each_kv(c, slots, self, block, def_env, cself, 1);
 }
 
 /* Hash#merge(*others) [{ |key, old, new| }] — non-mutating; 0+ hash args merged
  * left-to-right into a copy of self; a block resolves key conflicts. */
-static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     slots[0] = UNWRAP(korb_hash_new(c, slots, SELF_HASH->len));   /* dst = copy of self */
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
@@ -169,7 +169,7 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Hash#update / merge! — like merge but mutates self in place, returns self. */
-static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE ov = VALUE_SLICE_GET(a, k);
         if (UNLIKELY(!KORB_HASH_P(ov)))

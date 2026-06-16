@@ -141,13 +141,13 @@ RESULT korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
-                     uint32_t argc, NODE *block, VALUE *def_env, VALUE captured_self);
+                     uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self);
 
 /* Invoke a block (node_entry + def_env) with `argc` args from `argv`.  The
  * block frame is laid out at the cursor `slots`; its self cell gets
  * `captured_self`.  NEXT is folded to NORMAL. */
 RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                        const VALUE *argv, uint32_t argc, VALUE captured_self);
+                        const VALUE *argv, uint32_t argc, VALUE *captured_self);
 
 /* keyword-parameter metadata for a method (NULL on the method if no keywords).
  * `slot` is the local index; `deflt` NULL = required keyword. */
@@ -171,12 +171,12 @@ RESULT korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
  * three land in the callee frame's reserved cells for `yield`. */
 RESULT korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                      struct korb_callcache *cc, uint32_t argc,
-                     VALUE self, NODE *block, VALUE *def_env, VALUE captured_self);
+                     VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self);
 
 /* yield to the current method's block.  `block_entry` / `def_env` /
  * `captured_self` are the (odd-tagged) reserved frame cells. */
 RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
-                  VALUE block_entry, VALUE def_env, VALUE captured_self);
+                  VALUE block_entry, VALUE def_env, VALUE *captured_self);
 
 /* node_entry field accessors (block body metadata) — defined in node.def's
  * node_entry struct; korb_yield reads them off the node_entry NODE. */

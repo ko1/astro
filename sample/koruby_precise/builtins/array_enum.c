@@ -3,7 +3,7 @@
 /* ---- Array enumerable / aggregate methods -------------------------------- */
 
 
-static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: first truthy-yield index */
         for (uint32_t i = 0; ; i++) {
             const KorbArray *ary = SELF_ARY;
@@ -22,7 +22,7 @@ static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(KORB_NIL);
 }
 
-static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: count truthy yields */
         intptr_t n = 0;
         for (uint32_t i = 0; ; i++) {
@@ -88,12 +88,12 @@ static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
     return RESULT_OK(best);
 }
 static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
-                             NODE *block, VALUE *def_env, VALUE cself, int *out);
+                             NODE *block, VALUE *def_env, VALUE *cself, int *out);
 /* min (want=-1) / max (want=1) via a comparator block.  The running best lives
  * in slots[0] (rooted); each yield may GC, so the element is re-read from the
  * rooted array after the compare. */
 static RESULT korb_ary_minmax_blk(CTX *c, VALUE *slots, VALUE_REF self, int want,
-                                  NODE *block, VALUE *def_env, VALUE cself) {
+                                  NODE *block, VALUE *def_env, VALUE *cself) {
     uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if (len == 0) return RESULT_OK(KORB_NIL);
     slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[0];   /* best (rooted) */
@@ -135,14 +135,14 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                             NODE *block, VALUE *def_env, VALUE cself) {
+                             NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t n;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, -1, n);
     if (block != NULL) return korb_ary_minmax_blk(c, slots, self, -1, block, def_env, cself);
     return korb_ary_minmax(c, slots, self, -1);
 }
 static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                             NODE *block, VALUE *def_env, VALUE cself) {
+                             NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t n;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n);
     if (block != NULL) return korb_ary_minmax_blk(c, slots, self, 1, block, def_env, cself);
@@ -175,7 +175,7 @@ static RESULT korb_m_ary_transpose(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * for a non-antisymmetric comparator (e.g. the degenerate `{|x| x}`).  min/max
  * land in slots[0]/slots[1]; A(i) re-reads the (possibly moved) element. */
 static RESULT korb_ary_minmax_pair_blk(CTX *c, VALUE *slots, VALUE_REF self,
-                                       NODE *block, VALUE *def_env, VALUE cself) {
+                                       NODE *block, VALUE *def_env, VALUE *cself) {
 #define A(idx) (VAL2ARY(VALUE_REF_GET(self))->items->data[(idx)])
     uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     if (n == 0) { slots[0] = KORB_NIL; slots[1] = KORB_NIL; return RESULT_OK(KORB_NIL); }
@@ -203,7 +203,7 @@ static RESULT korb_ary_minmax_pair_blk(CTX *c, VALUE *slots, VALUE_REF self,
 #undef A
 }
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                NODE *block, VALUE *def_env, VALUE cself) {
+                                NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block != NULL) {
         CHECK(korb_ary_minmax_pair_blk(c, slots, self, block, def_env, cself));  /* fills slots[0..1] */
@@ -222,7 +222,7 @@ static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * ArgumentError; a block exception propagates.  slots[0]/slots[1] hold the two
  * (rooted) operands across the yield, so the caller need not root them. */
 static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
-                             NODE *block, VALUE *def_env, VALUE cself, int *out) {
+                             NODE *block, VALUE *def_env, VALUE *cself, int *out) {
     slots[0] = lhs; slots[1] = rhs;                       /* stage + root args */
     RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[0], 2, cself);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -236,7 +236,7 @@ static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
 }
 
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                              NODE *block, VALUE *def_env, VALUE cself) {
+                              NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     uint32_t n = SELF_ARY->len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
@@ -285,7 +285,7 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 /* sort_by: build parallel value+key arrays via the block, insertion-sort by key. */
-static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#sort_by");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF vals = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF keys = VALUE_REF_AT(&slots[1]);
@@ -315,7 +315,7 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(vals));
 }
 /* sort_by!: sort in place by block key (sort_by then copy back into self). */
-static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     RESULT sr = korb_m_ary_sort_by(c, slots, self, a, block, def_env, cself);   /* sorted copy at slots[0] */
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     slots[0] = sr.value;                                  /* root the sorted array */
@@ -329,7 +329,7 @@ static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
-static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want) {
+static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#min_by/max_by without a block is not supported");
     slots[0] = KORB_NIL;   /* best value */
     slots[1] = KORB_NIL;   /* best key */
@@ -348,9 +348,9 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
     }
     return RESULT_OK(slots[0]);
 }
-static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
-static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
-static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
+static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
+static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     slots[0] = UNWRAP(korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1));
     slots[1] = UNWRAP(korb_ary_minmax_by(c, slots + 1, self, block, def_env, cself, 1));
@@ -360,7 +360,7 @@ static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(VALUE_REF_AT(&slots[2])));
 }
 /* filter_map: collect block results that are truthy. */
-static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#filter_map");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -374,7 +374,7 @@ static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* flat_map: map then flatten one level (Array results spliced). */
-static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#flat_map");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -397,7 +397,7 @@ static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* partition: [truthy_elems, falsy_elems]. */
-static RESULT korb_m_ary_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#partition");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));        VALUE_REF yes = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));    VALUE_REF no  = VALUE_REF_AT(&slots[1]);
@@ -415,7 +415,7 @@ static RESULT korb_m_ary_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(out));
 }
 /* group_by: Hash{ block_key => [elems...] }. */
-static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; ARY_REQUIRE_BLOCK("Array#group_by");
     slots[0] = UNWRAP(korb_hash_new(c, slots, 4));       VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
@@ -440,7 +440,7 @@ static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* grep(pat)(keep=1) / grep_v(pat)(keep=0): select by `pat === elem`, optional block map. */
-static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself, bool keep) {
+static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool keep) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -459,11 +459,11 @@ static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself)   { return korb_ary_grep(c, slots, self, a, block, def_env, cself, true); }
-static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) { return korb_ary_grep(c, slots, self, a, block, def_env, cself, false); }
+static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_ary_grep(c, slots, self, a, block, def_env, cself, true); }
+static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_ary_grep(c, slots, self, a, block, def_env, cself, false); }
 
 static RESULT korb_m_ary_sort_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                   NODE *block, VALUE *def_env, VALUE cself) {
+                                   NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) {
         KorbArray *d = VAL2ARY(VALUE_REF_GET(self));    /* in-place; cmp does not alloc */
@@ -571,7 +571,7 @@ static RESULT korb_m_ary_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
     ary->len = w;
     return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
 }
-static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#each_index");
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;
@@ -666,7 +666,7 @@ static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 /* select (keep==true) / reject (keep==false) */
-static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE captured_self, bool keep) {
+static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#select/reject without a block (Enumerator) is not supported");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -680,10 +680,10 @@ static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block,
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, true); }
-static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, false); }
+static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, true); }
+static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, false); }
 
-static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#find");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
@@ -696,7 +696,7 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(KORB_NIL);
 }
 
-static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#rfind");
     for (int64_t i = (int64_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
@@ -708,7 +708,7 @@ static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(KORB_NIL);
 }
-static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */
         VALUE needle = VALUE_SLICE_GET(a, 0);
         const KorbArray *ary = SELF_ARY;
@@ -729,7 +729,7 @@ static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 static bool korb_ary_has(const KorbArray *ar, VALUE v);
-static RESULT korb_m_ary_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#take_while");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
@@ -743,7 +743,7 @@ static RESULT korb_m_ary_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
-static RESULT korb_m_ary_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#drop_while");
     uint32_t start = 0; bool dropping = true;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
@@ -779,7 +779,7 @@ static RESULT korb_m_ary_intersect_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* bsearch: find-minimum (boolean block) or find-any (Integer block). Returns the
  * matching element, or nil. Array must be sorted for meaningful results. */
-static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#bsearch");
     uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE found = KORB_NIL; bool have = false;
@@ -804,7 +804,7 @@ static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(have ? found : KORB_NIL);
 }
 
-static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#bsearch_index");
     uint32_t lo = 0, hi = VAL2ARY(VALUE_REF_GET(self))->len;
     uint32_t found = 0; bool have = false;
@@ -826,7 +826,7 @@ static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(have ? LONG2FIX(found) : KORB_NIL);
 }
-static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#map!");
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
@@ -842,7 +842,7 @@ static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* Integer#step / Float#step (generic over numeric self) */
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
-static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE selfv = VALUE_REF_GET(self);
     VALUE limv = VALUE_SLICE_GET(a, 0);
@@ -883,7 +883,7 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 /* any? (mode 0) / all? (1) / none? (2). A pattern arg (case ===) wins over a block. */
-static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self, int mode) {
+static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
@@ -905,9 +905,9 @@ static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(mode == 0 ? KORB_FALSE : KORB_TRUE);
 }
-static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 0); }
-static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 1); }
-static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 2); }
+static RESULT korb_m_ary_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 0); }
+static RESULT korb_m_ary_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 1); }
+static RESULT korb_m_ary_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_ary_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
 /* Numeric binop for send/symbol dispatch (op: 0+ 1- 2* 3/ 4%). Int op int → Int
  * (overflow→error), Float involved → Float; matches the node_plus/minus/... paths. */
@@ -939,7 +939,7 @@ static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
     if (KORB_STRING_P(v))  { *op_mid = korb_intern(c->vm, VAL2STR(v)->buf->data, VAL2STR(v)->len); return true; }
     return false;
 }
-static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) {                                   /* symbol form: reduce(:+) / reduce(init, :+) */
         uint32_t na = VALUE_SLICE_LEN(a), op_mid;
         if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
@@ -977,7 +977,7 @@ static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(slots[0]);
 }
 
-static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE captured_self) {
+static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     ARY_REQUIRE_BLOCK("Array#each_with_object");
     slots[0] = VALUE_SLICE_GET(a, 0);                      /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {

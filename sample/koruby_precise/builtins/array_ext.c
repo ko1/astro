@@ -48,7 +48,7 @@ static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     ary->len--; ARO_STORE(c, it, &it->data[ary->len], KORB_NIL);
     return RESULT_OK(removed);
 }
-static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL) {                          /* block form: last index whose yield is truthy */
         for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
             slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
@@ -80,7 +80,7 @@ static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* zip rows: [ self[i], other0[i], other1[i], ... ]. With a block, yield each row
  * and return nil; otherwise collect rows into an array. dst lives at slots[1]
  * (block path leaves it nil/unused), rows built at slots[2]. */
-static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     uint32_t k = VALUE_SLICE_LEN(a);
     uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     slots[0] = (block == NULL) ? UNWRAP(korb_ary_new(c, slots, n)) : KORB_NIL;   /* dst */
