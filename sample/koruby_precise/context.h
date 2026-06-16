@@ -462,6 +462,14 @@ struct korb_vm {
     struct KorbFiberRep *starting_fiber;
     VALUE *main_slots, *main_slots_top;
 
+    /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
+     * serial == method_serial (bumped on def AND on GC, so a moved/reused class
+     * pointer can never produce a false hit). */
+    struct korb_mcache_ent {
+        uint64_t serial; VALUE klass; uint32_t mid;
+        struct korb_method *m; VALUE def_class;
+    } *mcache;
+
     const char *script_name; /* for error messages */
 };
 
@@ -522,6 +530,9 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
     }                                                                        \
+    /* class pointers may move/reuse this GC → invalidate method caches      \
+     * (mcache + node callcaches all validate against method_serial). */     \
+    (c)->vm->method_serial++;                                                \
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \

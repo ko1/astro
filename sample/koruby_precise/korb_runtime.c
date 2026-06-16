@@ -852,6 +852,26 @@ korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
     return NULL;
 }
 
+#define KORB_MCACHE_N 4096u   /* direct-mapped, power of two */
+/* cached korb_class_find_method for user-object dispatch (the hot path).  A hit
+ * requires serial match → no def/GC since fill → cached klass ptr + method ptr
+ * (libc methods array) are both still valid. */
+static inline struct korb_method *
+korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
+{
+    const uint32_t idx = (((uint32_t)((uintptr_t)klass >> 4)) ^ (mid * 2654435761u)) & (KORB_MCACHE_N - 1);
+    struct korb_mcache_ent *const e = &vm->mcache[idx];
+    if (LIKELY(e->serial == vm->method_serial && e->klass == klass && e->mid == mid)) {
+        *out_def = e->def_class;
+        return e->m;
+    }
+    VALUE def = KORB_NIL;
+    struct korb_method *const m = korb_class_find_method(klass, mid, &def);
+    e->serial = vm->method_serial; e->klass = klass; e->mid = mid; e->m = m; e->def_class = def;
+    *out_def = def;
+    return m;
+}
+
 /* Set up an ISEQ frame (args at slots[-argc..]) with `self` and `def_class`
  * (the class that defines this method — for `super`), and dispatch.  Shared by
  * instance dispatch, implicit self-calls, global calls, super, and new's init.
@@ -1800,7 +1820,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * (a miss falls through to the global function table). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
-        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid, &def_class);
+        struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
                 return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
@@ -2093,7 +2113,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
-        struct korb_method *um = korb_class_find_method(VAL2OBJ(self)->klass, mid, &def_class);
+        struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
                 return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
@@ -3640,6 +3660,8 @@ korb_ctx_new(void)
 
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
+    c->vm->mcache = calloc(KORB_MCACHE_N, sizeof(*c->vm->mcache));
+    if (!c->vm->mcache) { fprintf(stderr, "koruby_precise: out of memory (mcache)\n"); abort(); }
 
     aro_gc_init(c);
 
