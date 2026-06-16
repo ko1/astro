@@ -66,8 +66,11 @@ RUNTIME_ABSPATH    := $(abspath $(RUNTIME))
 PRISM_INC_ABSPATH  := $(abspath ./prism/include)
 
 SRCS = main.c node.c korb_runtime.c parse.c
+# builtins/*.c are #included into korb_runtime.c's TU (not compiled separately);
+# list them + korb_runtime.h so edits trigger a rebuild.
+BUILTINS_INCLUDED = $(wildcard builtins/*.c)
 
-koruby_precise: .built_gc Makefile $(SRCS) context.h node.h $(NODE_GENFILES) \
+koruby_precise: .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILTINS_INCLUDED) $(NODE_GENFILES) \
                 $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
                 $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
                 $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h $(RUNTIME)/astro_ref_template.h
