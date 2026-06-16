@@ -56,7 +56,8 @@ struct korb_callcache {
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
  * GC-safe (no class pointer) and self-correcting across object layouts. */
 struct korb_ivcache {
-    int32_t slot;
+    uint32_t shape_id;   /* object shape this entry is valid for (0 = empty/invalid) */
+    int32_t  slot;       /* ivar index in the values array */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
@@ -100,9 +101,11 @@ RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t 
 
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
-VALUE  korb_ivar_get(VALUE self, VALUE name_sym);
+VALUE  korb_ivar_get(CTX *c, VALUE self, VALUE name_sym);
 /* write val into an existing ivar slot (cache-hit fast path; routes the WB). */
 void   korb_ivar_store_at(CTX *c, struct KorbObject *o, uint32_t slot, VALUE val);
+/* ivar index of `sym` (raw id) in object `shape`, or -1 if absent (shape IC). */
+int32_t korb_shape_index(struct korb_vm *vm, uint32_t shape, uint32_t sym);
 RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val);
 
 /* Classes + constants (korb_runtime.c) */

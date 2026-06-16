@@ -284,10 +284,23 @@ typedef struct KorbRange {
  * instance-variable store ([name_sym, val, ...] pairs in a VALUE[] payload). */
 typedef struct KorbObject {
     AroObjectHeader head;            /* KORB_OBJ_OBJECT */
-    uint32_t ivar_len, ivar_capa;
+    uint32_t shape_id;               /* ivar layout (vm->shapes index; 1 = root) */
+    uint32_t ivar_capa;              /* values-array capacity (VALUE count) */
     VALUE ARO_GC_EDGE klass;         /* KorbClass | nil */
-    KorbArrayItems *ARO_GC_EDGE ivars;   /* 2*ivar_capa VALUEs, or NULL */
+    KorbArrayItems *ARO_GC_EDGE ivars;   /* ivar_capa VALUEs (values only), or NULL */
 } KorbObject;
+
+/* Object shape: a node in the ivar-layout transition tree (VM-side, libc-stable;
+ * objects hold an integer shape_id so the GC can't invalidate it).  Adding an
+ * ivar transitions shape→child(edge_sym).  ivar index = depth-1 at the shape
+ * whose edge_sym matches; the inline cache keys on shape_id. */
+struct korb_shape {
+    uint32_t parent;                 /* parent shape id (0 = none, root's parent) */
+    uint32_t edge_sym;               /* ivar id added vs parent (UINT32_MAX at root) */
+    uint32_t ivar_count;             /* = depth = number of ivars */
+    struct korb_shape_edge { uint32_t sym, child; } *edges;   /* sym → child shape */
+    uint32_t edge_cnt, edge_capa;
+};
 
 /* User class.  The instance-method table is a libc side-array (method bodies
  * are immortal NODEs, names interned ints → no GC edges), so `methods` is a
@@ -469,6 +482,10 @@ struct korb_vm {
         uint64_t serial; VALUE klass; uint32_t mid;
         struct korb_method *m; VALUE def_class;
     } *mcache;
+
+    /* object shape table (ivar-layout tree).  shapes[0]=unused, shapes[1]=root. */
+    struct korb_shape *shapes;
+    uint32_t shape_cnt, shape_capa;
 
     const char *script_name; /* for error messages */
 };

@@ -589,54 +589,106 @@ korb_obj_new(CTX *c, VALUE *slots, VALUE klass)
 {
     VALUE_REF kref = SLOTS_PUSH(slots, klass);        /* root klass across alloc */
     KorbObject *o = korb_alloc(c, slots, sizeof(KorbObject), KORB_OBJ_OBJECT);
-    /* zero-init: ivar_len/capa=0, klass=nil, ivars=NULL */
+    o->shape_id = 1;                                  /* root shape (no ivars) */
+    /* zero-init: ivar_capa=0, klass=nil, ivars=NULL */
     if (klass != KORB_NIL) ARO_STORE(c, o, (VALUE *)(uintptr_t)&o->klass, VALUE_REF_GET(kref));
     return RESULT_OK((VALUE)o);
 }
 
+/* --- object shapes (ivar-layout transition tree; VM-side / libc-stable) --- */
+static uint32_t
+korb_shape_new(struct korb_vm *vm, uint32_t parent, uint32_t edge_sym)
+{
+    if (vm->shape_cnt == vm->shape_capa) {
+        uint32_t nc = vm->shape_capa ? vm->shape_capa * 2 : 64;
+        vm->shapes = realloc(vm->shapes, sizeof(*vm->shapes) * nc);
+        if (!vm->shapes) { fprintf(stderr, "koruby_precise: oom (shapes)\n"); abort(); }
+        vm->shape_capa = nc;
+    }
+    uint32_t id = vm->shape_cnt++;
+    struct korb_shape *s = &vm->shapes[id];
+    s->parent = parent;
+    s->edge_sym = edge_sym;
+    s->ivar_count = parent ? vm->shapes[parent].ivar_count + 1 : 0;
+    s->edges = NULL; s->edge_cnt = s->edge_capa = 0;
+    return id;
+}
+
+/* find-or-create the child shape reached by adding ivar `sym` to `shape`. */
+static uint32_t
+korb_shape_transition(struct korb_vm *vm, uint32_t shape, uint32_t sym)
+{
+    struct korb_shape *s = &vm->shapes[shape];
+    for (uint32_t i = 0; i < s->edge_cnt; i++)
+        if (s->edges[i].sym == sym) return s->edges[i].child;
+    uint32_t child = korb_shape_new(vm, shape, sym);  /* may realloc vm->shapes */
+    s = &vm->shapes[shape];                            /* re-read after possible realloc */
+    if (s->edge_cnt == s->edge_capa) {
+        uint32_t nc = s->edge_capa ? s->edge_capa * 2 : 4;
+        s->edges = realloc(s->edges, sizeof(*s->edges) * nc);
+        if (!s->edges) { fprintf(stderr, "koruby_precise: oom (shape edges)\n"); abort(); }
+        s->edge_capa = nc;
+    }
+    s->edges[s->edge_cnt].sym = sym;
+    s->edges[s->edge_cnt].child = child;
+    s->edge_cnt++;
+    return child;
+}
+
+/* ivar index of `sym` in `shape` (walk to root via edge_sym), or -1 if absent. */
+int32_t
+korb_shape_index(struct korb_vm *vm, uint32_t shape, uint32_t sym)
+{
+    while (shape) {
+        const struct korb_shape *s = &vm->shapes[shape];
+        if (s->edge_sym == sym) return (int32_t)s->ivar_count - 1;
+        shape = s->parent;
+    }
+    return -1;
+}
+
 VALUE
-korb_ivar_get(VALUE self, VALUE name_sym)
+korb_ivar_get(CTX *c, VALUE self, VALUE name_sym)
 {
     const KorbObject *o = VAL2OBJ(self);
-    if (!o->ivars) return KORB_NIL;
-    for (uint32_t i = 0; i < o->ivar_len; i++)
-        if (o->ivars->data[2 * i] == name_sym) return o->ivars->data[2 * i + 1];
-    return KORB_NIL;
+    int32_t idx = korb_shape_index(c->vm, o->shape_id, SYM2ID(name_sym));
+    if (idx < 0) return KORB_NIL;
+    return o->ivars->data[idx];
 }
 
 void
 korb_ivar_store_at(CTX *c, KorbObject *o, uint32_t slot, VALUE val)
 {
-    ARO_STORE(c, o->ivars, &o->ivars->data[2 * slot + 1], val);
+    ARO_STORE(c, o->ivars, &o->ivars->data[slot], val);   /* values-only array */
 }
 
 RESULT
 korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val)
 {
-    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow GC */
+    const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
-    if (o->ivars) {                                   /* update existing */
-        for (uint32_t i = 0; i < o->ivar_len; i++)
-            if (o->ivars->data[2 * i] == name_sym) {
-                KorbArrayItems *it = o->ivars;
-                ARO_STORE(c, it, &it->data[2 * i + 1], VALUE_REF_GET(vref));
-                return RESULT_OK(VALUE_REF_GET(vref));
-            }
+    int32_t idx = korb_shape_index(c->vm, o->shape_id, sym);
+    if (idx >= 0) {                                   /* existing ivar: in-place (no GC) */
+        ARO_STORE(c, o->ivars, &o->ivars->data[idx], val);
+        return RESULT_OK(val);
     }
-    if (!o->ivars || o->ivar_len == o->ivar_capa) {   /* grow / first alloc */
+    /* new ivar: transition shape + (maybe) grow the values array. */
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow GC */
+    const uint32_t nshape = korb_shape_transition(c->vm, o->shape_id, sym);   /* libc, no GC */
+    const uint32_t ncount = c->vm->shapes[nshape].ivar_count;   /* = old count + 1 */
+    o = VAL2OBJ(VALUE_REF_GET(selfref));
+    if (!o->ivars || ncount > o->ivar_capa) {         /* grow / first alloc */
         uint32_t ncapa = o->ivar_capa ? o->ivar_capa * 2 : 4;
-        KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * 2 * sizeof(VALUE),
+        while (ncapa < ncount) ncapa *= 2;
+        KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * sizeof(VALUE),
                                          KORB_OBJ_VALUE_ARRAY);
         o = VAL2OBJ(VALUE_REF_GET(selfref));          /* re-read after GC */
-        if (o->ivars) ARO_STORE_BULK(c, nit, nit->data, o->ivars->data, (size_t)o->ivar_len * 2);
+        if (o->ivars) ARO_STORE_BULK(c, nit, nit->data, o->ivars->data, (size_t)(ncount - 1));
         ARO_STORE(c, o, (VALUE *)(uintptr_t)&o->ivars, (VALUE)(uintptr_t)nit);
         o->ivar_capa = ncapa;
     }
-    KorbArrayItems *it = o->ivars;
-    uint32_t i = o->ivar_len;
-    ARO_STORE(c, it, &it->data[2 * i],     name_sym);   /* symbol immediate, edge-qualified */
-    ARO_STORE(c, it, &it->data[2 * i + 1], VALUE_REF_GET(vref));
-    o->ivar_len++;
+    o->shape_id = nshape;                             /* commit transition */
+    ARO_STORE(c, o->ivars, &o->ivars->data[ncount - 1], VALUE_REF_GET(vref));
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
@@ -1057,7 +1109,7 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "super: no superclass method '%s'", korb_sym_name(c->vm, mid));
     if (m->kind == KORB_METHOD_ATTR_R)
-        return RESULT_OK(korb_ivar_get(self, ID2SYM(m->attr_ivar)));
+        return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
     return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
@@ -1823,7 +1875,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
-                return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+                return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
             if (um->kind == KORB_METHOD_ATTR_W) {
                 if (UNLIKELY(argc != 1))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -2116,7 +2168,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
-                return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+                return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
             if (um->kind == KORB_METHOD_ATTR_W) {
                 if (UNLIKELY(argc != 1))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -2256,7 +2308,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             struct korb_method *um = korb_class_find_method(ov, mid, &def_class);
             if (um) {
                 if (um->kind == KORB_METHOD_ATTR_R)
-                    return RESULT_OK(korb_ivar_get(self, ID2SYM(um->attr_ivar)));
+                    return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
                 if (um->kind == KORB_METHOD_ATTR_W) {
                     if (UNLIKELY(argc != 1))
                         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 1)", argc);
@@ -3662,6 +3714,11 @@ korb_ctx_new(void)
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
     c->vm->mcache = calloc(KORB_MCACHE_N, sizeof(*c->vm->mcache));
     if (!c->vm->mcache) { fprintf(stderr, "koruby_precise: out of memory (mcache)\n"); abort(); }
+    c->vm->shapes = calloc(64, sizeof(*c->vm->shapes));   /* [0]=unused, [1]=root */
+    if (!c->vm->shapes) { fprintf(stderr, "koruby_precise: out of memory (shapes)\n"); abort(); }
+    c->vm->shape_capa = 64;
+    c->vm->shape_cnt = 2;
+    c->vm->shapes[1].edge_sym = 0xFFFFFFFFu;             /* root: no ivars, no edge */
 
     aro_gc_init(c);
 
