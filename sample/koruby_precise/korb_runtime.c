@@ -906,6 +906,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = KORB_METHOD_ISEQ;
+    m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -928,6 +929,7 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = is_writer ? KORB_METHOD_ATTR_W : KORB_METHOD_ATTR_R;
+    m->owner = klass;
     m->params_cnt = is_writer ? 1 : 0;
     m->attr_ivar = ivar_sym;
     m->body = NULL;
@@ -1039,7 +1041,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
     for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
     base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = def_class;     /* odd-tagged not needed: class is a heap obj or nil */
+    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged -> GC skips); super reads owner, __method__ reads mid */
+    (void)def_class;
     if (block != NULL && m->uses_block) {
         base[locals_cnt - 5] = (VALUE)((uintptr_t)block   | 1u);
         base[locals_cnt - 4] = (VALUE)((uintptr_t)def_env | 1u);
@@ -1121,7 +1124,8 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     if (locals_cnt > argc) memset(base + argc, 0, (locals_cnt - argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = def_class;        /* def_class for `super`; nil for global/simple */
+    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
+    (void)def_class;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) r.state = KORB_NORMAL;
@@ -1174,11 +1178,16 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     return RESULT_OK(VALUE_REF_GET(kref));
 }
 
-/* `super` — invoke `mid` starting from def_class's superclass, keeping self. */
+/* `super` — invoke `mid` starting from def_class's superclass, keeping self.
+ * `entry_cell` is the frame's fs-2 cell: the running method's entry (tagged
+ * korb_method*); its owner is the def_class to search above. */
 RESULT
 korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-           VALUE def_class, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+           VALUE entry_cell, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
 {
+    const struct korb_method *const cur =
+        ((uintptr_t)entry_cell & 1u) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u) : NULL;
+    const VALUE def_class = cur ? cur->owner : KORB_NIL;
     VALUE found_def = KORB_NIL;
     struct korb_method *m = NULL;
     /* MRO after def_class: its included modules (nearest first), then superclass. */
@@ -2360,10 +2369,13 @@ static struct korb_method *
 korb_cmethod_slot(struct korb_vm *vm, enum korb_class cls, const char *name)
 {
     const uint32_t mid = korb_intern(vm, name, strlen(name));
-    KorbClass *const k = VAL2CLASS(korb_builtin_class_obj(vm, cls));
+    const VALUE clsobj = korb_builtin_class_obj(vm, cls);
+    KorbClass *const k = VAL2CLASS(clsobj);
     for (uint32_t i = 0; i < k->method_cnt; i++)
         if (k->methods[i]->mid == mid) return NULL;   /* earlier registration wins */
-    return korb_class_method_slot(k, mid);
+    struct korb_method *const m = korb_class_method_slot(k, mid);
+    m->owner = clsobj;
+    return m;
 }
 
 void

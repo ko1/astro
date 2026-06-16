@@ -408,6 +408,10 @@ struct korb_method {
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     struct Node *body;       /* ISEQ */
+    VALUE owner;             /* defining class/module (super's def_class), nil for a global fn.
+                              * Manually GC-forwarded (entry is immortal libc, so the class
+                              * visitor + roots forward this field — like const_vals).  owner/mid
+                              * never change, so a frame-held entry yields a live owner + stable mid. */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     korb_builtin_fn bfn;     /* BUILTIN (global C fn) */
@@ -566,6 +570,10 @@ struct CTX_struct {
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \
     }                                                                        \
+    /* global fn entries (immortal libc): forward each entry's owner edge. */ \
+    for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->owner); \
+    }                                                                        \
     /* per-instance class override table: forward both columns in lockstep   \
      * so the (object, class) pairing survives compaction. */                \
     for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
@@ -689,6 +697,9 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->superclass);            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->included);             \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->members);             \
+        /* method entries are immortal libc; forward each entry's owner edge. */ \
+        for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++)               \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
