@@ -96,8 +96,21 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each without a block (Enumerator) is not supported");
+    if (block == NULL) {                                 /* no block → Enumerator over [k,v] pairs */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, SELF_HASH->len));
+        VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = SELF_HASH;
+            if (i >= h->len) break;
+            slots[1] = h->items->data[2 * i]; slots[2] = h->items->data[2 * i + 1];
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+            CHECK(korb_ary_push_val(c, slots + 4, arr, slots[3]));
+        }
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
+    }
     const uint32_t np = korb_entry_params_cnt(block);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = SELF_HASH;

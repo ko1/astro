@@ -298,6 +298,21 @@ static RESULT korb_m_str_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     while (cl < s->len && ((unsigned char)s->buf->data[cl] & 0xC0) == 0x80) cl++;
     return korb_str_slice_new(c, slots, self, 0, cl);
 }
+/* String#ord — codepoint of the first character (UTF-8); empty → ArgumentError. */
+static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty string");
+    const unsigned char *d = (const unsigned char *)s->buf->data;
+    unsigned char c0 = d[0]; uint32_t cp, n;
+    if (c0 < 0x80)             { cp = c0;        n = 1; }
+    else if ((c0 & 0xE0) == 0xC0) { cp = c0 & 0x1F; n = 2; }
+    else if ((c0 & 0xF0) == 0xE0) { cp = c0 & 0x0F; n = 3; }
+    else if ((c0 & 0xF8) == 0xF0) { cp = c0 & 0x07; n = 4; }
+    else                       { cp = c0;        n = 1; }   /* invalid lead → raw byte */
+    for (uint32_t k = 1; k < n && k < s->len; k++) cp = (cp << 6) | (d[k] & 0x3F);
+    return RESULT_OK(LONG2FIX((intptr_t)cp));
+}
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     VALUE sv = VALUE_SLICE_GET(a, 0);

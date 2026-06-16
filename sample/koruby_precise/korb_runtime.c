@@ -2903,6 +2903,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "byterindex", korb_m_str_byterindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chr", korb_m_str_chr, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "ord", korb_m_str_ord, 0);
     korb_def_cmethod(c, KORB_C_STRING, "rindex", korb_m_str_rindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "swapcase", korb_m_str_swapcase, 0);
     korb_def_cmethod(c, KORB_C_STRING, "ljust", korb_m_str_ljust, -1);
