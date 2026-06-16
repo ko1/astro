@@ -1013,7 +1013,8 @@ korb_class_obj_of(CTX *c, VALUE self)
 {
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) return VAL2OBJ(self)->klass;
     if (AROH_IS_GC_OBJECT(self) && (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)) {
-        VALUE ov = korb_klass_override_get(c->vm, self);   /* subclass instance → its real class */
+        VALUE ov = korb_klass_override_get(c->vm, self);
+        while (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) ov = VAL2CLASS(ov)->superclass;  /* singleton is transparent */
         if (ov != KORB_NIL) return ov;
     }
     if (KORB_EXC_P(self)) {
@@ -4015,14 +4016,73 @@ static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE target = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     if (target == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return RESULT_OK(KORB_TRUE);
-    VALUE cls = korb_class_obj_of(c, VALUE_REF_GET(self));
-    while (KORB_CLASS_P(cls)) { if (cls == target) return RESULT_OK(KORB_TRUE); cls = VAL2CLASS(cls)->superclass; }
+    VALUE sv = VALUE_REF_GET(self);
+    /* start from the RAW override (singleton included) so extended modules count */
+    VALUE cls = (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))
+                  ? korb_klass_override_get(c->vm, sv)
+                  : korb_class_obj_of(c, sv);
+    while (KORB_CLASS_P(cls)) {
+        if (cls == target) return RESULT_OK(KORB_TRUE);
+        VALUE inc = VAL2CLASS(cls)->included;            /* included/extended modules count */
+        if (inc != KORB_NIL) {
+            const KorbArray *ia = VAL2ARY(inc);
+            for (uint32_t j = 0; j < ia->len; j++) if (ia->items->data[j] == target) return RESULT_OK(KORB_TRUE);
+        }
+        cls = VAL2CLASS(cls)->superclass;
+    }
     return RESULT_OK(KORB_FALSE);
+}
+static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    VALUE mv = VALUE_SLICE_GET(a, 0);
+    uint32_t mid;
+    if (SYMBOL_P(mv)) mid = SYM2ID(mv);
+    else if (KORB_STRING_P(mv)) mid = korb_intern(vm, VAL2STR(mv)->buf->data, VAL2STR(mv)->len);
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(mv));
+    VALUE sv = VALUE_REF_GET(self);
+    if (KORB_OBJECT_P(sv) && VAL2OBJ(sv)->klass != KORB_NIL && korb_class_find_method(VAL2OBJ(sv)->klass, mid, NULL))
+        return RESULT_OK(KORB_TRUE);
+    if (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS)) {
+        VALUE ov = korb_klass_override_get(vm, sv);
+        if (ov != KORB_NIL && korb_class_find_method(ov, mid, NULL)) return RESULT_OK(KORB_TRUE);
+    }
+    return RESULT_OK(korb_find_cmethod(vm, korb_class_of(sv), mid) != NULL ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");
     return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)) == target ? KORB_TRUE : KORB_FALSE);
+}
+/* Object#extend(*mods) — mix the modules into the object's singleton class (a
+ * per-instance class whose superclass is the object's current class).  Recorded
+ * in the override table; .class stays transparent (singleton is skipped). */
+static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    VALUE sv = VALUE_REF_GET(self);
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
+    VALUE sing = KORB_NIL;
+    if (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS) {
+        VALUE ov = korb_klass_override_get(vm, sv);
+        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) sing = ov;          /* reuse existing singleton */
+    }
+    if (sing == KORB_NIL) {                                                       /* create one, super = current class */
+        slots[0] = sv;
+        VALUE cur = (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS)
+                      ? korb_klass_override_get(vm, sv) : korb_class_obj_of(c, sv);
+        slots[1] = cur;
+        sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));                 /* anonymous, super=cur */
+        VAL2CLASS(sing)->is_singleton = 1;
+        slots[2] = sing;
+        korb_klass_override_set(c, slots[0], slots[2]);                           /* sv/sing rooted, no GC in set */
+        sv = slots[0]; sing = slots[2];
+    }
+    slots[0] = sv; slots[1] = sing;
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
+        slots[2] = VALUE_SLICE_GET(a, i);
+        CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));
+    }
+    return RESULT_OK(slots[0]);
 }
 /* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
 static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -8833,6 +8893,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);

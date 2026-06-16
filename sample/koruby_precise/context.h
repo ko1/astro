@@ -249,6 +249,7 @@ typedef struct KorbClass {
     int32_t  exc_etype;              /* builtin exception class → its etype, else -1 */
     uint32_t method_cnt, method_capa;
     uint8_t  is_module;              /* 1 = module (mixin, not instantiable) */
+    uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
     struct korb_method *methods;     /* libc side-array (no GC edges) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
