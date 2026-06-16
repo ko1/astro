@@ -2827,6 +2827,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_writer", korb_m_class_attr_writer, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_accessor", korb_m_class_attr_accessor, -1);

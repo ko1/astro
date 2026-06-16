@@ -296,6 +296,33 @@ static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)slots;
     return RESULT_OK(korb_case_eq(c, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE);
 }
+/* Module#const_get(sym|str) — consts are a flat (global) table here, so the
+ * receiver's namespace is ignored; rightmost name resolves. */
+static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    VALUE name = VALUE_SLICE_GET(a, 0);
+    uint32_t id;
+    if (SYMBOL_P(name)) id = SYM2ID(name);
+    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, s->buf->data, s->len); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
+    return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
+}
+/* Module#const_defined?(sym|str) — flat table membership. */
+static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)slots;
+    VALUE name = VALUE_SLICE_GET(a, 0);
+    uint32_t id;
+    if (SYMBOL_P(name)) id = SYM2ID(name);
+    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, s->buf->data, s->len); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == id) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
+}
 /* Object#then / yield_self — yield self, return the block's value (no block → self). */
 static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
