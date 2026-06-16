@@ -2681,6 +2681,7 @@ korb_fmt_int(intptr_t n, int base, char *buf)
 #include "builtins/symbol.c"
 #include "builtins/enumerator.c"
 #include "builtins/set.c"
+#include "builtins/math.c"
 #include "builtins/array.c"
 #include "builtins/hash.c"
 #include "builtins/array_enum.c"
@@ -4042,6 +4043,7 @@ korb_ctx_new(void)
      * them (korb_def_cmethod attaches CFUNC entries to the class objects). */
     korb_init_builtin_classes(c, c->slots);
     korb_init_exception_classes(c, c->slots);
+    korb_init_math(c, c->slots);
     korb_register_core_methods(c);
 
     /* resolve dispatch-hot method names once (see struct korb_vm). */
