@@ -920,6 +920,16 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     return ALLOC_node_class(name_sym, entry, super_node);
 }
 
+/* Build `lget(t).[](i)` — index a synth-temp array; used by the general
+ * multi-assign desugar (`a, b.x = arr` → t=arr; a=t[0]; b.x=t[1]). */
+static NODE *
+mw_index_get(struct kp_ctx *tc, uint32_t t, uint32_t i, uint32_t aref, uint32_t line)
+{
+    NODE *r, *k;
+    WITH_CHAIN(tc, 2, (r = bake_lget(tc, t), k = ALLOC_node_lit(LONG2FIX((intptr_t)i))));
+    return ALLOC_node_send1(aref, line, r, k);
+}
+
 /* `module Name ... end` → node_module (own scope, run with self = the module). */
 static NODE *
 transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
@@ -1237,8 +1247,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (!has_splat) {
             uint32_t nt = (uint32_t)mw->lefts.size;
             /* classify: all depth-0 locals → node_massign (fast); a mix of
-             * local / @ivar / CONST → node_massign_het; anything else → no. */
-            bool all_local = true;
+             * local / @ivar / CONST → node_massign_het; a call/attribute target
+             * (recv.x=) → general synth-temp desugar; anything else → no. */
+            bool all_local = true, needs_general = false;
             for (uint32_t i = 0; i < nt; i++) {
                 const pm_node_t *t = mw->lefts.nodes[i];
                 if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
@@ -1247,9 +1258,43 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
                     all_local = false;
+                } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
+                    all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
                 }
+            }
+            if (needs_general) {
+                /* t = rhs; target_i = t[i] ...; → result is the rhs array. */
+                uint32_t tmp = alloc_synth_local(tc);
+                uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+                NODE *acc = bake_lset(tc, tmp, transduce(tc, mw->value));
+                for (uint32_t i = 0; i < nt; i++) {
+                    const pm_node_t *t = mw->lefts.nodes[i];
+                    uint32_t line = kp_line(tc, t);
+                    NODE *assign;
+                    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                        pm_constant_id_t cid = ((const pm_local_variable_target_node_t *)t)->name;
+                        assign = lvar_write(tc, t, cid, 0, mw_index_get(tc, tmp, i, aref, line));
+                    } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
+                        uint32_t name = kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name);
+                        assign = ALLOC_node_ivar_set(-1 - tc->chain, name, mw_index_get(tc, tmp, i, aref, line));
+                    } else if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+                        uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
+                        NODE *v; uint32_t sc = kind_node_const_set.slot_count;
+                        WITH_CHAIN(tc, sc, (v = mw_index_get(tc, tmp, i, aref, line)));
+                        assign = ALLOC_node_const_set(name, v);
+                    } else {   /* PM_CALL_TARGET_NODE: recv.setter=(t[i]) */
+                        const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
+                        uint32_t setter = kp_intern_cid(tc, ct->name);
+                        NODE *r, *v;
+                        WITH_CHAIN(tc, 2, (r = transduce(tc, ct->receiver),
+                                           v = mw_index_get(tc, tmp, i, aref, line)));
+                        assign = ALLOC_node_send1(setter, line, r, v);
+                    }
+                    acc = ALLOC_node_seq(acc, assign);
+                }
+                return ALLOC_node_seq(acc, bake_lget(tc, tmp));   /* massign value = rhs */
             }
             if (all_local) {
                 int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
