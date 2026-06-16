@@ -1330,7 +1330,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             v = transduce(tc, rn->arguments->arguments.nodes[0]);
         }
         else {
-            return kp_unsupported(tc, node, "return with multiple values");
+            /* `return a, b, ...` → return the values as an Array. */
+            size_t cnt = rn->arguments->arguments.size;
+            v = build_array(tc, rn->arguments->arguments.nodes, cnt, (uint32_t)cnt);
         }
         return ALLOC_node_return(v);
       }
@@ -1358,7 +1360,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *v;
         if (nn->arguments == NULL || nn->arguments->arguments.size == 0) v = lit_nil();
         else if (nn->arguments->arguments.size == 1) v = transduce(tc, nn->arguments->arguments.nodes[0]);
-        else return kp_unsupported(tc, node, "next with multiple values");
+        else { size_t cnt = nn->arguments->arguments.size; v = build_array(tc, nn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `next a, b` → [a, b] */
         return ALLOC_node_next(v);
       }
 
