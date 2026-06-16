@@ -838,7 +838,9 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         body = transduce_statements(tc, (const pm_statements_node_t *)dn->body);
     }
     else {
-        body = kp_unsupported(tc, dn->body, "def body with rescue/ensure");
+        /* def-body rescue/ensure — the body is an (implicit) begin node, handled
+         * by the PM_BEGIN_NODE transducer (node_begin). */
+        body = transduce(tc, dn->body);
     }
 
     uint32_t uses_block = tc->frame->uses_block ? 1u : 0u;

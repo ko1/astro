@@ -30,7 +30,7 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (korb_value_eq(it->data[r], v)) found = true;
         else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
     }
-    for (uint32_t r = w; r < ary->len; r++) it->data[r] = KORB_NIL;
+    for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
     ary->len = w;
     return RESULT_OK(found ? v : KORB_NIL);
 }
@@ -45,7 +45,7 @@ static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     KorbArrayItems *it = ary->items;
     VALUE removed = it->data[i];
     for (uint32_t r = (uint32_t)i; r + 1 < ary->len; r++) ARO_STORE(c, it, &it->data[r], it->data[r + 1]);
-    ary->len--; it->data[ary->len] = KORB_NIL;
+    ary->len--; ARO_STORE(c, it, &it->data[ary->len], KORB_NIL);
     return RESULT_OK(removed);
 }
 static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {

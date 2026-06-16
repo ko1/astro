@@ -392,6 +392,45 @@ static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_str_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_delete_into(c, slots, self, a, false); }
 static RESULT korb_m_str_delete_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_delete_into(c, slots, self, a, true); }
+/* expand a tr spec (byte level) — `a-z` ranges into individual bytes. */
+static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, uint32_t cap) {
+    uint32_t k = 0, i = 0;
+    while (i < n && k < cap) {
+        if (i + 2 < n && s[i + 1] == '-' && (unsigned char)s[i] <= (unsigned char)s[i + 2]) {
+            for (int ch = (unsigned char)s[i]; ch <= (unsigned char)s[i + 2] && k < cap; ch++) out[k++] = (unsigned char)ch;
+            i += 3;
+        } else out[k++] = (unsigned char)s[i++];
+    }
+    return k;
+}
+/* String#tr(from, to) — byte-level translate; `^` negation, ranges, to-empty
+ * deletes, to-shorter repeats its last char.  (UTF-8 chars beyond ASCII pass.) */
+static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE fv = VALUE_SLICE_GET(a, 0), tv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
+    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    unsigned char fromx[512], tox[512];
+    uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
+    uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));      /* no GC during the scan */
+    for (uint32_t i = 0; i < s->len; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i];
+        int idx = -1;
+        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
+        bool match = neg ? (idx < 0) : (idx >= 0);
+        if (!match) { fputc(ch, ms); continue; }
+        if (tn == 0) continue;                              /* delete */
+        fputc(neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1], ms);
+    }
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
+    free(buf);
+    return r;
+}
 /* gsub/sub with a literal String pattern + String replacement (no regex/block). */
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place) {
     VALUE pv = VALUE_SLICE_GET(a, 0), rv = VALUE_SLICE_GET(a, 1);
@@ -730,7 +769,7 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (!ws) {   /* CRuby drops trailing empty fields for an explicit separator */
         KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
         while (d->len > 0 && KORB_STRING_P(d->items->data[d->len-1]) && VAL2STR(d->items->data[d->len-1])->len == 0) {
-            d->items->data[--d->len] = KORB_NIL;
+            ARO_STORE(c, d->items, &d->items->data[--d->len], KORB_NIL);
         }
     }
     return RESULT_OK(VALUE_REF_GET(dst));

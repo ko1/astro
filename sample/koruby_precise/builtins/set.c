@@ -47,7 +47,7 @@ static RESULT korb_m_set_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (uint32_t i = 0; i < ar->len; i++)
         if (korb_value_eq(ar->items->data[i], v)) {
             for (uint32_t j = i; j + 1 < ar->len; j++) ARO_STORE(c, ar->items, &ar->items->data[j], ar->items->data[j+1]);
-            ar->items->data[--ar->len] = KORB_NIL;
+            ARO_STORE(c, ar->items, &ar->items->data[--ar->len], KORB_NIL);
             break;
         }
     return RESULT_OK(VALUE_REF_GET(self));
@@ -271,6 +271,26 @@ static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)c;(void)slots;(void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
 }
+/* runtime attr_reader/writer/accessor (the dynamic `attr_reader id` form that
+ * the parser can't desugar at parse time; self is the class). */
+static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {
+    struct korb_vm *const vm = c->vm;
+    VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "attr on a non-class");
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE sym = VALUE_SLICE_GET(a, i);
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
+        if (!SYMBOL_P(sym)) continue;
+        const char *nm = korb_sym_name(vm, SYM2ID(sym));
+        char buf[256]; snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        if (reader) korb_class_def_attr(c, cls, korb_intern(vm, nm, strlen(nm)), ivar, 0);
+        if (writer) { snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, cls, korb_intern(vm, buf, strlen(buf)), ivar, 1); }
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_class_attr_reader(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_m_class_attr(c, slots, self, a, 1, 0); }
+static RESULT korb_m_class_attr_writer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_m_class_attr(c, slots, self, a, 0, 1); }
+static RESULT korb_m_class_attr_accessor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_class_attr(c, slots, self, a, 1, 1); }
 /* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
 static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;

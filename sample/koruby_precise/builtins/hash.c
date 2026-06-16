@@ -79,8 +79,8 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         ARO_STORE(c, it, &it->data[2 * i + 1], it->data[2 * (i + 1) + 1]);
     }
     h->len--;
-    it->data[2 * h->len] = KORB_NIL;                     /* drop tail refs (nil = no WB) */
-    it->data[2 * h->len + 1] = KORB_NIL;
+    ARO_STORE(c, it, &it->data[2 * h->len], KORB_NIL);   /* drop tail refs (nil = no WB) */
+    ARO_STORE(c, it, &it->data[2 * h->len + 1], KORB_NIL);
     return RESULT_OK(removed);
 }
 
@@ -110,6 +110,25 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Hash#each_value / each_key — yield each value (resp. key); return self. */
+static RESULT korb_hash_each_kv(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE cself, int want_key) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#each_value/each_key without a block (Enumerator) is not supported");
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = SELF_HASH;
+        if (i >= h->len) break;
+        VALUE e = h->items->data[2 * i + (want_key ? 0 : 1)];
+        RESULT r = korb_block_yield(c, slots, block, def_env, &e, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_hash_each_value(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; return korb_hash_each_kv(c, slots, self, block, def_env, cself, 0);
+}
+static RESULT korb_m_hash_each_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE cself) {
+    (void)a; return korb_hash_each_kv(c, slots, self, block, def_env, cself, 1);
 }
 
 /* Hash#merge(*others) [{ |key, old, new| }] — non-mutating; 0+ hash args merged

@@ -142,7 +142,7 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if ((uint32_t)i >= ary->len) {
         CHECK(korb_ary_ensure(c, slots, self, (uint32_t)i + 1 - ary->len));
         ary = SELF_ARY;                                  /* re-read after grow GC */
-        for (uint32_t k = ary->len; k <= (uint32_t)i; k++) ary->items->data[k] = KORB_NIL;
+        for (uint32_t k = ary->len; k <= (uint32_t)i; k++) ARO_STORE(c, ary->items, &ary->items->data[k], KORB_NIL);
         ary->len = (uint32_t)i + 1;
     }
     VALUE val = VALUE_SLICE_GET(a, 1);                    /* re-read (rooted) after GC */
@@ -208,7 +208,7 @@ static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (ary->len == 0) return RESULT_OK(KORB_NIL);
     ary->len--;
     VALUE v = ary->items->data[ary->len];
-    ary->items->data[ary->len] = KORB_NIL;               /* drop the reference (nil needs no WB) */
+    ARO_STORE(c, ary->items, &ary->items->data[ary->len], KORB_NIL); /* drop the reference (nil needs no WB) */
     return RESULT_OK(v);
 }
 

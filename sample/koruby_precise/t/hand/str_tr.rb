@@ -1,0 +1,8 @@
+puts "hello".tr("el", "ip")
+puts "hello".tr("a-y", "b-z")
+puts "hello".tr("el", "*")
+puts "hello".tr("aeiou", "")
+puts "hello".tr("^aeiou", "*")
+puts "config_name".tr("_", "-")
+puts "HELLO".tr("A-Z", "a-z")
+puts "abcdef".tr("a-c", "x")

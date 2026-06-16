@@ -100,7 +100,7 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         for (uint32_t j = 0; j < k; j++) ARO_STORE(c, it, &it->data[at + j], VALUE_SLICE_GET(a, 1 + j));
         ary->len = oldlen + k;
     } else {
-        for (uint32_t r = oldlen; r < at; r++) it->data[r] = KORB_NIL;
+        for (uint32_t r = oldlen; r < at; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
         for (uint32_t j = 0; j < k; j++) ARO_STORE(c, it, &it->data[at + j], VALUE_SLICE_GET(a, 1 + j));
         ary->len = at + k;
     }
@@ -114,16 +114,17 @@ static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (ar.state != KORB_NORMAL) return ar;
     VALUE_REF dst = SLOTS_PUSH(slots, ar.value);
     KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));           /* in-place insertion sort by pair[0] */
-    VALUE *data = d->items->data;
+    KorbArrayItems *const dit = d->items;
+    const VALUE *data = dit->data;
     for (uint32_t i = 1; i < d->len; i++) {
         VALUE key = data[i]; uint32_t j = i;
         while (j > 0) {
             VALUE pa = VAL2ARY(data[j-1])->items->data[0], pb = VAL2ARY(key)->items->data[0];
             int cmp = korb_cmp_full(c, pa, pb);
             if (cmp != 1) break;
-            data[j] = data[j-1]; j--;
+            ARO_STORE(c, dit, &data[j], data[j-1]); j--;
         }
-        data[j] = key;
+        ARO_STORE(c, dit, &data[j], key);
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -156,7 +157,7 @@ static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *b
         } else changed = true;
     }
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    for (uint32_t r = w; r < ary->len; r++) ary->items->data[r] = KORB_NIL;
+    for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, ary->items, &ary->items->data[r], KORB_NIL);
     ary->len = w;
     if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(self));

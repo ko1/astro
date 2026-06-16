@@ -424,7 +424,7 @@ korb_ary_ensure(CTX *c, VALUE *slots, VALUE_REF aref, uint32_t need)
                                      KORB_OBJ_VALUE_ARRAY);
     a = VAL2ARY(VALUE_REF_GET(aref));               /* re-read after GC */
     KorbArrayItems *oit = a->items;                 /* a fixed up → its items too */
-    memcpy(nit->data, oit->data, (size_t)a->len * sizeof(VALUE));   /* new tail is zero-init = nil */
+    ARO_STORE_BULK(c, nit, nit->data, oit->data, (size_t)a->len);   /* new tail is zero-init = nil */
     ARO_STORE(c, a, (VALUE *)(uintptr_t)&a->items, (VALUE)(uintptr_t)nit);
     a->capa = ncapa;
     return RESULT_OK(VALUE_REF_GET(aref));
@@ -528,7 +528,7 @@ korb_hash_ensure(CTX *c, VALUE *slots, VALUE_REF href, uint32_t need)
                                      KORB_OBJ_VALUE_ARRAY);
     h = VAL2HASH(VALUE_REF_GET(href));                /* re-read after GC */
     KorbArrayItems *oit = h->items;
-    memcpy(nit->data, oit->data, (size_t)h->len * 2 * sizeof(VALUE));
+    ARO_STORE_BULK(c, nit, nit->data, oit->data, (size_t)h->len * 2);
     ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->items, (VALUE)(uintptr_t)nit);
     h->capa = ncapa;
     return RESULT_OK(VALUE_REF_GET(href));
@@ -615,7 +615,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
         KorbArrayItems *nit = korb_alloc(c, slots, sizeof(KorbArrayItems) + (size_t)ncapa * 2 * sizeof(VALUE),
                                          KORB_OBJ_VALUE_ARRAY);
         o = VAL2OBJ(VALUE_REF_GET(selfref));          /* re-read after GC */
-        if (o->ivars) memcpy(nit->data, o->ivars->data, (size_t)o->ivar_len * 2 * sizeof(VALUE));
+        if (o->ivars) ARO_STORE_BULK(c, nit, nit->data, o->ivars->data, (size_t)o->ivar_len * 2);
         ARO_STORE(c, o, (VALUE *)(uintptr_t)&o->ivars, (VALUE)(uintptr_t)nit);
         o->ivar_capa = ncapa;
     }
@@ -2403,6 +2403,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, 2);
     korb_def_cmethod(c, KORB_C_STRING, "delete", korb_m_str_delete, -1);
     korb_def_cmethod(c, KORB_C_STRING, "delete!", korb_m_str_delete_b, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "tr", korb_m_str_tr, 2);
     korb_def_cmethod(c, KORB_C_STRING, "gsub", korb_m_str_gsub, -1);
     korb_def_cmethod(c, KORB_C_STRING, "sub", korb_m_str_sub, -1);
     korb_def_cmethod(c, KORB_C_STRING, "gsub!", korb_m_str_gsub_b, -1);
@@ -2693,6 +2694,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_value", korb_m_hash_each_value, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_key", korb_m_hash_each_key, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "map", korb_m_hash_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "collect", korb_m_hash_map, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "flat_map", korb_m_hash_flat_map, 0);
@@ -2820,6 +2823,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "attr_writer", korb_m_class_attr_writer, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "attr_accessor", korb_m_class_attr_accessor, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "attr", korb_m_class_attr_reader, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
