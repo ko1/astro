@@ -1035,9 +1035,24 @@ static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen) 
     for (uint32_t k = 1; k < cl && k < avail; k++) cp = (cp << 6) | ((unsigned char)p[k] & 0x3F);
     *clen = cl; return cp;
 }
+/* forward decls: each_* without a block returns an Enumerator over the sibling
+ * array (defined later in this TU). */
+static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_str_bytes(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);          /* enumerator.c (included later) */
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
+/* build an Enumerator over `arr_fn(self)` labelled `name`. */
+static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
+                                 RESULT (*arr_fn)(CTX *, VALUE *, VALUE_REF, VALUE_SLICE), const char *name) {
+    slots[0] = UNWRAP(arr_fn(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), name));
+    return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+}
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_codepoint without a block (Enumerator) is not supported");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints, "each_codepoint");
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
@@ -1135,7 +1150,7 @@ static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_byte without a block (Enumerator) is not supported");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_bytes, "each_byte");
     for (uint32_t pos = 0; ; pos++) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
@@ -1162,7 +1177,7 @@ static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos) {
 }
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_line without a block (Enumerator) is not supported");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line");
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
@@ -1190,7 +1205,7 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#each_char without a block (Enumerator) is not supported");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_chars, "each_char");
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
