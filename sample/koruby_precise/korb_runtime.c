@@ -2948,6 +2948,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "empty?", korb_m_ary_empty, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "<=>", korb_m_ary_cmp, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_a", korb_m_ary_self, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_h", korb_m_ary_to_h, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "cycle", korb_m_ary_cycle, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);

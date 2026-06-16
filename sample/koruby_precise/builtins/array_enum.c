@@ -528,6 +528,7 @@ static void korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbStri
     }
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (SELF_ARY->len == 0) return korb_str_new(c, slots, "", 0);   /* [].join(anything) → "" (sep not validated) */
     /* sep at slots scratch so it survives the per-element to_s allocs */
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         VALUE sv = VALUE_SLICE_GET(a, 0);
@@ -544,6 +545,52 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
     return r;
+}
+
+/* Array#to_h — elements (or block results) must be 2-element arrays → Hash. */
+static RESULT korb_m_ary_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, SELF_ARY->len));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        if (i >= ary->len) break;
+        slots[1] = ary->items->data[i];                        /* element / pair */
+        if (block != NULL) {
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[1] = r.value;
+        }
+        if (UNLIKELY(!KORB_ARRAY_P(slots[1])))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong element type %s at %u (expected array)", korb_type_name(slots[1]), i);
+        if (UNLIKELY(VAL2ARY(slots[1])->len != 2))
+            return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "wrong array length at %u (expected 2, was %u)", i, VAL2ARY(slots[1])->len);
+        slots[2] = VAL2ARY(slots[1])->items->data[0];          /* key */
+        VALUE val = VAL2ARY(slots[1])->items->data[1];
+        CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[2]), val));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* Array#cycle([n]) — yield elements n times (forever if n omitted); → nil. */
+static RESULT korb_m_ary_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    const bool bounded = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
+    intptr_t n = 0;
+    if (bounded && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#cycle without a block is not supported");
+    if (bounded && n <= 0) return RESULT_OK(KORB_NIL);
+    if (SELF_ARY->len == 0) return RESULT_OK(KORB_NIL);
+    for (intptr_t pass = 0; !bounded || pass < n; pass++) {
+        for (uint32_t i = 0; ; i++) {
+            const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+            if (i >= ary->len) break;
+            VALUE e = ary->items->data[i];
+            RESULT r = korb_block_yield(c, slots, block, def_env, &e, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT korb_m_ary_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
