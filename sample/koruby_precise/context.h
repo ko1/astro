@@ -156,6 +156,9 @@ enum korb_obj_type {
 /* bit 7 (Hash only): compare_by_identity — key lookup uses object identity (==)
  * instead of value equality. */
 #define KORB_FL_CMP_BY_ID  0x80u
+/* bit 8 (String only): ASCII-8BIT / binary encoding — inspect renders control
+ * and high bytes as \xNN (vs \uNNNN / UTF-8 passthrough for the default UTF-8). */
+#define KORB_FL_BINARY     0x100u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {

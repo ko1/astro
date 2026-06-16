@@ -3503,7 +3503,7 @@ korb_register_core_methods(CTX *c)
 
 /* Inspect-quote a byte run: "..." with CRuby's escape set. */
 static void
-korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
+korb_fprint_quoted_enc(FILE *fp, const char *bytes, uint32_t len, bool binary)
 {
     fputc('"', fp);
     for (uint32_t i = 0; i < len; i++) {
@@ -3526,7 +3526,11 @@ korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
                 fputc('#', fp);
             break;
           default:
-            if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
+            if (binary) {         /* ASCII-8BIT: printable ASCII as-is, everything else \xHH */
+                if (ch < 0x20 || ch >= 0x7f) fprintf(fp, "\\x%02X", ch);
+                else fputc(ch, fp);
+            }
+            else if (ch < 0x20 || ch == 0x7f) { fprintf(fp, "\\u%04X", ch); }
             else if (ch < 0x80) { fputc(ch, fp); }
             else {                /* >= 0x80: pass valid UTF-8 through, escape invalid bytes as \xHH */
                 int n = (ch >= 0xF0) ? 3 : (ch >= 0xE0) ? 2 : (ch >= 0xC0) ? 1 : -1;
@@ -3539,6 +3543,7 @@ korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len)
     }
     fputc('"', fp);
 }
+static void korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len) { korb_fprint_quoted_enc(fp, bytes, len, false); }
 
 /* Can a symbol name appear bare as a hash label `name:`?  CRuby 3.4+: an
  * identifier optionally ending in ? or ! (not =, not empty, not operator). */
@@ -3708,7 +3713,8 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
-        korb_fprint_quoted(fp, s->buf->data, s->len);
+        bool binary = (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_BINARY) != 0;
+        korb_fprint_quoted_enc(fp, s->buf->data, s->len, binary);
         return;
       }
       case KORB_OBJ_RANGE:
