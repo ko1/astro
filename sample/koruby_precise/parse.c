@@ -331,6 +331,8 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
+extern const struct NodeKind kind_node_aref;         /* recv[idx] */
+extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
@@ -657,6 +659,29 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
     if (strcmp(name, "!") == 0 && argc == 0) {
         return ALLOC_node_not(transduce(tc, cn->receiver));
+    }
+
+    /* recv[idx] / recv[idx] = val → type-fast-path nodes (Array+fixnum inline,
+     * else deopt to a real send).  No block, no splat args. */
+    if (!cn->block) {
+        if (mid == tc->c->vm->mid_aref && argc == 1 &&
+            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE)) {
+            NODE *recv, *idx;
+            WITH_CHAIN(tc, kind_node_aref.slot_count,
+                       (recv = transduce(tc, cn->receiver),
+                        idx  = transduce(tc, cn->arguments->arguments.nodes[0])));
+            return ALLOC_node_aref(line, recv, idx);
+        }
+        if (mid == tc->c->vm->mid_aset && argc == 2 &&
+            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_SPLAT_NODE) &&
+            !PM_NODE_TYPE_P(cn->arguments->arguments.nodes[1], PM_SPLAT_NODE)) {
+            NODE *recv, *idx, *val;
+            WITH_CHAIN(tc, kind_node_aset.slot_count,
+                       (recv = transduce(tc, cn->receiver),
+                        idx  = transduce(tc, cn->arguments->arguments.nodes[0]),
+                        val  = transduce(tc, cn->arguments->arguments.nodes[1])));
+            return ALLOC_node_aset(line, recv, idx, val);
+        }
     }
 
     /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */

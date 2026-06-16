@@ -444,6 +444,15 @@ korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem)
     return RESULT_OK(VALUE_REF_GET(aref));
 }
 
+/* In-place store ary[i] = val (write-barriered).  Caller guarantees i is in
+ * range.  Exported for node_aset's fast path (node_eval.c lacks the GC macros). */
+void
+korb_ary_store_at(CTX *c, VALUE ary, uint32_t i, VALUE val)
+{
+    KorbArray *const a = VAL2ARY(ary);
+    ARO_STORE(c, a->items, &a->items->data[i], val);
+}
+
 static bool korb_range_int_bounds(const KorbRange *r, intptr_t *lo, intptr_t *hi);
 /* splat `*val` into aref: Array → its elements, Range → its ints, nil → nothing,
  * else → val itself (Ruby `[*x]` semantics). aref/srcref are slots-rooted. */
@@ -865,6 +874,10 @@ static void
 korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
 {
     struct korb_vm *const vm = c->vm;
+    /* Array#[] / Array#[]= redefinition deopts the node_aref/node_aset fast path. */
+    if (!vm->aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
+        (mid == vm->mid_aref || mid == vm->mid_aset))
+        vm->aref_redefined = true;
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
@@ -3905,6 +3918,8 @@ korb_ctx_new(void)
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
     c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
+    c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
+    c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
 
     return c;
 }
