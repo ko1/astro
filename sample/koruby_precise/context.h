@@ -253,6 +253,7 @@ typedef struct KorbClass {
     struct korb_method *methods;     /* libc side-array (no GC edges) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
+    VALUE ARO_GC_EDGE members;       /* Struct member-name Array (symbols), or nil */
 } KorbClass;
 
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
@@ -533,6 +534,7 @@ struct CTX_struct {
         KorbClass *_cl = (KorbClass *)(payload);                            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->superclass);            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->included);             \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->members);             \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

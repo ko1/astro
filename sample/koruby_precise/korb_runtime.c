@@ -644,6 +644,38 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     return RESULT_OK((VALUE)k);
 }
 
+/* the `@<member>` ivar symbol for a Struct member symbol (`:x` → `:@x`). */
+static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
+    const char *nm = korb_sym_name(vm, SYM2ID(member_sym));
+    char buf[256];
+    snprintf(buf, sizeof buf, "@%s", nm);
+    return ID2SYM(korb_intern(vm, buf, strlen(buf)));
+}
+
+/* Struct.new(*members) — build an anonymous class with attr_accessor per member
+ * and the member list recorded (for positional .new).  Symbol or String members;
+ * a trailing keyword_init: hash is ignored (minimal). */
+static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    slots[0] = UNWRAP(korb_class_new(c, slots, 0, KORB_NIL));   /* anon class, super Object */
+    VALUE_REF cls = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
+    VALUE_REF mem = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE sym = VALUE_SLICE_GET(a, i);
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
+        if (!SYMBOL_P(sym)) continue;                          /* skip keyword_init: hash etc. */
+        const char *nm = korb_sym_name(vm, SYM2ID(sym));
+        char buf[256];
+        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
+        snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
+        CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
+    }
+    ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
+    return RESULT_OK(VALUE_REF_GET(cls));
+}
+
 VALUE
 korb_const_get(struct korb_vm *vm, uint32_t name_sym)
 {
@@ -1043,6 +1075,9 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         if (defs[i].cls == KORB_C_OBJECT) objc = cls;                 /* rest inherit Object */
     }
     vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
+
+    /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
+    { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, objc).value); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
      * so is_a?/kind_of? report membership (the comparison/iteration methods
@@ -1985,6 +2020,20 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && strcmp(korb_sym_name(vm, mid), "new") == 0) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
+        if (cname == korb_intern(vm, "Struct", 6) && VAL2CLASS(self)->members == KORB_NIL)
+            return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));   /* Struct.new(*members) → class */
+        if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) → positional init */
+            VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
+            slots[0] = obj;
+            for (uint32_t i = 0; ; i++) {
+                const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                if (i >= mem->len) break;
+                slots[1] = (i < argc) ? slots[-(intptr_t)argc + (intptr_t)i] : KORB_NIL;
+                VALUE iv = korb_member_ivar_sym(vm, mem->items->data[i]);
+                CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), iv, slots[1]));
+            }
+            return RESULT_OK(slots[0]);
+        }
         if (cname == vm->class_name[KORB_C_ARRAY]) {       /* Array.new(n[,v]) / Array.new(n){|i|} */
             intptr_t n = 0;
             if (argc >= 1) {
