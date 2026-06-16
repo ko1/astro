@@ -474,6 +474,58 @@ static RESULT korb_hash_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 }
 #define HASH_REQ_BLOCK(what) do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, what " without a block is not supported"); } while (0)
 
+/* Hash#reverse_each — yield (k,v) pairs in reverse insertion order; return self. */
+static RESULT korb_m_hash_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a; HASH_REQ_BLOCK("Hash#reverse_each");
+    const uint32_t np = korb_entry_params_cnt(block);
+    uint32_t i = VAL2HASH(VALUE_REF_GET(self))->len;
+    while (i > 0) {
+        i--;
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) continue;                              /* shrunk during iteration */
+        CHECK(korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2 * i], h->items->data[2 * i + 1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Hash#each_with_index — yield ([k,v], index); return self. */
+static RESULT korb_m_hash_each_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a; HASH_REQ_BLOCK("Hash#each_with_index");
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[0] = h->items->data[2 * i];                      /* k (rooted) */
+        slots[1] = h->items->data[2 * i + 1];                  /* v (rooted) */
+        VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));
+        slots[2] = pair;
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+        VALUE argv[2] = { slots[2], LONG2FIX((intptr_t)i) };
+        CHECK(korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Hash#cycle([n]) — yield (k,v) pairs n times (forever if n omitted); return nil. */
+static RESULT korb_m_hash_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    HASH_REQ_BLOCK("Hash#cycle");
+    const uint32_t np = korb_entry_params_cnt(block);
+    bool bounded = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
+    intptr_t n = 0;
+    if (bounded && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (bounded && n <= 0) return RESULT_OK(KORB_NIL);
+    if (VAL2HASH(VALUE_REF_GET(self))->len == 0) return RESULT_OK(KORB_NIL);
+    for (intptr_t pass = 0; !bounded || pass < n; pass++) {
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            if (i >= h->len) break;
+            CHECK(korb_hash_yield(c, slots, block, def_env, cself, np, h->items->data[2 * i], h->items->data[2 * i + 1]));
+        }
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT korb_m_hash_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; HASH_REQ_BLOCK("Hash#flat_map");
     uint32_t np = korb_entry_params_cnt(block);

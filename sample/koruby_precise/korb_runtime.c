@@ -3095,6 +3095,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
     korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "entries", korb_m_hash_to_a, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_entry", korb_m_hash_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "reverse_each", korb_m_hash_reverse_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "each_with_index", korb_m_hash_each_with_index, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "cycle", korb_m_hash_cycle, -1);
     korb_def_cmethod(c, KORB_C_HASH, "tally", korb_m_hash_tally, 0);
     korb_def_cmethod(c, KORB_C_HASH, "invert", korb_m_hash_invert, 0);
     korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
@@ -3200,6 +3205,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reverse_each", korb_m_range_reverse_each, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each_slice", korb_m_range_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "bsearch", korb_m_range_bsearch, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min_by", korb_m_range_min_by, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "max_by", korb_m_range_max_by, 0);

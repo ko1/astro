@@ -251,6 +251,36 @@ static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VA
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Range#each_slice(n) — consecutive n-element slices over the integer range.
+ * block → yield each slice (returns self); no block → Enumerator over the slices.
+ * Slices are pre-built into a rooted array so yielding is GC-safe. */
+static RESULT korb_m_range_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    intptr_t n;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid slice size");
+    intptr_t lo, hi;
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* array of slices */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    for (intptr_t i = lo; i < hi; i += n) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)n));
+        VALUE_REF slice = VALUE_REF_AT(&slots[1]);
+        for (intptr_t j = 0; j < n && i + j < hi; j++)
+            CHECK(korb_ary_push_val(c, slots + 2, slice, LONG2FIX(i + j)));
+        CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_REF_GET(slice)));
+    }
+    if (block == NULL) {
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_slice"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
+    }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
+        VALUE sl = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &sl, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* bsearch (find-minimum mode): smallest i in [lo,hi) where block(i) is truthy. */
 static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
