@@ -121,6 +121,33 @@ node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VA
     return RESULT_OK(rval);
 }
 
+// Multiple assignment to heterogeneous targets (no splat): each target is a
+// local (kind 0, data=slot offset), instance var (kind 1, data=ivar name sym),
+// or constant (kind 2, data=const name sym).  rhs parked in slots[0] across the
+// ivar-set allocs.  Returns the rhs (Array or scalar).
+NODE_DEF @noinline
+node_massign_het(CTX *c, NODE *n, VALUE *slots, void *descs, uint32_t nt, int32_t self_off, VALUE rval@child)
+{
+    (void)n;
+    const struct { int32_t kind; int32_t data; } *const d = descs;
+    slots[0] = rval;
+    const bool is_ary = KORB_ARRAY_P(slots[0]);
+    for (uint32_t i = 0; i < nt; i++) {
+        const VALUE v = is_ary
+            ? (i < VAL2ARY(slots[0])->len ? VAL2ARY(slots[0])->items->data[i] : KORB_NIL)
+            : (i == 0 ? slots[0] : KORB_NIL);
+        switch (d[i].kind) {
+          case 0: slots[d[i].data] = v; break;                              /* local */
+          case 1:                                                            /* @ivar */
+            slots[1] = v;                                                    /* root across alloc */
+            CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[self_off]), ID2SYM((uint32_t)d[i].data), slots[1]));
+            break;
+          case 2: korb_const_define(c, (uint32_t)d[i].data, v); break;       /* CONST */
+        }
+    }
+    return RESULT_OK(slots[0]);
+}
+
 // Multiple assignment with a splat target: `pre..., *splat, post... = rhs`.
 // `offsets` = npre pre-offsets, then the splat offset, then npost post-offsets.
 // The splat collects the middle elements into a fresh Array (a GC point — rhs is

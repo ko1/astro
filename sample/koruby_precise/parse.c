@@ -1158,16 +1158,55 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
         if (!has_splat) {
             uint32_t nt = (uint32_t)mw->lefts.size;
-            int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
-            if (!offs) abort();
-            pm_constant_id_t cid;
-            NODE *rhs = transduce(tc, mw->value);             /* register child */
+            /* classify: all depth-0 locals → node_massign (fast); a mix of
+             * local / @ivar / CONST → node_massign_het; anything else → no. */
+            bool all_local = true;
             for (uint32_t i = 0; i < nt; i++) {
-                MW_LOCAL_CID(mw->lefts.nodes[i], cid);
-                offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
+                const pm_node_t *t = mw->lefts.nodes[i];
+                if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                    if (((const pm_local_variable_target_node_t *)t)->depth != 0)
+                        return kp_unsupported(tc, t, "outer-scope multi-assign target");
+                } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+                    all_local = false;
+                } else {
+                    return kp_unsupported(tc, t, "non-local multi-assign target");
+                }
             }
-            NODE *mn = ALLOC_node_massign(offs, nt, rhs);
-            for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
+            if (all_local) {
+                int32_t *offs = malloc(sizeof(int32_t) * (nt ? nt : 1));
+                if (!offs) abort();
+                pm_constant_id_t cid;
+                NODE *rhs = transduce(tc, mw->value);             /* register child */
+                for (uint32_t i = 0; i < nt; i++) {
+                    MW_LOCAL_CID(mw->lefts.nodes[i], cid);
+                    offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
+                }
+                NODE *mn = ALLOC_node_massign(offs, nt, rhs);
+                for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
+                return mn;
+            }
+            /* heterogeneous: {kind, data} per target (matches node_massign_het) */
+            struct kp_mdesc { int32_t kind; int32_t data; };
+            struct kp_mdesc *descs = malloc(sizeof(*descs) * (nt ? nt : 1));
+            if (!descs) abort();
+            NODE *rhs = transduce(tc, mw->value);                 /* register child */
+            for (uint32_t i = 0; i < nt; i++) {
+                const pm_node_t *t = mw->lefts.nodes[i];
+                if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                    pm_constant_id_t cid = ((const pm_local_variable_target_node_t *)t)->name;
+                    descs[i].kind = 0;
+                    descs[i].data = (int32_t)lvar_index(tc, t, cid) - tc->chain;
+                } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
+                    descs[i].kind = 1;
+                    descs[i].data = (int32_t)kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name);
+                } else {       /* PM_CONSTANT_TARGET_NODE */
+                    descs[i].kind = 2;
+                    descs[i].data = (int32_t)kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
+                }
+            }
+            NODE *mn = ALLOC_node_massign_het(descs, nt, -1 - tc->chain, rhs);
+            for (uint32_t i = 0; i < nt; i++) if (descs[i].kind == 0) bake_add(tc, &descs[i].data);
             return mn;
         }
 
