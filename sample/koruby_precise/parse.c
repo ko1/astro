@@ -523,20 +523,19 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
                           uint32_t line, const pm_arguments_node_t *args, size_t argc,
                           NODE *entry)
 {
-    if (argc > 1) return kp_unsupported(tc, (const pm_node_t *)cn, "call with block and >1 arg");
-
-    /* def_env_off: cursor → caller frame base = -(chain + slot_count); pop
-     * subtracts the caller's frame_size (the slot_count = argc). */
+    /* def_env_off: cursor → caller frame base = -(chain + staging); staging =
+     * argc.  bake_add fixes up by the caller's frame_size.  node_call_blk stages
+     * the args via argv@children (any fixed arity). */
     int32_t self_off = -1 - tc->chain - (int32_t)argc;  /* caller self = block's captured self */
-    if (argc == 0) {
-        NODE *call = ALLOC_node_call_blk0(mid, line, self_off, entry, -(tc->chain + 0));
-        bake_add(tc, &call->u.node_call_blk0.def_env_off);
-        return call;
-    }
-    NODE *a0;
-    WITH_CHAIN(tc, 1, (a0 = transduce(tc, args->arguments.nodes[0])));
-    NODE *call = ALLOC_node_call_blk1(mid, line, self_off, entry, -(tc->chain + 1), a0);
-    bake_add(tc, &call->u.node_call_blk1.def_env_off);
+    NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
+    if (argc && !argv) abort();
+    int32_t saved = tc->chain;
+    tc->chain = saved + (int32_t)argc;
+    for (size_t i = 0; i < argc; i++)
+        argv[i] = transduce(tc, args->arguments.nodes[i]);
+    tc->chain = saved;
+    NODE *call = ALLOC_node_call_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)argc), argv, (uint32_t)argc);
+    bake_add(tc, &call->u.node_call_blk.def_env_off);
     return call;
 }
 
@@ -603,9 +602,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
-    /* splat call f(*arr) or >3 plain args: build the args Array, dispatch dynamically */
+    /* actual `*splat` call f(*arr): build the args Array, dispatch dynamically */
     {
-        bool has_splat = argc > 3;
+        bool has_splat = false;
         for (size_t i = 0; i < argc; i++)
             if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
         if (has_splat) {
@@ -617,26 +616,18 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 
     /* caller self cell (base[fs-1]); the argc staged args advance the body
-     * cursor, so offset back past them too. */
-    int32_t self_off = -1 - tc->chain - (int32_t)argc;
-    NODE *a[3];
-    switch (argc) {
-      case 0:
-        return ALLOC_node_call0(mid, line, self_off);
-      case 1:
-        WITH_CHAIN(tc, 1, (a[0] = transduce(tc, args->arguments.nodes[0])));
-        return ALLOC_node_call1(mid, line, self_off, a[0]);
-      case 2:
-        WITH_CHAIN(tc, 2, (a[0] = transduce(tc, args->arguments.nodes[0]),
-                           a[1] = transduce(tc, args->arguments.nodes[1])));
-        return ALLOC_node_call2(mid, line, self_off, a[0], a[1]);
-      case 3:
-        WITH_CHAIN(tc, 3, (a[0] = transduce(tc, args->arguments.nodes[0]),
-                           a[1] = transduce(tc, args->arguments.nodes[1]),
-                           a[2] = transduce(tc, args->arguments.nodes[2])));
-        return ALLOC_node_call3(mid, line, self_off, a[0], a[1], a[2]);
-      default:
-        return kp_unsupported(tc, (const pm_node_t *)cn, "call with more than 3 arguments");
+     * cursor, so offset back past them too.  node_call stages the args via
+     * argv@children (any fixed arity). */
+    {
+        int32_t self_off = -1 - tc->chain - (int32_t)argc;
+        NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
+        if (argc && !argv) abort();
+        int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)argc;
+        for (size_t i = 0; i < argc; i++)
+            argv[i] = transduce(tc, args->arguments.nodes[i]);
+        tc->chain = saved;
+        return ALLOC_node_call(mid, line, self_off, argv, (uint32_t)argc);
     }
 }
 
@@ -670,38 +661,23 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 
     /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */
     if (cn->block) {
-        if (argc > 2)
-            return kp_unsupported(tc, (const pm_node_t *)cn, "receiver call with block and >2 args");
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
-         * = recv(1) + argc.  bake_add fixes up by the caller's frame_size. */
-        /* caller self; recv(1) + argc staged children advance the body cursor */
-        int32_t self_off = -1 - tc->chain - (int32_t)(1 + argc);
-        if (argc == 0) {
-            uint32_t sc = 1;
-            NODE *recv;
-            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
-            NODE *call = ALLOC_node_send_blk0(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv);
-            bake_add(tc, &call->u.node_send_blk0.def_env_off);
-            return call;
-        }
-        if (argc == 1) {
-            uint32_t sc = 2;
-            NODE *recv, *a0;
-            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                                a0   = transduce(tc, cn->arguments->arguments.nodes[0])));
-            NODE *call = ALLOC_node_send_blk1(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0);
-            bake_add(tc, &call->u.node_send_blk1.def_env_off);
-            return call;
-        }
-        uint32_t sc = 3;
-        NODE *recv, *a0, *a1;
-        WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                            a0   = transduce(tc, cn->arguments->arguments.nodes[0]),
-                            a1   = transduce(tc, cn->arguments->arguments.nodes[1])));
-        NODE *call = ALLOC_node_send_blk2(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), recv, a0, a1);
-        bake_add(tc, &call->u.node_send_blk2.def_env_off);
+         * = recv(1) + argc.  bake_add fixes up by the caller's frame_size.
+         * node_send_blk stages [recv, args...] via argv@children (any arity). */
+        uint32_t sc = 1u + (uint32_t)argc;
+        int32_t self_off = -1 - tc->chain - (int32_t)sc;
+        NODE **argv = malloc(sizeof(NODE *) * sc);
+        if (!argv) abort();
+        int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)sc;
+        argv[0] = transduce(tc, cn->receiver);
+        for (size_t i = 0; i < argc; i++)
+            argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+        tc->chain = saved;
+        NODE *call = ALLOC_node_send_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), argv, sc);
+        bake_add(tc, &call->u.node_send_blk.def_env_off);
         return call;
     }
     /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
@@ -716,38 +692,22 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             return ALLOC_node_send_splat(mid, line, recv, arr);
         }
     }
-    uint32_t sc = 1u + (uint32_t)argc;     /* recv + args staging depth */
-    /* safe navigation `recv&.m(args)`: if recv is nil, yield nil w/o dispatch */
-    if ((cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) && argc <= 2) {
-        NODE *recv, *a[2];
-        switch (argc) {
-          case 0:
-            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver)));
-            return ALLOC_node_send_safe0(mid, line, recv);
-          case 1:
-            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                                a[0] = transduce(tc, cn->arguments->arguments.nodes[0])));
-            return ALLOC_node_send_safe1(mid, line, recv, a[0]);
-          default:
-            WITH_CHAIN(tc, sc, (recv = transduce(tc, cn->receiver),
-                                a[0] = transduce(tc, cn->arguments->arguments.nodes[0]),
-                                a[1] = transduce(tc, cn->arguments->arguments.nodes[1])));
-            return ALLOC_node_send_safe2(mid, line, recv, a[0], a[1]);
-        }
-    }
     /* unified send (any fixed arity): stage [recv, arg0..] into a parse-time
-     * NODE* array; node_send stages them into consecutive slots at eval. */
+     * NODE* array; node_send / node_send_safe stage them into consecutive slots
+     * at eval.  Safe navigation (recv&.m) nil-checks recv before dispatch. */
     {
+        bool safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
         uint32_t cnt = 1u + (uint32_t)argc;
         NODE **argv = malloc(sizeof(NODE *) * cnt);
         if (!argv) abort();
         int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)sc;
+        tc->chain = saved + (int32_t)cnt;
         argv[0] = transduce(tc, cn->receiver);
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        return ALLOC_node_send(mid, line, argv, cnt);
+        return safe ? ALLOC_node_send_safe(mid, line, argv, cnt)
+                    : ALLOC_node_send(mid, line, argv, cnt);
     }
 }
 

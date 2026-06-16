@@ -296,12 +296,17 @@ class KorubyNodeDef < ASTroGen::NodeDef
     # SD for a @children node: recursively specialize each child, then emit a
     # dispatcher that unrolls the staging with the baked count.
     def build_children_specializer(kids)
+      if @option.include? '@noinline'
+        return "static void\nSPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)\n{\n    /* do nothing */\n}\n"
+      end
       f = "n->u.#{@name}.#{kids.name}"
+      child_nodes = []
       args = @operands.map do |op|
         if op.children?
           'fprintf(fp, "        %u", _cnt);'
         else
-          _cn, arg = op.build_specializer(@name)
+          cn, arg = op.build_specializer(@name)
+          child_nodes << cn if cn   # e.g. SPECIALIZE(block) for a lazy NODE* operand
           arg
         end
       end
@@ -311,6 +316,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       {
           const uint32_t _cnt = #{f}_cnt;
           for (uint32_t _i = 0; _i < _cnt; _i++) SPECIALIZE(fp, #{f}[_i]);
+      #{child_nodes.join("\n")}
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
 
