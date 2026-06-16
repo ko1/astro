@@ -66,7 +66,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
     (void)slots;
     if (!KORB_OBJECT_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(korb_ivar_get(VALUE_REF_GET(self), sym));
+    return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
 }
 /* Object#method(:sym) → bound Method. */
 static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
