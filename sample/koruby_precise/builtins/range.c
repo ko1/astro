@@ -670,25 +670,26 @@ static RESULT korb_m_range_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 1); }
 static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
-static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    VALUE sv = VALUE_SLICE_GET(a, 0);
+static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, uint8_t is_pct) {
+    VALUE sv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
+    if (block == NULL)                                /* → lazy ArithmeticSequence (recv = self range) */
+        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, 1, is_pct);
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
-    if (block == NULL) {                              /* → Enumerator of the stepped values */
-        slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
-        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-        for (intptr_t i = lo; i < hi; i += st) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
-        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "step"));
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
-    }
     for (intptr_t i = lo; i < hi; i += st) {
         VALUE iv = LONG2FIX(i);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_range_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_range_step_impl(c, slots, self, a, block, def_env, cself, 0);
+}
+static RESULT korb_m_range_pct(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_range_step_impl(c, slots, self, a, block, def_env, cself, 1);
 }
 

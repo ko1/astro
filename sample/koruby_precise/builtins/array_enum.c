@@ -1,6 +1,7 @@
 /* koruby_precise — array_enum.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Array enumerable / aggregate methods -------------------------------- */
+static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);   /* arithseq.c */
 
 
 static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -890,6 +891,12 @@ static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) {                                  /* no block → lazy ArithmeticSequence */
+        uint32_t na = VALUE_SLICE_LEN(a);
+        VALUE a0 = na >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+        VALUE a1 = na >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), a0, a1, (uint8_t)(na > 2 ? 2 : na), 0);
+    }
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE selfv = VALUE_REF_GET(self);
     VALUE limv = VALUE_SLICE_GET(a, 0);

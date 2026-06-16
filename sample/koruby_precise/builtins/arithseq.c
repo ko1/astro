@@ -1,0 +1,144 @@
+/* koruby_precise — arithseq.c: Enumerator::ArithmeticSequence (step / %).
+ * #included into korb_runtime.c's TU.  A lazy numeric sequence created by
+ * Numeric#step / Range#step / Range#% without a block. */
+
+/* recv = begin (Numeric) or source Range; a0/a1 = literal call args. */
+static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct) {
+    slots[0] = recv; slots[1] = a0; slots[2] = a1;            /* root across alloc */
+    KorbArithSeq *as = korb_alloc(c, slots + 3, sizeof(KorbArithSeq), KORB_OBJ_ARITHSEQ);
+    as->nargs = nargs; as->is_pct = is_pct;
+    ARO_STORE(c, as, (VALUE *)(uintptr_t)&as->recv, slots[0]);
+    ARO_STORE(c, as, (VALUE *)(uintptr_t)&as->a0,   slots[1]);
+    ARO_STORE(c, as, (VALUE *)(uintptr_t)&as->a1,   slots[2]);
+    return RESULT_OK((VALUE)as);
+}
+
+/* Resolve (begin, limit, step, exclusive) for the sequence.  limit == KORB_NIL
+ * means endless.  Returns false on a non-numeric component (caller raises). */
+static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl) {
+    if (KORB_RANGE_P(as->recv)) {
+        const KorbRange *rg = VAL2RANGE(as->recv);
+        *beginv = rg->rbegin; *limv = rg->rend; *excl = rg->exclude_end != 0;
+        *stepv = as->nargs >= 1 ? as->a0 : LONG2FIX(1);
+    } else {
+        *beginv = as->recv; *excl = false;
+        *limv  = as->nargs >= 1 ? as->a0 : KORB_NIL;
+        *stepv = as->nargs >= 2 ? as->a1 : LONG2FIX(1);
+    }
+}
+
+/* Materialize the sequence into a fresh Array (rooted via return).  Raises
+ * RangeError for an endless sequence (limit nil), matching CRuby. */
+static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
+    const KorbArithSeq *as = VAL2ASEQ(VALUE_REF_GET(self));
+    VALUE beginv, limv, stepv; bool excl;
+    korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
+    if (limv == KORB_NIL)
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot convert endless arithmetic sequence to an array");
+    const bool use_float = KORB_FLOAT_P(beginv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
+    /* Extract all scalars BEFORE allocating — under STRESS the array alloc GCs and
+     * would move the Float operands (beginv/limv/stepv) out from under us. */
+    double s = 0, lim = 0, st = 0; intptr_t is = 0, ilim = 0, ist = 0;
+    if (use_float) {
+        if (!korb_num_to_d(beginv, &s) || !korb_num_to_d(limv, &lim) || !korb_num_to_d(stepv, &st))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        if (st == 0.0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    } else {
+        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(limv) || !FIXNUM_P(stepv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        is = FIX2LONG(beginv); ilim = FIX2LONG(limv); ist = FIX2LONG(stepv);
+        if (ist == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    if (use_float) {
+        for (long i = 0; ; i++) {
+            double d = s + (double)i * st;                    /* count-based to limit fp drift */
+            bool over = st > 0 ? (excl ? d >= lim : d > lim) : (excl ? d <= lim : d < lim);
+            if (over) break;
+            slots[1] = UNWRAP(korb_float_new(c, slots + 1, d));
+            CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+        }
+    } else {
+        for (intptr_t i = is; ist > 0 ? (excl ? i < ilim : i <= ilim) : (excl ? i > ilim : i >= ilim); i += ist)
+            CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+static RESULT korb_m_aseq_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_aseq_to_array(c, slots, self);
+}
+static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));
+    return RESULT_OK(LONG2FIX(VAL2ARY(slots[0])->len));
+}
+static RESULT korb_m_aseq_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));     /* materialize (rooted) */
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *v = VAL2ARY(VALUE_REF_GET(arr));
+        if (i >= v->len) break;
+        slots[1] = v->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* first / first(n): lazy — take from the front without materializing the whole seq. */
+static RESULT korb_m_aseq_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbArithSeq *as = VAL2ASEQ(VALUE_REF_GET(self));
+    VALUE beginv, limv, stepv; bool excl;
+    korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
+    const bool want_n = VALUE_SLICE_LEN(a) >= 1;
+    intptr_t n = 1;
+    if (want_n && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const bool use_float = KORB_FLOAT_P(beginv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
+    double s = 0, lim = 0, st = 0; intptr_t is = 0, ilim = 0, ist = 0; bool endless = (limv == KORB_NIL);
+    if (use_float) {
+        if (!korb_num_to_d(beginv, &s) || !korb_num_to_d(stepv, &st) || (!endless && !korb_num_to_d(limv, &lim)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+    } else {
+        if (UNLIKELY(!FIXNUM_P(beginv) || !FIXNUM_P(stepv) || (!endless && !FIXNUM_P(limv))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+        is = FIX2LONG(beginv); ist = FIX2LONG(stepv); if (!endless) ilim = FIX2LONG(limv);
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(n > 0 ? n : 0)));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (intptr_t i = 0; (want_n ? (intptr_t)VAL2ARY(VALUE_REF_GET(dst))->len < n : i < 1); i++) {
+        if (use_float) {
+            double d = s + (double)i * st;
+            if (!endless && (st > 0 ? (excl ? d >= lim : d > lim) : (excl ? d <= lim : d < lim))) break;
+            slots[1] = UNWRAP(korb_float_new(c, slots + 1, d));
+            CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+        } else {
+            intptr_t d = is + i * ist;
+            if (!endless && (ist > 0 ? (excl ? d >= ilim : d > ilim) : (excl ? d <= ilim : d < ilim))) break;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(d)));
+        }
+    }
+    if (!want_n) {   /* first → element or nil */
+        const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
+        return RESULT_OK(d->len ? d->items->data[0] : KORB_NIL);
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_aseq_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));
+    const KorbArray *d = VAL2ARY(slots[0]);
+    return RESULT_OK(d->len ? d->items->data[d->len - 1] : KORB_NIL);
+}
+static RESULT korb_m_aseq_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(b);
+}
+static RESULT korb_m_aseq_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(l);
+}
+static RESULT korb_m_aseq_step_acc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; VALUE b, l, s; bool e; korb_aseq_params(VAL2ASEQ(VALUE_REF_GET(self)), &b, &l, &s, &e); return RESULT_OK(s);
+}

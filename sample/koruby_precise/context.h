@@ -142,6 +142,7 @@ enum korb_obj_type {
     KORB_OBJ_REGEXP      = 15,  /* Regexp: source string + flags (matching via astrogre .so) */
     KORB_OBJ_METHOD      = 16,  /* bound Method: receiver + method id (needs 5-bit tag) */
     KORB_OBJ_FIBER       = 17,  /* stackful coroutine (separate value/C stacks) */
+    KORB_OBJ_ARITHSEQ    = 18,  /* Enumerator::ArithmeticSequence (step/% lazy seq) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -198,6 +199,18 @@ typedef struct KorbEnumerator {
     VALUE ARO_GC_EDGE values;
     VALUE ARO_GC_EDGE desc;
 } KorbEnumerator;
+
+/* Enumerator::ArithmeticSequence — a lazy step/% sequence.  `recv` is the begin
+ * (Numeric) or the source Range; `a0`/`a1` are the literal call args (reproduced
+ * by inspect); `nargs` 0..2; `is_pct` selects the `%` vs `step` method name. */
+typedef struct KorbArithSeq {
+    AroObjectHeader head;            /* KORB_OBJ_ARITHSEQ */
+    uint8_t nargs;
+    uint8_t is_pct;
+    VALUE ARO_GC_EDGE recv;
+    VALUE ARO_GC_EDGE a0;
+    VALUE ARO_GC_EDGE a1;
+} KorbArithSeq;
 
 /* Set: a thin wrapper over an array of unique elements (dedup by korb_value_eq). */
 typedef struct KorbSet {
@@ -353,6 +366,8 @@ typedef struct KorbClass {
 #define VAL2METH(v)        ((KorbMethod *)(uintptr_t)(v))
 #define KORB_FIBER_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER)
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
+#define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
+#define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
 
 /* -----------------------------------------------------------------------------
  * VM — interned symbols, the method table, and the unwind backtrace buffer.
@@ -386,6 +401,7 @@ enum korb_class {
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
+    KORB_C_ARITHSEQ,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -688,6 +704,14 @@ struct CTX_struct {
         /* handle only; rep (libc) roots scanned via the vm fiber list */    \
         (void)(payload_size);                                               \
         break;                                                               \
+      case KORB_OBJ_ARITHSEQ: {                                              \
+        KorbArithSeq *_as = (KorbArithSeq *)(payload);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_as->recv);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_as->a0);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_as->a1);                      \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
       case KORB_OBJ_OBJECT: {                                                \
         KorbObject *_ob = (KorbObject *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ob->klass);                  \

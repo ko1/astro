@@ -1389,6 +1389,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
+        { "ArithmeticSequence", KORB_C_ARITHSEQ },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -1447,6 +1448,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "ArgumentError",       KORB_E_ARGUMENT,   "StandardError" },
         { "ZeroDivisionError",   KORB_E_ZERODIV,    "StandardError" },
         { "LocalJumpError",      KORB_E_LOCALJUMP,  "StandardError" },
+        { "RangeError",          KORB_E_RANGE,      "StandardError" },
         { "IndexError",          -1,                "StandardError" },
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
@@ -1504,6 +1506,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_RATIONAL:  return "Rational";
       case KORB_OBJ_COMPLEX:   return "Complex";
       case KORB_OBJ_ENUMERATOR: return "Enumerator";
+      case KORB_OBJ_ARITHSEQ:  return "Enumerator::ArithmeticSequence";
       case KORB_OBJ_SET: return "Set";
     }
     return "Object";
@@ -1527,6 +1530,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_RATIONAL: return "an instance of Rational";
       case KORB_OBJ_COMPLEX:  return "an instance of Complex";
       case KORB_OBJ_ENUMERATOR: return "an instance of Enumerator";
+      case KORB_OBJ_ARITHSEQ: return "an instance of Enumerator::ArithmeticSequence";
       case KORB_OBJ_SET: return "an instance of Set";
     }
     return "an instance of Object";
@@ -1987,6 +1991,7 @@ korb_etype_name(unsigned int etype)
       case KORB_E_NOTIMPL:  return "NotImplementedError";
       case KORB_E_NAME:     return "NameError";
       case KORB_E_LOCALJUMP: return "LocalJumpError";
+      case KORB_E_RANGE:    return "RangeError";
       default:              return "RuntimeError";
     }
 }
@@ -2362,6 +2367,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_RATIONAL: return KORB_C_RATIONAL;
           case KORB_OBJ_COMPLEX:  return KORB_C_COMPLEX;
           case KORB_OBJ_ENUMERATOR: return KORB_C_ENUMERATOR;
+          case KORB_OBJ_ARITHSEQ: return KORB_C_ARITHSEQ;
           case KORB_OBJ_SET: return KORB_C_SET;
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
           case KORB_OBJ_METHOD: return KORB_C_METHOD;
@@ -2390,6 +2396,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_REGEXP: return "Regexp";
       case KORB_C_METHOD: return "Method";
       case KORB_C_FIBER:  return "Fiber";
+      case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -2690,6 +2697,7 @@ korb_fmt_int(intptr_t n, int base, char *buf)
 #include "builtins/array_ext.c"
 #include "builtins/int_float_ext.c"
 #include "builtins/fiber.c"
+#include "builtins/arithseq.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
 {
@@ -3226,6 +3234,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "%", korb_m_range_pct, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reduce", korb_m_range_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "inject", korb_m_range_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "select", korb_m_range_select, 0);
@@ -3424,6 +3433,17 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_object", korb_m_enum_with_object, -1);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
+
+    /* Enumerator::ArithmeticSequence (step / %) */
+    korb_def_cmethod_blk(c, KORB_C_ARITHSEQ, "each", korb_m_aseq_each, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "to_a", korb_m_aseq_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "entries", korb_m_aseq_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "size", korb_m_aseq_size, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "first", korb_m_aseq_first, -1);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "last", korb_m_aseq_last, -1);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "begin", korb_m_aseq_begin, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "end", korb_m_aseq_end, 0);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "step", korb_m_aseq_step_acc, 0);
 
     /* Set */
     korb_def_cmethod(c, KORB_C_SET, "to_a", korb_m_set_to_a, 0);
@@ -3726,6 +3746,23 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_COMPLEX:                            /* inspect: (re±|im|i) */
         fputc('(', fp); korb_fprint_to_s(c, fp, v); fputc(')', fp);
         return;
+      case KORB_OBJ_ARITHSEQ: {                         /* inspect: (recv.step(args)) / (recv.%(arg)) */
+        const KorbArithSeq *as = VAL2ASEQ(v);
+        const bool rng = KORB_RANGE_P(as->recv);
+        fputc('(', fp);
+        if (rng) fputc('(', fp);
+        korb_fprint_inspect(c, fp, as->recv);
+        if (rng) fputc(')', fp);
+        fputs(as->is_pct ? ".%" : ".step", fp);
+        if (as->nargs >= 1) {
+            fputc('(', fp);
+            korb_fprint_inspect(c, fp, as->a0);
+            if (as->nargs >= 2) { fputs(", ", fp); korb_fprint_inspect(c, fp, as->a1); }
+            fputc(')', fp);
+        }
+        fputc(')', fp);
+        return;
+      }
     }
     korb_fprint_to_s(c, fp, v);
 }

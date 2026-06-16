@@ -282,7 +282,8 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 4, line);
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%%' for %s", korb_a_type_name(l));
+    slots[0] = l; slots[1] = rhs;                       /* Range#% / user-defined % via dispatch */
+    return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), line, 1);
 }
 
 // Unary minus.  Single child → register form.
