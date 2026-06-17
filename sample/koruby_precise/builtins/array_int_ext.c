@@ -480,6 +480,10 @@ static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
         }
     }
+    if (depth > 1 || depth < 0) {                         /* flatten the k/v values further */
+        slots[0] = LONG2FIX(depth < 0 ? -1 : depth - 1);
+        return korb_m_ary_flatten(c, slots + 1, dst, VALUE_SLICE_MAKE(&slots[0], 1));
+    }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Hash#invert — new hash with keys and values swapped (later dups win, like CRuby). */
