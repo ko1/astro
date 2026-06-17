@@ -1386,6 +1386,15 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
 }
 
+/* Comparable mixin methods (defined in builtins/set.c, included later). */
+static RESULT korb_m_cmpbl_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+
 /* Build the builtin class objects (Object/Integer/String/...) + register
  * constants + fill vm->class_name[].  Run before exception-class init. */
 void
@@ -1425,7 +1434,22 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
      * already exist natively on those types). */
     uint32_t comp_sym = korb_intern(vm, "Comparable", 10);
     korb_const_define(c, comp_sym, KORB_NIL);                     /* reserve a const slot (rooted) */
-    { VALUE comp = korb_class_new(c, slots, comp_sym, KORB_NIL).value; VAL2CLASS(comp)->is_module = 1; korb_const_define(c, comp_sym, comp); }
+    { VALUE comp = korb_class_new(c, slots, comp_sym, KORB_NIL).value; VAL2CLASS(comp)->is_module = 1; korb_const_define(c, comp_sym, comp);
+      /* Comparable derives the comparison API from the includer's <=>. */
+      KorbClass *const cm = VAL2CLASS(comp);
+      #define KORB_DEF_COMPARABLE(nm, fnp, ar) do { \
+          struct korb_method *_m = korb_class_method_slot(cm, korb_intern(vm, (nm), (uint32_t)strlen(nm))); \
+          _m->kind = KORB_METHOD_CFUNC; _m->uses_block = 0; _m->params_cnt = (ar); \
+          _m->rfn = (fnp); _m->rbfn = NULL; _m->body = NULL; _m->owner = comp; } while (0)
+      KORB_DEF_COMPARABLE("<",  korb_m_cmpbl_lt, 1);
+      KORB_DEF_COMPARABLE("<=", korb_m_cmpbl_le, 1);
+      KORB_DEF_COMPARABLE(">",  korb_m_cmpbl_gt, 1);
+      KORB_DEF_COMPARABLE(">=", korb_m_cmpbl_ge, 1);
+      KORB_DEF_COMPARABLE("==", korb_m_cmpbl_eq, 1);
+      KORB_DEF_COMPARABLE("between?", korb_m_cmpbl_between, 2);
+      KORB_DEF_COMPARABLE("clamp", korb_m_cmpbl_clamp, -1);
+      #undef KORB_DEF_COMPARABLE
+    }
     uint32_t enum_sym = korb_intern(vm, "Enumerable", 10);
     korb_const_define(c, enum_sym, KORB_NIL);
     { VALUE enm = korb_class_new(c, slots, enum_sym, KORB_NIL).value; VAL2CLASS(enm)->is_module = 1; korb_const_define(c, enum_sym, enm); }

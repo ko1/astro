@@ -344,6 +344,58 @@ static RESULT korb_m_class_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_class_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 1); }
 static RESULT korb_m_class_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 2); }
 static RESULT korb_m_class_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 3); }
+/* Comparable mixin: derive </<=/>/>=/==/between?/clamp from the receiver's <=>.
+ * `*out` = -1/0/1, or 2 when <=> returns nil (incomparable). */
+static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other, int *out) {
+    slots[0] = self; slots[1] = other;
+    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (r.value == KORB_NIL) { *out = 2; return RESULT_OK(KORB_NIL); }
+    if (UNLIKELY(!FIXNUM_P(r.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
+    intptr_t v = FIX2LONG(r.value);
+    *out = v < 0 ? -1 : v > 0 ? 1 : 0;
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_m_cmpbl_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
+    int cmp; RESULT r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &cmp);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (cmp == 2) {                                       /* <=> returned nil */
+        if (op == 4) return RESULT_OK(KORB_FALSE);        /* == → false */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
+                          korb_type_name(VALUE_REF_GET(self)), korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    bool t;
+    switch (op) { case 0: t = cmp < 0; break; case 1: t = cmp <= 0; break;
+                  case 2: t = cmp > 0; break; case 3: t = cmp >= 0; break; default: t = cmp == 0; break; }
+    return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_cmpbl_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 0); }
+static RESULT korb_m_cmpbl_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 1); }
+static RESULT korb_m_cmpbl_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 2); }
+static RESULT korb_m_cmpbl_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 3); }
+static RESULT korb_m_cmpbl_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 4); }
+static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int c1; RESULT r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &c1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (c1 == 2 || c1 < 0) return RESULT_OK(KORB_FALSE);   /* self < min */
+    int c2; r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 1), &c2);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK((c2 != 2 && c2 <= 0) ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
+        const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0)); slots[0] = rg->rbegin; slots[1] = rg->rend;
+    } else if (VALUE_SLICE_LEN(a) >= 2) { slots[0] = VALUE_SLICE_GET(a, 0); slots[1] = VALUE_SLICE_GET(a, 1); }
+    else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    /* slots[0]=lo, slots[1]=hi rooted across the (GC-causing) <=> dispatches */
+    int cl; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[0], &cl);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (cl != 2 && cl < 0) return RESULT_OK(slots[0]);    /* self < lo → lo */
+    int ch; r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[1], &ch);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (ch != 2 && ch > 0) return RESULT_OK(slots[1]);    /* self > hi → hi */
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* Module#include?(mod) — true if mod is included in self or any ancestor
  * (superclasses themselves don't count, only included modules). */
 static RESULT korb_m_class_include_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
