@@ -199,7 +199,7 @@ static RESULT korb_str_splice(CTX *c, VALUE *slots, VALUE_REF self, uint32_t bs,
 }
 /* Compute byte span [*bs,*be) for a string index target. idx + optional len arg
  * (len_v = KORB_NIL if absent). *found=false ⇒ no match / out of range. */
-static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be) {
+static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
     *found = true;
@@ -225,8 +225,9 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
             if (UNLIKELY(!korb_to_index(len_v, &ln))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(len_v));
         } else ln = 1;
     }
-    const bool single = (len_v == KORB_NIL && !KORB_RANGE_P(idx));   /* str[i]: one char, nil at end */
-    if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && st == (intptr_t)ncp)) { *found = false; return RESULT_OK(KORB_NIL); }
+    const bool single = (len_v == KORB_NIL && !KORB_RANGE_P(idx));   /* str[i]: one char, nil at end (read only) */
+    if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && !write && st == (intptr_t)ncp)) { *found = false; return RESULT_OK(KORB_NIL); }
+    if (single && write && st == (intptr_t)ncp) ln = 0;              /* str[len]=x → append (empty span at end) */
     if (st + ln > (intptr_t)ncp) ln = (intptr_t)ncp - st;
     *bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)st);
     *be = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(st + ln));
@@ -240,9 +241,9 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE idx = VALUE_SLICE_GET(a, 0);
     VALUE len_v = (na == 3) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     bool found; uint32_t bs = 0, be = 0;
-    RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be);
+    RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be, true);
     if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
-    if (!found) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index out of string");
+    if (!found) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)(VALUE_SLICE_LEN(a)>=1 && FIXNUM_P(VALUE_SLICE_GET(a,0)) ? FIX2LONG(VALUE_SLICE_GET(a,0)) : 0));
     CHECK(korb_str_splice(c, slots, self, bs, be, VALUE_SLICE_REF(a, na - 1), true));
     return RESULT_OK(repl);
 }
@@ -252,7 +253,7 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     VALUE idx = VALUE_SLICE_GET(a, 0);
     VALUE len_v = (na >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     bool found; uint32_t bs = 0, be = 0;
-    RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be);
+    RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be, false);
     if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
     if (!found) return RESULT_OK(KORB_NIL);
     slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, bs, be - bs));   /* removed part */
