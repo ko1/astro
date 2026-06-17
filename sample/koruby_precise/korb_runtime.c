@@ -2916,7 +2916,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
-    korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "lines", korb_m_str_lines_b, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_byte", korb_m_str_each_byte, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "bytes", korb_m_str_bytes_b, 0);
