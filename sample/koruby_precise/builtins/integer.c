@@ -374,8 +374,8 @@ static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
         if (e >= 62) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float magnitude too large for Rational (Bignum)");
         return korb_rat_new(c, slots, mant << e, 1);
     }
-    if (-e >= 62) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float too small for Rational (Bignum)");
-    return korb_rat_new(c, slots, mant, (intptr_t)1 << (-e));
+    if (-e >= 63) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float too small for Rational (Bignum)");
+    return korb_rat_new(c, slots, mant, (intptr_t)1 << (-e));   /* 1<<62 still fits int64 */
 }
 
 /* Simplest rational p/q in [a, b] (a <= b), CF-convergent search matching
