@@ -2513,24 +2513,32 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  uint32_t argc, VALUE self)
 {
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL)) {
+    if (LIKELY(KORB_OBJECT_P(self))) {
         const VALUE klass = VAL2OBJ(self)->klass;
-        struct korb_method *m;
-        VALUE def_class;
-        if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
-            m = ic->m; def_class = ic->def_class;
-        } else {
-            def_class = KORB_NIL;
-            m = korb_mcache_find(vm, klass, mid, &def_class);
-            if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
-            ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+        if (LIKELY(klass != KORB_NIL)) {              /* user-instance self-call (inline cache) */
+            struct korb_method *m;
+            VALUE def_class;
+            if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                def_class = KORB_NIL;
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                if (UNLIKELY(m == NULL)) return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+                ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+            }
+            if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines */
+                return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
+            RESULT r;
+            if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
+                return r;   /* ATTR / non-simple ISEQ */
+            /* CFUNC → fall through to korb_call_impl */
+        } else if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL &&
+                          cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple &&
+                          mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send)) {
+            /* top-level (main, klass-less) call of a cached simple ISEQ global
+             * function (fib / ackermann / inc) — skip korb_call_impl's maze. */
+            return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);
         }
-        if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines */
-            return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
-        RESULT r;
-        if (korb_invoke_self(c, slots, m, argc, line, mid, self, def_class, &r))
-            return r;   /* ATTR / non-simple ISEQ */
-        /* CFUNC → fall through to korb_call_impl */
     }
     return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
 }
