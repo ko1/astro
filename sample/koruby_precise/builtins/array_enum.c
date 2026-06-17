@@ -94,17 +94,25 @@ static RESULT korb_m_ary_sum_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* min (want=-1) / max (want=1) by <=> */
+static RESULT korb_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out);   /* fwd */
 static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
-    const KorbArray *ary = SELF_ARY;
-    if (ary->len == 0) return RESULT_OK(KORB_NIL);
-    VALUE best = ary->items->data[0];
-    for (uint32_t i = 1; i < ary->len; i++) {
-        VALUE e = ary->items->data[i];
-        int cmp = korb_cmp_full(c, e, best);
-        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(e), korb_type_name(best));
-        if (cmp == want) best = e;
+    const uint32_t len = SELF_ARY->len;
+    if (len == 0) return RESULT_OK(KORB_NIL);
+    slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[0];   /* best (rooted across any <=> dispatch GC) */
+    for (uint32_t i = 1; i < len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        int cmp;
+        if (UNLIKELY(KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0]))) {   /* user/Comparable → dispatch <=> */
+            slots[1] = e;                                             /* root e across the dispatch */
+            CHECK(korb_cmp_spaceship(c, slots + 2, slots[1], slots[0], &cmp));
+            e = slots[1];                                            /* re-read (may have moved) */
+        } else {
+            cmp = korb_cmp_full(c, e, slots[0]);
+            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(e), korb_type_name(slots[0]));
+        }
+        if (cmp == want) slots[0] = e;
     }
-    return RESULT_OK(best);
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
                              NODE *block, VALUE *def_env, VALUE *cself, int *out);
@@ -301,6 +309,20 @@ static void korb_fix_qsort(VALUE *const d, intptr_t lo, intptr_t hi) {
     }
     korb_fix_insort(d, lo, hi);
 }
+/* Dispatch `a <=> b` (user / Comparable) → *out = sign(-1/0/1).  May GC (caller
+ * re-fetches the array after the call).  nil result = incomparable → raise. */
+static RESULT korb_cmp_spaceship(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out) {
+    slots[0] = a; slots[1] = b;
+    RESULT r = korb_send(c, slots + 2, c->vm->mid_cmp, 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(!FIXNUM_P(r.value)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
+                          korb_type_name(slots[0]), korb_type_name(slots[1]));
+    const intptr_t v = FIX2LONG(r.value);
+    *out = (v > 0) - (v < 0);
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
@@ -318,10 +340,35 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
          * creates no new heap edges (all already tracked) → no write barrier. */
         VALUE *const dd0 = d->items->data;
         const uint32_t dn = d->len;
-        bool all_fix = true;
-        for (uint32_t i = 0; i < dn; i++) { if (!FIXNUM_P(dd0[i])) { all_fix = false; break; } }
+        bool all_fix = true, has_obj = false;
+        for (uint32_t i = 0; i < dn; i++) {
+            const VALUE e = dd0[i];
+            if (!FIXNUM_P(e)) all_fix = false;
+            if (KORB_OBJECT_P(e)) { has_obj = true; break; }   /* user object → needs <=> dispatch */
+        }
         if (all_fix) {                      /* homogeneous Fixnum → callback-free typed sort */
             if (dn > 1) korb_fix_qsort(dd0, 0, (intptr_t)dn - 1);
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        if (has_obj) {
+            /* user/Comparable objects: dispatch <=> per compare (may GC/move dst →
+             * re-fetch the items pointer each time, key rooted in slots[1]).  Stable
+             * insertion sort, matching the comparator-block path below. */
+            uint32_t len = d->len;
+            for (uint32_t i = 1; i < len; i++) {
+                slots[1] = VAL2ARY(VALUE_REF_GET(dst))->items->data[i];   /* key (rooted) */
+                uint32_t j = i;
+                while (j > 0) {
+                    VALUE left = VAL2ARY(VALUE_REF_GET(dst))->items->data[j-1];
+                    int cmp = 0;
+                    CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
+                    if (cmp <= 0) break;
+                    KorbArray *dd = VAL2ARY(VALUE_REF_GET(dst));          /* re-fetch post-dispatch */
+                    ARO_STORE(c, dd->items, &dd->items->data[j], dd->items->data[j-1]); j--;
+                }
+                KorbArrayItems *dit = VAL2ARY(VALUE_REF_GET(dst))->items;
+                ARO_STORE(c, dit, &dit->data[j], slots[1]);
+            }
             return RESULT_OK(VALUE_REF_GET(dst));
         }
         struct korb_sortctx sc = { c, 0 };
