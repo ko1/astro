@@ -233,6 +233,7 @@ RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
         return korb_m_ary_difference(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
     }
     if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_diff(c, slots + 1, lhs, VALUE_SLICE_MAKE(&slots[0], 1)); }   /* Set - → difference */
+    { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
 }
 static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

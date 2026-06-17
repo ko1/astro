@@ -1833,6 +1833,21 @@ static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 
+/* If `l` is a user class/instance defining the binary operator `op`, dispatch
+ * l.op(rhs) and report handled=true.  Guarded to KORB_CLASS_P/KORB_OBJECT_P so
+ * builtin types whose operator routes back through the slow path can't recurse. */
+RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled) {
+    if (KORB_CLASS_P(l) || KORB_OBJECT_P(l)) {
+        uint32_t mid = korb_intern(c->vm, op, (uint32_t)strlen(op));
+        if (korb_responds_to(c, l, mid)) {
+            slots[0] = l; slots[1] = rhs; *handled = true;
+            return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
+        }
+    }
+    *handled = false;
+    return RESULT_OK(KORB_NIL);
+}
+
 RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
@@ -1858,6 +1873,7 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_STRING_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "no implicit conversion of %s into String", korb_type_name(rhs));
+    { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "+", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                       "undefined method '+' for %s", korb_a_type_name(l));
 }
@@ -1899,6 +1915,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_STRING_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "no implicit conversion of %s into Integer", korb_type_name(rhs));
+    { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "*", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                       "undefined method '*' for %s", korb_a_type_name(l));
 }
