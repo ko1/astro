@@ -2297,6 +2297,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
+static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
 /* Core block invocation: lay out the block frame at cursor `slots` and
@@ -2318,8 +2319,30 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
     bf[0] = (VALUE)((uintptr_t)def_env | 1u);
+    const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
-    if (dn > 0) {                                       /* |(a, b, ...)| — splat the array arg */
+    if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| */
+        const uint32_t np = korb_entry_params_cnt(block);   /* logical param count */
+        const VALUE *src = argv; uint32_t srcn = argc;
+        if (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
+            const KorbArray *ar = VAL2ARY(argv[0]); src = ar->items->data; srcn = ar->len;
+        }
+        uint32_t loc = 0;
+        for (uint32_t p = 0; p < np; p++) {
+            VALUE pv = (p < srcn) ? src[p] : KORB_NIL;
+            uint8_t m = spec[p];
+            if (m == 0) { bf[1 + loc] = pv; loc++; continue; }
+            if (KORB_ARRAY_P(pv)) {                     /* destructure this param into m locals */
+                const KorbArray *ar2 = VAL2ARY(pv);
+                for (uint32_t j = 0; j < m; j++) bf[1 + loc + j] = j < ar2->len ? ar2->items->data[j] : KORB_NIL;
+            } else {
+                bf[1 + loc] = pv;
+                for (uint32_t j = 1; j < m; j++) bf[1 + loc + j] = KORB_NIL;
+            }
+            loc += m;
+        }
+        for (uint32_t i = loc; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else if (dn > 0) {                                /* |(a, b, ...)| — splat the array arg */
         VALUE arr = (argc >= 1) ? argv[0] : KORB_NIL;
         if (KORB_ARRAY_P(arr)) {
             const KorbArray *ar = VAL2ARY(arr);

@@ -840,9 +840,9 @@ node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@
 // reads params/locals off it (korb_entry_*) to size the block frame, then
 // dispatches it (EVAL evaluates the body at the block-frame cursor).
 NODE_DEF
-node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n)
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec)
 {
-    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n;
+    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec;
     return EVAL_ARG(c, body);
 }
 
