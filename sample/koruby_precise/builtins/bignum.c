@@ -59,7 +59,11 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
         mpz_clear(zb);
         RESULT denr = korb_big_from_mpz(c, slots, zr);     /* a**n (normalised) */
         mpz_clear(zr);
-        if (FIXNUM_P(denr.value)) return korb_rat_new(c, slots, 1, FIX2LONG(denr.value));
+        if (FIXNUM_P(denr.value)) {
+            intptr_t d = FIX2LONG(denr.value);
+            if (d == 1 || d == -1) return RESULT_OK(LONG2FIX(d));   /* 1/±1 → Integer (CRuby) */
+            return korb_rat_new(c, slots, 1, d);
+        }
         return denr;                                       /* huge denom: best-effort (rare) */
     }
     unsigned long e;

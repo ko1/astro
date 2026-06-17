@@ -113,9 +113,11 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; intptr_t n = SELF_INT;
-    if (n < 0 || n > 255) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%ld out of char range", (long)n);
+    if (n < 0 || n > 255) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
     char ch = (char)n;
-    return korb_str_new(c, slots, &ch, 1);
+    RESULT r = korb_str_new(c, slots, &ch, 1);
+    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_BINARY;   /* n.chr is ASCII-8BIT */
+    return r;
 }
 
 /* floored integer division / modulo (Ruby semantics: quotient rounds toward

@@ -343,7 +343,8 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 #endif
     if (KORB_FLOAT_P(v)) return korb_float_new(c, slots, -VAL2FLT(v)->val);
     if (KORB_STRING_P(v)) return RESULT_OK(v);   /* -@ on a String → self (frozen dup) */
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-@' for %s", korb_a_type_name(v));
+    slots[0] = v;                                /* Rational/Complex/user-defined -@ via dispatch */
+    return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), line, 0);
 }
 
 // ---- comparison ------------------------------------------------------------
