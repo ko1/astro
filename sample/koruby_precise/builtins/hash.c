@@ -95,6 +95,7 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     h->len--;
     ARO_STORE(c, it, &it->data[2 * h->len], KORB_NIL);   /* drop tail refs (nil = no WB) */
     ARO_STORE(c, it, &it->data[2 * h->len + 1], KORB_NIL);
+    KORB_HASH_DROP_INDEX(h);                             /* pairs shifted → index stale */
     return RESULT_OK(removed);
 }
 
@@ -157,6 +158,7 @@ static RESULT korb_m_hash_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     h->len--;
     ARO_STORE(c, it, &it->data[2 * h->len],     KORB_NIL);
     ARO_STORE(c, it, &it->data[2 * h->len + 1], KORB_NIL);
+    KORB_HASH_DROP_INDEX(h);                             /* pairs shifted → index stale */
     return RESULT_OK(slots[2]);
 }
 /* Hash#each_value / each_key — yield each value (resp. key); return self. */

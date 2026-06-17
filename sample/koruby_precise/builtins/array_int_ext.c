@@ -338,6 +338,7 @@ static RESULT korb_m_hash_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_hash_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
+    KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;     /* drop all pairs (payload kept, becomes garbage) */
     return RESULT_OK(VALUE_REF_GET(self));
 }
@@ -358,6 +359,7 @@ static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     if (w == h->len) return RESULT_OK(KORB_NIL);          /* unchanged → nil */
     h->len = w;
+    KORB_HASH_DROP_INDEX(h);                              /* pairs compacted → index stale */
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -415,6 +417,7 @@ static RESULT korb_m_hash_transform_keys(CTX *c, VALUE *slots, VALUE_REF self, V
 static RESULT korb_m_hash_transform_keys_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     slots[0] = UNWRAP(korb_hash_xform_keys(c, slots + 1, self, a, block, def_env, cself));   /* result rooted at slots[0] */
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;                     /* clear self (payload kept) */
     for (uint32_t i = 0; ; i++) {
         const KorbHash *r = VAL2HASH(VALUE_REF_GET(res));
@@ -508,6 +511,7 @@ static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ov = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+    KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;                       /* clear, then copy other's pairs */
     slots[0] = ov;
     for (uint32_t i = 0; ; i++) {
@@ -759,6 +763,7 @@ static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *
     KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
     for (uint32_t r = 2*w; r < 2*h->len; r++) ARO_STORE(c, h->items, &h->items->data[r], KORB_NIL);
     h->len = w;
+    KORB_HASH_DROP_INDEX(h);                              /* pairs compacted → index stale */
     if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(self));
 }

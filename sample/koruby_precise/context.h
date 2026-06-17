@@ -166,6 +166,9 @@ enum korb_obj_type {
 /* bit 8 (String only): ASCII-8BIT / binary encoding — inspect renders control
  * and high bytes as \xNN (vs \uNNNN / UTF-8 passthrough for the default UTF-8). */
 #define KORB_FL_BINARY     0x100u
+/* bit 9 (Hash only): the lookup index is permanently disabled because a key
+ * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
+#define KORB_FL_HASH_NOINDEX 0x200u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
@@ -331,7 +334,18 @@ typedef struct KorbHash {
     uint32_t len, capa;              /* pair count / pair capacity */
     KorbArrayItems *ARO_GC_EDGE items;       /* 2*capa VALUEs */
     VALUE ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
+    /* O(1) lookup index for large hashes: open-addressing table of pair indices
+     * (slot = pair_idx + 1; 0 = empty), a raw KORB_OBJ_STR_BUF of uint32.  NULL
+     * for small hashes (linear scan is faster) or when KORB_FL_HASH_NOINDEX is
+     * set (a key whose value-equality is ambiguous to hash, e.g. Float/heap). */
+    KorbStrBuf *ARO_GC_EDGE index;
+    uint32_t idx_mask;               /* index capacity - 1 (0 = no index) */
 } KorbHash;
+/* Drop the lookup index — call after any structural mutation that removes or
+ * reorders pairs (delete/shift/clear/reject!) so pair indices can't go stale.
+ * korb_hash_find falls back to linear; the next insert past the threshold
+ * rebuilds.  (NOINDEX, if set, stays set.) */
+#define KORB_HASH_DROP_INDEX(h) do { (h)->index = NULL; (h)->idx_mask = 0; } while (0)
 
 /* Range: begin/end + exclusivity.  Endpoints are arbitrary values (GC edges). */
 typedef struct KorbRange {
@@ -721,6 +735,7 @@ struct CTX_struct {
         KorbHash *_hh = (KorbHash *)(payload);                              \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_val);            \
+        if (_hh->index) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->index); /* raw uint32 table */ \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
