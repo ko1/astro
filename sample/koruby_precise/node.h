@@ -249,6 +249,7 @@ enum korb_etype {
     KORB_E_NAME,
     KORB_E_LOCALJUMP,
     KORB_E_RANGE,
+    KORB_E_INDEX,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

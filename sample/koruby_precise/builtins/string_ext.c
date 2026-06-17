@@ -155,6 +155,29 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
     return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
 }
+/* String#insert(index, str) — insert str before the char at index (negative
+ * index counts from the end, inserting after); mutates and returns self. */
+static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t idx;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    VALUE iv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(iv));
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+    intptr_t pos = idx >= 0 ? idx : (intptr_t)ncp + idx + 1;
+    if (UNLIKELY(pos < 0 || pos > (intptr_t)ncp)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)idx);
+    uint32_t boff = korb_str_char_to_byte(s, (uint32_t)pos);
+    uint32_t inn = VAL2STR(iv)->len, newlen = s->len + inn;
+    char *out = malloc(newlen ? newlen : 1);
+    s = VAL2STR(VALUE_REF_GET(self));
+    memcpy(out, s->buf->data, boff);
+    memcpy(out + boff, VAL2STR(iv)->buf->data, inn);
+    memcpy(out + boff + inn, s->buf->data + boff, s->len - boff);
+    KorbString *ns = korb_str_ensure(c, slots, self, newlen);
+    memcpy(ns->buf->data, out, newlen); ns->len = newlen; ns->buf->data[newlen] = '\0';
+    free(out);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* String#bytesplice(index, length, str) / (range, str) — replace bytes in place,
  * return self. */
 static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
