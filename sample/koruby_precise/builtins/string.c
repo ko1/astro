@@ -955,6 +955,22 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     VALUE_REF sepref = ws ? (VALUE_REF){0} : VALUE_SLICE_REF(a, 0);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    if (VAL2STR(VALUE_REF_GET(self))->len == 0)            /* CRuby: empty string always splits to [] */
+        return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
+    if (!ws && VAL2STR(VALUE_REF_GET(sepref))->len == 0) {  /* empty pattern → split into characters */
+        uint32_t cpos = 0;
+        for (;;) {
+            const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+            if (cpos >= s->len) break;
+            bool last_field = (limit > 0 && VAL2ARY(VALUE_REF_GET(dst))->len == (uint32_t)limit - 1);
+            if (last_field) { CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, s->len - cpos)))); break; }
+            uint32_t cl = 1;                               /* one UTF-8 codepoint */
+            while (cpos + cl < s->len && ((unsigned char)s->buf->data[cpos+cl] & 0xC0) == 0x80) cl++;
+            CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, cl))));
+            cpos += cl;
+        }
+        return korb_split_finish(c, slots + 1, self, dst, block, def_env, cself);
+    }
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read each iter */

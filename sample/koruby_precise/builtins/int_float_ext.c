@@ -187,9 +187,8 @@ static RESULT korb_m_hash_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block == NULL) {                              /* sum(init): fold init + [k,v] over pairs via + */
-        if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no init given");
         uint32_t plus_mid = korb_intern(c->vm, "+", 1);
-        slots[0] = VALUE_SLICE_GET(a, 0);             /* acc = init (rooted) */
+        slots[0] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);   /* acc = init (default 0), rooted */
         for (uint32_t i = 0; i < VAL2HASH(VALUE_REF_GET(self))->len; i++) {
             VALUE pair; CHECK(korb_hash_pair_at(c, slots + 1, self, i, &pair));   /* pair at slots[3] */
             slots[4] = slots[0]; slots[5] = slots[3];                            /* recv=acc, arg=pair */
