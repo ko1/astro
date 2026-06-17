@@ -109,6 +109,7 @@ static RESULT korb_ary_minmax_blk(CTX *c, VALUE *slots, VALUE_REF self, int want
 /* min(n)/max(n): the n smallest (want=-1) / largest (want=1), sorted accordingly. */
 static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, intptr_t n) {
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    if (n == 0) return korb_ary_new(c, slots, 0);          /* max(0)/min(0) → [] (no comparison) */
     uint32_t len = SELF_ARY->len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, len));        /* sorted-ascending working copy */
     VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
