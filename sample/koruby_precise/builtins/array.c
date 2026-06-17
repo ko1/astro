@@ -486,8 +486,15 @@ static RESULT korb_m_ary_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 
 static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; REQUIRE_BLOCK("Integer#times");
+    (void)a;
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
+    if (block == NULL) {                              /* → Enumerator over 0...n */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(n > 0 ? n : 0)));
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        for (intptr_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(i)));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "times"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), slots[1]);
+    }
     for (intptr_t i = 0; i < n; i++) {
         VALUE iv = LONG2FIX(i);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
