@@ -466,9 +466,13 @@ static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_range_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_drop(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    }
     intptr_t n;
     if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to drop negative size");
@@ -510,10 +514,15 @@ static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
+static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_range_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool keep) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return (keep ? korb_m_ary_grep : korb_m_ary_grep_v)(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (intptr_t i = lo; i < hi; i++) {
         slots[0] = LONG2FIX(i);
@@ -692,10 +701,15 @@ static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* select (keep==true) / reject (keep==false) over an integer range */
+static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
+static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_range_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#select/reject without a block is not supported");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return (keep ? korb_m_ary_select : korb_m_ary_reject)(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), block, def_env, captured_self);
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
