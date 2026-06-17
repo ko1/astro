@@ -74,6 +74,24 @@ static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(slots[0]);
 }
+/* Array#sum with a block: init + block(e0) + block(e1) + ... (+ via dispatch). */
+static RESULT korb_m_ary_sum_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_m_ary_sum(c, slots, self, a);
+    const uint32_t plus = korb_intern(c->vm, "+", 1);
+    slots[0] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);   /* acc (recv) */
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *ar = SELF_ARY;
+        if (i >= ar->len) break;
+        slots[1] = ar->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[1] = r.value;                          /* arg = block(e); recv = slots[0] */
+        r = korb_send(c, slots + 2, plus, 0, 1);     /* acc = acc + block(e) */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    return RESULT_OK(slots[0]);
+}
 
 /* min (want=-1) / max (want=1) by <=> */
 static RESULT korb_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, int want) {
