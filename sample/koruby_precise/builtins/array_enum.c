@@ -909,8 +909,8 @@ static RESULT korb_m_ary_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {   /* find-minimum */
             if (KORB_TRUTHY(rv)) { found = slots[0]; have = true; hi = mid; }
             else lo = mid + 1;
-        } else if (FIXNUM_P(rv)) {                                     /* find-any */
-            intptr_t cmp = FIX2LONG(rv);
+        } else if (FIXNUM_P(rv) || KORB_FLOAT_P(rv)) {                 /* find-any (numeric) */
+            double cmp; (void)korb_num_to_d(rv, &cmp);
             if (cmp == 0) return RESULT_OK(slots[0]);
             else if (cmp < 0) hi = mid;
             else lo = mid + 1;
@@ -933,8 +933,8 @@ static RESULT korb_m_ary_bsearch_index(CTX *c, VALUE *slots, VALUE_REF self, VAL
         VALUE rv = r.value;
         if (rv == KORB_TRUE || rv == KORB_FALSE || rv == KORB_NIL) {
             if (KORB_TRUTHY(rv)) { found = mid; have = true; hi = mid; } else lo = mid + 1;
-        } else if (FIXNUM_P(rv)) {
-            intptr_t cmp = FIX2LONG(rv);
+        } else if (FIXNUM_P(rv) || KORB_FLOAT_P(rv)) {
+            double cmp; (void)korb_num_to_d(rv, &cmp);
             if (cmp == 0) return RESULT_OK(LONG2FIX(mid));
             else if (cmp < 0) hi = mid; else lo = mid + 1;
         } else {
