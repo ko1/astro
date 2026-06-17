@@ -904,7 +904,9 @@ NODE_DEF @noinline
 node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], block, &slots[def_env_off], &slots[self_off]);
+    /* def_env carries the raw PREV form: tag the live slots base odd (eget slots path). */
+    return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], block,
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
 
 // `def m(&blk)` prologue: materialize the passed block into the &blk local as a
@@ -943,7 +945,8 @@ NODE_DEF @noinline
 node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
-    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, block, &slots[def_env_off], &slots[self_off]);
+    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, block,
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
 
 // yield to the current method's block.  `biseq_off` / `def_env_off` /

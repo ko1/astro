@@ -1193,8 +1193,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged -> GC skips); super reads owner, __method__ reads mid */
     (void)def_class;
     if (block != NULL && m->uses_block) {
-        base[locals_cnt - 5] = (VALUE)((uintptr_t)block   | 1u);
-        base[locals_cnt - 4] = (VALUE)((uintptr_t)def_env | 1u);
+        base[locals_cnt - 5] = (VALUE)((uintptr_t)block | 1u);
+        base[locals_cnt - 4] = (VALUE)(uintptr_t)def_env;   /* raw PREV (odd slots / clean KorbEnv) */
         base[locals_cnt - 3] = captured_self;
     }
     if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
@@ -2559,13 +2559,13 @@ korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
     return r;
 }
 
-/* Standard block invocation: the PREV handle is the caller's live slots base
- * (tagged odd → eget slots path).  Used by yield and all builtin block drivers. */
+/* Standard block invocation.  `def_env` carries the raw PREV form (a slots base
+ * already tagged odd at the origin node, or a forwarded KorbEnv*); pass through. */
 RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
-    return korb_block_yield_raw(c, slots, block, (VALUE)((uintptr_t)def_env | 1u),
+    return korb_block_yield_raw(c, slots, block, (VALUE)(uintptr_t)def_env,
                                 argv, argc, captured_self);
 }
 
@@ -2577,9 +2577,9 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
     if (UNLIKELY(((uintptr_t)block_cell & 1u) == 0)) {
         return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
     }
-    NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell   & ~(uintptr_t)1u);
-    VALUE *def_env = (VALUE *)(uintptr_t)((uintptr_t)def_env_cell & ~(uintptr_t)1u);
-    return korb_block_yield(c, slots, entry, def_env, slots - argc, argc, captured_self);
+    NODE  *entry   = (NODE  *)(uintptr_t)((uintptr_t)block_cell & ~(uintptr_t)1u);
+    /* def_env_cell holds the raw PREV (odd slots / clean KorbEnv) — pass through. */
+    return korb_block_yield(c, slots, entry, (VALUE *)(uintptr_t)def_env_cell, slots - argc, argc, captured_self);
 }
 
 /* ---------------------------------------------------------------------------
