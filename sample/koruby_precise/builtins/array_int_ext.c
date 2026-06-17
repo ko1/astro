@@ -140,8 +140,9 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (i >= 0) mpz_fdiv_q_2exp(r, z, (mp_bitcnt_t)i);     /* self >> i (arith) */
         else        mpz_mul_2exp(r, z, (mp_bitcnt_t)(-i));     /* self << -i */
         if (have_len) {
-            if (len <= 0) mpz_set_ui(r, 0);
-            else { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
+            if (len == 0) mpz_set_ui(r, 0);
+            else if (len > 0) { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
+            /* len < 0: no upper mask — all bits from the offset (CRuby) */
         } else {
             mpz_t one; mpz_init_set_ui(one, 1); mpz_and(r, r, one); mpz_clear(one);   /* single bit */
         }
