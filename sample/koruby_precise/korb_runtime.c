@@ -384,6 +384,14 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
     VALUE p = VALUE_REF_GET(pref);
     if (KORB_STRING_P(p))
         return korb_str_plus_ref(c, slots, aref, pref);
+    if (KORB_OBJECT_P(p)) {                              /* user object → its to_s (user or default) */
+        RESULT tsr = korb_send(c, slots, korb_intern(c->vm, "to_s", 4), 0, 0);   /* recv = pref slot */
+        if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
+        VALUE_REF_SET(pref, tsr.value);                  /* reuse the rooted slot to hold the result */
+        if (KORB_STRING_P(tsr.value))
+            return korb_str_plus_ref(c, slots, aref, pref);
+        p = tsr.value;                                   /* non-String to_s → render the returned value */
+    }
 
     char *buf = NULL;
     size_t sz = 0;
@@ -3884,35 +3892,43 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
  * ------------------------------------------------------------------------- */
 
 /* puts one value, newline-terminated; arrays flatten recursively (each element
- * on its own line), matching CRuby.  An empty array prints nothing. */
-static void
-korb_puts_one(CTX *c, VALUE v)
+ * on its own line), matching CRuby.  An empty array prints nothing.  User
+ * objects dispatch their to_s method (slots-threaded, may GC). */
+static RESULT
+korb_puts_one(CTX *c, VALUE *slots, VALUE v)
 {
     if (KORB_ARRAY_P(v)) {
-        const KorbArray *a = VAL2ARY(v);
-        for (uint32_t i = 0; i < a->len; i++) korb_puts_one(c, a->items->data[i]);
-        return;
+        slots[0] = v;                                   /* root across to_s GC in recursion */
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
+            CHECK(korb_puts_one(c, slots + 1, VAL2ARY(slots[0])->items->data[i]));
+        return RESULT_OK(KORB_NIL);
+    }
+    if (KORB_OBJECT_P(v)) {                             /* user object → its to_s (user or default) */
+        slots[0] = v;
+        RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        v = r.value;                                    /* fall through to print the string */
     }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v);
         fwrite(s->buf->data, 1, s->len, stdout);
         if (s->len == 0 || s->buf->data[s->len - 1] != '\n') fputc('\n', stdout);
-        return;
+        return RESULT_OK(KORB_NIL);
     }
     korb_fprint_to_s(c, stdout, v);
     fputc('\n', stdout);
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)slots;
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n == 0) {
         fputc('\n', stdout);
         return RESULT_OK(KORB_NIL);
     }
-    for (uint32_t i = 0; i < n; i++) korb_puts_one(c, VALUE_SLICE_GET(args, i));
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one(c, slots, VALUE_SLICE_GET(args, i)));
     return RESULT_OK(KORB_NIL);
 }
 
