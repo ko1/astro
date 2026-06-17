@@ -2936,13 +2936,37 @@ korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
     return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
 }
 
+/* Classify a class for `.new` (cached in cls->new_kind; the inputs — name_sym,
+ * is_module, members, builtin-base — are all fixed once the class exists, so a
+ * one-shot classification stays valid).  1 = plain user class (generic alloc +
+ * initialize), 2 = special (Fiber / Struct factory / Struct subclass / a builtin
+ * class or subclass / module) that needs korb_send_impl's bespoke handling. */
+static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
+    KorbClass *const k = VAL2CLASS(cls);
+    if (LIKELY(k->new_kind != 0)) return k->new_kind;
+    const uint32_t cname = k->name_sym;
+    uint8_t kind = 1;
+    if (k->is_module || k->members != KORB_NIL || cname == vm->name_fiber ||
+        (cname == vm->name_struct) ||
+        cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
+        cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING]) {
+        kind = 2;
+    } else {
+        const enum korb_class base = korb_builtin_base_class(vm, cls);
+        if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) kind = 2;
+    }
+    k->new_kind = kind;
+    return kind;
+}
+
 /* Per-call-site cached plain send (no block).  A monomorphic site resolves the
  * receiver's dispatch class, and on a serial+class match invokes the cached
  * method directly — skipping korb_send_impl's prologue, special-case probes and
- * the mcache hash.  Special receivers (a class via new/yield/..., the send
- * family) and lookup misses fall through to korb_send_impl for full handling;
- * those never fill the cache, so such sites simply stay on the slow path.  Only
- * normal-receiver, normal-method sites cache. */
+ * the mcache hash.  The send/__send__/public_send family falls through to
+ * korb_send_impl; a class receiver doing a plain-user-class `.new` is handled
+ * here with an inline-cached `initialize` (the hot Klass.new path), other class
+ * receivers fall through.  Lookup misses don't fill the cache, so such sites
+ * simply stay on the slow path.  Only normal sites cache. */
 RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                  struct korb_inlcache *ic)
@@ -2952,8 +2976,35 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     /* class receivers (Klass.new / Fiber.yield / Struct / class methods) and the
      * send/__send__/public_send family need korb_send_impl's special handling. */
     if (UNLIKELY(KORB_CLASS_P(recv) ||
-                 mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))
+                 mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
+        /* hot path: Klass.new of a plain user class → alloc + cached initialize,
+         * skipping korb_send_impl's long mid_new special-case cascade and the
+         * uncached korb_class_find_method(initialize) it does on every call. */
+        if (mid == vm->mid_new && KORB_CLASS_P(recv) && korb_class_new_kind(vm, recv) == 1) {
+            struct korb_method *init;
+            VALUE idef;
+            if (LIKELY(ic->serial == vm->method_serial && ic->klass == recv)) {
+                init = ic->m; idef = ic->def_class;
+            } else {
+                idef = KORB_NIL;
+                init = korb_class_find_method(recv, vm->mid_initialize, &idef);
+                ic->serial = vm->method_serial; ic->klass = recv; ic->m = init; ic->def_class = idef;
+            }
+            const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
+            if (init) {
+                VALUE *const base = slots - argc;
+                const RESULT ir = korb_invoke_method(c, slots, init, argc, line, vm->mid_initialize,
+                                                     obj, idef, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
+            }
+            if (UNLIKELY(argc != 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                                  "wrong number of arguments (given %u, expected 0)", argc);
+            return RESULT_OK(obj);
+        }
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+    }
 
     const VALUE klass = korb_dispatch_class(c, recv);
     if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass))
