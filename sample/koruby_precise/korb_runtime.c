@@ -2856,7 +2856,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         {
             enum korb_class base = korb_builtin_base_class(vm, self);
             if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {
-                uint32_t imid = korb_intern(vm, "initialize", 10);
+                uint32_t imid = vm->mid_initialize;
                 VALUE idef = KORB_NIL;
                 struct korb_method *uinit = korb_class_find_method(*recv_slot, imid, &idef);
                 slots[0] = *recv_slot;                         /* root the subclass (recv) */
@@ -2884,7 +2884,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 return RESULT_OK(slots[1]);
             }
         }
-        uint32_t init_mid = korb_intern(vm, "initialize", 10);
+        uint32_t init_mid = vm->mid_initialize;
         VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
         /* find initialize AFTER the alloc-GC, re-reading the class from the
          * rooted recv slot (the pre-alloc class pointer would be stale). */
@@ -4505,6 +4505,7 @@ korb_ctx_new(void)
     c->vm->mid___send__    = korb_intern(c->vm, "__send__", 8);
     c->vm->mid_public_send = korb_intern(c->vm, "public_send", 11);
     c->vm->mid_new         = korb_intern(c->vm, "new", 3);
+    c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
     c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
