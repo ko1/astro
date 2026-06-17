@@ -1168,11 +1168,36 @@ static RESULT korb_str_bang_from(CTX *c, VALUE *slots, VALUE_REF self, RESULT ne
 static RESULT korb_m_str_succ_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_str_bang_from(c, slots, self, korb_m_str_succ(c, slots, self, a), false);
 }
+/* tr!/tr_s! return nil only when NO source char matched the from-set; a
+ * translation that maps chars to themselves (e.g. "a".tr!("a","a")) still
+ * counts as a change and returns self.  So detect "any match" rather than
+ * comparing the byte content before/after. */
+static bool korb_str_tr_matched(VALUE_REF self, VALUE fv) {
+    if (!KORB_STRING_P(fv)) return false;
+    const KorbString *fs = VAL2STR(fv);
+    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    unsigned char fromx[512];
+    uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    for (uint32_t i = 0; i < s->len; i++) {
+        unsigned char ch = (unsigned char)s->buf->data[i];
+        int idx = -1;
+        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
+        if (neg ? (idx < 0) : (idx >= 0)) return true;
+    }
+    return false;
+}
 static RESULT korb_m_str_tr_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    return korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), true);
+    const bool matched = korb_str_tr_matched(self, VALUE_SLICE_GET(a, 0));
+    RESULT r = korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), false);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(matched ? VALUE_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_tr_s_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    return korb_str_bang_from(c, slots, self, korb_m_str_tr_s(c, slots, self, a), true);
+    const bool matched = korb_str_tr_matched(self, VALUE_SLICE_GET(a, 0));
+    RESULT r = korb_str_bang_from(c, slots, self, korb_m_str_tr_s(c, slots, self, a), false);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(matched ? VALUE_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;

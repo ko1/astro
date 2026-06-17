@@ -148,7 +148,10 @@ static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_sum_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t lo, hi;
-    if (block != NULL || !korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* block or non-int → via to_a */
+    /* non-fixnum init (e.g. Float, Rational) must accumulate via "+" so the type
+     * is preserved: (1..5).sum(0.5) => 15.5, not 15. */
+    const bool nonint_init = VALUE_SLICE_LEN(a) >= 1 && !FIXNUM_P(VALUE_SLICE_GET(a, 0));
+    if (block != NULL || nonint_init || !korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* block / non-int init / non-int range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
         return korb_m_ary_sum_b(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
     }
