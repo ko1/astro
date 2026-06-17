@@ -252,7 +252,10 @@ static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_range_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(block == NULL || VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_each_with_object(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                 /* memo (rooted) */
     for (intptr_t i = lo; i < hi; i++) {
         VALUE argv[2] = { LONG2FIX(i), slots[0] };
@@ -366,10 +369,14 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(found ? LONG2FIX(ans) : KORB_NIL);
 }
+static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), NULL, NULL, KORB_NIL);
+    }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(lo) : KORB_NIL));
@@ -586,7 +593,10 @@ static RESULT korb_m_range_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALU
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#filter_map without a block is not supported");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_filter_map(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
