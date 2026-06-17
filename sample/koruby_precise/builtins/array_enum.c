@@ -265,6 +265,42 @@ static int korb_sort_cmp(const void *pa, const void *pb, void *arg) {
     if (UNLIKELY(r == 2)) { sc->err = 1; return 0; }
     return r;
 }
+
+/* Typed in-place sort for an all-Fixnum array.  A Fixnum VALUE is `(n<<1)|1`,
+ * a strictly monotonic map of n, so comparing the raw VALUEs as signed
+ * intptr_t yields integer order — no per-compare callback (the qsort_r PLT
+ * indirection + korb_cmp_full type dispatch that dominate the generic path).
+ * Median-of-three quicksort with an insertion-sort cutoff; tail-recursion on
+ * the larger side is looped to bound stack depth.  Reordering existing Fixnums
+ * creates no heap edges → no write barrier needed (matches korb_m_ary_sort). */
+static inline void korb_fix_insort(VALUE *const d, const intptr_t lo, const intptr_t hi) {
+    for (intptr_t i = lo + 1; i <= hi; i++) {
+        const VALUE k = d[i]; intptr_t j = i - 1;
+        while (j >= lo && (intptr_t)d[j] > (intptr_t)k) { d[j + 1] = d[j]; j--; }
+        d[j + 1] = k;
+    }
+}
+static void korb_fix_qsort(VALUE *const d, intptr_t lo, intptr_t hi) {
+    while (hi - lo > 16) {
+        const intptr_t mid = lo + ((hi - lo) >> 1);   /* median-of-three pivot into d[hi-1] */
+        if ((intptr_t)d[mid] < (intptr_t)d[lo])     { VALUE t = d[mid]; d[mid] = d[lo]; d[lo] = t; }
+        if ((intptr_t)d[hi]  < (intptr_t)d[lo])     { VALUE t = d[hi];  d[hi]  = d[lo]; d[lo] = t; }
+        if ((intptr_t)d[hi]  < (intptr_t)d[mid])    { VALUE t = d[hi];  d[hi]  = d[mid]; d[mid] = t; }
+        const VALUE pivot = d[mid];
+        { VALUE t = d[mid]; d[mid] = d[hi - 1]; d[hi - 1] = t; }   /* park pivot at hi-1 */
+        intptr_t i = lo, j = hi - 1;
+        for (;;) {
+            do i++; while ((intptr_t)d[i] < (intptr_t)pivot);
+            do j--; while ((intptr_t)d[j] > (intptr_t)pivot);
+            if (i >= j) break;
+            VALUE t = d[i]; d[i] = d[j]; d[j] = t;
+        }
+        { VALUE t = d[i]; d[i] = d[hi - 1]; d[hi - 1] = t; }       /* restore pivot to its seat */
+        if (i - lo < hi - i) { korb_fix_qsort(d, lo, i - 1); lo = i + 1; }   /* recurse smaller side */
+        else                 { korb_fix_qsort(d, i + 1, hi); hi = i - 1; }
+    }
+    korb_fix_insort(d, lo, hi);
+}
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
@@ -280,6 +316,14 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         /* default <=> : O(n log n) qsort.  korb_cmp_full is GC-free for builtin
          * types so the items pointer stays valid; reordering existing elements
          * creates no new heap edges (all already tracked) → no write barrier. */
+        VALUE *const dd0 = d->items->data;
+        const uint32_t dn = d->len;
+        bool all_fix = true;
+        for (uint32_t i = 0; i < dn; i++) { if (!FIXNUM_P(dd0[i])) { all_fix = false; break; } }
+        if (all_fix) {                      /* homogeneous Fixnum → callback-free typed sort */
+            if (dn > 1) korb_fix_qsort(dd0, 0, (intptr_t)dn - 1);
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
         struct korb_sortctx sc = { c, 0 };
         qsort_r(d->items->data, d->len, sizeof(VALUE), korb_sort_cmp, &sc);
         if (UNLIKELY(sc.err)) {
