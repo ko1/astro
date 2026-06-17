@@ -133,13 +133,20 @@ static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t init = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+static RESULT korb_m_ary_sum_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
+static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (block != NULL || !korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* block or non-int → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_sum_b(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
+    intptr_t init = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     intptr_t acc = init;
     for (intptr_t i = lo; i < hi; i++) acc += i;   /* small ranges; Bignum unneeded here */
     return RESULT_OK(LONG2FIX(acc));
+}
+static RESULT korb_m_range_frozen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE);   /* Range instances are frozen */
 }
 
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
