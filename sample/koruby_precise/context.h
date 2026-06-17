@@ -603,6 +603,7 @@ struct korb_vm {
      * on every call (send/__send__/public_send check ran for every arg call). */
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize;
     uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
+    uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */

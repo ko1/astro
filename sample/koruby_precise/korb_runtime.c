@@ -2792,9 +2792,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
-        if (cname == korb_intern(vm, "Fiber", 5))
+        if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
-        if (cname == korb_intern(vm, "Struct", 6) && VAL2CLASS(self)->members == KORB_NIL)
+        if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));   /* Struct.new(*members) → class */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) → positional init */
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
@@ -4508,6 +4508,7 @@ korb_ctx_new(void)
     c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
     c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
+    c->vm->name_struct     = korb_intern(c->vm, "Struct", 6);
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
     c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
 
