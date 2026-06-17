@@ -203,7 +203,20 @@ static RESULT korb_m_ary_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* pop(n): remove & return last n as array */
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+        uint32_t take = (uint32_t)n; if (take > SELF_ARY->len) take = SELF_ARY->len;
+        uint32_t start = SELF_ARY->len - take;
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
+        for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, SELF_ARY->items->data[start + i]));
+        KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        for (uint32_t i = start; i < ary->len; i++) ARO_STORE(c, ary->items, &ary->items->data[i], KORB_NIL);
+        ary->len = start;
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    (void)slots;
     KorbArray *ary = SELF_ARY;
     if (ary->len == 0) return RESULT_OK(KORB_NIL);
     ary->len--;
