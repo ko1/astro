@@ -3980,6 +3980,40 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(a0));
 }
 
+/* Kernel#format / sprintf(fmt, *args) — delegate to String#% with the rest
+ * args collected into an Array (the form korb_m_str_format expects). */
+static RESULT
+korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no format string given");
+    VALUE fmt = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(fmt)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(fmt));
+    slots[0] = fmt;                                       /* root format string */
+    const uint32_t n = VALUE_SLICE_LEN(args) - 1;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n));     /* arr at slots[1], scratch from slots+2 */
+    VALUE_REF arr = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_ary_push_val(c, slots + 2, arr, VALUE_SLICE_GET(args, i + 1)));
+    return korb_m_str_format(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1));
+}
+
+/* Kernel#Array(arg) — nil→[], Array→itself, else [arg]. */
+static RESULT
+korb_bi_array(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (a0 == KORB_NIL) return korb_ary_new(c, slots, 0);
+    if (KORB_ARRAY_P(a0)) return RESULT_OK(a0);
+    slots[0] = a0;                                        /* root before alloc */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));     /* arr at slots[1] */
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    return RESULT_OK(slots[1]);
+}
+
 /* Float(arg) — Kernel conversion.  Float→itself, Integer→to f, String→strict. */
 static RESULT
 korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -4155,6 +4189,9 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
+    korb_builtin_define(c, "Array", korb_bi_array, -1);
+    korb_builtin_define(c, "format", korb_bi_format, -1);
+    korb_builtin_define(c, "sprintf", korb_bi_format, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
     korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 
