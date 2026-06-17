@@ -87,9 +87,14 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(lo) : KORB_NIL);
     return RESULT_OK(r->rbegin);
 }
+static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     intptr_t lo, hi;
+    if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-integer range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
+    }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* max(n) → last n descending */
         intptr_t n;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -309,7 +314,10 @@ static RESULT korb_m_range_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALU
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid slice size");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_each_slice(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* array of slices */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     for (intptr_t i = lo; i < hi; i += n) {
