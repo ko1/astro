@@ -724,13 +724,38 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    int base = 10;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* to_i(base): base 0 = auto-detect prefix */
+        intptr_t b;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        base = (int)b;
+        if (UNLIKELY(base != 0 && (base < 2 || base > 36))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t i = 0; while (i < s->len && korb_is_ws((unsigned char)s->buf->data[i])) i++;
+    const char *const d = s->buf->data; uint32_t i = 0, end = s->len;
+    while (i < end && korb_is_ws((unsigned char)d[i])) i++;
     intptr_t sign = 1;
-    if (i < s->len && (s->buf->data[i] == '+' || s->buf->data[i] == '-')) { if (s->buf->data[i] == '-') sign = -1; i++; }
-    intptr_t n = 0;
-    while (i < s->len && s->buf->data[i] >= '0' && s->buf->data[i] <= '9') { n = n * 10 + (s->buf->data[i] - '0'); i++; }
+    if (i < end && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
+    if (i + 1 < end && d[i] == '0') {                /* base prefix */
+        const char p = d[i + 1] | 0x20;
+        const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
+        if (pb && (base == 0 || base == pb)) { base = pb; i += 2; }
+        else if (base == 0) base = 8;                /* leading 0 → octal */
+    }
+    if (base == 0) base = 10;
+    intptr_t n = 0; bool any = false, prev_us = false;
+    for (; i < end; i++) {
+        const char ch = d[i];
+        if (ch == '_') { if (!any || prev_us) break; prev_us = true; continue; }
+        prev_us = false;
+        int dig;
+        if (ch >= '0' && ch <= '9') dig = ch - '0';
+        else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') dig = (ch | 0x20) - 'a' + 10;
+        else break;
+        if (dig >= base) break;
+        n = n * base + dig;
+        any = true;
+    }
     return RESULT_OK(LONG2FIX(sign * n));
 }
 
