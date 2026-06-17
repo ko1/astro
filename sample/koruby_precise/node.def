@@ -907,6 +907,24 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
     return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], block, &slots[def_env_off], &slots[self_off]);
 }
 
+// `def m(&blk)` prologue: materialize the passed block into the &blk local as a
+// Proc (or nil if no block given).  Reads the frame's block cells (biseq/def_env/
+// cself); korb_make_proc handles escape if the block captures outer locals.
+NODE_DEF
+node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
+{
+    (void)n;
+    VALUE bi = slots[biseq_off];
+    if (!(bi & 1u)) { slots[dst_off] = KORB_NIL; return RESULT_OK(KORB_NIL); }   /* no block given */
+    NODE *iseq  = (NODE *)(uintptr_t)(bi & ~(uintptr_t)1u);
+    VALUE *denv = (VALUE *)(uintptr_t)((uintptr_t)slots[def_env_off] & ~(uintptr_t)1u);
+    VALUE cself = slots[cself_off];
+    RESULT pr = korb_make_proc(c, slots, iseq, denv, cself, 0);
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    slots[dst_off] = pr.value;
+    return RESULT_OK(pr.value);
+}
+
 // proc { } / lambda { } / ->{ } — reify a literal block into a Proc object.
 // `block` is the block's node_entry; def_env_off = the defining frame base
 // (captured env), self_off = the lexical self.  Captures, does not invoke.

@@ -854,9 +854,12 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
+    pm_constant_id_t blk_param_name = 0;   /* &blk param name (0 = none) */
     if (ps) {
         if (ps->block) {
-            return kp_unsupported(tc, (const pm_node_t *)dn, "block parameter (&blk)");
+            if (!ps->block->name)
+                return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding block parameter (&)");
+            blk_param_name = ps->block->name;
         }
         if (ps->posts.size && !ps->rest) {     /* posts only appear after a rest in Ruby */
             return kp_unsupported(tc, (const pm_node_t *)dn, "post parameters without rest");
@@ -965,6 +968,13 @@ transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
         body = transduce(tc, dn->body);
     }
 
+    if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
+        tc->frame->uses_block = true;      /* reserve the frame's block cells */
+        int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
+        NODE *bp = ALLOC_node_blkparam(dst, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
+        bake_add(tc, &bp->u.node_blkparam.dst_off);
+        body = ALLOC_node_seq(bp, body);
+    }
     uint32_t uses_block = tc->frame->uses_block ? 1u : 0u;
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
