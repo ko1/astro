@@ -94,7 +94,9 @@ static RESULT korb_m_flt_prev(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_flt_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(o == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-    double s = SELF_FLT, q = floor(s / o), r = s - o * q;
+    double s = SELF_FLT, q = floor(s / o);
+    double r = fmod(s, o);                                /* fmod keeps -0.0 sign, matching CRuby */
+    if (r != 0.0 && ((r < 0) != (o < 0))) r += o;        /* floored remainder (sign of divisor) */
     RESULT qr = korb_flt_toint(c, slots, q, 3);          /* quotient → Integer */
     if (UNLIKELY(qr.state != KORB_NORMAL)) return qr;
     slots[0] = qr.value;
