@@ -3139,7 +3139,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_HASH, "reverse_each", korb_m_hash_reverse_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_with_index", korb_m_hash_each_with_index, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "cycle", korb_m_hash_cycle, -1);
-    korb_def_cmethod(c, KORB_C_HASH, "tally", korb_m_hash_tally, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "tally", korb_m_hash_tally, -1);
     korb_def_cmethod(c, KORB_C_HASH, "invert", korb_m_hash_invert, 0);
     korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
     korb_def_cmethod(c, KORB_C_HASH, "replace", korb_m_hash_replace, 1);
@@ -3261,9 +3261,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "partition", korb_m_range_partition, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "flat_map", korb_m_range_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect_concat", korb_m_range_flat_map, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "tally", korb_m_range_tally, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "collect", korb_m_range_map, 0);
-    korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, 1);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "step", korb_m_range_step, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "%", korb_m_range_pct, 1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "reduce", korb_m_range_reduce, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "inject", korb_m_range_reduce, -1);

@@ -237,10 +237,17 @@ static RESULT korb_m_range_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
+static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    if (VALUE_SLICE_LEN(a) >= 1) {                    /* tally(hash) or String range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_tally(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    }
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_tally(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+    }
     slots[0] = UNWRAP(korb_hash_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0)));
     VALUE_REF h = VALUE_REF_AT(&slots[0]);
     for (intptr_t i = lo; i < hi; i++) {              /* int range elements are unique → count 1 each */
@@ -815,9 +822,10 @@ static RESULT korb_m_range_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_range_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 
 static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, uint8_t is_pct) {
-    VALUE sv = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
+    uint8_t na = VALUE_SLICE_LEN(a) >= 1 ? 1 : 0;
+    VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
     if (block == NULL)                                /* → lazy ArithmeticSequence (recv = self range) */
-        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, 1, is_pct);
+        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
