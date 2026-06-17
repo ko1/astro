@@ -374,6 +374,8 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, intptr_t cnt, uint32_t 
     return RESULT_OK((VALUE)s);
 }
 
+static uint32_t korb_fmt_int(intptr_t n, int base, char *buf);   /* defined below */
+
 /* String interpolation step: acc (a String) + to_s(part).  String parts take
  * the direct concat path; other values render through korb_fprint_to_s (which
  * does not allocate, so `part` stays put) into a transient buffer first. */
@@ -391,6 +393,26 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
         if (KORB_STRING_P(tsr.value))
             return korb_str_plus_ref(c, slots, aref, pref);
         p = tsr.value;                                   /* non-String to_s → render the returned value */
+    }
+
+    /* scalar fast path: format into a stack buffer, skipping the open_memstream
+     * FILE+malloc that dominates interpolation of small values (#{int}, #{float}…).
+     * The value is fully captured into `sb`/`src` before korb_str_new can GC. */
+    {
+        char sb[48];
+        const char *src = NULL;
+        uint32_t slen = 0;
+        if (FIXNUM_P(p))          { slen = korb_fmt_int((intptr_t)FIX2LONG(p), 10, sb); src = sb; }
+        else if (p == KORB_NIL)   { src = "";      slen = 0; }
+        else if (p == KORB_TRUE)  { src = "true";  slen = 4; }
+        else if (p == KORB_FALSE) { src = "false"; slen = 5; }
+        else if (SYMBOL_P(p))     { src = korb_sym_name(c->vm, SYM2ID(p)); slen = (uint32_t)strlen(src); }  /* interned, GC-stable */
+        else if (KORB_OBJ_TYPE(p) == KORB_OBJ_FLOAT) { korb_float_to_s(VAL2FLT(p)->val, sb); slen = (uint32_t)strlen(sb); src = sb; }
+        if (src) {
+            const VALUE tmp = UNWRAP(korb_str_new(c, slots, src, slen));
+            VALUE_REF tref = SLOTS_PUSH(slots, tmp);
+            return korb_str_plus_ref(c, slots, aref, tref);
+        }
     }
 
     char *buf = NULL;
