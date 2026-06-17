@@ -529,6 +529,12 @@ struct korb_vm {
     VALUE    *sklass_cls;
     uint32_t  sklass_cnt, sklass_capa;
 
+    /* B3 escape: KorbEnv objects still "open" (their defining frame is live).
+     * Each holds a slots `loc`; closed (slots->vals copied) when that frame
+     * returns (korb_close_envs).  GC-rooted (heap KorbEnv pointers). */
+    VALUE    *open_envs;
+    uint32_t  open_env_cnt, open_env_capa;
+
     /* Regexp engine: lazily dlopen'd koruby_regex.so (astrogre).  re_fn is the
      * koruby_re_search entry, or (void*)-1 if the .so failed to load. */
     void     *re_fn;
@@ -650,6 +656,10 @@ struct CTX_struct {
     for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
+    }                                                                        \
+    /* open closure envs (B3 escape): roots holding heap KorbEnv pointers. */  \
+    for (uint32_t _ei = 0; _ei < (c)->vm->open_env_cnt; _ei++) {              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->open_envs[_ei]);       \
     }                                                                        \
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \

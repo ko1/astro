@@ -885,9 +885,9 @@ node_dstr_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF acc@child, VALUE part@
 // reads params/locals off it (korb_entry_*) to size the block frame, then
 // dispatches it (EVAL evaluates the body at the block-frame cursor).
 NODE_DEF
-node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec)
+node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t destructure_n, void *destructure_spec, uint32_t cap_depth, void *cap_ns)
 {
-    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec;
+    (void)n; (void)params_cnt; (void)locals_cnt; (void)destructure_n; (void)destructure_spec; (void)cap_depth; (void)cap_ns;
     return EVAL_ARG(c, body);
 }
 
@@ -1018,26 +1018,45 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VA
 // frame's PREV cell, also tagged).  The odd tag makes the GC root scan skip
 // these slots-internal pointers (they're not heap objects).
 
+// Outer-variable read.  The PREV handle is either a tagged-odd live-slots
+// region (the common yield/non-escape chain — direct access) or an even
+// KorbEnv* (an escaped Proc's captured chain — access via loc when open /
+// vals when the defining frame has returned).  A walk is homogeneous (B3).
 NODE_DEF @nogc
 node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index)
 {
     (void)c; (void)n;
-    VALUE *node = (VALUE *)(uintptr_t)((uintptr_t)slots[prev_off] & ~(uintptr_t)1);
-    for (uint32_t k = 1; k < depth; k++)
-        node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1);
-    return RESULT_OK(node[index]);
+    VALUE h = slots[prev_off];
+    if (LIKELY(h & 1u)) {                                  /* slots-handle chain */
+        VALUE *node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+        for (uint32_t k = 1; k < depth; k++)
+            node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1u);
+        return RESULT_OK(node[index]);
+    }
+    KorbEnv *e = VAL2ENV(h);                               /* escaped KorbEnv chain */
+    for (uint32_t k = 1; k < depth; k++) e = VAL2ENV(e->prev);
+    VALUE *base = e->closed ? ((KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc;
+    return RESULT_OK(base[index]);
 }
 
-// B2: the target slot is always in the (non-moving) slots root range, so a
-// plain store is GC-safe (no WB).  B3 (escape → closed heap env) will route
-// closed-env writes through ARO_STORE.
+// Outer-variable write.  Slots handles + open envs target the (non-moving)
+// slots root range → plain store (no WB).  A closed env's vals is a heap
+// VALUE_ARRAY → route through ARO_STORE for the generational backends.
 NODE_DEF @nogc
 node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index, VALUE val@child)
 {
     (void)c; (void)n;
-    VALUE *node = (VALUE *)(uintptr_t)((uintptr_t)slots[prev_off] & ~(uintptr_t)1);
-    for (uint32_t k = 1; k < depth; k++)
-        node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1);
-    node[index] = val;
+    VALUE h = slots[prev_off];
+    if (LIKELY(h & 1u)) {                                  /* slots-handle chain */
+        VALUE *node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+        for (uint32_t k = 1; k < depth; k++)
+            node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1u);
+        node[index] = val;
+        return RESULT_OK(val);
+    }
+    KorbEnv *e = VAL2ENV(h);                               /* escaped KorbEnv chain */
+    for (uint32_t k = 1; k < depth; k++) e = VAL2ENV(e->prev);
+    if (e->closed) korb_env_store(c, e, index, val);       /* heap vals → WB-aware store */
+    else e->loc[index] = val;
     return RESULT_OK(val);
 }

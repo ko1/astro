@@ -35,6 +35,7 @@ struct kp_frame {
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
+    uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
     struct kp_frame *prev;
 };
 
@@ -146,6 +147,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->module_function_mode = false;
     f->method_mid = 0;
     f->method_params = 0;
+    f->max_ref_depth = 0;
     f->prev = tc->frame;
     tc->frame = f;
     tc->chain = 0;
@@ -166,6 +168,13 @@ pop_frame(struct kp_ctx *tc)
     }
     tc->bake_cnt = f->bake_base;
     tc->chain = f->saved_chain;
+    /* B3: a nested block reaching depth d reaches depth d-1 from its parent, so
+     * the parent (if reified as a Proc) must materialize that far too.  prism's
+     * depths already stop at method boundaries, so methods stay at 0. */
+    if (f->prev && f->max_ref_depth >= 1) {
+        uint32_t up = f->max_ref_depth - 1;
+        if (up > f->prev->max_ref_depth) f->prev->max_ref_depth = up;
+    }
     tc->frame = f->prev;
     free(f);
     return frame_size;
@@ -251,10 +260,16 @@ bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
 }
 
 /* depth==0 → local, depth>=1 → outer.  Centralizes the read/write dispatch. */
+/* record the deepest outer-scope read/write so a reified Proc knows how many
+ * enclosing scopes to materialize on escape (B3). */
+static void kp_note_depth(struct kp_ctx *tc, uint32_t depth) {
+    if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+}
 static NODE *
 lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
 {
     if (depth == 0) return bake_lget(tc, lvar_index(tc, node, cid));
+    kp_note_depth(tc, depth);
     return bake_eget(tc, depth, lvar_index_at(tc, node, cid, depth));
 }
 
@@ -262,6 +277,7 @@ static NODE *
 lvar_write(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth, NODE *rval)
 {
     if (depth == 0) return bake_lset(tc, lvar_index(tc, node, cid), rval);
+    kp_note_depth(tc, depth);
     return bake_eset(tc, depth, lvar_index_at(tc, node, cid, depth), rval);
 }
 
@@ -527,8 +543,22 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         body = kp_unsupported(tc, blk_body, "block body with rescue/ensure");
     }
 
+    /* B3 capture metadata: how many enclosing scopes this block reaches, and
+     * each one's local count (final prism locals->size — synth temps aren't
+     * captured by closures).  Computed before pop_frame (needs the prev chain). */
+    uint32_t cap_depth = tc->frame->max_ref_depth;
+    uint16_t *cap_ns = NULL;
+    if (cap_depth > 0) {
+        cap_ns = malloc(sizeof(uint16_t) * cap_depth);
+        if (!cap_ns) abort();
+        struct kp_frame *encl = tc->frame->prev;
+        for (uint32_t k = 0; k < cap_depth; k++) {
+            cap_ns[k] = encl ? (uint16_t)encl->locals->size : 0;
+            encl = encl ? encl->prev : NULL;
+        }
+    }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns);
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -555,7 +585,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, 1, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -983,7 +1013,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     return ALLOC_node_class(name_sym, entry, super_node);
 }
@@ -1015,7 +1045,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL);
     code_repo_add("module", entry, true);
     return ALLOC_node_module(name_sym, entry);
 }

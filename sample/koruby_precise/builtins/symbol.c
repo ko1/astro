@@ -96,13 +96,11 @@ static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     NODE *entry = p->iseq;
-    VALUE penv = p->env;
-    VALUE *denv = (penv & 1u) ? (VALUE *)(uintptr_t)(penv & ~(uintptr_t)1u)
-                              : (VALUE *)(uintptr_t)penv;   /* even = KorbEnv handle (stage B) */
+    VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
     uint32_t argc = VALUE_SLICE_LEN(a);
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
-    return korb_block_yield(c, slots + 1 + argc, entry, denv, &slots[1], argc, &slots[0]);
+    return korb_block_yield_raw(c, slots + 1 + argc, entry, penv, &slots[1], argc, &slots[0]);
 }
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);

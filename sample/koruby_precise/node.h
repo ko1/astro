@@ -169,6 +169,8 @@ RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
 RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled);
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);
+void   korb_env_store(CTX *c, struct KorbEnv *e, uint32_t index, VALUE v);
+void   korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
@@ -199,6 +201,8 @@ RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
  * `captured_self`.  NEXT is folded to NORMAL. */
 RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                         const VALUE *argv, uint32_t argc, VALUE *captured_self);
+RESULT korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
+                            const VALUE *argv, uint32_t argc, VALUE *captured_self);
 
 /* keyword-parameter metadata for a method (NULL on the method if no keywords).
  * `slot` is the local index; `deflt` NULL = required keyword. */

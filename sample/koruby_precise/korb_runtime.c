@@ -798,16 +798,91 @@ RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     return RESULT_OK((VALUE)m);
 }
 
-/* Build a Proc/lambda capturing a block body + its lexical env + self.  Stage A
- * (non-escape): `def_env` is the live caller frame slots base, stored tagged-odd
- * so the eget slots path reads it directly while that frame is alive.  Stage B
- * (escape) replaces the env with a heap KorbEnv chain that survives the frame. */
+/* Write VALUE `v` into a closed env's captured-locals array, with the write
+ * barrier (the vals buffer is a heap VALUE_ARRAY). */
+void korb_env_store(CTX *c, KorbEnv *e, uint32_t index, VALUE v) {
+    KorbArrayItems *vi = (KorbArrayItems *)(uintptr_t)e->vals;
+    ARO_STORE(c, vi, &vi->data[index], v);
+}
+
+/* Find an already-open env for the given frame locals base (so multiple procs
+ * capturing the same scope activation share one env → shared mutation). */
+static KorbEnv *korb_open_env_find(struct korb_vm *vm, VALUE *loc) {
+    for (uint32_t i = 0; i < vm->open_env_cnt; i++) {
+        KorbEnv *e = VAL2ENV(vm->open_envs[i]);
+        if (!e->closed && e->loc == loc) return e;
+    }
+    return NULL;
+}
+/* Register an open env as a GC root + close candidate. */
+static void korb_open_env_register(struct korb_vm *vm, VALUE env) {
+    if (vm->open_env_cnt == vm->open_env_capa) {
+        vm->open_env_capa = vm->open_env_capa ? vm->open_env_capa * 2 : 16;
+        vm->open_envs = realloc(vm->open_envs, sizeof(VALUE) * vm->open_env_capa);
+        if (!vm->open_envs) { fprintf(stderr, "koruby_precise: out of memory (open_envs)\n"); abort(); }
+    }
+    vm->open_envs[vm->open_env_cnt++] = env;
+}
+/* A frame at `frame_base` is returning: close (slots->vals) every open env
+ * whose loc lies in [frame_base, top) — i.e. belongs to this frame (inner
+ * frames already closed theirs, LIFO).  `slots` is scratch above the frame. */
+void korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base) {
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->open_env_cnt; ) {
+        KorbEnv *e = VAL2ENV(vm->open_envs[i]);
+        if (e->loc < frame_base) { i++; continue; }       /* outer frame's env: keep open */
+        slots[0] = vm->open_envs[i];                       /* root env across vals alloc */
+        uint32_t n = VAL2ENV(slots[0])->n;
+        KorbArrayItems *vals = korb_alloc(c, slots + 1, sizeof(KorbArrayItems) + (size_t)n * sizeof(VALUE), KORB_OBJ_VALUE_ARRAY);
+        KorbEnv *ee = VAL2ENV(slots[0]);                   /* re-read after alloc/GC */
+        for (uint32_t j = 0; j < n; j++) ARO_STORE(c, vals, &vals->data[j], ee->loc[j]);
+        ARO_STORE(c, ee, (VALUE *)(uintptr_t)&ee->vals, (VALUE)(uintptr_t)vals);
+        ee->closed = 1;
+        vm->open_envs[i] = vm->open_envs[vm->open_env_cnt - 1];   /* swap-remove */
+        vm->open_env_cnt--;
+    }
+}
+
+/* Build a Proc/lambda capturing a block body + its lexical env + self.  If the
+ * body reads outer locals (cap_depth>0) the captured scope chain is materialized
+ * into heap KorbEnv objects (open: loc->live slots, shared with the frame; the
+ * frame's return closes them, copying slots->vals) so the closure survives the
+ * frame (escape).  cap_depth==0 → no outer refs → env left as a tagged slots
+ * sentinel (never dereferenced by the body). */
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
-    slots[0] = self_val;                                 /* root captured self across alloc */
-    KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
-    p->iseq = entry;
-    p->is_lambda = (uint8_t)is_lambda;
-    p->env = (VALUE)((uintptr_t)def_env | 1u);           /* odd-tagged slots handle (GC skips) */
+    uint32_t depth = entry->u.node_entry.cap_depth;
+    slots[0] = self_val;                                 /* root captured self across allocs */
+    if (depth == 0) {                                    /* no captured outer locals */
+        KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
+        p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
+        p->env = (VALUE)((uintptr_t)def_env | 1u);       /* sentinel (unused by body) */
+        ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
+        return RESULT_OK((VALUE)p);
+    }
+    const uint16_t *ns = (const uint16_t *)entry->u.node_entry.cap_ns;
+    if (depth > 64) depth = 64;                          /* sanity bound on nesting */
+    VALUE *bases[64];
+    bases[0] = def_env;                                  /* immediate enclosing scope locals */
+    for (uint32_t k = 1; k < depth; k++)                 /* walk PREV (slots base[-1], tagged) */
+        bases[k] = (VALUE *)(uintptr_t)((uintptr_t)bases[k-1][-1] & ~(uintptr_t)1u);
+    /* materialize outermost -> innermost, sharing via the open-env table.
+     * slots[1] holds the current outer env (rooted across each alloc). */
+    slots[1] = 0;
+    for (int k = (int)depth - 1; k >= 0; k--) {
+        KorbEnv *existing = korb_open_env_find(c->vm, bases[k]);
+        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share */
+        KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
+        e->loc = bases[k];                               /* open: live slots */
+        e->n = ns[k];
+        e->closed = 0;
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1]);   /* outer (forwarded) */
+        slots[1] = (VALUE)(uintptr_t)e;
+        korb_open_env_register(c->vm, slots[1]);
+    }
+    KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
+    p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, slots[1]);   /* innermost env (even = KorbEnv) */
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
     return RESULT_OK((VALUE)p);
 }
@@ -1176,6 +1251,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
         e->line = line;
     }
+    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: close this method's escaped envs */
+        base[locals_cnt] = r.value;                    /* root return value across close's alloc */
+        korb_close_envs(c, base + locals_cnt + 1, base);
+        r.value = base[locals_cnt];
+    }
     return r;
 }
 
@@ -1207,6 +1287,11 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;
+    }
+    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: close this method's escaped envs */
+        base[locals_cnt] = r.value;                    /* root return value across close's alloc */
+        korb_close_envs(c, base + locals_cnt + 1, base);
+        r.value = base[locals_cnt];
     }
     return r;
 }
@@ -2405,19 +2490,19 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
  * cursor region (node_yield passes &slots[-argc]); copies happen before any
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
 RESULT
-korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
+korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
+                     const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
-    /* block frame: bf[0]=PREV(def_env, tagged), bf[1..1+blocals)=block locals,
-     * with the block's self cell at base[fs-1] = bf[blocals]. */
+    /* block frame: bf[0]=PREV (tagged-odd slots handle, or even KorbEnv* for an
+     * escaped Proc), bf[1..1+blocals)=block locals, self cell at bf[blocals]. */
     VALUE *const bf = slots;
     char cstack_probe;
     if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
-    bf[0] = (VALUE)((uintptr_t)def_env | 1u);
+    bf[0] = prev;
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
     if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| */
@@ -2465,7 +2550,23 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
+    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: escaped envs of this frame close now */
+        VALUE *const sp = bf + 1 + blocals;
+        sp[0] = r.value;                               /* root the return value across close's alloc */
+        korb_close_envs(c, sp + 1, bf);
+        r.value = sp[0];
+    }
     return r;
+}
+
+/* Standard block invocation: the PREV handle is the caller's live slots base
+ * (tagged odd → eget slots path).  Used by yield and all builtin block drivers. */
+RESULT
+korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
+{
+    return korb_block_yield_raw(c, slots, block, (VALUE)((uintptr_t)def_env | 1u),
+                                argv, argc, captured_self);
 }
 
 RESULT
