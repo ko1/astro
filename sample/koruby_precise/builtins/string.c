@@ -225,7 +225,8 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
             if (UNLIKELY(!korb_to_index(len_v, &ln))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(len_v));
         } else ln = 1;
     }
-    if (st < 0 || st > (intptr_t)ncp || ln < 0) { *found = false; return RESULT_OK(KORB_NIL); }
+    const bool single = (len_v == KORB_NIL && !KORB_RANGE_P(idx));   /* str[i]: one char, nil at end */
+    if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && st == (intptr_t)ncp)) { *found = false; return RESULT_OK(KORB_NIL); }
     if (st + ln > (intptr_t)ncp) ln = (intptr_t)ncp - st;
     *bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)st);
     *be = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(st + ln));
