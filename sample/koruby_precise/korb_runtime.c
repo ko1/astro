@@ -1695,6 +1695,8 @@ static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                             NODE *block, VALUE *def_env, VALUE *captured_self);
 
 RESULT
 korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
@@ -1767,6 +1769,16 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
              : op == 1 ? korb_m_set_subset(c, slots + 2, sref, sl)
              : op == 2 ? korb_m_set_psuperset(c, slots + 2, sref, sl)
              :           korb_m_set_superset(c, slots + 2, sref, sl);
+    }
+    /* user class / instance with the operator defined (e.g. Class#<, a class
+     * that defines its own `<`).  Guarded to exclude builtin types whose `<`
+     * routes back here (Fixnum/String/Symbol) — that would recurse forever. */
+    if (KORB_CLASS_P(l) || KORB_OBJECT_P(l)) {
+        uint32_t mid = korb_intern(c->vm, korb_cmp_op_name[op], (uint32_t)strlen(korb_cmp_op_name[op]));
+        if (korb_responds_to(c, l, mid)) {
+            slots[0] = l; slots[1] = r;
+            return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
+        }
     }
     if (FIXNUM_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
         char rdesc[64];
@@ -3344,6 +3356,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "ancestors", korb_m_class_ancestors, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "include?", korb_m_class_include_q, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "<",  korb_m_class_lt, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "<=", korb_m_class_le, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, ">",  korb_m_class_gt, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, ">=", korb_m_class_ge, 1);
     korb_def_cmethod(c, KORB_C_STRING, "=~", korb_m_str_match_op, 1);
     korb_def_cmethod(c, KORB_C_STRING, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);

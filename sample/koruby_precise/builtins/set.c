@@ -291,6 +291,76 @@ static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)slots;
     return RESULT_OK(korb_case_eq(c, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE);
 }
+/* Class#superclass — the immediate superclass (nil at the top). */
+static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK(VAL2CLASS(VALUE_REF_GET(self))->superclass);
+}
+/* Module#ancestors — self, its included modules (most-recent first), then the
+ * superclass chain (each followed by its modules).  Singleton classes skipped. */
+static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));        /* result (rooted) */
+    slots[1] = VALUE_REF_GET(self);                          /* current class (rooted) */
+    while (KORB_CLASS_P(slots[1])) {
+        if (!VAL2CLASS(slots[1])->is_singleton)
+            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
+        VALUE inc = VAL2CLASS(slots[1])->included;
+        if (inc != KORB_NIL) {
+            slots[2] = inc;                                  /* root the module list */
+            for (uint32_t j = VAL2ARY(slots[2])->len; j-- > 0; )
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[0]), VAL2ARY(slots[2])->items->data[j]));
+        }
+        slots[1] = VAL2CLASS(slots[1])->superclass;
+    }
+    return RESULT_OK(slots[0]);
+}
+/* true if `sub` is `sup` or has `sup` among its ancestors (class chain + modules). */
+static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
+    VALUE cls = sub;
+    while (KORB_CLASS_P(cls)) {
+        if (cls == sup) return true;
+        VALUE inc = VAL2CLASS(cls)->included;
+        if (inc != KORB_NIL) {
+            const KorbArray *ia = VAL2ARY(inc);
+            for (uint32_t j = 0; j < ia->len; j++) if (ia->items->data[j] == sup) return true;
+        }
+        cls = VAL2CLASS(cls)->superclass;
+    }
+    return false;
+}
+/* Module#< <= > >= : class/module hierarchy comparison (nil if unrelated).
+ * rel: 0 '<', 1 '<=', 2 '>', 3 '>='. */
+static RESULT korb_class_cmp_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int rel) {
+    VALUE me = VALUE_REF_GET(self), other = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(other)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "compared with non class/module");
+    if (me == other) return RESULT_OK((rel == 1 || rel == 3) ? KORB_TRUE : KORB_FALSE);
+    if (korb_class_is_descendant(me, other)) return RESULT_OK((rel <= 1) ? KORB_TRUE : KORB_FALSE);   /* me < other */
+    if (korb_class_is_descendant(other, me)) return RESULT_OK((rel >= 2) ? KORB_TRUE : KORB_FALSE);   /* me > other */
+    return RESULT_OK(KORB_NIL);                                  /* unrelated */
+}
+static RESULT korb_m_class_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 0); }
+static RESULT korb_m_class_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 1); }
+static RESULT korb_m_class_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 2); }
+static RESULT korb_m_class_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 3); }
+/* Module#include?(mod) — true if mod is included in self or any ancestor
+ * (superclasses themselves don't count, only included modules). */
+static RESULT korb_m_class_include_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE target = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(target)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(target));
+    VALUE cls = VALUE_REF_GET(self);
+    while (KORB_CLASS_P(cls)) {                              /* pure reads → no GC, no rooting */
+        VALUE inc = VAL2CLASS(cls)->included;
+        if (inc != KORB_NIL) {
+            const KorbArray *ia = VAL2ARY(inc);
+            for (uint32_t j = 0; j < ia->len; j++) if (ia->items->data[j] == target) return RESULT_OK(KORB_TRUE);
+        }
+        cls = VAL2CLASS(cls)->superclass;
+    }
+    return RESULT_OK(KORB_FALSE);
+}
 /* Module#const_get(sym|str) — consts are a flat (global) table here, so the
  * receiver's namespace is ignored; rightmost name resolves. */
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
