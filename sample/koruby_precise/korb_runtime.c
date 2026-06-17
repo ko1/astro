@@ -3244,6 +3244,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "minmax", korb_m_range_minmax_cmp, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "chunk_while", korb_m_range_chunk_while, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "slice_when", korb_m_range_slice_when, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "each_cons", korb_m_range_each_cons, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "uniq", korb_m_range_uniq, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort", korb_m_range_sort_cmp, 0);   /* int range already ascending */
     korb_def_cmethod(c, KORB_C_RANGE, "compact", korb_m_range_to_a, 0); /* no nils in an int range */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sort_by", korb_m_range_sort_by, 0);

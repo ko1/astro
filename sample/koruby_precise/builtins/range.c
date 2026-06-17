@@ -351,6 +351,16 @@ static RESULT korb_m_range_slice_when(CTX *c, VALUE *slots, VALUE_REF self, VALU
     slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
     return korb_m_ary_slice_when(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
 }
+static RESULT korb_m_range_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    RESULT r = korb_m_ary_each_cons(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(VALUE_REF_GET(self));   /* block form → self (the range) */
+    return r;
+}
+static RESULT korb_m_range_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_uniq(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_range_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     slots[0] = UNWRAP(korb_range_by(c, slots, self, block, def_env, cself, -1));   /* min_by */
