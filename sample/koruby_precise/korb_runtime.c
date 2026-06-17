@@ -2226,7 +2226,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * slots[0], args above).  Otherwise fall through to the global function
      * table (p/puts/top-level defs).  `main` (klass=nil) is excluded so
      * top-level keeps using globals. */
-    if (AROH_IS_GC_OBJECT(self) && !(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)) {
+    if (AROH_IS_GC_OBJECT(self) &&
+        (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL)) {
+        /* `main` (klass=nil) normally keeps globals, but a block-bearing call
+         * (e.g. top-level `loop do … end`, `tap { }`) must reach the Object
+         * method — top-level user defs are globals and won't respond here. */
         if (korb_responds_to(c, self, mid)) {
             for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
             slots[0] = self;                            /* recv below the args */
@@ -3432,6 +3436,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "loop", korb_m_loop, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);

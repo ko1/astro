@@ -447,6 +447,18 @@ static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[0] = VALUE_REF_GET(self);                   /* rooted across the yield */
     return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
 }
+/* Kernel#loop — yield with no args forever; `break` ends it (and is the value).
+ * (StopIteration-based termination isn't modelled; koruby has no such class.) */
+static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a; (void)self;
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "loop without a block (Enumerator) is not supported");
+    for (;;) {
+        RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
+        if (r.state == KORB_BREAK) return RESULT_OK(r.value);   /* break [v] → loop value */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+}
 /* Object#tap — yield self, return self. */
 static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;

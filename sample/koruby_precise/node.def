@@ -506,7 +506,7 @@ node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negat
         RESULT br = EVAL_ARG(c, body);
         if (UNLIKELY(br.state != KORB_NORMAL)) {
             if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
-            return br;                                                 /* return / raise / next propagate */
+            if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
         }
         if (post) {
             VALUE cv = UNWRAP(EVAL_ARG(c, cond));
