@@ -1461,6 +1461,17 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     uint32_t enum_sym = korb_intern(vm, "Enumerable", 10);
     korb_const_define(c, enum_sym, KORB_NIL);
     { VALUE enm = korb_class_new(c, slots, enum_sym, KORB_NIL).value; VAL2CLASS(enm)->is_module = 1; korb_const_define(c, enum_sym, enm); }
+    /* Numeric: a tag module on the numeric types so is_a?(Numeric) / `Integer <
+     * Numeric` answer correctly (the arithmetic methods live on the concretes). */
+    uint32_t num_sym = korb_intern(vm, "Numeric", 7);
+    korb_const_define(c, num_sym, KORB_NIL);
+    { VALUE num = korb_class_new(c, slots, num_sym, KORB_NIL).value; VAL2CLASS(num)->is_module = 1; korb_const_define(c, num_sym, num); }
+    static const int num_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX };
+    for (size_t i = 0; i < sizeof(num_in)/sizeof(num_in[0]); i++) {
+        slots[0] = korb_const_get(vm, num_sym);
+        VALUE k = korb_const_get(vm, vm->class_name[num_in[i]]);
+        (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
+    }
     static const int comp_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_RATIONAL };
     for (size_t i = 0; i < sizeof(comp_in)/sizeof(comp_in[0]); i++) {
         slots[0] = korb_const_get(vm, comp_sym);
