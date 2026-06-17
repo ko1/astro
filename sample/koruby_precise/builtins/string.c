@@ -915,10 +915,10 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * >0 = at most `limit` fields (last = remainder).  limit==1 → [self] verbatim. */
     intptr_t limit = 0;
     if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) (void)korb_to_index(VALUE_SLICE_GET(a, 1), &limit);
-    if (limit == 1) {                                         /* whole string, separator untouched */
-        VALUE_REF d1 = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
+    if (limit == 1) {                                         /* whole string (sep untouched); empty → [] */
         const uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
-        CHECK(korb_ary_push_val(c, slots + 1, d1, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, slen))));
+        VALUE_REF d1 = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
+        if (slen > 0) CHECK(korb_ary_push_val(c, slots + 1, d1, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, slen))));
         return korb_split_finish(c, slots + 1, self, d1, block, def_env, cself);
     }
     bool ws = (sepv == KORB_NIL);
