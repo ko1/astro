@@ -19,7 +19,11 @@ static RESULT korb_m_range_exclude(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+        if (KORB_FLOAT_P(SELF_RANGE->rbegin))            /* Float begin → not iterable */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+        return RESULT_OK(KORB_NIL);                      /* non-numeric begin (e.g. String) → nil */
+    }
     return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
 }
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined below */
@@ -327,7 +331,11 @@ static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VA
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reverse_each without a block is not supported");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        RESULT r = korb_m_ary_reverse_each(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+        return (r.state == KORB_NORMAL) ? RESULT_OK(VALUE_REF_GET(self)) : r;
+    }
     for (intptr_t i = hi - 1; i >= lo; i--) {
         VALUE iv = LONG2FIX(i);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
@@ -470,7 +478,10 @@ static RESULT korb_m_range_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#partition without a block is not supported");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_partition(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));         /* matching */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));     /* non-matching */
     for (intptr_t i = lo; i < hi; i++) {
@@ -548,7 +559,10 @@ static RESULT korb_m_range_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALU
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#take_while without a block is not supported");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_take_while(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (intptr_t i = lo; i < hi; i++) {
         VALUE iv = LONG2FIX(i);
@@ -843,7 +857,15 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → stride over to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i += (uint32_t)st) {
+            VALUE ev = VAL2ARY(slots[0])->items->data[i];
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &ev, 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     for (intptr_t i = lo; i < hi; i += st) {
         VALUE iv = LONG2FIX(i);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);

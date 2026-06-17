@@ -1038,13 +1038,16 @@ static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     if (FIXNUM_P(l) && FIXNUM_P(r)) {
         intptr_t a = FIX2LONG(l), b = FIX2LONG(r), res;
         switch (op) {
-          case 0: if (UNLIKELY(__builtin_add_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
-          case 1: if (UNLIKELY(__builtin_sub_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
-          case 2: if (UNLIKELY(__builtin_mul_overflow(a, b, &res) || !FIXABLE(res))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)"); return RESULT_OK(LONG2FIX(res));
+          case 0: if (LIKELY(!__builtin_add_overflow(a, b, &res) && FIXABLE(res))) return RESULT_OK(LONG2FIX(res)); break;
+          case 1: if (LIKELY(!__builtin_sub_overflow(a, b, &res) && FIXABLE(res))) return RESULT_OK(LONG2FIX(res)); break;
+          case 2: if (LIKELY(!__builtin_mul_overflow(a, b, &res) && FIXABLE(res))) return RESULT_OK(LONG2FIX(res)); break;
           case 3: if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); return RESULT_OK(LONG2FIX(korb_int_fdiv(a, b)));
           default: if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); return RESULT_OK(LONG2FIX(korb_int_fmod(a, b)));
         }
+        return korb_int_arith(c, slots, l, r, op, 0);    /* +,-,* overflow → promote to Bignum */
     }
+    if (KORB_INTEGER_P(l) && KORB_INTEGER_P(r))          /* Bignum operand(s) → exact integer arith */
+        return korb_int_arith(c, slots, l, r, op, 0);
     return korb_num_arith(c, slots, l, r, op, 0);
 }
 static RESULT korb_m_num_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
