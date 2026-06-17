@@ -61,7 +61,11 @@ static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
     if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
-    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "key not found");
+    char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
+    if (km) { korb_fprint_inspect(c, km, VALUE_SLICE_GET(a, 0)); fclose(km); }
+    RESULT r = korb_raise(c, slots, KORB_E_KEY, 0, "key not found: %s", kb ? kb : "");
+    free(kb);
+    return r;
 }
 
 /* collect keys (sel 0) or values (sel 1) into a new array */

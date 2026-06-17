@@ -1493,6 +1493,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "LocalJumpError",      KORB_E_LOCALJUMP,  "StandardError" },
         { "RangeError",          KORB_E_RANGE,      "StandardError" },
         { "IndexError",          KORB_E_INDEX,      "StandardError" },
+        { "KeyError",            KORB_E_KEY,        "IndexError" },
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },
@@ -4104,6 +4105,18 @@ korb_bi_array(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(slots[1]);
 }
 
+/* Kernel#String(arg) — arg.to_s (String → itself). */
+static RESULT
+korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (KORB_STRING_P(a0)) return RESULT_OK(a0);
+    slots[0] = a0;                                        /* root across dispatch */
+    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+}
+
 /* Float(arg) — Kernel conversion.  Float→itself, Integer→to f, String→strict. */
 static RESULT
 korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -4280,6 +4293,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);
+    korb_builtin_define(c, "String", korb_bi_string, -1);
     korb_builtin_define(c, "format", korb_bi_format, -1);
     korb_builtin_define(c, "sprintf", korb_bi_format, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
