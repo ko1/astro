@@ -457,6 +457,7 @@ korb_ary_store_at(CTX *c, VALUE ary, uint32_t i, VALUE val)
 }
 
 static bool korb_range_int_bounds(const KorbRange *r, intptr_t *lo, intptr_t *hi);
+static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined in builtins/range.c */
 /* splat `*val` into aref: Array → its elements, Range → its ints, nil → nothing,
  * else → val itself (Ruby `[*x]` semantics). aref/srcref are slots-rooted. */
 RESULT
@@ -476,6 +477,13 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
             for (intptr_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots, aref, LONG2FIX(i)));
             return RESULT_OK(VALUE_REF_GET(aref));
         }
+        slots[0] = val;                                 /* non-int (e.g. String) range → expand via to_a */
+        RESULT ta = korb_m_range_to_a(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0));
+        if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+        slots[0] = ta.value;
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
+            CHECK(korb_ary_push_val(c, slots + 1, aref, VAL2ARY(slots[0])->items->data[i]));
+        return RESULT_OK(VALUE_REF_GET(aref));
     }
     if (val == KORB_NIL) return RESULT_OK(VALUE_REF_GET(aref));
     return korb_ary_push_val(c, slots, aref, val);
