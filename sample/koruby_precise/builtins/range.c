@@ -25,11 +25,11 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* defined below */
 static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
-static RESULT korb_m_range_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_range_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
+    if (block != NULL || !korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* block or non-int → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
-        return korb_m_ary_count(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
+        return korb_m_ary_count(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
     }
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* count(obj): 1 if obj in the integer range else 0 */
         VALUE o = VALUE_SLICE_GET(a, 0);
@@ -606,24 +606,30 @@ static RESULT korb_m_range_each_wi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static VALUE korb_zip_elem(VALUE arg, uint32_t i);    /* array_int_ext.c */
+static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
+static RESULT korb_m_range_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     uint32_t k = VALUE_SLICE_LEN(a);
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
+    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {     /* non-integer range → via to_a */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+        return korb_m_ary_zip(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    }
+    slots[0] = (block == NULL) ? UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))) : KORB_NIL;
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (intptr_t i = lo; i < hi; i++) {
         uint32_t idx = (uint32_t)(i - lo);
-        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k + 1));
-        VALUE_REF row = VALUE_REF_AT(&slots[0]);
-        CHECK(korb_ary_push_val(c, slots + 1, row, LONG2FIX(i)));
-        for (uint32_t j = 0; j < k; j++) {
-            VALUE ov = VALUE_SLICE_GET(a, j);
-            VALUE e = (KORB_ARRAY_P(ov) && idx < VAL2ARY(ov)->len) ? VAL2ARY(ov)->items->data[idx] : KORB_NIL;
-            CHECK(korb_ary_push_val(c, slots + 1, row, e));
-        }
-        CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 2, k + 1));
+        VALUE_REF row = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_ary_push_val(c, slots + 2, row, LONG2FIX(i)));
+        for (uint32_t j = 0; j < k; j++)
+            CHECK(korb_ary_push_val(c, slots + 2, row, korb_zip_elem(VALUE_SLICE_GET(a, j), idx)));   /* Array/Range arg */
+        if (block != NULL) {
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        } else CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
-    return RESULT_OK(VALUE_REF_GET(dst));
+    return RESULT_OK(block != NULL ? KORB_NIL : VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
