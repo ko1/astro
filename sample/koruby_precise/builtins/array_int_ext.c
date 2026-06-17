@@ -66,8 +66,8 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (i < 0) i += ary->len;
     if (i >= 0 && (uint32_t)i < ary->len) return RESULT_OK(ary->items->data[i]);
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
-    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%u...%u",
-                      (long)orig, ary->len, ary->len);
+    return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld outside of array bounds: %ld...%u",
+                      (long)orig, ary->len ? -(long)ary->len : 0L, ary->len);
 }
 
 /* dig: recursive index into nested Array/Hash */

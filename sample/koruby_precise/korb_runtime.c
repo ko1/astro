@@ -2977,6 +2977,7 @@ korb_register_core_methods(CTX *c)
     /* nil */
     korb_def_cmethod(c, KORB_C_NIL, "to_s", korb_m_nil_to_s, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "to_a", korb_m_nil_to_a, 0);
     korb_def_cmethod(c, KORB_C_NIL, "nil?", korb_m_nil_nil_q, 0);
     korb_def_cmethod(c, KORB_C_NIL, "&", korb_m_bool_false_and, 1);
     korb_def_cmethod(c, KORB_C_NIL, "|", korb_m_bool_false_or, 1);
@@ -3312,7 +3313,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_eq, 1);   /* default: same as == (Class/Range/Regexp/Set override) */
     korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eql, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
