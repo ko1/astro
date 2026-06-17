@@ -95,12 +95,28 @@ static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
 static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
+    uint32_t argc = VALUE_SLICE_LEN(a);
+    if (p->iseq == NULL) {                               /* Symbol#to_proc: arg0.sym(arg1..) */
+        uint32_t mid = p->sym_mid;
+        if (UNLIKELY(argc < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
+        for (uint32_t i = 0; i < argc; i++) slots[i] = VALUE_SLICE_GET(a, i);
+        return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
+    }
     NODE *entry = p->iseq;
     VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
-    uint32_t argc = VALUE_SLICE_LEN(a);
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     return korb_block_yield_raw(c, slots + 1 + argc, entry, penv, &slots[1], argc, &slots[0]);
+}
+/* Symbol#to_proc — a Proc that sends the symbol to its first argument. */
+static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t mid = SYM2ID(VALUE_REF_GET(self));
+    KorbProc *p = korb_alloc(c, slots, sizeof(KorbProc), KORB_OBJ_PROC);
+    p->iseq = NULL; p->sym_mid = mid; p->is_lambda = 0;
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, 0);
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, KORB_NIL);
+    return RESULT_OK((VALUE)p);
 }
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);

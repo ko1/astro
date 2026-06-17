@@ -269,9 +269,10 @@ typedef struct KorbEnv {
  * the captured self.  KORB_OBJ_PROC. */
 typedef struct KorbProc {
     AroObjectHeader head;            /* KORB_OBJ_PROC */
-    struct Node *iseq;               /* block node_entry (immortal; not scanned) */
+    struct Node *iseq;               /* block node_entry (immortal; not scanned); NULL for a symbol proc */
     VALUE ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
     VALUE ARO_GC_EDGE self;          /* captured lexical self */
+    uint32_t sym_mid;                /* Symbol#to_proc: send this mid to arg0 (iseq==NULL) */
     uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
 } KorbProc;
 
