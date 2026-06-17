@@ -1244,6 +1244,11 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil sep → whole string as one line */
+        VALUE_REF d = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
+        CHECK(korb_ary_push_val(c, slots + 1, d, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, VAL2STR(VALUE_REF_GET(self))->len))));
+        return RESULT_OK(VALUE_REF_GET(d));
+    }
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
