@@ -255,6 +255,16 @@ static RESULT korb_cmp_block(CTX *c, VALUE *slots, VALUE lhs, VALUE rhs,
     return RESULT_OK(KORB_NIL);
 }
 
+/* qsort_r comparator for the default-<=> sort: korb_cmp_full doesn't allocate
+ * for builtin-comparable types, so the array pointer stays put during qsort.
+ * `cmp==2` (incomparable) is latched into err; we raise after the sort. */
+struct korb_sortctx { CTX *c; int err; };
+static int korb_sort_cmp(const void *pa, const void *pb, void *arg) {
+    struct korb_sortctx *const sc = (struct korb_sortctx *)arg;
+    int r = korb_cmp_full(sc->c, *(const VALUE *)pa, *(const VALUE *)pb);
+    if (UNLIKELY(r == 2)) { sc->err = 1; return 0; }
+    return r;
+}
 static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
@@ -267,19 +277,15 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
     if (block == NULL) {
-        /* default <=> insertion sort on the copy — no alloc, pointers stay put */
-        KorbArrayItems *const dit = d->items;
-        const VALUE *data = dit->data;
-        for (uint32_t i = 1; i < d->len; i++) {
-            VALUE key = data[i];
-            uint32_t j = i;
-            while (j > 0) {
-                int cmp = korb_cmp_full(c, data[j-1], key);
-                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(data[j-1]), korb_type_name(key));
-                if (cmp <= 0) break;
-                ARO_STORE(c, dit, &data[j], data[j-1]); j--;
-            }
-            ARO_STORE(c, dit, &data[j], key);
+        /* default <=> : O(n log n) qsort.  korb_cmp_full is GC-free for builtin
+         * types so the items pointer stays valid; reordering existing elements
+         * creates no new heap edges (all already tracked) → no write barrier. */
+        struct korb_sortctx sc = { c, 0 };
+        qsort_r(d->items->data, d->len, sizeof(VALUE), korb_sort_cmp, &sc);
+        if (UNLIKELY(sc.err)) {
+            const VALUE *dd = VAL2ARY(VALUE_REF_GET(dst))->items->data;
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed",
+                              korb_type_name(dd[0]), korb_type_name(d->len > 1 ? dd[1] : KORB_NIL));
         }
         return RESULT_OK(VALUE_REF_GET(dst));
     }
