@@ -843,6 +843,17 @@ void korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base) {
     }
 }
 
+/* Cold tail of the frame-return close hook: kept OUT-OF-LINE so the close logic
+ * doesn't bloat the always-inlined invoke fast paths.  Even when the guard is
+ * false, inlining this code hurt i-cache/regalloc on call/loop-heavy programs
+ * that never escape (collatz regressed ~16% before this split). */
+static RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r) {
+    scratch[0] = r.value;                              /* root return value across close's alloc */
+    korb_close_envs(c, scratch + 1, frame_base);
+    r.value = scratch[0];
+    return r;
+}
+
 /* Build a Proc/lambda capturing a block body + its lexical env + self.  If the
  * body reads outer locals (cap_depth>0) the captured scope chain is materialized
  * into heap KorbEnv objects (open: loc->live slots, shared with the frame; the
@@ -1251,11 +1262,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
         e->line = line;
     }
-    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: close this method's escaped envs */
-        base[locals_cnt] = r.value;                    /* root return value across close's alloc */
-        korb_close_envs(c, base + locals_cnt + 1, base);
-        r.value = base[locals_cnt];
-    }
+    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
 
@@ -1288,11 +1295,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;
     }
-    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: close this method's escaped envs */
-        base[locals_cnt] = r.value;                    /* root return value across close's alloc */
-        korb_close_envs(c, base + locals_cnt + 1, base);
-        r.value = base[locals_cnt];
-    }
+    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
 
@@ -2490,9 +2493,10 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
  * cursor region (node_yield passes &slots[-argc]); copies happen before any
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
 RESULT
-korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
-                     const VALUE *argv, uint32_t argc, VALUE *captured_self)
+korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
+    const VALUE prev = (VALUE)(uintptr_t)def_env;   /* raw PREV: odd slots handle / even KorbEnv */
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
     /* block frame: bf[0]=PREV (tagged-odd slots handle, or even KorbEnv* for an
      * escaped Proc), bf[1..1+blocals)=block locals, self cell at bf[blocals]. */
@@ -2550,23 +2554,9 @@ korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
-    if (UNLIKELY(c->vm->open_env_cnt)) {               /* B3: escaped envs of this frame close now */
-        VALUE *const sp = bf + 1 + blocals;
-        sp[0] = r.value;                               /* root the return value across close's alloc */
-        korb_close_envs(c, sp + 1, bf);
-        r.value = sp[0];
-    }
+    if (UNLIKELY(c->vm->open_env_cnt))                 /* B3: escaped envs of this frame close now */
+        r = korb_close_ret(c, bf + 1 + blocals, bf, r);
     return r;
-}
-
-/* Standard block invocation.  `def_env` carries the raw PREV form (a slots base
- * already tagged odd at the origin node, or a forwarded KorbEnv*); pass through. */
-RESULT
-korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
-{
-    return korb_block_yield_raw(c, slots, block, (VALUE)(uintptr_t)def_env,
-                                argv, argc, captured_self);
 }
 
 RESULT

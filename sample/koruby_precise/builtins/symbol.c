@@ -106,7 +106,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
-    return korb_block_yield_raw(c, slots + 1 + argc, entry, penv, &slots[1], argc, &slots[0]);
+    return korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
 }
 /* Symbol#to_proc — a Proc that sends the symbol to its first argument. */
 static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

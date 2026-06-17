@@ -201,8 +201,6 @@ RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
  * `captured_self`.  NEXT is folded to NORMAL. */
 RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                         const VALUE *argv, uint32_t argc, VALUE *captured_self);
-RESULT korb_block_yield_raw(CTX *c, VALUE *slots, NODE *block, VALUE prev,
-                            const VALUE *argv, uint32_t argc, VALUE *captured_self);
 
 /* keyword-parameter metadata for a method (NULL on the method if no keywords).
  * `slot` is the local index; `deflt` NULL = required keyword. */
