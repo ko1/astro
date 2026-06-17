@@ -168,6 +168,7 @@ RESULT korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t l
 RESULT korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line);
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled);
+RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);

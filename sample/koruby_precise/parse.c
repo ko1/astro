@@ -648,6 +648,18 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 
     if (cn->block) {
+        /* proc { } / lambda { } — reify the literal block into a Proc object. */
+        if (argc == 0 && PM_NODE_TYPE_P(cn->block, PM_BLOCK_NODE)) {
+            const char *cnm = kp_cid_cstr(tc, cn->name);
+            int is_lam = !strcmp(cnm, "lambda");
+            if (is_lam || !strcmp(cnm, "proc")) {
+                NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
+                int32_t self_off = -1 - tc->chain;
+                NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam);
+                bake_add(tc, &mk->u.node_make_proc.def_env_off);
+                return mk;
+            }
+        }
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);

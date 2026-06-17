@@ -797,6 +797,20 @@ RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
     return RESULT_OK((VALUE)m);
 }
+
+/* Build a Proc/lambda capturing a block body + its lexical env + self.  Stage A
+ * (non-escape): `def_env` is the live caller frame slots base, stored tagged-odd
+ * so the eget slots path reads it directly while that frame is alive.  Stage B
+ * (escape) replaces the env with a heap KorbEnv chain that survives the frame. */
+RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
+    slots[0] = self_val;                                 /* root captured self across alloc */
+    KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
+    p->iseq = entry;
+    p->is_lambda = (uint8_t)is_lambda;
+    p->env = (VALUE)((uintptr_t)def_env | 1u);           /* odd-tagged slots handle (GC skips) */
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
+    return RESULT_OK((VALUE)p);
+}
 /* `re =~ str` core: returns the match's CHARACTER index (Integer) or nil. */
 static RESULT korb_re_match_index(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) return RESULT_OK(KORB_NIL);
@@ -1417,7 +1431,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Rational", KORB_C_RATIONAL }, { "Complex", KORB_C_COMPLEX },
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
-        { "ArithmeticSequence", KORB_C_ARITHSEQ },
+        { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -2497,6 +2511,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
           case KORB_OBJ_METHOD: return KORB_C_METHOD;
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
+          case KORB_OBJ_PROC:   return KORB_C_PROC;
         }
     }
     return KORB_C_OBJECT;
@@ -2521,6 +2536,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_REGEXP: return "Regexp";
       case KORB_C_METHOD: return "Method";
       case KORB_C_FIBER:  return "Fiber";
+      case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
@@ -3408,6 +3424,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "call", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "[]", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "()", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
+    korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);

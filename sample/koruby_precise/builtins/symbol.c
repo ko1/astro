@@ -91,6 +91,22 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2METH(VALUE_REF_GET(self))->recv);
 }
+/* Proc#call / [] / .() / === — invoke the captured block body.  Stage A: env is
+ * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
+static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
+    NODE *entry = p->iseq;
+    VALUE penv = p->env;
+    VALUE *denv = (penv & 1u) ? (VALUE *)(uintptr_t)(penv & ~(uintptr_t)1u)
+                              : (VALUE *)(uintptr_t)penv;   /* even = KorbEnv handle (stage B) */
+    uint32_t argc = VALUE_SLICE_LEN(a);
+    slots[0] = p->self;                                  /* captured self (rooted) */
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    return korb_block_yield(c, slots + 1 + argc, entry, denv, &slots[1], argc, &slots[0]);
+}
+static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(ID2SYM(VAL2METH(VALUE_REF_GET(self))->mid));
 }

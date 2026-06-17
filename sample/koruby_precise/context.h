@@ -147,6 +147,8 @@ enum korb_obj_type {
     KORB_OBJ_FIBER       = 17,  /* stackful coroutine (separate value/C stacks) */
     KORB_OBJ_ARITHSEQ    = 18,  /* Enumerator::ArithmeticSequence (step/% lazy seq) */
     KORB_OBJ_BIGNUM      = 19,  /* arbitrary-precision Integer (.class is Integer; no GC edges) */
+    KORB_OBJ_ENV         = 20,  /* closure env: [prev|loc|vals], open(loc→slots)/closed(loc→vals) */
+    KORB_OBJ_PROC        = 21,  /* Proc/lambda: iseq(immortal) + captured env + self */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -245,6 +247,33 @@ typedef struct KorbMethod {
     VALUE ARO_GC_EDGE recv;          /* bound receiver */
     uint32_t mid;                    /* interned method name */
 } KorbMethod;
+
+/* Closure env (one captured scope activation), materialized when a Proc escapes
+ * (docs/v2_blocks_design.md).  open: the defining frame is still live; `loc`
+ * points at the frame's slots locals base and outer reads/writes go straight to
+ * the live slots (shared with the frame's own direct writes — correct mutation).
+ * closed: the frame has returned; values were copied into `vals` (a separate
+ * KORB_OBJ_VALUE_ARRAY, the codebase pattern — no self-pointer to fix up) and
+ * access goes through it.  `loc` is not a GC edge (open=slots root; unused when
+ * closed); `vals` is the only forwarded edge (closed only). */
+typedef struct KorbEnv {
+    AroObjectHeader head;            /* KORB_OBJ_ENV */
+    VALUE ARO_GC_EDGE prev;          /* parent env handle (tagged KorbEnv* or tagged slots*, 0=top) */
+    VALUE ARO_GC_EDGE vals;          /* closed: KORB_OBJ_VALUE_ARRAY of the captured locals; 0 when open */
+    VALUE *loc;                      /* open: frame slots locals base; unused when closed */
+    uint32_t n;                      /* number of locals captured */
+    uint8_t  closed;                 /* 0 = open (use loc), 1 = closed (use vals) */
+} KorbEnv;
+
+/* Proc / lambda: an immortal body descriptor (node_entry) + the captured env +
+ * the captured self.  KORB_OBJ_PROC. */
+typedef struct KorbProc {
+    AroObjectHeader head;            /* KORB_OBJ_PROC */
+    struct Node *iseq;               /* block node_entry (immortal; not scanned) */
+    VALUE ARO_GC_EDGE env;           /* captured env handle (KorbEnv* tagged) or 0 */
+    VALUE ARO_GC_EDGE self;          /* captured lexical self */
+    uint8_t  is_lambda;              /* lambda semantics (strict arity, return-from-proc) */
+} KorbProc;
 
 /* Fiber: a stackful coroutine.  The moving GC object is a thin handle; all
  * mutable state + GC roots live in a libc-malloc'd (stable) KorbFiberRep, so
@@ -385,6 +414,10 @@ typedef struct KorbClass {
 #define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
 #define KORB_BIGNUM_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BIGNUM)
 #define VAL2BIG(v)         ((KorbBignum *)(uintptr_t)(v))
+#define KORB_ENV_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENV)
+#define VAL2ENV(v)         ((KorbEnv *)(uintptr_t)(v))
+#define KORB_PROC_P(v)     (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC)
+#define VAL2PROC(v)        ((KorbProc *)(uintptr_t)(v))
 /* any Integer: immediate Fixnum or heap Bignum */
 #define KORB_INTEGER_P(v)  (FIXNUM_P(v) || KORB_BIGNUM_P(v))
 
@@ -420,7 +453,7 @@ enum korb_class {
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
-    KORB_C_ARITHSEQ,
+    KORB_C_ARITHSEQ, KORB_C_PROC,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -751,6 +784,20 @@ struct CTX_struct {
         /* method entries are immortal libc; forward each entry's owner edge. */ \
         for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++)               \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_ENV: {                                                   \
+        KorbEnv *_ev = (KorbEnv *)(payload);                                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->prev);   /* odd slots-ptr skipped, KorbEnv* fwd */ \
+        if (_ev->closed) ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ev->vals);  /* open: loc->slots root */ \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_PROC: {                                                  \
+        KorbProc *_pr = (KorbProc *)(payload);                              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->env);    /* odd slots-ptr skipped, KorbEnv* fwd */ \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_pr->self);                   \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

@@ -907,6 +907,16 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
     return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], block, &slots[def_env_off], &slots[self_off]);
 }
 
+// proc { } / lambda { } / ->{ } — reify a literal block into a Proc object.
+// `block` is the block's node_entry; def_env_off = the defining frame base
+// (captured env), self_off = the lexical self.  Captures, does not invoke.
+NODE_DEF @noinline
+node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, int32_t self_off, uint32_t is_lambda)
+{
+    (void)n; (void)block_dispatcher;
+    return korb_make_proc(c, slots, block, &slots[def_env_off], slots[self_off], is_lambda);
+}
+
 // Receiver method call with a literal block (arr.each { ... }), any fixed arity.
 // argv@children stages [recv, args...]; korb_send_blk resolves the built-in and
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.
