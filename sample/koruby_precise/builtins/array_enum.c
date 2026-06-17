@@ -353,21 +353,24 @@ static RESULT korb_m_ary_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (has_obj) {
             /* user/Comparable objects: dispatch <=> per compare (may GC/move dst →
              * re-fetch the items pointer each time, key rooted in slots[1]).  Stable
-             * insertion sort, matching the comparator-block path below. */
-            uint32_t len = d->len;
+             * binary-insertion sort: O(n log n) dispatches (the dispatch dominates;
+             * the element shifts are cheap pointer writes).  `cmp<=0` keeps the key
+             * after equal elements → stable. */
+            const uint32_t len = d->len;
             for (uint32_t i = 1; i < len; i++) {
                 slots[1] = VAL2ARY(VALUE_REF_GET(dst))->items->data[i];   /* key (rooted) */
-                uint32_t j = i;
-                while (j > 0) {
-                    VALUE left = VAL2ARY(VALUE_REF_GET(dst))->items->data[j-1];
+                uint32_t lo = 0, hi = i;
+                while (lo < hi) {                                         /* find insertion point in [0,i) */
+                    const uint32_t mid = (lo + hi) >> 1;
+                    const VALUE mv = VAL2ARY(VALUE_REF_GET(dst))->items->data[mid];
                     int cmp = 0;
-                    CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
-                    if (cmp <= 0) break;
-                    KorbArray *dd = VAL2ARY(VALUE_REF_GET(dst));          /* re-fetch post-dispatch */
-                    ARO_STORE(c, dd->items, &dd->items->data[j], dd->items->data[j-1]); j--;
+                    CHECK(korb_cmp_spaceship(c, slots + 2, mv, slots[1], &cmp));   /* dst[mid] <=> key */
+                    if (cmp <= 0) lo = mid + 1; else hi = mid;
                 }
-                KorbArrayItems *dit = VAL2ARY(VALUE_REF_GET(dst))->items;
-                ARO_STORE(c, dit, &dit->data[j], slots[1]);
+                KorbArrayItems *dit = VAL2ARY(VALUE_REF_GET(dst))->items;  /* no dispatch below → stable ptr */
+                for (uint32_t j = i; j > lo; j--)
+                    ARO_STORE(c, dit, &dit->data[j], dit->data[j-1]);     /* shift [lo,i) right by 1 */
+                ARO_STORE(c, dit, &dit->data[lo], slots[1]);
             }
             return RESULT_OK(VALUE_REF_GET(dst));
         }
