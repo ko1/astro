@@ -275,8 +275,18 @@ static RESULT korb_m_range_overlap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_RANGE_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)", korb_type_name(o));
     intptr_t lo1, hi1, lo2, hi2;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo1, &hi1) || !korb_range_int_bounds(VAL2RANGE(o), &lo2, &hi2))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
+    if (!korb_range_int_bounds(SELF_RANGE, &lo1, &hi1) || !korb_range_int_bounds(VAL2RANGE(o), &lo2, &hi2)) {
+        const KorbRange *r1 = SELF_RANGE, *r2 = VAL2RANGE(o);     /* non-integer: compare endpoints */
+        int c1 = korb_cmp_values(r1->rbegin, r2->rend);          /* r1.begin vs r2.end */
+        int c2 = korb_cmp_values(r2->rbegin, r1->rend);          /* r2.begin vs r1.end */
+        int e1 = korb_cmp_values(r1->rbegin, r1->rend), e2 = korb_cmp_values(r2->rbegin, r2->rend);
+        if (c1 == 2 || c2 == 2 || e1 == 2 || e2 == 2) return RESULT_OK(KORB_FALSE);   /* incomparable */
+        bool a_ok = r2->exclude_end ? (c1 < 0) : (c1 <= 0);
+        bool b_ok = r1->exclude_end ? (c2 < 0) : (c2 <= 0);
+        bool ne1  = r1->exclude_end ? (e1 < 0) : (e1 <= 0);
+        bool ne2  = r2->exclude_end ? (e2 < 0) : (e2 <= 0);
+        return RESULT_OK((a_ok && b_ok && ne1 && ne2) ? KORB_TRUE : KORB_FALSE);
+    }
     bool ov = lo1 < hi2 && lo2 < hi1 && hi1 > lo1 && hi2 > lo2;   /* half-open [lo,hi) overlap, non-empty */
     return RESULT_OK(ov ? KORB_TRUE : KORB_FALSE);
 }
