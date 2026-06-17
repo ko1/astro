@@ -76,6 +76,9 @@ bake_code_store(NODE *ast)
              " -I" KORUBY_SRC_DIR
              " -I" ASTRO_RUNTIME_DIR
              " -I" ASTRO_PRISM_INC_DIR
+#ifdef KORB_HAVE_GMP
+             " -DKORB_HAVE_GMP"   /* match the main build: SDs must keep the bignum-promote arithmetic paths, not the no-GMP overflow stubs */
+#endif
              " -DBARUBY_GC=%d", BARUBY_GC);   /* framework backend-select macro */
     setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
     astro_cs_build(extra_cflags);
