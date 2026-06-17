@@ -602,7 +602,7 @@ struct korb_vm {
     /* interned ids of dispatch-hot method names, resolved once at init so the
      * send path tests them with integer compares instead of korb_sym_name+strcmp
      * on every call (send/__send__/public_send check ran for every arg call). */
-    uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize;
+    uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
     uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */

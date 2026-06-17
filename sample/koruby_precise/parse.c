@@ -347,6 +347,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 /* ---- operators --------------------------------------------------------- */
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
+extern const struct NodeKind kind_node_caseeq;       /* case/when `v === subj` */
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
 extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
@@ -1582,7 +1583,6 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *subj = transduce(tc, cn->predicate);   /* register child: no staging */
             assign = bake_lset(tc, tmp, subj);
         }
-        uint32_t eqq = korb_intern(tc->c->vm, "===", 3);
         NODE *chain = cn->else_clause
             ? transduce_statements(tc, cn->else_clause->statements)
             : lit_nil();
@@ -1596,9 +1596,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     return kp_unsupported(tc, cv, "when with splat");
                 NODE *test;
                 if (has_subj) {
-                    NODE *vn, *targ; uint32_t line = kp_line(tc, cv);
-                    WITH_CHAIN(tc, 2, (vn = transduce(tc, cv), targ = bake_lget(tc, tmp)));
-                    test = kp_send1(eqq, line, vn, targ);   /* v === subj */
+                    NODE *vn, *targ; (void)kp_line(tc, cv);
+                    WITH_CHAIN(tc, kind_node_caseeq.slot_count, (vn = transduce(tc, cv), targ = bake_lget(tc, tmp)));
+                    test = ALLOC_node_caseeq(vn, targ);     /* v === subj (inline for value-eq types) */
                 } else {
                     test = transduce(tc, cv);                       /* plain truthiness */
                 }

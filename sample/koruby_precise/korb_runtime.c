@@ -4595,6 +4595,7 @@ korb_ctx_new(void)
     c->vm->name_struct     = korb_intern(c->vm, "Struct", 6);
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
     c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
+    c->vm->mid_eqq         = korb_intern(c->vm, "===", 3);
 
     return c;
 }

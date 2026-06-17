@@ -429,6 +429,29 @@ node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
     return RESULT_OK(korb_value_eq(l, rhs) ? KORB_FALSE : KORB_TRUE);
 }
 
+// case/when subject test: `whenval === subj`.  For value-equality types
+// (Fixnum/Float/Symbol/String/nil/bool/Array/Hash/Bignum) === is definitionally
+// ==, so compare inline via korb_value_eq — no per-`when` method dispatch.  Only
+// Range/Class/Regexp/Proc/user-object when-values (where === means membership /
+// is_a? / match / call / custom) fall back to a real === send.
+NODE_DEF
+node_caseeq(CTX *c, NODE *n, VALUE *slots, VALUE_REF wv@child, VALUE subj@child)
+{
+    (void)n;
+    const VALUE w = VALUE_REF_GET(wv);
+    if (w == subj) return RESULT_OK(KORB_TRUE);            /* identity (fixnum/symbol/singleton) */
+    if (!AROH_IS_GC_OBJECT(w))                             /* fixnum / symbol / nil / true / false */
+        return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
+    switch (KORB_OBJ_TYPE(w)) {
+      case KORB_OBJ_STRING: case KORB_OBJ_ARRAY: case KORB_OBJ_HASH:
+      case KORB_OBJ_FLOAT:  case KORB_OBJ_BIGNUM:
+        return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
+      default:                                             /* Range / Class / Regexp / Proc / user obj → real === */
+        slots[0] = w; slots[1] = subj;
+        return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+    }
+}
+
 // ---- boolean ---------------------------------------------------------------
 
 NODE_DEF @nogc
