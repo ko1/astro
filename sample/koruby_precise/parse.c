@@ -1462,6 +1462,37 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
         return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, ALLOC_node_or(get, set)));
       }
+      case PM_INDEX_OPERATOR_WRITE_NODE: {  /* recv[key] op= value  →  recv[key] = recv[key] op value */
+        const pm_index_operator_write_node_t *iw = (const pm_index_operator_write_node_t *)node;
+        size_t argc = iw->arguments ? iw->arguments->arguments.size : 0;
+        if (iw->block || argc != 1)
+            return kp_unsupported(tc, node, "index op= with block or multiple index args");
+        uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+        uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
+        enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
+        uint32_t opmid = kp_intern_cid(tc, iw->binary_operator);
+        uint32_t line = kp_line(tc, node);
+        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc);
+        /* evaluate recv + key once into temps (single-eval semantics) */
+        NODE *store_recv = bake_lset(tc, t0, transduce(tc, iw->receiver));
+        NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
+        /* set(recv, key, (recv[key]) op value), nesting chains: set → binop → get */
+        NODE *s_recv, *s_key, *newval;
+        const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
+        WITH_CHAIN(tc, 3, (
+            s_recv = bake_lget(tc, t0),
+            s_key  = bake_lget(tc, t1),
+            newval = WITH_CHAIN(tc, bsc, ({
+                NODE *g_recv, *g_key, *get, *val;
+                WITH_CHAIN(tc, 2, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
+                get = kp_send1(aref, line, g_recv, g_key);
+                val = transduce(tc, iw->value);
+                (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
+            }))
+        ));
+        NODE *set = kp_send2(aset, line, s_recv, s_key, newval);
+        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, set));
+      }
 
       /* ---- control flow ---- */
       case PM_IF_NODE: {
