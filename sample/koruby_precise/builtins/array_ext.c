@@ -80,14 +80,14 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE v = VALUE_SLICE_GET(a, 0);
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     KorbArrayItems *it = ary->items;
-    uint32_t w = 0; bool found = false;
+    uint32_t w = 0; VALUE last = KORB_NIL; bool found = false;
     for (uint32_t r = 0; r < ary->len; r++) {
-        if (korb_value_eq(it->data[r], v)) found = true;
+        if (korb_value_eq(it->data[r], v)) { last = it->data[r]; found = true; }   /* return the deleted element */
         else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
     }
     for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
     ary->len = w;
-    return RESULT_OK(found ? v : KORB_NIL);
+    return RESULT_OK(found ? last : KORB_NIL);
 }
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;

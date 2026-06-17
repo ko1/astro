@@ -8,7 +8,7 @@ static bool korb_math_d(VALUE v, double *out) { return korb_num_to_d(v, out); }
 static double korb_cbrt(double f) {
     double r = cbrt(f);
 #if defined __GLIBC__
-    if (isfinite(r)) r = (2.0 * r + (f / r / r)) / 3.0;
+    if (isfinite(r) && r != 0.0) r = (2.0 * r + (f / r / r)) / 3.0;   /* Newton step (skip r==0: avoids 0/0) */
 #endif
     return r;
 }
