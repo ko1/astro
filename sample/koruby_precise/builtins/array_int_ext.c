@@ -565,6 +565,11 @@ static RESULT korb_m_hash_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_hash_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* Enumerable#uniq over [k,v] pairs */
+    slots[0] = UNWRAP(korb_m_hash_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    return korb_m_ary_uniq(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
 static RESULT korb_m_hash_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_hash_pick(c, slots, self, a, true); }
 static RESULT korb_m_hash_except(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_hash_pick(c, slots, self, a, false); }
 

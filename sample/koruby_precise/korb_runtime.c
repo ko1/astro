@@ -3149,6 +3149,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
     korb_def_cmethod(c, KORB_C_HASH, "clear", korb_m_hash_clear, 0);
     korb_def_cmethod(c, KORB_C_HASH, "shift", korb_m_hash_shift, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "uniq", korb_m_hash_uniq, -1);
     korb_def_cmethod(c, KORB_C_HASH, "flatten", korb_m_hash_flatten, -1);
     korb_def_cmethod(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
     korb_def_cmethod(c, KORB_C_HASH, "fetch_values", korb_m_hash_fetch_values, -1);
