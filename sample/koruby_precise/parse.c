@@ -389,32 +389,36 @@ alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
 /* Parse a block literal into a node_entry (its own scope; registered as an
  * AOT entry like a method body).  docs/v2_blocks_design.md. */
 static NODE *
-transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
+transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals,
+                      const pm_node_t *blk_params, const pm_node_t *blk_body)
 {
-    push_frame(tc, &blk->locals);
+    push_frame(tc, blk_locals);
 
     uint32_t bparams = 0;
     uint32_t destructure_n = 0;     /* >0 for a single |(a,b,...)| destructuring param */
     uint8_t *destructure_spec = NULL;  /* per-param arity for mixed |a,(k,v)| (0=scalar) */
-    if (blk->parameters && PM_NODE_TYPE_P(blk->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
-        /* `{ _1 * _2 }` — prism puts `_1`.._N in blk->locals[0..N-1]; the body's
+    if (blk_params && PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
+        /* `{ _1 * _2 }` — prism puts `_1`.._N in locals[0..N-1]; the body's
          * `_N` reads resolve as ordinary locals.  N = maximum referenced. */
-        bparams = ((const pm_numbered_parameters_node_t *)blk->parameters)->maximum;
-    } else if (blk->parameters && PM_NODE_TYPE_P(blk->parameters, PM_IT_PARAMETERS_NODE)) {
+        bparams = ((const pm_numbered_parameters_node_t *)blk_params)->maximum;
+    } else if (blk_params && PM_NODE_TYPE_P(blk_params, PM_IT_PARAMETERS_NODE)) {
         /* `{ it * 2 }` — one implicit param `it`; the body reads it via a
          * PM_IT_LOCAL_VARIABLE_READ_NODE, mapped to local slot 0 in transduce. */
         bparams = 1;
-    } else if (blk->parameters) {
-        if (!PM_NODE_TYPE_P(blk->parameters, PM_BLOCK_PARAMETERS_NODE)) {
+    } else if (blk_params) {
+        const pm_parameters_node_t *ps;
+        if (PM_NODE_TYPE_P(blk_params, PM_BLOCK_PARAMETERS_NODE)) {
+            const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)blk_params;
+            if (bp->locals.size) {
+                pop_frame(tc);
+                return kp_unsupported(tc, blk_params, "block-local variables (|x; y|)");
+            }
+            ps = bp->parameters;
+        } else if (PM_NODE_TYPE_P(blk_params, PM_PARAMETERS_NODE)) {   /* `->(x) {}` lambda params */
+            ps = (const pm_parameters_node_t *)blk_params;
+        } else {
             pop_frame(tc);
-            return kp_unsupported(tc, blk->parameters, "unsupported block parameters");
-        }
-        const pm_block_parameters_node_t *bp =
-            (const pm_block_parameters_node_t *)blk->parameters;
-        const pm_parameters_node_t *ps = bp->parameters;
-        if (bp->locals.size) {
-            pop_frame(tc);
-            return kp_unsupported(tc, blk->parameters, "block-local variables (|x; y|)");
+            return kp_unsupported(tc, blk_params, "unsupported block parameters");
         }
         if (ps) {
             if (ps->optionals.size || ps->rest || ps->posts.size ||
@@ -513,14 +517,14 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
     }
 
     NODE *body;
-    if (blk->body == NULL) {
+    if (blk_body == NULL) {
         body = lit_nil();
     }
-    else if (PM_NODE_TYPE_P(blk->body, PM_STATEMENTS_NODE)) {
-        body = transduce_statements(tc, (const pm_statements_node_t *)blk->body);
+    else if (PM_NODE_TYPE_P(blk_body, PM_STATEMENTS_NODE)) {
+        body = transduce_statements(tc, (const pm_statements_node_t *)blk_body);
     }
     else {
-        body = kp_unsupported(tc, blk->body, "block body with rescue/ensure");
+        body = kp_unsupported(tc, blk_body, "block body with rescue/ensure");
     }
 
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
@@ -529,6 +533,12 @@ transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
     return entry;
+}
+
+static NODE *
+transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
+{
+    return transduce_block_parts(tc, &blk->locals, blk->parameters, blk->body);
 }
 
 /* Call with a literal block.  Bakes def_env_off (caller frame base) and
@@ -1581,6 +1591,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *cond = transduce(tc, un->predicate);
         NODE *body = transduce_statements(tc, un->statements);
         return ALLOC_node_while(cond, body, 1, post);
+      }
+      case PM_LAMBDA_NODE: {   /* ->(args) { body } — a lambda Proc */
+        const pm_lambda_node_t *ln = (const pm_lambda_node_t *)node;
+        NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
+        int32_t self_off = -1 - tc->chain;
+        NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);
+        bake_add(tc, &mk->u.node_make_proc.def_env_off);
+        return mk;
       }
       case PM_FOR_NODE: {
         /* `for VAR in COLL; BODY; end` — VAR + BODY share the enclosing frame
