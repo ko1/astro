@@ -516,6 +516,39 @@ node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negat
     return RESULT_OK(KORB_NIL);
 }
 
+// `for VAR in COLL; BODY; end` — no new scope: VAR and BODY's locals live in
+// the enclosing frame, so BODY is transduced there (unlike a block).  The
+// collection is materialized to an Array (via to_a) into a synth local, then
+// iterated; `break`/`next` behave as in a while loop.  Result = the iterable.
+NODE_DEF
+node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int32_t var_off, NODE *coll, NODE *body)
+{
+    (void)n;
+    RESULT cr = EVAL_ARG(c, coll);
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    slots[orig_off] = cr.value;                             /* the original collection (for's value) */
+    slots[iter_off] = cr.value;
+    if (!KORB_ARRAY_P(slots[iter_off])) {                   /* Range/Hash/Enumerable → to_a */
+        slots[0] = slots[iter_off];
+        RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);
+        if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+        slots[iter_off] = ta.value;
+        if (UNLIKELY(!KORB_ARRAY_P(slots[iter_off])))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "for: collection is not iterable");
+    }
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *a = VAL2ARY(slots[iter_off]);     /* re-read: body may move it */
+        if (i >= a->len) break;
+        slots[var_off] = a->items->data[i];                /* assign the loop var (enclosing local) */
+        RESULT br = EVAL_ARG(c, body);
+        if (UNLIKELY(br.state != KORB_NORMAL)) {
+            if (br.state == KORB_BREAK) return RESULT_OK(br.value);
+            if (br.state != KORB_NEXT) return br;           /* return/raise propagate; `next` continues */
+        }
+    }
+    return RESULT_OK(slots[orig_off]);
+}
+
 // `break [v]` — unwind to the nearest loop (node_while) or block-call boundary.
 NODE_DEF @nogc
 node_break(CTX *c, NODE *n, VALUE *slots, VALUE v@child)

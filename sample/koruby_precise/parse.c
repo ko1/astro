@@ -1570,6 +1570,28 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *body = transduce_statements(tc, un->statements);
         return ALLOC_node_while(cond, body, 1, post);
       }
+      case PM_FOR_NODE: {
+        /* `for VAR in COLL; BODY; end` — VAR + BODY share the enclosing frame
+         * (for introduces no scope), so BODY is transduced here, not in a block. */
+        const pm_for_node_t *fn = (const pm_for_node_t *)node;
+        if (!PM_NODE_TYPE_P(fn->index, PM_LOCAL_VARIABLE_TARGET_NODE))
+            return kp_unsupported(tc, fn->index, "for-loop with non-local / destructured index");
+        const pm_local_variable_target_node_t *iv = (const pm_local_variable_target_node_t *)fn->index;
+        if (iv->depth != 0)
+            return kp_unsupported(tc, fn->index, "for-loop with outer-scope index");
+        uint32_t orig_local = alloc_synth_local(tc);
+        uint32_t iter_local = alloc_synth_local(tc);
+        NODE *coll = transduce(tc, fn->collection);
+        NODE *body = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+        NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
+                                     (int32_t)iter_local - tc->chain,
+                                     (int32_t)lvar_index(tc, fn->index, iv->name) - tc->chain,
+                                     coll, body);
+        bake_add(tc, &fnode->u.node_for.orig_off);
+        bake_add(tc, &fnode->u.node_for.iter_off);
+        bake_add(tc, &fnode->u.node_for.var_off);
+        return fnode;
+      }
       case PM_AND_NODE: {
         const pm_and_node_t *an = (const pm_and_node_t *)node;
         return ALLOC_node_and(transduce(tc, an->left), transduce(tc, an->right));
