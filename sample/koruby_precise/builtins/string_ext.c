@@ -148,9 +148,10 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     intptr_t i;
     if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     if (i < 0) i += bn;
-    if (i < 0 || i > (intptr_t)bn) return RESULT_OK(KORB_NIL);
+    const bool two_arg = VALUE_SLICE_LEN(a) >= 2;
+    if (i < 0 || i > (intptr_t)bn || (!two_arg && i == (intptr_t)bn)) return RESULT_OK(KORB_NIL);   /* byteslice(i): nil at end */
     intptr_t lentmp;
-    intptr_t len = (VALUE_SLICE_LEN(a) >= 2 && korb_to_index(VALUE_SLICE_GET(a, 1), &lentmp)) ? lentmp : 1;
+    intptr_t len = (two_arg && korb_to_index(VALUE_SLICE_GET(a, 1), &lentmp)) ? lentmp : 1;
     if (len < 0) return RESULT_OK(KORB_NIL);
     if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
     return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
@@ -217,9 +218,9 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    VALUE iv = VALUE_SLICE_GET(a, 0);
-    if (!FIXNUM_P(iv)) return RESULT_OK(KORB_NIL);
-    intptr_t i = FIX2LONG(iv); if (i < 0) i += s->len;
+    intptr_t i;
+    if (!korb_to_index(VALUE_SLICE_GET(a, 0), &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (i < 0) i += s->len;
     if (i < 0 || (uint32_t)i >= s->len) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX((unsigned char)s->buf->data[i]));
 }
