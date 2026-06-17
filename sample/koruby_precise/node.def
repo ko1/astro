@@ -325,6 +325,75 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), line, 1);
 }
 
+// ---- bitwise / shift -------------------------------------------------------
+// Fixnum-pair fast path inline; everything else (Array#<< / String#<< / Set ops
+// / bignum / bool & | ^ / user-defined) dispatches.  Integer# redefinition of a
+// bit op sets basic_op_redefined (see korb_check_basic_op_redef), forcing send.
+NODE_DEF
+node_band(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+{
+    (void)n;
+    const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
+        return RESULT_OK(LONG2FIX(FIX2LONG(l) & FIX2LONG(rhs)));
+    slots[0] = l; slots[1] = rhs;
+    return korb_send(c, slots + 2, c->vm->mid_band, line, 1);
+}
+
+NODE_DEF
+node_bor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+{
+    (void)n;
+    const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
+        return RESULT_OK(LONG2FIX(FIX2LONG(l) | FIX2LONG(rhs)));
+    slots[0] = l; slots[1] = rhs;
+    return korb_send(c, slots + 2, c->vm->mid_bor, line, 1);
+}
+
+NODE_DEF
+node_bxor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+{
+    (void)n;
+    const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
+        return RESULT_OK(LONG2FIX(FIX2LONG(l) ^ FIX2LONG(rhs)));
+    slots[0] = l; slots[1] = rhs;
+    return korb_send(c, slots + 2, c->vm->mid_bxor, line, 1);
+}
+
+NODE_DEF
+node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+{
+    (void)n;
+    const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
+        if (LIKELY(sh >= 0 && sh < 62)) {
+            const intptr_t r = a << sh;
+            if (LIKELY((r >> sh) == a && FIXABLE(r))) return RESULT_OK(LONG2FIX(r));   /* no overflow */
+        }
+        /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
+    }
+    slots[0] = l; slots[1] = rhs;
+    return korb_send(c, slots + 2, c->vm->mid_shl, line, 1);
+}
+
+NODE_DEF
+node_shr(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+{
+    (void)n;
+    const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
+        if (LIKELY(sh >= 0 && sh < 63)) return RESULT_OK(LONG2FIX(a >> sh));   /* arithmetic shift */
+        if (sh >= 63) return RESULT_OK(LONG2FIX(a < 0 ? -1 : 0));
+        /* sh < 0 (= left shift) may overflow → dispatch */
+    }
+    slots[0] = l; slots[1] = rhs;
+    return korb_send(c, slots + 2, c->vm->mid_shr, line, 1);
+}
+
 // Unary minus.  Single child → register form.
 NODE_DEF
 node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)

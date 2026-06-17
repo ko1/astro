@@ -1142,6 +1142,7 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
     static const char *const ops[] = {
         "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "-@",
+        "&", "|", "^", "<<", ">>",
     };
     const char *const nm = korb_sym_name(vm, mid);
     for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
@@ -4596,6 +4597,11 @@ korb_ctx_new(void)
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
     c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
     c->vm->mid_eqq         = korb_intern(c->vm, "===", 3);
+    c->vm->mid_band        = korb_intern(c->vm, "&", 1);
+    c->vm->mid_bor         = korb_intern(c->vm, "|", 1);
+    c->vm->mid_bxor        = korb_intern(c->vm, "^", 1);
+    c->vm->mid_shl         = korb_intern(c->vm, "<<", 2);
+    c->vm->mid_shr         = korb_intern(c->vm, ">>", 2);
 
     return c;
 }

@@ -363,6 +363,7 @@ enum kp_binop {
     KP_BINOP_NONE = 0,
     KP_PLUS, KP_MINUS, KP_MUL, KP_DIV, KP_MOD,
     KP_LT, KP_LE, KP_GT, KP_GE, KP_EQ, KP_NEQ,
+    KP_BAND, KP_BOR, KP_BXOR, KP_SHL, KP_SHR,
 };
 
 static enum kp_binop
@@ -379,6 +380,11 @@ kp_binop_kind(const char *name)
     if (strcmp(name, ">=") == 0) return KP_GE;
     if (strcmp(name, "==") == 0) return KP_EQ;
     if (strcmp(name, "!=") == 0) return KP_NEQ;
+    if (strcmp(name, "&") == 0)  return KP_BAND;
+    if (strcmp(name, "|") == 0)  return KP_BOR;
+    if (strcmp(name, "^") == 0)  return KP_BXOR;
+    if (strcmp(name, "<<") == 0) return KP_SHL;
+    if (strcmp(name, ">>") == 0) return KP_SHR;
     return KP_BINOP_NONE;
 }
 
@@ -397,6 +403,11 @@ alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
       case KP_GE:    return ALLOC_node_ge(lhs, rhs, line);
       case KP_EQ:    return ALLOC_node_eq(lhs, rhs);
       case KP_NEQ:   return ALLOC_node_neq(lhs, rhs);
+      case KP_BAND:  return ALLOC_node_band(lhs, rhs, line);
+      case KP_BOR:   return ALLOC_node_bor(lhs, rhs, line);
+      case KP_BXOR:  return ALLOC_node_bxor(lhs, rhs, line);
+      case KP_SHL:   return ALLOC_node_shl(lhs, rhs, line);
+      case KP_SHR:   return ALLOC_node_shr(lhs, rhs, line);
       default:       abort();
     }
 }
