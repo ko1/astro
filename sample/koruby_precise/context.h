@@ -151,6 +151,7 @@ enum korb_obj_type {
     KORB_OBJ_BIGNUM      = 19,  /* arbitrary-precision Integer (.class is Integer; no GC edges) */
     KORB_OBJ_ENV         = 20,  /* closure env: [prev|loc|vals], open(loc→slots)/closed(loc→vals) */
     KORB_OBJ_PROC        = 21,  /* Proc/lambda: iseq(immortal) + captured env + self */
+    KORB_OBJ_MATCHDATA   = 22,  /* MatchData (whole-match substring; no captures) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -248,6 +249,12 @@ typedef struct KorbRegexp {
     VALUE ARO_GC_EDGE source;        /* the pattern as a String */
     uint8_t ci;                      /* case-insensitive flag */
 } KorbRegexp;
+
+/* MatchData (whole-match only; group captures need astrogre). */
+typedef struct KorbMatchData {
+    AroObjectHeader head;            /* KORB_OBJ_MATCHDATA */
+    VALUE ARO_GC_EDGE matched;       /* the matched substring (group 0) */
+} KorbMatchData;
 
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */
 typedef struct KorbMethod {
@@ -436,6 +443,8 @@ typedef struct KorbClass {
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
 #define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
+#define KORB_MATCHDATA_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MATCHDATA)
+#define VAL2MD(v)          ((KorbMatchData *)(uintptr_t)(v))
 #define KORB_BIGNUM_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BIGNUM)
 #define VAL2BIG(v)         ((KorbBignum *)(uintptr_t)(v))
 #define KORB_ENV_P(v)      (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ENV)
@@ -477,7 +486,7 @@ enum korb_class {
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
-    KORB_C_ARITHSEQ, KORB_C_PROC,
+    KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -793,6 +802,12 @@ struct CTX_struct {
       case KORB_OBJ_REGEXP: {                                                \
         KorbRegexp *_re = (KorbRegexp *)(payload);                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_re->source);                 \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_MATCHDATA: {                                             \
+        KorbMatchData *_md = (KorbMatchData *)(payload);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_md->matched);               \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

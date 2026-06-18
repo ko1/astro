@@ -1310,15 +1310,100 @@ static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* String#match?(pat) — pat is a Regexp or a String (literal pattern); true if it
  * matches anywhere.  (Whole-match only; group captures need astrogre — see
  * project_regexp_astrorge.) */
+/* type name as Ruby renders it in "wrong argument type ..." (singletons lowercase). */
+static const char *korb_re_arg_type(VALUE v) {
+    if (v == KORB_NIL) return "nil";
+    if (v == KORB_TRUE) return "true";
+    if (v == KORB_FALSE) return "false";
+    return korb_type_name(v);
+}
+static RESULT korb_re_match_region(CTX *c, VALUE *slots, VALUE re, VALUE str, long startc, long *ms, long *me);   /* fwd */
 static RESULT korb_m_str_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE pv = VALUE_SLICE_GET(a, 0);
-    VALUE re;
-    if (KORB_REGEXP_P(pv)) re = pv;
-    else if (KORB_STRING_P(pv)) { slots[0] = pv; re = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0)); }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
-    RESULT r = korb_re_match_index(c, slots + 1, re, VALUE_REF_GET(self));
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    const VALUE selfv = VALUE_REF_GET(self);
+    if (SYMBOL_P(selfv)) { const char *const nm = korb_sym_name(c->vm, SYM2ID(selfv)); slots[0] = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm))); }
+    else slots[0] = selfv;                                /* subject string in slots[0] */
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (KORB_REGEXP_P(pv)) slots[1] = pv;
+    else if (KORB_STRING_P(pv)) { slots[1] = pv; slots[1] = UNWRAP(korb_regexp_new(c, slots + 2, slots[1], 0)); }
+    else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
+    long startc = 0;
+    if (argc >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long ms = 0, me = 0;
+    const RESULT mr = korb_re_match_region(c, slots + 2, slots[1], slots[0], startc, &ms, &me);
+    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+    return RESULT_OK(mr.value == KORB_TRUE ? KORB_TRUE : KORB_FALSE);
+}
+/* allocate a MatchData carrying group 0 (the matched substring). */
+static RESULT korb_matchdata_new(CTX *c, VALUE *slots, VALUE matched) {
+    VALUE_REF mref = SLOTS_PUSH(slots, matched);         /* root across alloc */
+    KorbMatchData *md = korb_alloc(c, slots, sizeof(KorbMatchData), KORB_OBJ_MATCHDATA);
+    ARO_STORE(c, md, (VALUE *)(uintptr_t)&md->matched, VALUE_REF_GET(mref));
+    return RESULT_OK((VALUE)md);
+}
+/* run the engine on `str` starting at character index `startc`; on a match,
+ * fill the ms/me byte offsets and return KORB_TRUE, else KORB_FALSE.
+ * Whole-match only (no group captures — those need astrogre). */
+static RESULT korb_re_match_region(CTX *c, VALUE *slots, VALUE re, VALUE str, long startc, long *ms, long *me) {
+    if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) return RESULT_OK(KORB_FALSE);
+    const korb_re_fn_t fn = korb_re_load(c->vm);
+    if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
+    const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(str);
+    long boff = 0, cc = 0;                                /* char index startc → byte offset */
+    while (cc < startc && boff < (long)s->len) {
+        boff++;
+        while (boff < (long)s->len && ((unsigned char)s->buf->data[boff] & 0xC0) == 0x80) boff++;
+        cc++;
+    }
+    if (cc < startc) return RESULT_OK(KORB_FALSE);        /* start position past end → no match */
+    long lms = 0, lme = 0;
+    const int rc = fn(pat->buf->data, pat->len, s->buf->data + boff, (size_t)(s->len - boff), VAL2RE(re)->ci, &lms, &lme);
+    if (rc != 1) return RESULT_OK(KORB_FALSE);
+    *ms = boff + lms; *me = boff + lme;
+    return RESULT_OK(KORB_TRUE);
+}
+/* String#match / Symbol#match (pat[, pos]) → MatchData or nil; with a block,
+ * yields the MatchData on a match (returns its value) else nil. */
+static RESULT korb_m_str_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    const VALUE selfv = VALUE_REF_GET(self);
+    if (SYMBOL_P(selfv)) { const char *const nm = korb_sym_name(c->vm, SYM2ID(selfv)); slots[0] = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm))); }
+    else slots[0] = selfv;                                /* subject string in slots[0] */
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (KORB_REGEXP_P(pv)) slots[1] = pv;
+    else if (KORB_STRING_P(pv)) { slots[1] = pv; slots[1] = UNWRAP(korb_regexp_new(c, slots + 2, slots[1], 0)); }
+    else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
+    long startc = 0;
+    if (argc >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p) && p > 0) startc = (long)p; }
+    long ms = 0, me = 0;
+    const RESULT mr = korb_re_match_region(c, slots + 2, slots[1], slots[0], startc, &ms, &me);
+    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+    if (mr.value != KORB_TRUE) return RESULT_OK(KORB_NIL);
+    const uint32_t mlen = (uint32_t)(me - ms);
+    KorbString *const r = korb_str_alloc(c, slots + 3, mlen);        /* may move slots[0] */
+    memcpy(r->buf->data, VAL2STR(slots[0])->buf->data + ms, mlen);   /* re-read subject after the alloc-GC */
+    slots[2] = (VALUE)r;                                             /* root the matched substring */
+    slots[2] = UNWRAP(korb_matchdata_new(c, slots + 3, slots[2]));   /* MatchData in slots[2] */
+    if (block != NULL) return korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, cself);
+    return RESULT_OK(slots[2]);
+}
+/* MatchData#[] (only group 0 supported), #to_a, #to_s. */
+static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    intptr_t i = 0;
+    if (!korb_to_index(VALUE_SLICE_GET(a, 0), &i)) return RESULT_OK(KORB_NIL);
+    if (i == 0 || i == -1) return RESULT_OK(VAL2MD(VALUE_REF_GET(self))->matched);
+    return RESULT_OK(KORB_NIL);                           /* no captures */
+}
+static RESULT korb_m_md_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2MD(VALUE_REF_GET(self))->matched);
+}
+static RESULT korb_m_md_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = VAL2MD(VALUE_REF_GET(self))->matched;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    return RESULT_OK(slots[1]);
 }
 /* String#scan(pat) — array of all (whole) matches.  Group captures unsupported
  * (engine returns whole-match only); no-group patterns are exact. */
@@ -1327,7 +1412,7 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     uint8_t ci = 0; VALUE patstr;
     if (KORB_REGEXP_P(pv)) { patstr = VAL2RE(pv)->source; ci = VAL2RE(pv)->ci; }
     else if (KORB_STRING_P(pv)) patstr = pv;
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
     korb_re_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
     slots[0] = patstr;                                   /* root pattern across allocs */
@@ -1958,6 +2043,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
+        { "MatchData", KORB_C_MATCHDATA },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -2105,6 +2191,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_ARITHSEQ:  return "Enumerator::ArithmeticSequence";
       case KORB_OBJ_BIGNUM:    return "Integer";
       case KORB_OBJ_SET: return "Set";
+      case KORB_OBJ_MATCHDATA: return "MatchData";
     }
     return "Object";
 }
@@ -2130,6 +2217,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_ARITHSEQ: return "an instance of Enumerator::ArithmeticSequence";
       case KORB_OBJ_BIGNUM: return "an instance of Integer";
       case KORB_OBJ_SET: return "an instance of Set";
+      case KORB_OBJ_MATCHDATA: return "an instance of MatchData";
     }
     return "an instance of Object";
 }
@@ -3205,6 +3293,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_METHOD: return KORB_C_METHOD;
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
           case KORB_OBJ_PROC:   return KORB_C_PROC;
+          case KORB_OBJ_MATCHDATA: return KORB_C_MATCHDATA;
         }
     }
     return KORB_C_OBJECT;
@@ -3231,6 +3320,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_FIBER:  return "Fiber";
       case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
+      case KORB_C_MATCHDATA: return "MatchData";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -4270,11 +4360,17 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, ">=", korb_m_class_ge, 1);
     korb_def_cmethod(c, KORB_C_STRING, "=~", korb_m_str_match_op, 1);
     korb_def_cmethod(c, KORB_C_STRING, "match?", korb_m_str_match_q, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "match", korb_m_str_match, -1);
+    korb_def_cmethod_blk(c, KORB_C_SYMBOL, "match", korb_m_str_match, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_match_q, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "[]", korb_m_md_aref, -1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "to_s", korb_m_md_to_s, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "to_a", korb_m_md_to_a, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
@@ -4761,6 +4857,13 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_RATIONAL:
         fprintf(fp, "(%ld/%ld)", (long)VAL2RAT(v)->num, (long)VAL2RAT(v)->den);   /* inspect: (n/d) */
         return;
+      case KORB_OBJ_MATCHDATA: {                        /* inspect: #<MatchData "group0"> */
+        const KorbString *m = VAL2STR(VAL2MD(v)->matched);
+        fputs("#<MatchData ", fp);
+        korb_fprint_quoted_enc(fp, m->buf->data, m->len, false);
+        fputc('>', fp);
+        return;
+      }
       case KORB_OBJ_COMPLEX:                            /* inspect: (re±|im|i) */
         fputc('(', fp); korb_fprint_to_s(c, fp, v); fputc(')', fp);
         return;
