@@ -769,6 +769,66 @@ static RESULT korb_m_ary_combination(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* repeated_combination: like combination but indices may repeat (i, not i+1). */
+static RESULT korb_rcomb_rec(CTX *c, VALUE *scratch, VALUE_REF self, VALUE_REF out, VALUE_REF cur,
+                             uint32_t want, uint32_t start, uint32_t depth) {
+    if (depth == want) {
+        VALUE_REF copy = SLOTS_PUSH(scratch, UNWRAP(korb_ary_new(c, scratch, want)));
+        for (uint32_t k = 0; k < VAL2ARY(VALUE_REF_GET(cur))->len; k++)
+            CHECK(korb_ary_push_val(c, scratch + 1, copy, VAL2ARY(VALUE_REF_GET(cur))->items->data[k]));
+        return korb_ary_push_val(c, scratch + 1, out, VALUE_REF_GET(copy));
+    }
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    for (uint32_t i = start; i < len; i++) {
+        CHECK(korb_ary_push_val(c, scratch, cur, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        CHECK(korb_rcomb_rec(c, scratch, self, out, cur, want, i, depth + 1));   /* i: allow reuse */
+        VAL2ARY(VALUE_REF_GET(cur))->len--;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* repeated_permutation: all length-`want` tuples with repetition (len^want). */
+static RESULT korb_rperm_rec(CTX *c, VALUE *scratch, VALUE_REF self, VALUE_REF out, VALUE_REF cur,
+                             uint32_t want, uint32_t depth) {
+    if (depth == want) {
+        VALUE_REF copy = SLOTS_PUSH(scratch, UNWRAP(korb_ary_new(c, scratch, want)));
+        for (uint32_t k = 0; k < VAL2ARY(VALUE_REF_GET(cur))->len; k++)
+            CHECK(korb_ary_push_val(c, scratch + 1, copy, VAL2ARY(VALUE_REF_GET(cur))->items->data[k]));
+        return korb_ary_push_val(c, scratch + 1, out, VALUE_REF_GET(copy));
+    }
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    for (uint32_t i = 0; i < len; i++) {
+        CHECK(korb_ary_push_val(c, scratch, cur, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        CHECK(korb_rperm_rec(c, scratch, self, out, cur, want, depth + 1));
+        VAL2ARY(VALUE_REF_GET(cur))->len--;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_ary_repeated(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool perm) {
+    intptr_t want = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                   /* out */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    if (want >= 0) {                                                /* want<0 → empty (size 0) */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)want));   /* cur work array */
+        VALUE_REF cur = VALUE_REF_AT(&slots[1]);
+        CHECK(perm ? korb_rperm_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0)
+                   : korb_rcomb_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0, 0));
+    }
+    if (block == NULL) {
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), perm ? "repeated_permutation" : "repeated_combination"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
+    }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &e, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_ary_repeated_combination(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_ary_repeated(c, slots, self, a, block, def_env, cself, false); }
+static RESULT korb_m_ary_repeated_permutation(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_ary_repeated(c, slots, self, a, block, def_env, cself, true); }
 /* Array#to_h — elements (or block results) must be 2-element arrays → Hash. */
 static RESULT korb_m_ary_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;

@@ -314,7 +314,15 @@ static RESULT korb_m_ary_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; REQUIRE_BLOCK("Array#reverse_each");
+    (void)a;
+    if (block == NULL) {                                        /* no block → Enumerator over reversed elements */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(self))->len));
+        VALUE_REF rev = VALUE_REF_AT(&slots[0]);
+        for (int32_t k = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; k >= 0; k--)
+            CHECK(korb_ary_push_val(c, slots + 1, rev, VAL2ARY(VALUE_REF_GET(self))->items->data[k]));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "reverse_each"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(rev), slots[1]);
+    }
     uint32_t i = VAL2ARY(VALUE_REF_GET(self))->len;
     while (i > 0) {
         i--;

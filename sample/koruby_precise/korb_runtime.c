@@ -4018,6 +4018,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "cycle", korb_m_ary_cycle, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "permutation", korb_m_ary_permutation, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "combination", korb_m_ary_combination, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_combination", korb_m_ary_repeated_combination, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "repeated_permutation", korb_m_ary_repeated_permutation, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
@@ -4372,6 +4374,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_SYMBOL, "match", korb_m_str_match, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "unpack", korb_m_str_unpack, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_match_q, 1);
