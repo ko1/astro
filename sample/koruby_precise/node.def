@@ -42,12 +42,12 @@ node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint
     return korb_regexp_new(c, slots + 1, slots[0], (uint8_t)ci);
 }
 
-// Float literal (heap-boxed at eval time).
+// Float literal (immediate flonum when representable, else heap-boxed).
 NODE_DEF
 node_float(CTX *c, NODE *n, VALUE *slots, double v)
 {
     (void)n;
-    return korb_float_new(c, slots, v);
+    return korb_flo(c, slots, v);
 }
 
 // Rational literal `2r` / `1.5r` → a fresh Rational(num/den) per evaluation.
@@ -210,7 +210,7 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         return korb_int_arith(c, slots, l, rhs, 0, line);
 #endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float+Float inline (skip korb_num_arith dispatch) */
-        return korb_float_new(c, slots, korb_float_val(l) + korb_float_val(rhs));
+        return korb_flo(c, slots, korb_float_val(l) + korb_float_val(rhs));
     return korb_plus_slow(c, slots, lhs, rhs, line);
 }
 
@@ -236,7 +236,7 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
 #endif
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float-Float inline */
-        return korb_float_new(c, slots, korb_float_val(l) - korb_float_val(rhs));
+        return korb_flo(c, slots, korb_float_val(l) - korb_float_val(rhs));
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
     if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
@@ -267,7 +267,7 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_int_arith(c, slots, l, rhs, 2, line);
 #endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float*Float inline */
-        return korb_float_new(c, slots, korb_float_val(l) * korb_float_val(rhs));
+        return korb_flo(c, slots, korb_float_val(l) * korb_float_val(rhs));
     return korb_mul_slow(c, slots, lhs, rhs, line);
 }
 
@@ -297,7 +297,7 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_int_arith(c, slots, l, rhs, 3, line);
 #endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float/Float inline */
-        return korb_float_new(c, slots, korb_float_val(l) / korb_float_val(rhs));
+        return korb_flo(c, slots, korb_float_val(l) / korb_float_val(rhs));
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 3);
     if (FIXNUM_P(l))
@@ -421,7 +421,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) return korb_big_neg(c, slots, v);
 #endif
-    if (KORB_FLOAT_P(v)) return korb_float_new(c, slots, -korb_float_val(v));
+    if (KORB_FLOAT_P(v)) return korb_flo(c, slots, -korb_float_val(v));
     if (KORB_STRING_P(v)) return RESULT_OK(v);   /* -@ on a String → self (frozen dup) */
     slots[0] = v;                                /* Rational/Complex/user-defined -@ via dispatch */
     return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), line, 0);
@@ -437,6 +437,8 @@ node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l < (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+    if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
+        return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 0, line);
 }
 
@@ -448,6 +450,8 @@ node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l <= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+    if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
+        return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 1, line);
 }
 
@@ -459,6 +463,8 @@ node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l > (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+    if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
+        return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 2, line);
 }
 
@@ -470,6 +476,8 @@ node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l >= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+    if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
+        return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 3, line);
 }
 

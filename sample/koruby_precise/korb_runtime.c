@@ -109,13 +109,19 @@ korb_str_cat(CTX *c, VALUE *slots, VALUE_REF sref, const char *src, uint32_t n)
  * ------------------------------------------------------------------------- */
 
 RESULT
+korb_float_box(CTX *c, VALUE *slots, double d)
+{
+    KorbFloat *f = korb_alloc(c, slots, sizeof(KorbFloat), KORB_OBJ_FLOAT);
+    f->val = d;
+    return RESULT_OK((VALUE)f);
+}
+
+RESULT
 korb_float_new(CTX *c, VALUE *slots, double d)
 {
     VALUE imm = korb_d2flo(d);                 /* immediate flonum — no heap box */
     if (imm) return RESULT_OK(imm);
-    KorbFloat *f = korb_alloc(c, slots, sizeof(KorbFloat), KORB_OBJ_FLOAT);
-    f->val = d;
-    return RESULT_OK((VALUE)f);
+    return korb_float_box(c, slots, d);
 }
 
 static intptr_t korb_gcd_pos(intptr_t a, intptr_t b) {   /* gcd of |a|,|b| */

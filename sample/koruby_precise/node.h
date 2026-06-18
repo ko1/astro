@@ -94,6 +94,15 @@ RESULT korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len);
 /* Float (heap-boxed double).  korb_num_to_d extracts a double from an Integer
  * or Float (returns false if neither). */
 RESULT korb_float_new(CTX *c, VALUE *slots, double d);
+/* Cold: unconditionally heap-box a double (out-of-flonum-range / ±0.0 sign). */
+RESULT korb_float_box(CTX *c, VALUE *slots, double d);
+/* Hot float result: inline the flonum encode; PLT-call only on the cold box
+ * path so representable results never leave the SD. */
+static inline RESULT korb_flo(CTX *c, VALUE *slots, double d) {
+    const VALUE imm = korb_d2flo(d);
+    if (LIKELY(imm)) return RESULT_OK(imm);
+    return korb_float_box(c, slots, d);
+}
 RESULT korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den);
 RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);
 RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint8_t ci);
