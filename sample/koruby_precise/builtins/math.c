@@ -1,6 +1,7 @@
 /* koruby_precise — math.c: the Math module (module functions on Math's singleton).
  * #included into korb_runtime.c's TU (after set.c, for korb_obj_singleton). */
 #include <math.h>
+#include <float.h>   /* DBL_MAX / DBL_MIN / DBL_EPSILON for Float:: constants */
 
 static bool korb_math_d(VALUE v, double *out) { return korb_num_to_d(v, out); }
 
@@ -101,6 +102,12 @@ void korb_init_math(CTX *c, VALUE *slots) {
     /* Math::PI / Math::E (flat const table). */
     korb_const_define(c, korb_intern(vm, "PI", 2), korb_float_new(c, slots + 1, M_PI).value);
     korb_const_define(c, korb_intern(vm, "E", 1),  korb_float_new(c, slots + 1, M_E).value);
+    /* Float:: constants (flat table: Float::INFINITY → "INFINITY"). */
+    korb_const_define(c, korb_intern(vm, "INFINITY", 8), korb_float_new(c, slots + 1, INFINITY).value);
+    korb_const_define(c, korb_intern(vm, "NAN", 3),      korb_float_new(c, slots + 1, NAN).value);
+    korb_const_define(c, korb_intern(vm, "MAX", 3),      korb_float_new(c, slots + 1, DBL_MAX).value);
+    korb_const_define(c, korb_intern(vm, "MIN", 3),      korb_float_new(c, slots + 1, DBL_MIN).value);
+    korb_const_define(c, korb_intern(vm, "EPSILON", 7),  korb_float_new(c, slots + 1, DBL_EPSILON).value);
     /* slots[0] holds Math; re-read it each call — singleton alloc may move it. */
 #define MF(name, fn, ar) korb_def_modfunc(c, slots + 1, slots[0], name, korb_m_math_##fn, ar)
     MF("sqrt", sqrt, 1); MF("cbrt", cbrt, 1);
