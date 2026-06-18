@@ -51,7 +51,10 @@ ruby   = opts[:ref].split
 # INTERP!) instead of reporting a misleadingly fast number.
 AOTRUN = (opts[:aot_flags] || '').split
 WIPE   = -> { FileUtils.rm_rf('code_store') }
-compile = ->(flag, f) { system(*koruby, flag, f, out: File::NULL, err: File::NULL) }
+# Compile a fresh code store: CCACHE_DISABLE=1 so a cold AOT-compile measurement
+# reflects real C-compilation time (not a ccache hit), and wipe first so it's
+# truly from scratch.
+compile = ->(flag, f) { WIPE.call; system({ 'CCACHE_DISABLE' => '1' }, *koruby, flag, f, out: File::NULL, err: File::NULL) }
 
 # Each mode: prep (untimed), timed_setup (timed, added once), run (best-of-N),
 # env (extra env for the run), strict (use ASTRO_AOT_STRICT for the no-interp check).
