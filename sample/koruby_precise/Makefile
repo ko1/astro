@@ -110,3 +110,19 @@ clean:
 INTERP ?= ./koruby_precise
 include ../rubyharness/harness.mk
 test bench: koruby_precise
+
+# Persist a full benchmark sweep to bench-report/<timestamp>-<commit>.txt.
+# (The shared `bench` target only prints to stdout.)  Knobs: BENCHRUNS=, BENCHMODES=.
+BENCHREPORT_MODES ?= $(if $(BENCHMODES),$(BENCHMODES),cruby,cruby+yjit,interp,aot+compile,aot+cached)
+bench-report: koruby_precise
+	@mkdir -p bench-report
+	@f="bench-report/$$(date +%Y%m%d-%H%M%S)-$$(git rev-parse --short HEAD 2>/dev/null || echo nogit).txt"; \
+	{ printf '# koruby_precise bench  %s  %s\n# modes: %s   runs: %s   host: %s\n\n' \
+	    "$$(date '+%Y-%m-%d %H:%M:%S')" "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)" \
+	    "$(BENCHREPORT_MODES)" "$(BENCHRUNS)" "$$(uname -sr)"; \
+	  $(RUBY) $(H)tools/run_bench.rb --interp "$(GCWRAP)$(INTERP)" --ref "$(RUBY)" \
+	    --dir $(H)bench --runs $(BENCHRUNS) --timeout 180 --modes $(BENCHREPORT_MODES) \
+	    --aot-flags --compiled-only; \
+	} | tee "$$f"; \
+	echo "saved: $$f"
+.PHONY: bench-report
