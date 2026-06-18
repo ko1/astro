@@ -35,6 +35,7 @@ struct kp_frame {
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
+    int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
     int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
     uint32_t add_cnt, add_capa;
@@ -149,6 +150,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->module_function_mode = false;
     f->method_mid = 0;
     f->method_params = 0;
+    f->fwd_slot = -1;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
     f->add_cnt = f->add_capa = 0;
@@ -921,6 +923,17 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
+    /* `inner(...)` — forward the enclosing `def m(...)`'s collected args: splat the
+     * synth rest local (args-only; a forwarded block/kwargs is not threaded). */
+    if (argc == 1 && PM_NODE_TYPE_P(args->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
+        if (tc->frame->fwd_slot < 0)
+            return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
+        int32_t self_off = -1 - tc->chain - 1;
+        NODE *arr;
+        WITH_CHAIN(tc, 1, (arr = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+        return ALLOC_node_call_splat(mid, line, self_off, arr);
+    }
+
     /* actual `*splat` call f(*arr): build the args Array, dispatch dynamically */
     {
         bool has_splat = false;
@@ -1152,6 +1165,13 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
         rest_slot = (int32_t)lvar_index(tc, ps->rest, rn);
     }
+    /* `def m(...)` — prism gives no locals, so collect ALL positional args into a
+     * synth rest local; `inner(...)` in the body splats it (args-only forward;
+     * a forwarded block/kwargs is not yet threaded). */
+    if (ps && ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
+        rest_slot = (int32_t)alloc_synth_local(tc);
+        tc->frame->fwd_slot = rest_slot;
+    }
 
     /* post params (after *rest): plain requireds occupying the slots right after
      * the rest slot, bound from the tail of the positional args. */
@@ -1167,7 +1187,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
      * occupying locals after the positional params; bound by name in korb_invoke_method. */
     struct korb_kw_info *kw_info = NULL;
-    if (ps && (ps->keywords.size || ps->keyword_rest)) {
+    if (ps && (ps->keywords.size ||
+               (ps->keyword_rest && !PM_NODE_TYPE_P(ps->keyword_rest, PM_FORWARDING_PARAMETER_NODE)))) {
         kw_info = malloc(sizeof(*kw_info));
         if (!kw_info) abort();
         kw_info->count = (uint32_t)ps->keywords.size;
