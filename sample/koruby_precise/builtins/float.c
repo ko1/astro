@@ -91,7 +91,14 @@ static RESULT korb_m_flt_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_flt_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    return korb_float_new(c, slots, fmod(SELF_FLT, o));        /* C fmod: sign of dividend = remainder */
+    /* CRuby Numeric#remainder: z = self % o (floored), then z - o when the signs
+     * of self and o differ.  This reconstruction (not a plain fmod) reproduces
+     * CRuby's exact rounding, e.g. 0.333.remainder(-1) == 0.33299999999999996. */
+    const double x = SELF_FLT;
+    double z = fmod(x, o);
+    if (z != 0.0 && ((z < 0) != (o < 0))) z += o;             /* → floored mod */
+    if (z != 0.0 && ((x < 0) != (o < 0))) z -= o;             /* differ-sign adjust back to dividend-signed */
+    return korb_float_new(c, slots, z);
 }
 static RESULT korb_m_flt_finite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(isfinite(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, nextafter(SELF_FLT, (double)INFINITY)); }
