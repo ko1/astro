@@ -1805,6 +1805,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
     { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
+    { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
      * so is_a?/kind_of? report membership (the comparison/iteration methods
@@ -3040,11 +3041,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
-        if (cname == vm->class_name[KORB_C_CLASS]) {       /* Class.new([super]) [do…end] → anonymous class */
-            slots[0] = (argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
-            if (UNLIKELY(!KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));
-            slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, slots[0]));   /* anonymous (name_sym 0) */
-            if (block != NULL) {                            /* body block: def's land on the new class */
+        if (cname == vm->class_name[KORB_C_CLASS] || cname == vm->name_module) {   /* Class.new([super]) / Module.new [do…end] */
+            const bool is_mod = (cname == vm->name_module);
+            slots[0] = (!is_mod && argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
+            if (UNLIKELY(!is_mod && !KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));
+            slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
+            if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
+            if (block != NULL) {                            /* body block: def's land on the new class/module */
                 RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }

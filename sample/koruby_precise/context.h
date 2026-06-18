@@ -610,6 +610,7 @@ struct korb_vm {
     uint32_t mid_cmp;                                         /* "<=>" — Array#sort of user/Comparable objects */
     uint32_t name_fiber;   /* class name_sym of Fiber (class-receiver fast check) */
     uint32_t name_struct;  /* class name_sym of Struct (class-receiver fast check) */
+    uint32_t name_module;  /* class name_sym of Module (Module.new anonymous module) */
     uint32_t mid_aref, mid_aset;   /* "[]" / "[]=" — node_aref/node_aset deopt target */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
