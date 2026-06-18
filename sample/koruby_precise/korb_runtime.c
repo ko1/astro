@@ -1007,6 +1007,17 @@ static RESULT korb_m_struct_members(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[0])->items->data[i]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* class-level `Rec.members` — self IS the Struct class; copy its member array. */
+static RESULT korb_m_struct_class_members(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = VAL2CLASS(VALUE_REF_GET(self))->members;
+    if (slots[0] == KORB_NIL) return korb_ary_new(c, slots, 0);
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[0])->items->data[i]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE mems = STRUCT_MEMBERS(self);
     const KorbArray *mem = VAL2ARY(mems);
@@ -1122,6 +1133,11 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
     VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit ? 1 : 0;
+    /* class-level `Rec.members`: install on the class's singleton (name already
+     * interned above → no GC in def_cfn). */
+    slots[2] = VALUE_REF_GET(cls);                            /* root class across singleton alloc */
+    slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
+    korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
