@@ -3063,10 +3063,12 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 return r;   /* ATTR / non-simple ISEQ */
             /* CFUNC → fall through to korb_call_impl */
         } else if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL &&
-                          cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple &&
-                          mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send)) {
+                          cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple)) {
             /* top-level (main, klass-less) call of a cached simple ISEQ global
-             * function (fib / ackermann / inc) — skip korb_call_impl's maze. */
+             * function (fib / ackermann / inc) — skip korb_call_impl's maze.
+             * No send-variant guard needed: send/__send__/public_send sites are
+             * intercepted in korb_call_impl (line ~2901) before cc->m is ever
+             * filled, so a non-NULL simple-ISEQ cc->m is never a send variant. */
             return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);
         }
     }
