@@ -348,6 +348,7 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
 
 extern const struct NodeKind kind_node_plus;         /* all binops share slot_count */
 extern const struct NodeKind kind_node_caseeq;       /* case/when `v === subj` */
+extern const struct NodeKind kind_node_entry;        /* block/lambda entry — guards proc/block reify */
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
 extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
@@ -706,6 +707,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             int is_lam = !strcmp(cnm, "lambda");
             if (is_lam || !strcmp(cnm, "proc")) {
                 NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
+                if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
                 int32_t self_off = -1 - tc->chain;
                 NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam);
                 bake_add(tc, &mk->u.node_make_proc.def_env_off);
@@ -1299,13 +1301,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       case PM_RANGE_NODE: {
         const pm_range_node_t *rn = (const pm_range_node_t *)node;
-        if (!rn->left || !rn->right)
-            return kp_unsupported(tc, node, "beginless/endless range");
         uint32_t excl = (rn->base.flags & PM_RANGE_FLAGS_EXCLUDE_END) ? 1u : 0u;
-        NODE *b, *e;
+        NODE *b, *e;                                     /* a missing bound → nil (beginless/endless range) */
         uint32_t sc = kind_node_range_new.slot_count;
-        WITH_CHAIN(tc, sc, (b = transduce(tc, rn->left),
-                            e = transduce(tc, rn->right)));
+        WITH_CHAIN(tc, sc, (b = rn->left  ? transduce(tc, rn->left)  : lit_nil(),
+                            e = rn->right ? transduce(tc, rn->right) : lit_nil()));
         return ALLOC_node_range_new(excl, b, e);
       }
 
@@ -1646,6 +1646,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_LAMBDA_NODE: {   /* ->(args) { body } — a lambda Proc */
         const pm_lambda_node_t *ln = (const pm_lambda_node_t *)node;
         NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
+        if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
         int32_t self_off = -1 - tc->chain;
         NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);
         bake_add(tc, &mk->u.node_make_proc.def_env_off);

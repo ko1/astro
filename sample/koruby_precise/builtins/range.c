@@ -57,11 +57,12 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         bool hi_ok = (r->exclude_end && !o->exclude_end) ? (ec < 0) : (ec <= 0);
         return RESULT_OK((lo_ok && hi_ok) ? KORB_TRUE : KORB_FALSE);
     }
-    int lc = korb_cmp_values(r->rbegin, x);     /* begin <=> x */
-    int uc = korb_cmp_values(x, r->rend);       /* x <=> end */
+    /* nil begin/end = unbounded on that side (beginless/endless range). */
+    int lc = (r->rbegin == KORB_NIL) ? -1 : korb_cmp_values(r->rbegin, x);   /* begin <=> x */
+    int uc = (r->rend   == KORB_NIL) ? -1 : korb_cmp_values(x, r->rend);     /* x <=> end */
     if (lc == 2 || uc == 2) return RESULT_OK(KORB_FALSE);
     bool lower = (lc <= 0);
-    bool upper = r->exclude_end ? (uc < 0) : (uc <= 0);
+    bool upper = (r->rend == KORB_NIL) ? true : (r->exclude_end ? (uc < 0) : (uc <= 0));
     return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
 }
 
@@ -115,7 +116,15 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(r->rend);
 }
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step);   /* fwd */
 static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (SELF_RANGE->rend == KORB_NIL) {                 /* endless: take n consecutive from begin */
+        if (UNLIKELY(!FIXNUM_P(SELF_RANGE->rbegin))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+        intptr_t n;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "attempt to take negative size");
+        return korb_range_seq(c, slots, FIX2LONG(SELF_RANGE->rbegin), (uint32_t)n, +1);
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
