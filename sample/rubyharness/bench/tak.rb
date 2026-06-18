@@ -7,9 +7,12 @@ def tak(x, y, z)
   end
 end
 
+def bench = tak(18, 12, 6)
+
+result = 0
 i = 0
 while i < 720
-  tak(18, 12, 6)
+  result = bench
   i += 1
 end
-p(tak(18, 12, 6))
+p(result)

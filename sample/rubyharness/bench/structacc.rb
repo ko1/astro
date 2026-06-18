@@ -1,9 +1,22 @@
 Point = Struct.new(:x, :y)
-pts = []
-50.times { |i| pts << Point.new(i, i * 2) }
-s = 0; j = 0
-while j < 200_000
-  pts.each { |p| s += p.x + p.y }
-  j += 1
+PTS = []
+50.times { |i| PTS << Point.new(i, i * 2) }
+INNER = 1_000
+OUTER = 200
+
+def bench
+  s = 0; j = 0
+  while j < INNER
+    PTS.each { |p| s += p.x + p.y }
+    j += 1
+  end
+  s
 end
-p s
+
+result = 0
+i = 0
+while i < OUTER
+  result = bench
+  i += 1
+end
+p(result)

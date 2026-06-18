@@ -4,4 +4,13 @@ def ack(m, n)
   else ack(m - 1, ack(m, n - 1))
   end
 end
-p ack(2, 4000)
+
+def bench = ack(2, 200)
+
+result = 0
+i = 0
+while i < 400
+  result = bench
+  i += 1
+end
+p(result)

@@ -64,7 +64,9 @@ MODES = {
   'interp'      => { prep: ->(_f) { WIPE.call }, run: ->(f) { koruby + [f] } },
   'aot+compile' => { aot: true, prep: ->(_f) { WIPE.call }, timed_setup: ->(f) { compile.call('--aot-compile', f) },
                      run: ->(f) { koruby + AOTRUN + [f] }, strict: true },
-  'aot+cached'  => { aot: true, prep: ->(f) { WIPE.call; compile.call('--aot-compile', f) },
+  # Reuses the code store left by a preceding aot+compile of the SAME bench
+  # (so put aot+compile before aot+cached in --modes); only builds if absent.
+  'aot+cached'  => { aot: true, prep: ->(f) { compile.call('--aot-compile', f) unless File.exist?('code_store/all.so') },
                      run: ->(f) { koruby + AOTRUN + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
   'pg+cached'   => { aot: true, prep: ->(f) { WIPE.call; compile.call('--pg-compile', f) },
                      run: ->(f) { koruby + AOTRUN + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
@@ -107,14 +109,22 @@ W = [11, *modes.map(&:size)].max
 benches = Dir.glob(File.join(opts[:dir], opts[:pattern])).sort
 abort "no benches under #{opts[:dir]}" if benches.empty?
 
+# Name-column width = the longest bench name (so long names like
+# `array_access` / `binary_trees` don't push the value columns out of line).
+NW = (['bench', 'geomean'] + benches.map { |f| File.basename(f, '.rb') }).map(&:size).max
+
 geo = Hash.new { |h, k| h[k] = [] }
-puts(format("%-10s #{(['%%%ds'] * modes.size).join('  ')}", 'bench', *Array.new(modes.size, W)) % modes)
+rows = []   # [name, { mode => valid_time_or_nil }] — kept for the relative tables below
+header = format("%-#{NW}s #{(['%%%ds'] * modes.size).join('  ')}", 'bench', *Array.new(modes.size, W)) % modes
+puts(header)
 benches.each do |f|
   ref_out = nil
   cells = modes.map { |mn| [mn, *measure(MODES[mn], f, opts[:runs], opts[:timeout])] }
   ref_out = cells.find { |c| c[0] == 'cruby' }&.dig(2)
   base    = cells.find { |c| c[0] == 'cruby' }&.dig(1) || cells.map { |c| c[1] }.compact.min
+  rt = {}
   printed = cells.map do |mn, t, out, code|
+    valid = nil
     cell = if code == :na then 'n/a'
            elsif code == 124 then 'TIMEOUT'
            elsif code.is_a?(Integer) && code >= 128 then "CRASH#{code - 128}"
@@ -122,14 +132,33 @@ benches.each do |f|
            elsif ref_out && out != ref_out then 'MISMATCH'
            else
              geo[mn] << (t / base) if t && base && base > 0
+             valid = t
              format('%.3f', t)
            end
+    rt[mn] = valid
     format("%#{W}s", cell)
   end
-  puts(format('%-10s %s', File.basename(f, '.rb'), printed.join('  ')))
+  rows << [File.basename(f, '.rb'), rt]
+  puts(format("%-#{NW}s %s", File.basename(f, '.rb'), printed.join('  ')))
 end
 gline = modes.map do |mn|
   rs = geo[mn]
   format("%#{W}s", rs.empty? ? '-' : format('%.2fx', Math.exp(rs.sum { |r| Math.log(r) } / rs.size)))
 end
-puts(format('%-10s %s', 'geomean', gline.join('  ')))
+puts(format("%-#{NW}s %s", 'geomean', gline.join('  ')))
+
+# Second view: wall time normalised to YJIT per row (cruby+yjit = 1.00; a value
+# > 1 is slower than YJIT, < 1 is faster).  Only when YJIT was actually run.
+if modes.include?('cruby+yjit')
+  puts
+  puts('# relative to YJIT (cruby+yjit = 1.00 per row; >1 slower than YJIT, <1 faster)')
+  puts(header)
+  rows.each do |name, rt|
+    y = rt['cruby+yjit']
+    line = modes.map do |mn|
+      v = (y && rt[mn] && y > 0) ? format('%.2f', rt[mn] / y) : '-'
+      format("%#{W}s", v)
+    end
+    puts(format("%-#{NW}s %s", name, line.join('  ')))
+  end
+end

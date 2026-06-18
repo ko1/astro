@@ -21,6 +21,12 @@ def make_tree(depth)
   end
 end
 
-max_depth = 20
-tree = make_tree(max_depth)
-p(tree.check)
+def bench = make_tree(14).check
+
+result = 0
+i = 0
+while i < 64
+  result = bench
+  i += 1
+end
+p(result)

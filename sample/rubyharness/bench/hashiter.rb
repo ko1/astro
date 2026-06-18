@@ -1,12 +1,21 @@
-h = {}
+H = {}
 i = 0
 while i < 5000
-  h[i] = i * 2
+  H[i] = i * 2
   i += 1
 end
-s = 0; j = 0
-while j < 2000
-  h.each { |k, v| s += k + v }
-  j += 1
+
+def bench
+  s = 0
+  H.each { |k, v| s += k + v }
+  s
 end
-p s
+
+OUTER = 2000
+result = 0
+i = 0
+while i < OUTER
+  result = bench
+  i += 1
+end
+p result

@@ -9,9 +9,21 @@ def classify(n)
   else 70
   end
 end
-s = 0; i = 0
-while i < 8_000_000
-  s += classify(i)
+
+def bench
+  s = 0
+  i = 0
+  while i < 100_000
+    s += classify(i)
+    i += 1
+  end
+  s
+end
+
+result = 0
+i = 0
+while i < 80
+  result = bench
   i += 1
 end
-p s
+p(result)
