@@ -1529,11 +1529,21 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         /* posts (last npost positionals) split off the tail; rest takes the middle. */
         uint32_t surplus = (avail > (uint32_t)m->params_cnt) ? avail - (uint32_t)m->params_cnt : 0;
         VALUE *cur = base + argc;                       /* scratch above all staged args (incl. kwhash) */
-        cur[0] = UNWRAP(korb_ary_new(c, cur, surplus ? surplus : 4));
-        VALUE_REF arr = VALUE_REF_AT(&cur[0]);
+        /* `self` (and the block's captured_self) are bare C-locals not yet stored
+         * in the frame; the rest-array allocs below GC under STRESS and would
+         * leave them stale.  Park them at the foot of the rest scratch (scanned,
+         * since the allocs publish a higher cursor) and re-read afterwards. */
+        const bool park_block = (block != NULL && m->uses_block);
+        cur[0] = self;
+        if (park_block) cur[1] = captured_self;
+        VALUE *const rcur = cur + (park_block ? 2 : 1);
+        rcur[0] = UNWRAP(korb_ary_new(c, rcur, surplus ? surplus : 4));
+        VALUE_REF arr = VALUE_REF_AT(&rcur[0]);
         for (uint32_t i = 0; i < surplus; i++)
-            CHECK(korb_ary_push_val(c, cur + 1, arr, base[(uint32_t)m->params_cnt + i]));
+            CHECK(korb_ary_push_val(c, rcur + 1, arr, base[(uint32_t)m->params_cnt + i]));
         rest_arr = VALUE_REF_GET(arr); have_rest = true;   /* C-local; no alloc until stored below */
+        self = cur[0];                                  /* re-read: rest allocs may have moved it */
+        if (park_block) captured_self = cur[1];
         for (uint32_t i = 0; i < npost; i++) postbuf[i] = base[avail + i];   /* capture posts (no alloc until written) */
         if (kw && kwhash != KORB_NIL) kwhash = base[pos_argc];   /* re-read GC-updated kwhash (rest allocs moved it) */
         for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus + post-source slots */
