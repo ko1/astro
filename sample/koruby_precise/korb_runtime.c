@@ -2964,6 +2964,8 @@ uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
 static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
+static struct Node **korb_entry_opt_defaults(NODE *entry) { return (struct Node **)entry->u.node_entry.opt_defaults; }
+static uint32_t korb_entry_req_cnt(NODE *entry) { return entry->u.node_entry.req_cnt; }
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
@@ -3042,6 +3044,21 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         bf[1 + rs] = VALUE_REF_GET(rarr);
         for (uint32_t j = 0; j < npost; j++)                                 /* trailing post params */
             bf[1 + rs + 1 + j] = (rs + surplus + j < srcn) ? stage[rs + surplus + j] : KORB_NIL;
+        for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else if (korb_entry_opt_defaults(block) != NULL) {   /* |req..., opt=default...| (no rest) */
+        const uint32_t np = korb_entry_params_cnt(block);
+        const uint32_t reqc = korb_entry_req_cnt(block);
+        struct Node **const opts = korb_entry_opt_defaults(block);
+        const bool splat = (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));
+        const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
+        for (uint32_t i = 0; i < np; i++) {
+            if (i < srcn) bf[1 + i] = splat ? VAL2ARY(argv[0])->items->data[i] : argv[i];   /* provided (read before any alloc) */
+            else if (i >= reqc) {                          /* optional → eval default in block scope */
+                RESULT dr = EVAL(c, opts[i - reqc], bf + 1 + blocals);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                bf[1 + i] = dr.value;
+            } else bf[1 + i] = KORB_NIL;                    /* missing required → nil (block-lenient) */
+        }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else {
         const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
