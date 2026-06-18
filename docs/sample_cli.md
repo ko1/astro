@@ -4,7 +4,13 @@ Cross-sample CLI option survey + porting status.
 
 This document is the single source of truth for "which sample is on
 the new framework CLI" and "what mapping each pending sample needs."
-Updated 2026-05-22.
+Updated 2026-06-18 (added the canonical `--compiled-only` mode).
+
+> **Status of `--compiled-only`:** adopted as a canonical framework flag
+> (this doc). The `bcfg.compiled_only` field + parsing in
+> `runtime/astro_build.{c,h}`, and the per-sample poison-dispatcher
+> wiring, are still to be implemented (abruby already has the standalone
+> `--compiled-only`; new samples should match the name).
 
 ## TL;DR — the canonical CLI
 
@@ -17,6 +23,7 @@ Order-free, canonical-only (no aliases):
 | flag | bcfg field | meaning |
 |---|---|---|
 | `--plain` | `bcfg.plain` | pure interpreter, ignore compiled code |
+| `--compiled-only` | `bcfg.compiled_only` | strict inverse of `--plain`: run only baked SDs; abort if any default (interpreter) dispatcher is reached — AOT **compile-miss detection** (see note below) |
 | `--aot-compile` | `bcfg.aot_compile` | bake AOT specializations |
 | `--pg-compile` | `bcfg.pg_compile` | bake PG specializations (implies `--run`) |
 | `--run` | `bcfg.run` | execute (default in runtime, opt-in for build) |
@@ -28,6 +35,37 @@ Order-free, canonical-only (no aliases):
 
 C-toolchain knobs (`--cc`, `-O*`, `--strip`, `--lto`, `--gc-sections`,
 etc.) are in the `ASTRO_BUILD_OPTS` env var, not argv.
+
+### `--compiled-only` (compile-miss detection)
+
+The three execution modes form a line:
+
+| mode | flag | interpreter | compiled SDs |
+|---|---|---|---|
+| interp-only | `--plain` | always | never |
+| hybrid (default) | *(none)* | fallback when no SD | when baked & matched |
+| compiled-only | `--compiled-only` | **never (abort)** | required |
+
+`--compiled-only` is a **debugging** mode: it makes a silent AOT
+compile-miss loud.  In hybrid mode a body whose bake was skipped (hash
+mismatch, an entry never registered, a not-yet-specializable node) just
+falls back to the interpreter and runs correctly but slowly — invisible
+in a benchmark.  Under `--compiled-only` every non-swapped body's
+dispatcher is replaced with a poison stub, so the first such body to run
+aborts with its node kind + source location, pinpointing the gap.
+
+Typical use: `<prog> --aot-compile FILE` then `<prog> --compiled-only FILE`
+(or the bench harness's compiled-only runner) to *prove* the AOT covers
+the whole program.  abruby already ships this as `--compiled-only`
+("abort if default dispatcher is used"); the framework adopts the same
+name so every sample's compiled-only runner is spelled identically.
+
+Implementation note: abruby NULLs every node's dispatcher at allocation
+(`OPTION.compiled_only ? NULL : DISPATCH_node_X`) and lets the swap fill
+the SDs, so any unfilled node crashes.  Samples whose SDs are per-body
+(koruby_precise etc.) can instead post-pass after the swap: set each
+unswapped `code_repo` body (+ program root) to a poison dispatcher —
+cheaper and gives a clean diagnostic instead of a raw NULL deref.
 
 ## Port status
 
@@ -77,6 +115,7 @@ if (bcfg.version_requested) { printf("<prog> " ASTRO_VERSION "\n"); return 0; }
 if (bcfg.quiet)       OPTION.quiet           = true;
 if (bcfg.verbose)     OPTION.verbose         = true;
 if (bcfg.plain)       OPTION.no_compiled_code = true;   /* or sample's "skip AOT" flag */
+if (bcfg.compiled_only) OPTION.compiled_only  = true;  /* poison non-swapped dispatchers (compile-miss detect) */
 if (bcfg.aot_compile) OPTION.aot_compile     = true;   /* or per-sample mapping */
 if (bcfg.pg_compile)  OPTION.pg_compile      = true;
 /* run / out_exe are inspected later when dispatching to build vs run */

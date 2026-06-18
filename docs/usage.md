@@ -483,6 +483,14 @@ Two orthogonal axes describe what the sample should do:
   - `--plain` — pure interpreter; ignore any compiled code
   - `--aot-compile` — bake AOT-specialized dispatchers
   - `--pg-compile` — bake profile-guided specializations (implies `--run`)
+  - `--compiled-only` — the strict inverse of `--plain`: run **only** baked
+    SDs and **abort the moment any default (interpreter) dispatcher would
+    run**.  A debugging/diagnostic mode for detecting AOT *compile-misses*
+    (bodies the bake silently skipped, which would otherwise fall back to the
+    interpreter unnoticed).  Compose with `--aot-compile`: bake, then run
+    compiled-only to prove coverage.  Implemented by pointing every
+    non-swapped body's dispatcher at a poison stub that reports the node
+    (kind + source location) and aborts when reached.
 
 - **action** (what to do with the program):
   - (default in runtime) — execute it
