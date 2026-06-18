@@ -18,11 +18,12 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     unsigned errtype = 0; const char *errmsg = NULL; char bad = 0;
     while (ti < t->len) {
         const char d = t->buf->data[ti++];
-        if (d == ' ' || d == '\t' || d == '\n') continue;
-        bool star = false; long cnt = 1;
+        if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
+        if (d == '#') { while (ti < t->len && t->buf->data[ti] != '\n') ti++; continue; }   /* comment to EOL */
+        bool star = false, has_cnt = false; long cnt = 1;
         if (ti < t->len && t->buf->data[ti] == '*') { star = true; ti++; }
         else if (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') {
-            cnt = 0; while (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') cnt = cnt * 10 + (t->buf->data[ti++] - '0');
+            has_cnt = true; cnt = 0; while (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') cnt = cnt * 10 + (t->buf->data[ti++] - '0');
         }
         if (d == 'C' || d == 'c') {
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
@@ -35,14 +36,54 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         } else if (d == 'x') {
             uint32_t emit = star ? 0 : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) fputc(0, ms);
-        } else if (d == 'a' || d == 'A') {
+        } else if (d == 'a' || d == 'A' || d == 'B' || d == 'b' || d == 'H' || d == 'h' || d == 'M') {
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
             VALUE e = ary->items->data[ai++];
-            if (UNLIKELY(!KORB_STRING_P(e))) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
-            const KorbString *es = VAL2STR(e);
-            uint32_t want = star ? es->len : (uint32_t)cnt;
-            const char pad = (d == 'A') ? ' ' : '\0';
-            for (uint32_t k = 0; k < want; k++) fputc(k < es->len ? es->buf->data[k] : pad, ms);
+            const char *ed; uint32_t elen;                /* element bytes; nil → "" */
+            if (e == KORB_NIL) { ed = ""; elen = 0; }
+            else if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); ed = es->buf->data; elen = es->len; }
+            else { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+            if (d == 'a' || d == 'A') {
+                uint32_t want = star ? elen : (uint32_t)cnt;
+                const char pad = (d == 'A') ? ' ' : '\0';
+                for (uint32_t k = 0; k < want; k++) fputc(k < elen ? ed[k] : pad, ms);
+            } else if (d == 'B' || d == 'b') {           /* bit string: bit = byte&1 */
+                uint32_t nbits = star ? elen : (uint32_t)cnt;
+                unsigned byte = 0, used = 0;
+                for (uint32_t k = 0; k < nbits; k++) {
+                    const unsigned bit = (k < elen) ? (unsigned)(ed[k] & 1) : 0u;
+                    if (d == 'B') byte |= bit << (7 - used); else byte |= bit << used;
+                    if (++used == 8) { fputc((int)byte, ms); byte = 0; used = 0; }
+                }
+                if (used) fputc((int)byte, ms);          /* flush partial byte */
+            } else if (d == 'H' || d == 'h') {           /* hex string */
+                uint32_t ndig = star ? elen : (uint32_t)cnt;
+                unsigned byte = 0, used = 0;
+                for (uint32_t k = 0; k < ndig; k++) {
+                    const char ch = (k < elen) ? ed[k] : '0';
+                    unsigned v = (ch >= '0' && ch <= '9') ? (unsigned)(ch - '0')
+                               : (ch >= 'a' && ch <= 'f') ? (unsigned)(ch - 'a' + 10)
+                               : (ch >= 'A' && ch <= 'F') ? (unsigned)(ch - 'A' + 10) : 0u;
+                    if (d == 'H') byte |= v << (used ? 0 : 4); else byte |= v << (used ? 4 : 0);
+                    if (++used == 2) { fputc((int)byte, ms); byte = 0; used = 0; }
+                }
+                if (used) fputc((int)byte, ms);          /* flush partial nibble */
+            } else {                                     /* M: quoted-printable */
+                const long wrap = (has_cnt && cnt > 1) ? cnt : 72;   /* soft-break column (default 72) */
+                long col = 0; char last = 0;
+                for (uint32_t k = 0; k < elen; k++) {
+                    const unsigned char ch = (unsigned char)ed[k];
+                    if (ch == '\n') { fputc('\n', ms); col = 0; last = '\n'; continue; }
+                    char enc[4]; int en;
+                    if (ch == '=' || ch > 126 || (ch < 32 && ch != '\t')) {   /* space/tab stay literal */
+                        en = 3; enc[0] = '='; static const char H[] = "0123456789ABCDEF"; enc[1] = H[ch >> 4]; enc[2] = H[ch & 15];
+                    } else { en = 1; enc[0] = (char)ch; }
+                    if (col + en > wrap) { fputs("=\n", ms); col = 0; }
+                    for (int j = 0; j < en; j++) fputc(enc[j], ms);
+                    col += en; last = enc[en - 1];
+                }
+                if (elen > 0 && last != '\n') fputs("=\n", ms);   /* trailing soft break unless empty / ended on newline */
+            }
         } else {
             bad = d; break;
         }
