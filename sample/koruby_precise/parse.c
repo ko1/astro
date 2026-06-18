@@ -368,6 +368,55 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
     return next;
 }
 
+/* Compile a prism pattern into a korb_pat descriptor (immortal; walked by the
+ * runtime matcher).  Supports binding / array / hash / value (=== ) patterns;
+ * rest/post/constant/find patterns fall back to an unsupported value node. */
+static struct korb_pat *
+build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
+{
+    struct korb_pat *p = calloc(1, sizeof(*p));
+    if (!p) abort();
+    if (PM_NODE_TYPE_P(pat, PM_LOCAL_VARIABLE_TARGET_NODE)) {       /* binding */
+        const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)pat;
+        if (lt->depth == 0) {
+            p->kind = 0;
+            p->bind_off = (int32_t)lvar_index(tc, pat, lt->name) - tc->chain;
+            bake_add(tc, &p->bind_off);
+            return p;
+        }
+    } else if (PM_NODE_TYPE_P(pat, PM_ARRAY_PATTERN_NODE)) {
+        const pm_array_pattern_node_t *ap = (const pm_array_pattern_node_t *)pat;
+        if (!ap->constant && !ap->rest && ap->posts.size == 0) {
+            p->kind = 2; p->n = (uint32_t)ap->requireds.size;
+            p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
+            return p;
+        }
+    } else if (PM_NODE_TYPE_P(pat, PM_HASH_PATTERN_NODE)) {
+        const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
+        if (!hp->constant && !hp->rest) {
+            bool ok = true;
+            p->kind = 3; p->n = (uint32_t)hp->elements.size;
+            p->keys  = calloc(p->n ? p->n : 1, sizeof(VALUE));
+            p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
+            for (uint32_t i = 0; i < p->n; i++) {
+                if (!PM_NODE_TYPE_P(hp->elements.nodes[i], PM_ASSOC_NODE)) { ok = false; break; }
+                const pm_assoc_node_t *as = (const pm_assoc_node_t *)hp->elements.nodes[i];
+                if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE) || !as->value) { ok = false; break; }
+                const pm_symbol_node_t *sn = (const pm_symbol_node_t *)as->key;
+                p->keys[i] = ID2SYM(korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped),
+                                                pm_string_length(&sn->unescaped)));
+                p->elems[i] = build_pattern_desc(tc, as->value);
+            }
+            if (ok) return p;
+        }
+    }
+    /* value pattern: `pattern === subject` (constant / literal / range / etc.) */
+    p->kind = 1;
+    p->value_node = transduce(tc, pat);
+    return p;
+}
+
 static bool
 kp_integer_value(const pm_integer_t *integer, intptr_t *out)
 {
@@ -1767,6 +1816,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         bake_add(tc, &mk->u.node_make_proc.def_env_off);
         return mk;
       }
+      case PM_MATCH_PREDICATE_NODE: {                /* `expr in pattern` → bool */
+        const pm_match_predicate_node_t *mp = (const pm_match_predicate_node_t *)node;
+        struct korb_pat *desc = build_pattern_desc(tc, mp->pattern);
+        NODE *subj = transduce(tc, mp->value);
+        return ALLOC_node_match_pred(subj, (void *)desc);
+      }
+      case PM_MATCH_REQUIRED_NODE: {                 /* `expr => pattern` → nil / raise */
+        const pm_match_required_node_t *mr = (const pm_match_required_node_t *)node;
+        struct korb_pat *desc = build_pattern_desc(tc, mr->pattern);
+        NODE *subj = transduce(tc, mr->value);
+        return ALLOC_node_match_req(subj, (void *)desc);
+      }
+
       case PM_FOR_NODE: {
         /* `for VAR in COLL; BODY; end` — VAR + BODY share the enclosing frame
          * (for introduces no scope), so BODY is transduced here, not in a block. */

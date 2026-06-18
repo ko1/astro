@@ -2251,6 +2251,49 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
     return korb_value_eq(pat, val);
 }
 
+/* Recursive pattern matcher (node_match_pred/req).  `base` is the match node's
+ * frame view (binding writes land in its locals); `cur` is scratch above the
+ * rooted subject.  Returns RESULT{KORB_TRUE|KORB_FALSE} (or a raise from a value
+ * pattern's EVAL).  Subject re-read from subjref after any GC point. */
+RESULT
+korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p)
+{
+    switch (p->kind) {
+      case 0:                                            /* binding: always matches */
+        base[p->bind_off] = VALUE_REF_GET(subjref);
+        return RESULT_OK(KORB_TRUE);
+      case 1: {                                          /* value: pat === subject */
+        RESULT pv = EVAL(c, p->value_node, cur);         /* may alloc; subject stays rooted */
+        if (UNLIKELY(pv.state != KORB_NORMAL)) return pv;
+        return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
+      }
+      case 2: {                                          /* array pattern [e0..en) */
+        if (!KORB_ARRAY_P(VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE);
+        if (VAL2ARY(VALUE_REF_GET(subjref))->len != p->n) return RESULT_OK(KORB_FALSE);
+        for (uint32_t i = 0; i < p->n; i++) {
+            cur[0] = VAL2ARY(VALUE_REF_GET(subjref))->items->data[i];   /* element, rooted at cur[0] */
+            RESULT r = korb_pat_match(c, base, cur + 1, VALUE_REF_AT(&cur[0]), p->elems[i]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
+        }
+        return RESULT_OK(KORB_TRUE);
+      }
+      case 3: {                                          /* hash pattern {k: e ...} */
+        if (!KORB_HASH_P(VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE);
+        for (uint32_t i = 0; i < p->n; i++) {
+            const int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(subjref)), p->keys[i]);
+            if (idx < 0) return RESULT_OK(KORB_FALSE);
+            cur[0] = VAL2HASH(VALUE_REF_GET(subjref))->items->data[2 * idx + 1];
+            RESULT r = korb_pat_match(c, base, cur + 1, VALUE_REF_AT(&cur[0]), p->elems[i]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
+        }
+        return RESULT_OK(KORB_TRUE);
+      }
+    }
+    return RESULT_OK(KORB_FALSE);
+}
+
 static const char *const korb_cmp_op_name[] = { "<", "<=", ">", ">=" };
 
 /* CRuby rb_cmperr flavor: immediates render via inspect, others by class. */

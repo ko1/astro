@@ -717,6 +717,30 @@ node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t dept
     return RESULT_RETURN_(v);
 }
 
+// pattern match `expr in pattern` → true/false (binds locals as a side effect).
+// @noinline: the compiled pattern descriptor (`desc`) is a per-process pointer
+// (not bakeable); the runtime matcher walks the subject + writes bindings.
+NODE_DEF @noinline
+node_match_pred(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
+{
+    (void)n;
+    slots[0] = subj;                                     /* root subject */
+    return korb_pat_match(c, slots, slots + 1, VALUE_REF_AT(&slots[0]), (const struct korb_pat *)desc);
+}
+
+// pattern match `expr => pattern` → nil, or raise on no match.
+NODE_DEF @noinline
+node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
+{
+    (void)n;
+    slots[0] = subj;
+    RESULT m = korb_pat_match(c, slots, slots + 1, VALUE_REF_AT(&slots[0]), (const struct korb_pat *)desc);
+    if (UNLIKELY(m.state != KORB_NORMAL)) return m;
+    if (m.value != KORB_TRUE)
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "NoMatchingPatternError");
+    return RESULT_OK(KORB_NIL);
+}
+
 // ---- method definition and calls -------------------------------------------
 
 // `def` registers the body in the per-CTX method table at eval time.  The

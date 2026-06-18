@@ -237,6 +237,19 @@ RESULT korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                         VALUE prev_handle, uint32_t depth, int32_t trio_base);
 VALUE *korb_outer_frame_base(VALUE prev_handle, uint32_t depth);
 
+/* Pattern-matching (`expr in/ => pattern`) compiled descriptor + runtime matcher.
+ * kind: 0 binding (write base[bind_off]), 1 value (value_node === subject),
+ * 2 array ([elems...] exact length), 3 hash ({keys[i]: elems[i]...}). */
+struct korb_pat {
+    uint8_t  kind;
+    int32_t  bind_off;            /* kind 0: frame slot offset (baked) */
+    struct Node *value_node;      /* kind 1: NODE to EVAL → `pat === subject` */
+    uint32_t n;                   /* kind 2/3: element / pair count */
+    struct korb_pat **elems;      /* kind 2: element patterns; kind 3: value patterns */
+    VALUE   *keys;                /* kind 3: symbol keys */
+};
+RESULT korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p);
+
 /* node_entry field accessors (block body metadata) — defined in node.def's
  * node_entry struct; korb_yield reads them off the node_entry NODE. */
 uint32_t korb_entry_params_cnt(NODE *entry);
