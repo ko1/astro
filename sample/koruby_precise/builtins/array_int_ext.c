@@ -56,7 +56,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE_REF self, VALUE key, uint32_t idx) {
 static RESULT korb_m_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)slots; return korb_ary_assoc(c, self, VALUE_SLICE_GET(a, 0), 0); }
 static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)slots; return korb_ary_assoc(c, self, VALUE_SLICE_GET(a, 0), 1); }
 
-static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0);
@@ -65,6 +65,10 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     intptr_t orig = i;
     if (i < 0) i += ary->len;
     if (i >= 0 && (uint32_t)i < ary->len) return RESULT_OK(ary->items->data[i]);
+    if (block != NULL) {                                  /* out of range: block form yields the index (wins over a default) */
+        VALUE ix = LONG2FIX(orig);
+        return korb_block_yield(c, slots, block, def_env, &ix, 1, cself);
+    }
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
     return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld outside of array bounds: %ld...%u",
                       (long)orig, ary->len ? -(long)ary->len : 0L, ary->len);

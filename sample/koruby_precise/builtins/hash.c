@@ -55,11 +55,15 @@ static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(KORB_FALSE);
 }
 
-static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const KorbHash *h = SELF_HASH;
     int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
     if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
+    if (block != NULL) {                                  /* miss: block form yields the key (wins over a default) */
+        VALUE k = VALUE_SLICE_GET(a, 0);
+        return korb_block_yield(c, slots, block, def_env, &k, 1, cself);
+    }
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
     char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
     if (km) { korb_fprint_inspect(c, km, VALUE_SLICE_GET(a, 0)); fclose(km); }

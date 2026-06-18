@@ -2839,6 +2839,45 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     else if (KORB_CLASS_P(self) && mid == vm->mid_yield && VAL2CLASS(self)->name_sym == vm->name_fiber) {
         return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
     }
+    else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
+             (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] ||
+              VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH])) {
+        VALUE *const base = &slots[-(intptr_t)argc];
+        if (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY]) {   /* Array[a, b, ...] → [a, b, ...] */
+            slots[0] = UNWRAP(korb_ary_new(c, slots, argc));
+            VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+            for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, base[i]));
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        /* Hash[k,v,k,v,...] | Hash[[[k,v],...]] | Hash[{...}] */
+        slots[0] = UNWRAP(korb_hash_new(c, slots, argc));
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        if (argc == 1 && KORB_HASH_P(base[0])) {                          /* copy an existing Hash */
+            const uint32_t n = VAL2HASH(base[0])->len;
+            for (uint32_t i = 0; i < n; i++) {
+                const KorbHash *src = VAL2HASH(base[0]);                   /* re-read: base[0] rooted, may move */
+                slots[1] = src->items->data[2*i];                         /* key + val into rooted slots */
+                slots[2] = src->items->data[2*i+1];
+                CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[1]), slots[2]));
+            }
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        if (argc == 1 && KORB_ARRAY_P(base[0])) {                         /* array of [k,v] pairs */
+            const uint32_t n = VAL2ARY(base[0])->len;
+            for (uint32_t i = 0; i < n; i++) {
+                const VALUE pr = VAL2ARY(base[0])->items->data[i];        /* re-read */
+                if (UNLIKELY(!KORB_ARRAY_P(pr) || VAL2ARY(pr)->len < 1)) continue;
+                slots[1] = VAL2ARY(pr)->items->data[0];                   /* key (rooted) */
+                slots[2] = VAL2ARY(pr)->len >= 2 ? VAL2ARY(pr)->items->data[1] : KORB_NIL;
+                CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[1]), slots[2]));
+            }
+            return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        if (UNLIKELY(argc & 1u)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "odd number of arguments for Hash");
+        for (uint32_t i = 0; i < argc; i += 2)
+            CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&base[i]), base[i+1]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
@@ -3371,6 +3410,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_h", korb_m_ary_to_h, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "cycle", korb_m_ary_cycle, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "permutation", korb_m_ary_permutation, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "combination", korb_m_ary_combination, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "to_ary", korb_m_ary_self, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "entries", korb_m_obj_dup, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
@@ -3444,7 +3484,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "shift", korb_m_ary_shift, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "assoc", korb_m_ary_assoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "fetch", korb_m_ary_fetch, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "fetch", korb_m_ary_fetch, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "dig", korb_m_ary_dig, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "take", korb_m_ary_take, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "drop", korb_m_ary_drop, 1);
@@ -3508,7 +3548,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "member?", korb_m_hash_key_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "value?", korb_m_hash_value_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "has_value?", korb_m_hash_value_q, 1);
-    korb_def_cmethod(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
     korb_def_cmethod(c, KORB_C_HASH, "assoc", korb_m_hash_assoc, 1);
     korb_def_cmethod(c, KORB_C_HASH, "keys", korb_m_hash_keys, 0);
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);

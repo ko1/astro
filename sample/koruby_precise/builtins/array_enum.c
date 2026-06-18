@@ -726,6 +726,48 @@ static RESULT korb_m_ary_permutation(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* recursive combination builder: append each `want`-length combination (indices
+ * chosen in increasing order from `start`) of self into `out`. */
+static RESULT korb_comb_rec(CTX *c, VALUE *scratch, VALUE_REF self, VALUE_REF out, VALUE_REF cur,
+                            uint32_t want, uint32_t start, uint32_t depth) {
+    if (depth == want) {
+        VALUE_REF copy = SLOTS_PUSH(scratch, UNWRAP(korb_ary_new(c, scratch, want)));
+        for (uint32_t k = 0; k < VAL2ARY(VALUE_REF_GET(cur))->len; k++)
+            CHECK(korb_ary_push_val(c, scratch + 1, copy, VAL2ARY(VALUE_REF_GET(cur))->items->data[k]));
+        return korb_ary_push_val(c, scratch + 1, out, VALUE_REF_GET(copy));
+    }
+    uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    for (uint32_t i = start; i < len; i++) {
+        CHECK(korb_ary_push_val(c, scratch, cur, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        CHECK(korb_comb_rec(c, scratch, self, out, cur, want, i + 1, depth + 1));
+        KorbArray *cv = VAL2ARY(VALUE_REF_GET(cur)); cv->len--;     /* pop */
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_ary_combination(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    uint32_t len = SELF_ARY->len;
+    intptr_t want = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                   /* out: array of combinations */
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    if (want >= 0 && (uint32_t)want <= len) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)want));   /* cur work array */
+        VALUE_REF cur = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_comb_rec(c, slots + 2, self, out, cur, (uint32_t)want, 0, 0));
+    }
+    if (block == NULL) {
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "combination"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
+    }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
+        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &e, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* Array#to_h — elements (or block results) must be 2-element arrays → Hash. */
 static RESULT korb_m_ary_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
