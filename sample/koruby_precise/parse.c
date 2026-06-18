@@ -897,6 +897,25 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 return mk;
             }
         }
+        /* `m(args, &proc)` (implicit self) — forward a runtime Proc. */
+        if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
+            const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
+            if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
+                uint32_t pslot = alloc_synth_local(tc);
+                NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+                int32_t self_off = -1 - tc->chain - (int32_t)argc;
+                NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
+                if (argc && !argv) abort();
+                int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)argc;
+                for (size_t i = 0; i < argc; i++)
+                    argv[i] = transduce(tc, args->arguments.nodes[i]);
+                tc->chain = saved;
+                NODE *call = ALLOC_node_call_blkproc(mid, line, self_off, (int32_t)pslot - tc->chain - (int32_t)argc, argv, (uint32_t)argc);
+                bake_add(tc, &call->u.node_call_blkproc.proc_off);
+                return ALLOC_node_seq(pset, call);
+            }
+        }
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);

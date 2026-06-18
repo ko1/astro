@@ -1121,6 +1121,25 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
 
+// `m(args, &proc)` (implicit self) — forward a runtime Proc as the block.  Like
+// node_send_blkproc but for an implicit-self call (no staged receiver).
+NODE_DEF @noinline
+node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
+{
+    (void)n;
+    const VALUE pv = slots[proc_off];
+    NODE *iseq = NULL;
+    if (pv != KORB_NIL) {
+        if (UNLIKELY(!KORB_PROC_P(pv)))
+            return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
+        iseq = VAL2PROC(pv)->iseq;
+        if (UNLIKELY(iseq == NULL))
+            return korb_raise(c, slots, KORB_E_NOTIMPL, line, "forwarding a Symbol#to_proc block");
+    }
+    return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], iseq,
+                         iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
+}
+
 // `def m(&blk)` prologue: materialize the passed block into the &blk local as a
 // Proc (or nil if no block given).  Reads the frame's block cells (biseq/def_env/
 // cself); korb_make_proc handles escape if the block captures outer locals.
