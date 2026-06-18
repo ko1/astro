@@ -1732,6 +1732,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         else { size_t cnt = bn->arguments->arguments.size; v = build_array(tc, bn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `break a, b` → [a, b] */
         return ALLOC_node_break(v);
       }
+      case PM_RETRY_NODE:                               /* `retry` in a rescue → re-run the begin body */
+        return ALLOC_node_retry();
 
       /* ---- calls / def ---- */
       case PM_CALL_NODE:

@@ -91,6 +91,7 @@ enum korb_state {
     KORB_RAISE  = 2,    /* exception in .value — unwinds to a handler / main */
     KORB_NEXT   = 3,    /* `next` in a block — caught at the yield boundary */
     KORB_BREAK  = 4,    /* `break` — caught at the nearest loop / block-call boundary */
+    KORB_RETRY  = 5,    /* `retry` in a rescue — re-runs the begin body (caught by node_begin) */
 };
 
 typedef struct {
@@ -103,6 +104,7 @@ typedef struct {
 #define RESULT_RAISE_(v)  ((RESULT){ (v), KORB_RAISE })
 #define RESULT_NEXT_(v)   ((RESULT){ (v), KORB_NEXT })
 #define RESULT_BREAK_(v)  ((RESULT){ (v), KORB_BREAK })
+#define RESULT_RETRY_     ((RESULT){ KORB_NIL, KORB_RETRY })
 
 /* UNWRAP(expr): take the VALUE out of a RESULT expression, early-returning
  * the RESULT from the *caller* when non-NORMAL.  CHECK(expr): same but the

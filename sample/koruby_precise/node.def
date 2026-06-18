@@ -566,22 +566,36 @@ NODE_DEF
 node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescue_class, NODE *resc, NODE *ensure_b, int32_t resc_var, uint32_t flags)
 {
     (void)n;
-    RESULT r = EVAL_ARG(c, body);
-    if ((flags & 1u) && r.state == KORB_RAISE) {       /* a rescue clause is present */
-        slots[0] = r.value;                            /* root the exception in scratch */
-        RESULT cr = EVAL(c, rescue_class, slots + 1);  /* the rescue's class (StandardError if bare) */
-        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-        if (korb_exc_matches(c, slots[0], cr.value)) {
-            if (flags & 4u) slots[resc_var] = slots[0];  /* bind the exception local */
-            r = EVAL_ARG(c, resc);
+    RESULT r;
+    for (;;) {                                         /* loop only re-entered by `retry` */
+        r = EVAL_ARG(c, body);
+        if ((flags & 1u) && r.state == KORB_RAISE) {   /* a rescue clause is present */
+            slots[0] = r.value;                        /* root the exception in scratch */
+            RESULT cr = EVAL(c, rescue_class, slots + 1);  /* the rescue's class (StandardError if bare) */
+            if (UNLIKELY(cr.state != KORB_NORMAL)) { r = cr; break; }
+            if (korb_exc_matches(c, slots[0], cr.value)) {
+                if (flags & 4u) slots[resc_var] = slots[0];  /* bind the exception local */
+                r = EVAL_ARG(c, resc);
+                if (r.state == KORB_RETRY) continue;   /* `retry` → re-run body (ensure not run yet) */
+            }
+            /* else: not matched → r stays RAISE (propagate) */
         }
-        /* else: not matched → r stays RAISE (propagate) */
+        break;
     }
     if (flags & 2u) {                                  /* ensure: always runs */
         RESULT er = EVAL_ARG(c, ensure_b);
         if (er.state != KORB_NORMAL) return er;         /* ensure's raise/return wins */
     }
     return r;
+}
+
+// `retry` — re-run the enclosing begin body from the top (valid only inside a
+// rescue clause; node_begin catches KORB_RETRY).  A bare leaf, like break/next.
+NODE_DEF @nogc
+node_retry(CTX *c, NODE *n, VALUE *slots)
+{
+    (void)c; (void)n; (void)slots;
+    return RESULT_RETRY_;
 }
 
 // while (negate=0) / until (negate=1).  `post`=1 → begin..end while (test after
