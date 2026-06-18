@@ -1202,6 +1202,26 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VA
     return r;
 }
 
+// ---- class variables (`@@x`) -----------------------------------------------
+//
+// `self_off`/`dc_off` read the frame's self + def_class cells; the cref is self
+// when self is a class/module (class body / class method) else def_class (an
+// instance method).  korb_cvar_{get,set} resolve up the superclass chain.
+
+NODE_DEF
+node_cvar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name, uint32_t soft)
+{
+    (void)n;
+    return korb_cvar_get(c, slots, slots[self_off], slots[dc_off], name, soft);
+}
+
+NODE_DEF
+node_cvar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name, VALUE val@child)
+{
+    (void)n;
+    return korb_cvar_set(c, slots, slots[self_off], slots[dc_off], name, val);
+}
+
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------
 //
 // `prev_off` is parse-baked: slots[prev_off] is the current (block) frame's

@@ -843,6 +843,87 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     return RESULT_OK((VALUE)k);
 }
 
+/* ---------------------------------------------------------------------------
+ * Class variables (`@@x`).  Stored in a per-class KorbHash (sym→value) and
+ * shared down the superclass chain: a read/write resolves to the nearest
+ * ancestor that already defines the name, else (for a write) the cref itself.
+ * The cref is the class/module the `@@x` is lexically inside: in a class body
+ * self IS the class; in an instance method it is the method's def_class.
+ * ------------------------------------------------------------------------- */
+
+/* `entry_cell` is the frame's fs-2 cell: a tagged-odd method-entry pointer in an
+ * instance method (def_class = entry->owner), as korb_super reads it. */
+static VALUE
+korb_cvar_cref(VALUE self, VALUE entry_cell)
+{
+    if (KORB_CLASS_P(self)) return self;              /* class body / class method: self */
+    if ((uintptr_t)entry_cell & 1u) {                 /* instance method: def_class = entry->owner */
+        const struct korb_method *const m = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u);
+        return m->owner;
+    }
+    return KORB_NIL;                                   /* toplevel: no class scope */
+}
+
+/* the ancestor (cref-and-up) that defines class var `sym`, with *idx set to its
+ * hash slot; KORB_NIL if undefined anywhere on the chain. */
+static VALUE
+korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
+{
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const VALUE cv = VAL2CLASS(k)->cvars;
+        if (cv != KORB_NIL) {
+            const int32_t idx = korb_hash_find(VAL2HASH(cv), sym);
+            if (idx >= 0) { *idx_out = idx; return k; }
+        }
+    }
+    return KORB_NIL;
+}
+
+/* soft: `@@x ||= v` / `&&=` read an undefined cvar as nil instead of raising. */
+RESULT
+korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft)
+{
+    const VALUE cref = korb_cvar_cref(self, entry_cell);
+    if (!KORB_CLASS_P(cref)) {
+        if (soft) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
+    }
+    const VALUE sym = ID2SYM(sym_id);
+    int32_t idx;
+    const VALUE owner = korb_cvar_owner(cref, sym, &idx);
+    if (owner == KORB_NIL) {
+        if (soft) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
+                          korb_sym_name(c->vm, sym_id), korb_type_name(cref));
+    }
+    return RESULT_OK(VAL2HASH(VAL2CLASS(owner)->cvars)->items->data[2 * idx + 1]);
+}
+
+RESULT
+korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val)
+{
+    const VALUE cref = korb_cvar_cref(self, entry_cell);
+    if (!KORB_CLASS_P(cref))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
+    const VALUE sym = ID2SYM(sym_id);
+    int32_t idx;
+    VALUE target = korb_cvar_owner(cref, sym, &idx);   /* update existing ancestor, else define in cref */
+    if (target == KORB_NIL) target = cref;
+
+    /* Root target + val across the hash alloc/grow (both may GC/move). */
+    VALUE_REF tref = SLOTS_PUSH(slots, target);
+    VALUE_REF vref = SLOTS_PUSH(slots, val);
+    if (VAL2CLASS(VALUE_REF_GET(tref))->cvars == KORB_NIL) {
+        const VALUE h = UNWRAP(korb_hash_new(c, slots, 4));
+        ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(tref)),
+                  (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(tref))->cvars, h);
+    }
+    VALUE_REF href = SLOTS_PUSH(slots, VAL2CLASS(VALUE_REF_GET(tref))->cvars);
+    VALUE_REF kref = SLOTS_PUSH(slots, sym);
+    CHECK(korb_hash_set(c, slots, href, kref, VALUE_REF_GET(vref)));
+    return RESULT_OK(VALUE_REF_GET(vref));
+}
+
 /* the `@<member>` ivar symbol for a Struct member symbol (`:x` → `:@x`). */
 static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
     const char *nm = korb_sym_name(vm, SYM2ID(member_sym));

@@ -1362,6 +1362,51 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                              ALLOC_node_ivar_set(-1 - tc->chain, name, transduce(tc, ow->value)));
       }
 
+      /* ---- class variables `@@x` (self at base[fs-1], def_class at fs-2) ---- */
+      case PM_CLASS_VARIABLE_READ_NODE: {
+        const pm_class_variable_read_node_t *cv = (const pm_class_variable_read_node_t *)node;
+        return ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, kp_intern_cid(tc, cv->name), 0);
+      }
+      case PM_CLASS_VARIABLE_WRITE_NODE: {
+        const pm_class_variable_write_node_t *cw = (const pm_class_variable_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, cw->name);
+        NODE *val = transduce(tc, cw->value);
+        return ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, val);
+      }
+      case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE: {      /* @@x op= v */
+        const pm_class_variable_operator_write_node_t *ow =
+            (const pm_class_variable_operator_write_node_t *)node;
+        const char *opname = kp_cid_cstr(tc, ow->binary_operator);
+        enum kp_binop op = kp_binop_kind(opname);
+        uint32_t opmid = kp_intern_cid(tc, ow->binary_operator);
+        uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
+        NODE *lhs, *rhs, *comb;
+        if (op != KP_BINOP_NONE) {
+            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 0),
+                                                       rhs = transduce(tc, ow->value)));
+            comb = alloc_binop(op, lhs, rhs, line);
+        } else {   /* &= |= ^= <<= >>= → method send */
+            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 0),
+                                         rhs = transduce(tc, ow->value)));
+            comb = kp_send1(opmid, line, lhs, rhs);
+        }
+        return ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, comb);
+      }
+      case PM_CLASS_VARIABLE_AND_WRITE_NODE: {           /* @@x &&= v */
+        const pm_class_variable_and_write_node_t *aw =
+            (const pm_class_variable_and_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, aw->name);
+        return ALLOC_node_and(ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 1),
+                              ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, transduce(tc, aw->value)));
+      }
+      case PM_CLASS_VARIABLE_OR_WRITE_NODE: {            /* @@x ||= v */
+        const pm_class_variable_or_write_node_t *ow =
+            (const pm_class_variable_or_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, ow->name);
+        return ALLOC_node_or(ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 1),
+                             ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, transduce(tc, ow->value)));
+      }
+
       case PM_ARRAY_NODE: {
         const pm_array_node_t *an = (const pm_array_node_t *)node;
         size_t cnt = an->elements.size;
