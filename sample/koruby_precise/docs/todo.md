@@ -1365,3 +1365,11 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   既知の大物。関連: `{1=>"a"}[1.0]` が "a"(eql? でなく == 的判定)。
 - (修正済 2026-06-18) Array#sort/min/max/min(n)/max(n) の <=> dispatch、
   AOT の -DKORB_HAVE_GMP 欠落 → 別 commit で対応済。
+- **`Integer == user_obj` の reverse coercion 未対応**: `42 == E.new`
+  (E が `==` を true 返しで定義) が CRuby では true だが koruby は false。
+  Integer#== が相手を理解できない時、CRuby は逆方向 (`E.new == 42`) を
+  試す。node_eq の korb_value_eq は組み込み型のみ判定。優先度低
+  (corpus 影響なし、pre-existing)。
+- (修正済 2026-06-18) `send(:top_level)` / `__send__` が top-level def に
+  届かなかった (private Object method 相当) → korb_send_impl の main miss で
+  global function table fallback。public_send は privacy で raise。
