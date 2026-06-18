@@ -539,6 +539,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     int32_t rest_slot = -1;         /* local index of a `*rest` param, or -1 */
     struct Node **opt_defaults = NULL;  /* default exprs for optional params */
     uint32_t req_cnt = 0;           /* leading required positional count */
+    struct korb_kw_info *kw_info = NULL;  /* keyword params (a:, b: 10, **kw) */
     if (blk_params && PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
         /* `{ _1 * _2 }` — prism puts `_1`.._N in locals[0..N-1]; the body's
          * `_N` reads resolve as ordinary locals.  N = maximum referenced. */
@@ -563,10 +564,33 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             return kp_unsupported(tc, blk_params, "unsupported block parameters");
         }
         if (ps) {
-            if (ps->keywords.size || ps->keyword_rest || ps->block) {
+            if (ps->block) {
                 pop_frame(tc);
-                return kp_unsupported(tc, (const pm_node_t *)ps,
-                                      "block keyword parameters");
+                return kp_unsupported(tc, (const pm_node_t *)ps, "block &block parameter");
+            }
+            if (ps->keywords.size || ps->keyword_rest) {   /* keyword params (built after positional) */
+                kw_info = malloc(sizeof(*kw_info));
+                if (!kw_info) abort();
+                kw_info->count = (uint32_t)ps->keywords.size;
+                kw_info->kwrest_slot = -1;
+                kw_info->entries = ps->keywords.size ? malloc(sizeof(struct korb_kw_entry) * ps->keywords.size) : NULL;
+                for (uint32_t j = 0; j < kw_info->count; j++) {
+                    const pm_node_t *kp = ps->keywords.nodes[j];
+                    pm_constant_id_t name; NODE *deflt = NULL;
+                    if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                        name = ((const pm_required_keyword_parameter_node_t *)kp)->name;
+                    } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                        const pm_optional_keyword_parameter_node_t *ok = (const pm_optional_keyword_parameter_node_t *)kp;
+                        name = ok->name; deflt = transduce(tc, ok->value);
+                    } else { pop_frame(tc); return kp_unsupported(tc, kp, "block keyword parameter form"); }
+                    kw_info->entries[j].mid  = kp_intern_cid(tc, name);
+                    kw_info->entries[j].slot = lvar_index(tc, kp, name);
+                    kw_info->entries[j].deflt = deflt;
+                }
+                if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {
+                    pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
+                    if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
+                }
             }
             if (ps->optionals.size && ps->rest) {
                 pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "block optional + rest params combined");
@@ -730,7 +754,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         }
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info);
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -757,7 +781,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, 1, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -1197,7 +1221,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     return ALLOC_node_class(name_sym, entry, super_node);
 }
@@ -1274,7 +1298,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
     code_repo_add("module", entry, true);
     return ALLOC_node_module(name_sym, entry);
 }

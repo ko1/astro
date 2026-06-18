@@ -2966,6 +2966,7 @@ static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_ent
 static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
 static struct Node **korb_entry_opt_defaults(NODE *entry) { return (struct Node **)entry->u.node_entry.opt_defaults; }
 static uint32_t korb_entry_req_cnt(NODE *entry) { return entry->u.node_entry.req_cnt; }
+static const struct korb_kw_info *korb_entry_kw_info(NODE *entry) { return (const struct korb_kw_info *)entry->u.node_entry.kw_info; }
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
@@ -2989,6 +2990,12 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
     bf[0] = prev;
+    /* keyword params: a trailing Hash is consumed as kwargs (like methods), so
+     * the positional binding below sees only the positional args. */
+    const struct korb_kw_info *const kw = korb_entry_kw_info(block);
+    const uint32_t orig_argc = argc;
+    const bool has_kw_hash = (kw && argc >= 1 && KORB_HASH_P(argv[argc - 1]));
+    if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
     if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| */
@@ -3069,6 +3076,27 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             for (uint32_t i = 0; i < np; i++)  bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    }
+    if (kw) {                                           /* bind keyword params from the kwargs hash */
+        /* re-read the kwargs hash from argv (scanned for yield/proc.call) — a
+         * positional rest/opt alloc above may have moved it. */
+        const VALUE kwhash = has_kw_hash ? argv[orig_argc - 1] : KORB_NIL;
+        VALUE *const kcur = bf + 1 + blocals;           /* default-eval scratch (block scope) */
+        uint64_t present = 0;
+        for (uint32_t j = 0; j < kw->count; j++) {      /* pass 1: provided keywords (no alloc) */
+            int32_t idx = (kwhash != KORB_NIL) ? korb_hash_find(VAL2HASH(kwhash), ID2SYM(kw->entries[j].mid)) : -1;
+            if (idx >= 0) { bf[1 + kw->entries[j].slot] = VAL2HASH(kwhash)->items->data[2 * idx + 1]; if (j < 64) present |= (1ull << j); }
+        }
+        for (uint32_t j = 0; j < kw->count; j++) {      /* pass 2: defaults / required check */
+            if (j < 64 && (present & (1ull << j))) continue;
+            if (kw->entries[j].deflt) {
+                RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, kcur);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                bf[1 + kw->entries[j].slot] = dr.value;
+            } else {
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(c->vm, kw->entries[j].mid));
+            }
+        }
     }
     bf[blocals] = *captured_self;                       /* block's lexical self (re-read fresh) */
 
