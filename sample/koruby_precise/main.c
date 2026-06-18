@@ -17,6 +17,43 @@
 
 struct koruby_option OPTION;
 
+/* Enumerable mixin, defined in Ruby in terms of the includer's `each` (which now
+ * works thanks to yield-in-block).  Run as a prelude before the user program so
+ * `include Enumerable` + a user `each` yields map/select/etc.  Methods use only
+ * single-/no-arg yield and non-local return (both supported); `block_given?` is
+ * read at method top-level into a local so the nested each-block can capture it.
+ * Line numbers stay independent of the user script (separate parse). */
+static const char *const KORUBY_PRELUDE =
+"module Enumerable\n"
+"  def map; r = []; each { |x| r << yield(x) }; r; end\n"
+"  def collect; r = []; each { |x| r << yield(x) }; r; end\n"
+"  def select; r = []; each { |x| r << x if yield(x) }; r; end\n"
+"  def filter; r = []; each { |x| r << x if yield(x) }; r; end\n"
+"  def find_all; r = []; each { |x| r << x if yield(x) }; r; end\n"
+"  def reject; r = []; each { |x| r << x unless yield(x) }; r; end\n"
+"  def flat_map; r = []; each { |x| v = yield(x); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end\n"
+"  def find; r = nil; d = false; each { |x| if !d && yield(x); r = x; d = true; end }; r; end\n"
+"  def detect; r = nil; d = false; each { |x| if !d && yield(x); r = x; d = true; end }; r; end\n"
+"  def to_a; r = []; each { |x| r << x }; r; end\n"
+"  def entries; r = []; each { |x| r << x }; r; end\n"
+"  def count; n = 0; each { |x| n += 1 }; n; end\n"
+"  def include?(v); f = false; each { |x| f = true if x == v }; f; end\n"
+"  def member?(v); f = false; each { |x| f = true if x == v }; f; end\n"
+"  def first(n = nil); if n.nil?; r = nil; g = false; each { |x| if !g; r = x; g = true; end }; r; else; r = []; c = 0; each { |x| if c < n; r << x; c += 1; end }; r; end; end\n"
+"  def reduce(a, b = nil); if b.nil?; acc = nil; f = true; each { |x| if f; acc = x; f = false; else; acc = acc.send(a, x); end }; acc; else; acc = a; each { |x| acc = acc.send(b, x) }; acc; end; end\n"
+"  def inject(a, b = nil); if b.nil?; acc = nil; f = true; each { |x| if f; acc = x; f = false; else; acc = acc.send(a, x); end }; acc; else; acc = a; each { |x| acc = acc.send(b, x) }; acc; end; end\n"
+"  def sum(init = 0); s = init; each { |x| s = s + x }; s; end\n"
+"  def min; r = nil; f = true; each { |x| if f; r = x; f = false; elsif x < r; r = x; end }; r; end\n"
+"  def max; r = nil; f = true; each { |x| if f; r = x; f = false; elsif x > r; r = x; end }; r; end\n"
+"  def min_by; r = nil; rk = nil; f = true; each { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif k < rk; r = x; rk = k; end }; r; end\n"
+"  def max_by; r = nil; rk = nil; f = true; each { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif k > rk; r = x; rk = k; end }; r; end\n"
+"  def sort; to_a.sort; end\n"
+"  def sort_by; a = []; each { |x| a << x }; a.sort_by { |x| yield(x) }; end\n"
+"  def all?; bg = block_given?; r = true; each { |x| r = false unless (bg ? yield(x) : x) }; r; end\n"
+"  def any?; bg = block_given?; r = false; each { |x| r = true if (bg ? yield(x) : x) }; r; end\n"
+"  def none?; bg = block_given?; r = true; each { |x| r = false if (bg ? yield(x) : x) }; r; end\n"
+"end\n";
+
 static void
 usage(FILE *fp)
 {
@@ -212,6 +249,14 @@ main(int argc, char *argv[])
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
 
+    /* Parse the Enumerable prelude first (registers its method bodies in the
+     * code repo so AOT bakes/swaps them too); run it after the AOT swap below.
+     * Captured here because koruby_toplevel_locals_cnt is overwritten by the
+     * user-program parse. */
+    NODE *prelude_ast = OPTION.dump_ast ? NULL
+                      : koruby_parse_source(c, KORUBY_PRELUDE, strlen(KORUBY_PRELUDE), "<prelude>");
+    uint32_t prelude_locals = koruby_toplevel_locals_cnt;
+
     NODE *ast = koruby_parse_source(c, src, src_len, src_name);
 
     if (OPTION.dump_ast) {
@@ -239,6 +284,19 @@ main(int argc, char *argv[])
                     "(hash mismatch or empty code store)\n");
             return 3;
         }
+    }
+
+    /* Run the Enumerable prelude in its own toplevel frame (self = a throwaway
+     * `main`), defining its methods on the global Enumerable module before the
+     * user program runs.  Bodies were registered in the code repo at parse time,
+     * so the AOT swap above already patched their dispatchers. */
+    if (prelude_ast) {
+        VALUE *pcur = c->slots + prelude_locals;
+        RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
+        if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); return 1; }
+        c->slots[prelude_locals - 1] = pm.value;
+        RESULT pr = EVAL(c, prelude_ast, pcur);
+        if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); return 1; }
     }
 
     /* Run.  Toplevel frame: locals at c->slots[0..L); the self cell is the
