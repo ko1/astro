@@ -559,34 +559,64 @@ node_if(CTX *c, NODE *n, VALUE *slots, VALUE cond@child, NODE *then_b, NODE *els
     return EVAL_ARG(c, else_b);
 }
 
-// begin/rescue/ensure (catch-all rescue only).  flags: bit0 has_rescue,
-// bit1 has_ensure, bit2 rescue binds `resc_var`.  resc/ensure_b are lit-nil
-// placeholders when absent (NODE* operands must be non-NULL).
+// begin/rescue/ensure.  flags: bit0 has_rescue, bit1 has_ensure.  `rescues` is
+// a node_rescue clause chain (lit-nil placeholder when no rescue); the chain
+// reads the live exception parked at slots[0] and either handles it or, via its
+// terminal node_reraise, re-propagates it.  `ensure_b` is lit-nil when absent.
+// (NODE* operands must be non-NULL.)
 NODE_DEF
-node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescue_class, NODE *resc, NODE *ensure_b, int32_t resc_var, uint32_t flags)
+node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescues, NODE *ensure_b, uint32_t flags)
 {
     (void)n;
     RESULT r;
     for (;;) {                                         /* loop only re-entered by `retry` */
         r = EVAL_ARG(c, body);
-        if ((flags & 1u) && r.state == KORB_RAISE) {   /* a rescue clause is present */
-            slots[0] = r.value;                        /* root the exception in scratch */
-            RESULT cr = EVAL(c, rescue_class, slots + 1);  /* the rescue's class (StandardError if bare) */
-            if (UNLIKELY(cr.state != KORB_NORMAL)) { r = cr; break; }
-            if (korb_exc_matches(c, slots[0], cr.value)) {
-                if (flags & 4u) slots[resc_var] = slots[0];  /* bind the exception local */
-                r = EVAL_ARG(c, resc);
-                if (r.state == KORB_RETRY) continue;   /* `retry` → re-run body (ensure not run yet) */
-            }
-            /* else: not matched → r stays RAISE (propagate) */
+        if ((flags & 1u) && r.state == KORB_RAISE) {   /* rescue clause(s) present */
+            slots[0] = r.value;                        /* park the exception in scratch (rooted) */
+            r = EVAL_ARG(c, rescues);                  /* clause chain handles or re-raises (same frame) */
+            if (r.state == KORB_RETRY) continue;       /* `retry` → re-run body (ensure not run yet) */
         }
         break;
     }
     if (flags & 2u) {                                  /* ensure: always runs */
-        RESULT er = EVAL_ARG(c, ensure_b);
+        /* Park the in-flight value (exception / return / normal result) at
+         * slots[0] and run the ensure body ONE slot up (slots+1, baked at
+         * chain+1) so a GC inside ensure forwards the parked value instead of
+         * leaving the C-local `r.value` stale; re-read it afterwards. */
+        slots[0] = r.value;
+        RESULT er = EVAL(c, ensure_b, slots + 1);
         if (er.state != KORB_NORMAL) return er;         /* ensure's raise/return wins */
+        r.value = slots[0];
     }
     return r;
+}
+
+// One rescue clause in a begin's rescue chain.  Runs in the begin frame with the
+// live exception parked at slots[0].  Evaluates `match` (the rescue class) above
+// the exception (slots+1); on korb_exc_matches it optionally binds the exception
+// local (flags bit0 → slots[resc_var]) and runs `body`, otherwise delegates to
+// `next` (the following clause, or node_reraise).  match/body/next are non-NULL.
+// `rescue A, B => e` chains two node_rescue sharing the same body+resc_var.
+NODE_DEF
+node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, int32_t resc_var, uint32_t flags)
+{
+    (void)n;
+    RESULT cr = EVAL(c, match, slots + 1);             /* rescue class (exception stays at slots[0]) */
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (korb_exc_matches(c, slots[0], cr.value)) {
+        if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
+        return EVAL_ARG(c, body);                       /* same frame; may clobber slots[0] */
+    }
+    return EVAL_ARG(c, next);                            /* try next clause / re-raise */
+}
+
+// Terminal of a rescue chain: no clause matched — re-propagate the exception
+// parked at slots[0] by the enclosing node_begin.
+NODE_DEF @nogc
+node_reraise(CTX *c, NODE *n, VALUE *slots)
+{
+    (void)c; (void)n;
+    return RESULT_RAISE_(slots[0]);
 }
 
 // `retry` — re-run the enclosing begin body from the top (valid only inside a

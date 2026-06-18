@@ -4252,14 +4252,26 @@ korb_sym_inspect_bare(const char *nm)
     return false;
 }
 
-/* Range: "1..5" / "1...5"; endpoints to_s for to_s, inspect for inspect. */
+/* Range: "1..5" / "1...5"; endpoints to_s for to_s, inspect for inspect.
+ * For inspect, an unbounded (nil) endpoint is elided — CRuby prints beg unless
+ * (beg nil && end non-nil), and end unless (end nil && beg non-nil): so
+ * (1..) => "1..", (..5) => "..5", but (nil..nil) => "nil..nil".  to_s renders
+ * both endpoints via to_s, where nil.to_s == "" (so (nil..nil) => ".."). */
 static void
 korb_fprint_range(CTX *c, FILE *fp, VALUE v, bool insp)
 {
     const KorbRange *r = VAL2RANGE(v);
-    if (insp) korb_fprint_inspect(c, fp, r->rbegin); else korb_fprint_to_s(c, fp, r->rbegin);
-    fputs(r->exclude_end ? "..." : "..", fp);
-    if (insp) korb_fprint_inspect(c, fp, r->rend); else korb_fprint_to_s(c, fp, r->rend);
+    const bool beg_nil = (r->rbegin == KORB_NIL), end_nil = (r->rend == KORB_NIL);
+    if (insp) {
+        if (!beg_nil || end_nil) korb_fprint_inspect(c, fp, r->rbegin);
+        fputs(r->exclude_end ? "..." : "..", fp);
+        if (!end_nil || beg_nil) korb_fprint_inspect(c, fp, r->rend);
+    }
+    else {
+        korb_fprint_to_s(c, fp, r->rbegin);
+        fputs(r->exclude_end ? "..." : "..", fp);
+        korb_fprint_to_s(c, fp, r->rend);
+    }
 }
 
 /* Array renders identically for to_s and inspect: "[1, 2, \"x\"]" — elements
