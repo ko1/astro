@@ -635,6 +635,14 @@ struct CTX_struct {
                               * recurses on the C stack, so frame push checks
                               * this too (CRuby-style machine stack check) */
     struct ASTroGC *astro_gc;
+    /* Non-local-return target: the home method frame base a block's `return`
+     * should unwind to (NULL = a plain method-level return, consumed by the
+     * nearest method).  A method boundary consumes KORB_RETURN only when this is
+     * NULL or equals its own frame base, else it propagates — so a block's
+     * `return` skips intermediate USER methods (e.g. Enumerable#find via each).
+     * It is a transient stack pointer: set the instant a return is raised and
+     * cleared when consumed; never read across a GC. */
+    VALUE *return_target;
     struct korb_vm *vm;
 };
 

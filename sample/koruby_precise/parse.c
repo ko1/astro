@@ -1799,19 +1799,30 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_RETURN_NODE: {
         const pm_return_node_t *rn = (const pm_return_node_t *)node;
+        /* A `return` inside a block targets the enclosing METHOD (non-local).
+         * Find it (method_mid != 0), counting intervening block frames as the
+         * env depth; depth 0 (method top-level or no method) → plain return. */
+        struct kp_frame *mf = tc->frame;
+        uint32_t depth = 0;
+        while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
+        if (mf->method_mid == 0) depth = 0;
+        const size_t nargs = rn->arguments ? rn->arguments->arguments.size : 0;
+        if (depth == 0) {
+            NODE *v;
+            if (nargs == 0)      v = lit_nil();
+            else if (nargs == 1) v = transduce(tc, rn->arguments->arguments.nodes[0]);
+            else { v = build_array(tc, rn->arguments->arguments.nodes, nargs, (uint32_t)nargs); }
+            return ALLOC_node_return(v);
+        }
+        /* node_return_outer reads this block frame's PREV cell (prev_off, like
+         * node_ivar_set's self_off — a VALUE @child reserves no sibling slot). */
         NODE *v;
-        if (rn->arguments == NULL || rn->arguments->arguments.size == 0) {
-            v = lit_nil();
-        }
-        else if (rn->arguments->arguments.size == 1) {
-            v = transduce(tc, rn->arguments->arguments.nodes[0]);
-        }
-        else {
-            /* `return a, b, ...` → return the values as an Array. */
-            size_t cnt = rn->arguments->arguments.size;
-            v = build_array(tc, rn->arguments->arguments.nodes, cnt, (uint32_t)cnt);
-        }
-        return ALLOC_node_return(v);
+        if (nargs == 0)      v = lit_nil();
+        else if (nargs == 1) v = transduce(tc, rn->arguments->arguments.nodes[0]);
+        else { v = build_array(tc, rn->arguments->arguments.nodes, nargs, (uint32_t)nargs); }
+        NODE *ro = ALLOC_node_return_outer(-1 - tc->chain, depth, v);
+        bake_add(tc, &ro->u.node_return_outer.prev_off);
+        return ro;
       }
 
       /* ---- blocks ---- */

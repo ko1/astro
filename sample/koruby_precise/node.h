@@ -235,6 +235,7 @@ RESULT korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                   VALUE block_entry, VALUE def_env, VALUE *captured_self);
 RESULT korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
                         VALUE prev_handle, uint32_t depth, int32_t trio_base);
+VALUE *korb_outer_frame_base(VALUE prev_handle, uint32_t depth);
 
 /* node_entry field accessors (block body metadata) — defined in node.def's
  * node_entry struct; korb_yield reads them off the node_entry NODE. */

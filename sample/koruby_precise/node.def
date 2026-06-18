@@ -693,10 +693,27 @@ node_break(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
     return RESULT_BREAK_(v);
 }
 
+// `return v` at method top-level: a nearest-method return (target = NULL → the
+// enclosing korb_invoke_method consumes it).
 NODE_DEF @nogc
 node_return(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
 {
-    (void)c; (void)n; (void)slots;
+    (void)n; (void)slots;
+    c->return_target = NULL;
+    return RESULT_RETURN_(v);
+}
+
+// `return v` from INSIDE a block: a non-local return aimed at the lexically
+// enclosing METHOD (Ruby semantics).  `prev_off`/`depth` reach that method's
+// frame base via the env chain (like node_yield_outer); set it as the return
+// target so intermediate USER methods (e.g. Enumerable#find calling the
+// includer's each) propagate the return instead of consuming it.  An escaped
+// chain (home frame gone) falls back to nearest-method (target NULL).
+NODE_DEF @nogc
+node_return_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, VALUE v@child)
+{
+    (void)n;
+    c->return_target = korb_outer_frame_base(slots[prev_off], depth);
     return RESULT_RETURN_(v);
 }
 

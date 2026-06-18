@@ -1645,7 +1645,15 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     }
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
-    if (r.state == KORB_RETURN) r.state = KORB_NORMAL;
+    if (r.state == KORB_RETURN) {
+        /* Consume only a return targeted at this method (NULL = nearest-method,
+         * the common case) — a block's `return` aimed at an outer method passes
+         * through unchanged. */
+        if (c->return_target == NULL || c->return_target == base) {
+            r.state = KORB_NORMAL;
+            c->return_target = NULL;
+        }
+    }
     else if (UNLIKELY(r.state == KORB_RAISE)) {
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
@@ -1681,7 +1689,15 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     (void)def_class;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
-    if (r.state == KORB_RETURN) r.state = KORB_NORMAL;
+    if (r.state == KORB_RETURN) {
+        /* Consume only a return targeted at this method (NULL = nearest-method,
+         * the common case) — a block's `return` aimed at an outer method passes
+         * through unchanged. */
+        if (c->return_target == NULL || c->return_target == base) {
+            r.state = KORB_NORMAL;
+            c->return_target = NULL;
+        }
+    }
     else if (UNLIKELY(r.state == KORB_RAISE)) {
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
@@ -3002,6 +3018,23 @@ korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
         node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
     }
     return korb_yield(c, slots, argc, line, node[trio_base], node[trio_base + 1], &node[trio_base + 2]);
+}
+
+/* Walk `depth` env links (like node_eget / korb_yield_outer) to the enclosing
+ * method frame's base — the target a block's `return` must unwind to.  Returns
+ * NULL for an escaped (KorbEnv) chain (home frame gone), in which case the
+ * return falls back to nearest-method semantics. */
+VALUE *
+korb_outer_frame_base(VALUE prev_handle, uint32_t depth)
+{
+    if ((prev_handle & 1u) == 0) return NULL;
+    VALUE *node = (VALUE *)(uintptr_t)(prev_handle & ~(uintptr_t)1u);
+    for (uint32_t k = 1; k < depth; k++) {
+        const VALUE h = node[-1];
+        if ((h & 1u) == 0) return NULL;
+        node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+    }
+    return node;
 }
 
 /* ---------------------------------------------------------------------------
