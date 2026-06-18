@@ -727,17 +727,22 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int base = 10;
+    bool have_base = false;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* to_i(base): base 0 = auto-detect prefix */
         intptr_t b;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        base = (int)b;
-        if (UNLIKELY(base != 0 && (base < 2 || base > 36))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
+        base = (int)b; have_base = true;
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const char *const d = s->buf->data; uint32_t i = 0, end = s->len;
     while (i < end && korb_is_ws((unsigned char)d[i])) i++;
     intptr_t sign = 1;
     if (i < end && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
+    /* CRuby validates the radix only once there is a digit to parse: a blank /
+     * sign-only string returns 0 regardless of an otherwise-invalid radix. */
+    if (i >= end) return RESULT_OK(LONG2FIX(0));
+    if (UNLIKELY(have_base && base != 0 && (base < 2 || base > 36)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
     if (i + 1 < end && d[i] == '0') {                /* base prefix */
         const char p = d[i + 1] | 0x20;
         const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
