@@ -227,12 +227,18 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE pos0 = VALUE_SLICE_LEN(a) > base ? VALUE_SLICE_GET(a, base) : KORB_NIL;
     if (KORB_RANGE_P(pos0)) {
         const KorbRange *r = VAL2RANGE(pos0);
-        intptr_t b, e;
-        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        intptr_t b = 0, e;
+        if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &b)))   /* beginless → 0 */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (b < 0) b += n;
-        if (e < 0) e += n;
         if (b < 0) b = 0;
-        beg = b; len = (r->exclude_end ? e - 1 : e) - b + 1; have_len = true;
+        if (r->rend == KORB_NIL) {                       /* endless range → to end of array */
+            beg = b; len = n - b; have_len = true;
+        } else {
+            if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (e < 0) e += n;
+            beg = b; len = (r->exclude_end ? e - 1 : e) - b + 1; have_len = true;
+        }
     } else {
         if (pos0 != KORB_NIL) {
             if (UNLIKELY(!korb_to_index(pos0, &beg))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos0));

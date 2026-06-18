@@ -4860,6 +4860,29 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(n > 0 ? VALUE_SLICE_GET(args, 0) : KORB_NIL);
 }
 
+/* Kernel#eval(string) — parse + run the string as a program in a fresh frame
+ * (self = a throwaway `main`).  No caller-binding/lvar access (M0 minimal): the
+ * eval'd code sees its own locals + a fresh self, which suffices for the common
+ * literal/expression eval (e.g. eval("(1..)")). */
+static RESULT
+korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+    const VALUE sv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(sv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    const KorbString *s = VAL2STR(sv);
+    NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
+    const uint32_t locals = koruby_toplevel_locals_cnt;
+    VALUE *const cur = slots + locals;                  /* the eval program's body cursor */
+    memset(slots, 0, (size_t)locals * sizeof(VALUE));   /* zero its locals */
+    RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
+    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+    slots[locals - 1] = mr.value;                       /* self cell (frame top) */
+    return EVAL(c, ast, cur);
+}
+
 /* strict string→integer parse for Integer():  optional surrounding whitespace,
  * sign, base prefix (0x/0b/0o/0d, leading-0 octal when base auto), and `_`
  * digit separators (single, between digits).  base==0 = auto-detect.  Returns
@@ -5181,6 +5204,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
