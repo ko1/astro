@@ -125,6 +125,17 @@ static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
 }
+/* Proc#arity: #required positional, negated as -(req+1) when optional/rest make
+ * it variable.  (Symbol#to_proc → -2, matching CRuby.) */
+static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
+    if (p->iseq == NULL) return RESULT_OK(LONG2FIX(-2));   /* symbol proc */
+    const NODE *e = p->iseq;
+    const bool variable = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+    const uint32_t reqc = variable ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
+    return RESULT_OK(LONG2FIX(variable ? -((intptr_t)reqc + 1) : (intptr_t)reqc));
+}
 static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(ID2SYM(VAL2METH(VALUE_REF_GET(self))->mid));
 }

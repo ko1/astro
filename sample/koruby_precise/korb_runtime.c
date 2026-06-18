@@ -1247,13 +1247,22 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     const uint16_t *ns = (const uint16_t *)entry->u.node_entry.cap_ns;
     if (depth > 64) depth = 64;                          /* sanity bound on nesting */
     VALUE *bases[64];
+    /* Walk the PREV chain (slots base[-1], odd-tagged for a live frame).  An
+     * ancestor that already escaped has an even KorbEnv* there — its chain is
+     * already materialized, so stop and reuse it as the outer env (do NOT treat
+     * the KorbEnv pointer as a slots base — that was the deep-capture bug). */
     bases[0] = def_env;                                  /* immediate enclosing scope locals */
-    for (uint32_t k = 1; k < depth; k++)                 /* walk PREV (slots base[-1], tagged) */
-        bases[k] = (VALUE *)(uintptr_t)((uintptr_t)bases[k-1][-1] & ~(uintptr_t)1u);
-    /* materialize outermost -> innermost, sharing via the open-env table.
-     * slots[1] holds the current outer env (rooted across each alloc). */
-    slots[1] = 0;
-    for (int k = (int)depth - 1; k >= 0; k--) {
+    uint32_t nlive = 1;
+    VALUE outer_env = 0;                                 /* existing KorbEnv chain to graft, or 0 */
+    for (uint32_t k = 1; k < depth; k++) {
+        const VALUE pv = bases[k-1][-1];
+        if (pv & 1u) { bases[k] = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u); nlive++; }
+        else { outer_env = pv; break; }                 /* reached an already-materialized KorbEnv */
+    }
+    /* materialize the live levels outermost -> innermost, grafting onto
+     * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
+    slots[1] = outer_env;
+    for (int k = (int)nlive - 1; k >= 0; k--) {
         KorbEnv *existing = korb_open_env_find(c->vm, bases[k]);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share */
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
@@ -4226,6 +4235,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);

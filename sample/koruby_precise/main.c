@@ -52,6 +52,13 @@ static const char *const KORUBY_PRELUDE =
 "  def all?; bg = block_given?; each { |x| return false unless (bg ? yield(x) : x) }; true; end\n"
 "  def any?; bg = block_given?; each { |x| return true if (bg ? yield(x) : x) }; false; end\n"
 "  def none?; bg = block_given?; each { |x| return false if (bg ? yield(x) : x) }; true; end\n"
+"end\n"
+"class Proc\n"
+"  def curry(n = (arity < 0 ? -arity - 1 : arity))\n"
+"    acc = nil\n"
+"    acc = ->(got) { got.length >= n ? call(*got) : ->(*more) { acc.call(got + more) } }\n"
+"    acc.call([])\n"
+"  end\n"
 "end\n";
 
 static void
