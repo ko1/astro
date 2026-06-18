@@ -3881,6 +3881,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "size", korb_m_sym_len, 0);
 
     /* nil */
+    /* `=~` with a non-Regexp operand (or non-String receiver) → nil; the shared
+     * String#=~ helper already returns nil unless both sides are Regexp+String. */
+    korb_def_cmethod(c, KORB_C_NIL, "=~", korb_m_str_match_op, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "=~", korb_m_str_match_op, 1);
     korb_def_cmethod(c, KORB_C_NIL, "to_s", korb_m_nil_to_s, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_a", korb_m_nil_to_a, 0);
