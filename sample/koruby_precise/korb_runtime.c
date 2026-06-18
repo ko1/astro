@@ -3340,6 +3340,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_NIL, "to_s", korb_m_nil_to_s, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_a", korb_m_nil_to_a, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "to_r", korb_m_nil_to_r, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "rationalize", korb_m_nil_to_r, -1);   /* ignores optional eps */
+    korb_def_cmethod(c, KORB_C_NIL, "to_f", korb_m_nil_to_f, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "to_h", korb_m_nil_to_h, 0);
+    korb_def_cmethod(c, KORB_C_NIL, "to_c", korb_m_nil_to_c, 0);
     korb_def_cmethod(c, KORB_C_NIL, "nil?", korb_m_nil_nil_q, 0);
     korb_def_cmethod(c, KORB_C_NIL, "&", korb_m_bool_false_and, 1);
     korb_def_cmethod(c, KORB_C_NIL, "|", korb_m_bool_false_or, 1);
