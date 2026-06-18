@@ -539,6 +539,34 @@ static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if ((unsigned char)s->buf->data[i] >= 0x80) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
+static bool korb_str_pure_ascii(const KorbString *s) {
+    for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)s->buf->data[i] >= 0x80) return false;
+    return true;
+}
+/* Unicode normalization: for a pure-ASCII string every NF{,K}{C,D} form is the
+ * identity, so this is exact for the (all-ASCII) corpus; the table-driven
+ * general case is out of scope → NotImplementedError on non-ASCII input. */
+static RESULT korb_m_str_unicode_normalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
+    if (UNLIKELY(!korb_str_pure_ascii(VAL2STR(VALUE_REF_GET(self)))))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Unicode normalization of non-ASCII strings is not supported");
+    KorbString *const r = korb_str_alloc(c, slots, len);          /* may move self */
+    memcpy(r->buf->data, VAL2STR(VALUE_REF_GET(self))->buf->data, len);   /* re-read after alloc */
+    return RESULT_OK((VALUE)r);
+}
+static RESULT korb_m_str_unicode_normalized_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (UNLIKELY(!korb_str_pure_ascii(VAL2STR(VALUE_REF_GET(self)))))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Unicode normalization of non-ASCII strings is not supported");
+    return RESULT_OK(KORB_TRUE);                                  /* pure ASCII is already normalized */
+}
+static RESULT korb_m_str_unicode_normalize_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (UNLIKELY(!korb_str_pure_ascii(VAL2STR(VALUE_REF_GET(self)))))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Unicode normalization of non-ASCII strings is not supported");
+    return RESULT_OK(VALUE_REF_GET(self));                        /* ASCII → unchanged, returns self */
+}
 /* rpartition(sep) → [before, sep, after] split at the LAST occurrence of sep. */
 static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_SLICE_GET(a, 0);

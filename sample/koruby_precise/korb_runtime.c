@@ -3878,6 +3878,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "squeeze!", korb_m_str_squeeze_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "append_as_bytes", korb_m_str_append_as_bytes, -1);
     korb_def_cmethod(c, KORB_C_STRING, "ascii_only?", korb_m_str_ascii_only, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "unicode_normalize", korb_m_str_unicode_normalize, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "unicode_normalized?", korb_m_str_unicode_normalized_q, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "unicode_normalize!", korb_m_str_unicode_normalize_bang, -1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_prefix", korb_m_str_delete_prefix, 1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_suffix", korb_m_str_delete_suffix, 1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_prefix!", korb_m_str_delete_prefix_b, 1);
@@ -4382,6 +4385,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scan", korb_m_str_scan, 1);
     korb_def_cmethod(c, KORB_C_STRING, "unpack", korb_m_str_unpack, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "unpack1", korb_m_str_unpack1, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_match_q, 1);

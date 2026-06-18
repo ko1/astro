@@ -150,9 +150,10 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     #undef PK_PUTS
 }
 
-/* String#unpack — minimal: J/j/Q/q (8-byte little-endian integer), P/p (pointer
- * deref is meaningless under a moving GC → nil).  Unknown directives push nil
- * rather than raise (keeps spec files from aborting). */
+/* String#unpack — a/A/Z (strings), x (skip), C/c (byte), J/j/Q/q (8-byte LE int),
+ * P/p (pointer deref → nil, meaningless under a moving GC).  Unknown directives
+ * push nil rather than raise.  slots[0]=template, slots[1]=subject (both re-read
+ * after each result push, which may move them). */
 static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE tv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(tv)))
@@ -171,13 +172,35 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         else if (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') {
             cnt = 0; while (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') cnt = cnt * 10 + (t->buf->data[ti++] - '0');
         }
-        if (d == 'J' || d == 'j' || d == 'Q' || d == 'q') {
-            const long reps = star ? (long)((VAL2STR(slots[1])->len - si) / 8) : cnt;
+        const uint32_t slen = VAL2STR(slots[1])->len;
+        if (d == 'a' || d == 'A' || d == 'Z') {          /* string slice (one value) */
+            uint32_t avail = slen - si;
+            uint32_t take = star ? avail : ((uint32_t)cnt < avail ? (uint32_t)cnt : avail);
+            uint32_t vlen = take;
+            if (d == 'Z') { for (uint32_t k = 0; k < take; k++) if (VAL2STR(slots[1])->buf->data[si + k] == '\0') { vlen = k; break; } }
+            else if (d == 'A') { while (vlen > 0) { char ch = VAL2STR(slots[1])->buf->data[si + vlen - 1]; if (ch == ' ' || ch == '\0') vlen--; else break; } }
+            KorbString *r = korb_str_alloc(c, slots + 3, vlen);   /* may move slots[0..2] */
+            memcpy(r->buf->data, VAL2STR(slots[1])->buf->data + si, vlen);   /* re-read subject */
+            slots[3] = (VALUE)r;
+            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            si += take;
+        } else if (d == 'x') {                            /* skip bytes (no value) */
+            uint32_t skip = star ? (slen - si) : (uint32_t)cnt;
+            if (UNLIKELY(si + skip > slen)) return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "x outside of string");
+            si += skip;
+        } else if (d == 'C' || d == 'c') {                /* unsigned / signed byte */
+            const long reps = star ? (long)(slen - si) : cnt;
             for (long r = 0; r < reps; r++) {
-                const KorbString *s = VAL2STR(slots[1]);
+                if (si >= VAL2STR(slots[1])->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }
+                int b = (unsigned char)VAL2STR(slots[1])->buf->data[si++];
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX(d == 'c' ? (int8_t)b : b)));
+            }
+        } else if (d == 'J' || d == 'j' || d == 'Q' || d == 'q') {   /* 8-byte LE int */
+            const long reps = star ? (long)((slen - si) / 8) : cnt;
+            for (long r = 0; r < reps; r++) {
                 uint64_t v = 0;
-                for (int k = 0; k < 8; k++) { if (si < s->len) v |= (uint64_t)(unsigned char)s->buf->data[si] << (8 * k); si++; }
-                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));   /* may move slots[0..2] */
+                for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); if (si < s->len) v |= (uint64_t)(unsigned char)s->buf->data[si] << (8 * k); si++; }
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
             }
         } else {                                          /* P/p and anything else → nil */
             const long reps = star ? 0 : cnt;
@@ -185,6 +208,13 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
     }
     return RESULT_OK(VALUE_REF_GET(res));
+}
+/* String#unpack1(template) — the first value of unpack (or nil). */
+static RESULT korb_m_str_unpack1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT r = korb_m_str_unpack(c, slots, self, a);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    const KorbArray *arr = VAL2ARY(r.value);
+    return RESULT_OK(arr->len > 0 ? arr->items->data[0] : KORB_NIL);
 }
 
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
