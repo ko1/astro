@@ -856,16 +856,148 @@ static VALUE korb_member_ivar_sym(struct korb_vm *vm, VALUE member_sym) {
  * a trailing keyword_init: hash is ignored (minimal). */
 static inline VALUE korb_builtin_class_obj(const struct korb_vm *vm, enum korb_class e);
 
-static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a) {
+static struct korb_method *korb_class_method_slot(KorbClass *k, uint32_t mid);   /* fwd (defined below) */
+/* add a CFUNC method to a specific class object (struct classes get these). */
+static void korb_class_def_cfn(CTX *c, VALUE klass, const char *name, korb_method_fn fn, int32_t arity) {
+    struct korb_method *m = korb_class_method_slot(VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
+    m->kind = KORB_METHOD_CFUNC; m->uses_block = 0; m->params_cnt = arity;
+    m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass;
+    c->vm->method_serial++;
+}
+static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_method_blk_fn fn, int32_t arity) {
+    struct korb_method *m = korb_class_method_slot(VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
+    m->kind = KORB_METHOD_CFUNC; m->uses_block = 1; m->params_cnt = arity;
+    m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass;
+    c->vm->method_serial++;
+}
+/* Struct instance methods — read the receiver's class `members` + the matching
+ * @ivars.  `members` is rooted in slots[1]; korb_ivar_get does not allocate. */
+#define STRUCT_MEMBERS(selfref) VAL2CLASS(VAL2OBJ(VALUE_REF_GET(selfref))->klass)->members
+static RESULT korb_m_struct_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = STRUCT_MEMBERS(self);                            /* members (rooted, below the alloc scratch) */
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));          /* result */
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE iv = korb_member_ivar_sym(c->vm, VAL2ARY(slots[0])->items->data[i]);
+        CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ivar_get(c, VALUE_REF_GET(self), iv)));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_struct_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = STRUCT_MEMBERS(self);
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_hash_new(c, slots + 1, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) {
+        slots[2] = VAL2ARY(slots[0])->items->data[i];              /* member sym (key, rooted) */
+        VALUE iv = korb_member_ivar_sym(c->vm, slots[2]);
+        slots[3] = korb_ivar_get(c, VALUE_REF_GET(self), iv);      /* value (rooted) */
+        CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_struct_members(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = STRUCT_MEMBERS(self);
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[0])->items->data[i]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE mems = STRUCT_MEMBERS(self);
+    const KorbArray *mem = VAL2ARY(mems);
+    VALUE k = VALUE_SLICE_GET(a, 0);
+    if (FIXNUM_P(k)) {
+        intptr_t i = FIX2LONG(k); if (i < 0) i += mem->len;
+        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)FIX2LONG(k), mem->len);
+        return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
+    }
+    uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : (KORB_STRING_P(k) ? korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len) : 0);
+    for (uint32_t i = 0; i < mem->len; i++)
+        if (SYM2ID(mem->items->data[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
+    return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", SYMBOL_P(k) ? korb_sym_name(c->vm, sym) : "?");
+}
+static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
+    VALUE k = VALUE_SLICE_GET(a, 0), v = VALUE_SLICE_GET(a, 1);
+    intptr_t idx = -1;
+    if (FIXNUM_P(k)) { intptr_t i = FIX2LONG(k); if (i < 0) i += mem->len; idx = i; }
+    else { uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : (KORB_STRING_P(k) ? korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len) : 0);
+           for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(mem->items->data[i]) == sym) { idx = i; break; } }
+    if (UNLIKELY(idx < 0 || (uint32_t)idx >= mem->len)) return korb_raise(c, slots, KORB_E_NAME, 0, "no such struct member");
+    slots[0] = v;
+    CHECK(korb_ivar_set(c, slots + 1, self, korb_member_ivar_sym(c->vm, mem->items->data[idx]), slots[0]));
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);                /* fwd (enumerator.c) */
+static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);         /* fwd */
+static RESULT korb_m_struct_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) {
+        slots[0] = UNWRAP(korb_m_struct_to_a(c, slots, self, a));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
+        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
+    slots[1] = STRUCT_MEMBERS(self);
+    const uint32_t n = VAL2ARY(slots[1])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE iv = korb_member_ivar_sym(c->vm, VAL2ARY(slots[1])->items->data[i]);
+        VALUE val = korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &val, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_struct_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) {
+        slots[0] = UNWRAP(korb_m_struct_to_a(c, slots, self, a));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "map"));
+        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
+    slots[0] = STRUCT_MEMBERS(self);                         /* members (rooted, below alloc scratch) */
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));        /* result (rooted) */
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) {
+        VALUE iv = korb_member_ivar_sym(c->vm, VAL2ARY(slots[0])->items->data[i]);
+        VALUE val = korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &val, 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[2] = r.value;
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_OBJECT_P(o) || VAL2OBJ(o)->klass != VAL2OBJ(VALUE_REF_GET(self))->klass) return RESULT_OK(KORB_FALSE);
+    const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
+    for (uint32_t i = 0; i < mem->len; i++) {
+        VALUE iv = korb_member_ivar_sym(c->vm, mem->items->data[i]);
+        if (!korb_value_eq(korb_ivar_get(c, VALUE_REF_GET(self), iv), korb_ivar_get(c, o, iv))) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
+    bool kwinit = false;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
+        if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
+            int32_t ki = korb_hash_find(VAL2HASH(sym), ID2SYM(korb_intern(vm, "keyword_init", 12)));
+            if (ki >= 0 && KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1])) kwinit = true;
+            continue;
+        }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
-        if (!SYMBOL_P(sym)) continue;                          /* skip keyword_init: hash etc. */
+        if (!SYMBOL_P(sym)) continue;
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
         snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
@@ -874,6 +1006,28 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a) {
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
+    /* common Struct instance methods (read members + @ivars generically).
+     * korb_class_def_cfn interns the name → may GC → re-read the class from the
+     * rooted `cls` slot each call (never hold it in a bare C-local across them). */
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_ary", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]", korb_m_struct_aref, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
+    VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit ? 1 : 0;
+    if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
+        slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
+        RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+    }
     return RESULT_OK(VALUE_REF_GET(cls));
 }
 
@@ -2883,15 +3037,21 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
         if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
-            return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));   /* Struct.new(*members) → class */
-        if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) → positional init */
+            return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
+        if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
             slots[0] = obj;
+            const bool kwinit = VAL2CLASS(*recv_slot)->struct_kwinit && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]);
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (i >= mem->len) break;
-                slots[1] = (i < argc) ? slots[-(intptr_t)argc + (intptr_t)i] : KORB_NIL;
                 VALUE iv = korb_member_ivar_sym(vm, mem->items->data[i]);
+                if (kwinit) {                              /* keyword_init: pull member by name from the kwargs hash */
+                    int32_t hi = korb_hash_find(VAL2HASH(slots[-(intptr_t)argc]), mem->items->data[i]);
+                    slots[1] = hi >= 0 ? VAL2HASH(slots[-(intptr_t)argc])->items->data[2*hi+1] : KORB_NIL;
+                } else {
+                    slots[1] = (i < argc) ? slots[-(intptr_t)argc + (intptr_t)i] : KORB_NIL;
+                }
                 CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[0]), iv, slots[1]));
             }
             return RESULT_OK(slots[0]);
