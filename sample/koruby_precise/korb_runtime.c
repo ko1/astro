@@ -2348,6 +2348,14 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         while (KORB_CLASS_P(cls)) { if (cls == pat) return true; cls = VAL2CLASS(cls)->superclass; }
         return false;
     }
+    if (KORB_REGEXP_P(pat)) {                             /* Regexp#=== : whole-match against a String */
+        if (!KORB_STRING_P(val)) return false;
+        const korb_re_fn_t fn = korb_re_load(c->vm);
+        if (UNLIKELY(fn == NULL)) return false;
+        const KorbString *const p = VAL2STR(VAL2RE(pat)->source), *const s = VAL2STR(val);
+        long ms = 0, me = 0;
+        return fn(p->buf->data, p->len, s->buf->data, s->len, VAL2RE(pat)->ci, &ms, &me) == 1;
+    }
     return korb_value_eq(pat, val);
 }
 
