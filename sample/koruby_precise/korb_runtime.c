@@ -3460,6 +3460,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&base[i]), base[i+1]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] &&
+             mid == korb_intern(vm, "try_convert", 11)) {                  /* Array.try_convert(obj) */
+        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        return RESULT_OK(KORB_ARRAY_P(arg) ? arg : KORB_NIL);              /* no to_ary coercion of arbitrary objects */
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
@@ -4038,6 +4043,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "append", korb_m_ary_push, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "pop", korb_m_ary_pop, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "include?", korb_m_ary_include, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "sample", korb_m_ary_sample, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "shuffle", korb_m_ary_shuffle, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse!", korb_m_ary_reverse_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
@@ -4084,7 +4091,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "compact!", korb_m_ary_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "slice!", korb_m_ary_slice_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq_b, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "uniq!", korb_m_ary_uniq_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten!", korb_m_ary_flatten_b, -1);

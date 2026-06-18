@@ -938,6 +938,29 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Array#uniq — block form dedups by yield(x); keeps the first element per key. */
+static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_m_ary_uniq(c, slots, self, a);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, SELF_ARY->len));       /* result */
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));              /* seen keys */
+    VALUE_REF keys = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; ; i++) {
+        if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;
+        slots[2] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* element */
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[3] = r.value;                                        /* key */
+        bool seen = false;
+        const KorbArray *ks = VAL2ARY(VALUE_REF_GET(keys));
+        for (uint32_t j = 0; j < ks->len; j++) if (korb_value_eql(ks->items->data[j], slots[3])) { seen = true; break; }
+        if (!seen) {
+            CHECK(korb_ary_push_val(c, slots + 4, keys, slots[3]));
+            CHECK(korb_ary_push_val(c, slots + 4, dst, slots[2]));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 
 /* recursive flatten helper: append all leaves of `src` into dst */
 /* depth-limited flatten: depth<0 = full, 0 = copy as-is, >0 = that many levels. */

@@ -196,6 +196,26 @@ static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if ((uint32_t)n > len) n = len;
     return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
 }
+/* Array#sample([n][, random:]) — deterministic subset of the spec: empty → nil,
+ * sample(0) → [], sample(n) → first n.  True randomness needs an exact MT19937
+ * (out of scope); a trailing kwargs Hash (random:) is accepted and ignored. */
+static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t argc = VALUE_SLICE_LEN(a);
+    if (argc >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, argc - 1))) argc--;   /* drop random: kwargs */
+    const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    if (argc == 0) return RESULT_OK(len ? VAL2ARY(VALUE_REF_GET(self))->items->data[0] : KORB_NIL);
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative sample number");
+    if ((uint32_t)n > len) n = len;
+    return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
+}
+/* Array#shuffle([random:]) — copy (a faithful shuffle needs an exact MT19937,
+ * out of scope); the trailing kwargs Hash is accepted and ignored. */
+static RESULT korb_m_ary_shuffle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    return korb_ary_subseq(c, slots, self, 0, VAL2ARY(VALUE_REF_GET(self))->len);
+}
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     intptr_t n;

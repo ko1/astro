@@ -59,6 +59,10 @@ static const char *const KORUBY_PRELUDE =
 "    acc = ->(got) { got.length >= n ? call(*got) : ->(*more) { acc.call(got + more) } }\n"
 "    acc.call([])\n"
 "  end\n"
+"end\n"
+"class Random\n"                       /* stub: faithful MT19937 sequence is out of scope */
+"  def initialize(seed = nil); @seed = seed; end\n"
+"  def seed; @seed; end\n"
 "end\n";
 
 static void
