@@ -516,6 +516,24 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
         return RESULT_OK(VALUE_REF_GET(aref));
     }
     if (val == KORB_NIL) return RESULT_OK(VALUE_REF_GET(aref));
+    /* `*obj` for an object with a to_a (e.g. Struct) spreads its elements
+     * (Ruby `[*x]` / `a, b = *x` semantics); otherwise `*x` is just `[x]`. */
+    if (KORB_OBJECT_P(val)) {
+        const uint32_t to_a_mid = korb_intern(c->vm, "to_a", 4);
+        if (korb_responds_to(c, val, to_a_mid)) {
+            VALUE_REF vr = SLOTS_PUSH(slots, val);       /* root recv across the send */
+            RESULT ta = korb_send(c, slots, to_a_mid, 0, 0);
+            if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+            if (KORB_ARRAY_P(ta.value)) {
+                VALUE_REF_SET(vr, ta.value);             /* reuse the rooted slot for the array */
+                uint32_t n = VAL2ARY(VALUE_REF_GET(vr))->len;
+                for (uint32_t i = 0; i < n; i++)
+                    CHECK(korb_ary_push_val(c, slots, aref, VAL2ARY(VALUE_REF_GET(vr))->items->data[i]));
+                return RESULT_OK(VALUE_REF_GET(aref));
+            }
+            return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));   /* to_a not an Array → [x] */
+        }
+    }
     return korb_ary_push_val(c, slots, aref, val);
 }
 
@@ -1330,6 +1348,10 @@ void
 korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
 {
     struct korb_vm *const vm = c->vm;
+    /* Ruby: assigning an anonymous class/module to a constant names it after
+     * that constant (the first such assignment wins). */
+    if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0)
+        VAL2CLASS(val)->name_sym = name_sym;
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == name_sym) { vm->const_vals[i] = val; return; }
     if (vm->const_cnt == vm->const_capa) {
