@@ -1,6 +1,7 @@
 /* koruby_precise — array.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Array methods ------------------------------------------------------- */
+static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode);   /* enumerator.c */
 
 static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
 static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }

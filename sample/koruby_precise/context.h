@@ -207,8 +207,11 @@ typedef struct KorbComplex {
 typedef struct KorbEnumerator {
     AroObjectHeader head;            /* KORB_OBJ_ENUMERATOR */
     uint32_t cursor;
+    uint8_t  mode;                   /* 0 eager (values materialized), 1 lazy, 2 cycle */
     VALUE ARO_GC_EDGE values;
     VALUE ARO_GC_EDGE desc;
+    VALUE ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */
+    VALUE ARO_GC_EDGE ops;           /* lazy: Array of [op_sym, block_proc] pairs */
 } KorbEnumerator;
 
 /* Enumerator::ArithmeticSequence — a lazy step/% sequence.  `recv` is the begin
@@ -776,6 +779,8 @@ struct CTX_struct {
         KorbEnumerator *_en = (KorbEnumerator *)(payload);                   \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->values);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->desc);                   \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->source);                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->ops);                    \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

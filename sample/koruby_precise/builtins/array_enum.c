@@ -1,6 +1,7 @@
 /* koruby_precise — array_enum.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Array enumerable / aggregate methods -------------------------------- */
+static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode);   /* enumerator.c */
 static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);   /* arithseq.c */
 
 
@@ -798,8 +799,8 @@ static RESULT korb_m_ary_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     intptr_t n = 0;
     if (bounded && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    if (UNLIKELY(block == NULL))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#cycle without a block is not supported");
+    if (block == NULL)                                  /* no block → infinite cycle lazy enum */
+        return korb_lazy_new(c, slots, VALUE_REF_GET(self), 2);
     if (bounded && n <= 0) return RESULT_OK(KORB_NIL);
     if (SELF_ARY->len == 0) return RESULT_OK(KORB_NIL);
     for (intptr_t pass = 0; !bounded || pass < n; pass++) {

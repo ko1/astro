@@ -4410,6 +4410,17 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_object", korb_m_enum_with_object, -1);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "first", korb_m_enum_first, -1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "take", korb_m_enum_take, 1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "select", korb_m_enum_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter", korb_m_enum_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "reject", korb_m_enum_reject, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter_map", korb_m_enum_filter_map, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "take_while", korb_m_enum_take_while, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "lazy", korb_m_to_lazy, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "lazy", korb_m_to_lazy, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "lazy", korb_m_to_lazy, 0);
+    korb_def_cmethod(c, KORB_C_HASH,  "lazy", korb_m_to_lazy, 0);
 
     /* Enumerator::ArithmeticSequence (step / %) */
     korb_def_cmethod_blk(c, KORB_C_ARITHSEQ, "each", korb_m_aseq_each, 0);
