@@ -1052,6 +1052,51 @@ mw_index_get(struct kp_ctx *tc, uint32_t t, uint32_t i, uint32_t aref, uint32_t 
     return kp_send1(aref, line, r, k);
 }
 
+extern const struct NodeKind kind_node_const_set;
+/* Assign src_tmp[idx] to a (possibly nested) multi-assign target.  Builds the
+ * index-get with the chain context each target type needs to stage its value
+ * (const_set advances by its slot_count; local/ivar/multi stage at chain+0).
+ * Recurses for nested `(a, b)` targets.  Returns NULL for an unsupported target. */
+static NODE *
+mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32_t idx, uint32_t aref)
+{
+    uint32_t line = kp_line(tc, t);
+    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+        const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)t;
+        if (lt->depth != 0) return NULL;
+        return lvar_write(tc, t, lt->name, 0, mw_index_get(tc, src_tmp, idx, aref, line));
+    }
+    if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE))
+        return ALLOC_node_ivar_set(-1 - tc->chain, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
+                                   mw_index_get(tc, src_tmp, idx, aref, line));
+    if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+        uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
+        NODE *v; uint32_t sc = kind_node_const_set.slot_count;
+        WITH_CHAIN(tc, sc, (v = mw_index_get(tc, src_tmp, idx, aref, line)));
+        return ALLOC_node_const_set(name, v);
+    }
+    if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
+        const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
+        uint32_t setter = kp_intern_cid(tc, ct->name);
+        NODE *r, *v;
+        WITH_CHAIN(tc, 2, (r = transduce(tc, ct->receiver), v = mw_index_get(tc, src_tmp, idx, aref, line)));
+        return kp_send1(setter, line, r, v);
+    }
+    if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {     /* nested `(a, b[, *r], c)` → materialize then destructure */
+        const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)t;
+        if (mt->rest || mt->rights.size) return NULL;  /* nested splat/post not yet supported */
+        uint32_t tmp2 = alloc_synth_local(tc);
+        NODE *acc = bake_lset(tc, tmp2, mw_index_get(tc, src_tmp, idx, aref, line));   /* tmp2 = src[idx] */
+        for (uint32_t j = 0; j < mt->lefts.size; j++) {
+            NODE *sub = mw_assign_target(tc, mt->lefts.nodes[j], tmp2, j, aref);
+            if (!sub) return NULL;
+            acc = ALLOC_node_seq(acc, sub);
+        }
+        return acc;
+    }
+    return NULL;
+}
+
 /* `module Name ... end` → node_module (own scope, run with self = the module). */
 static NODE *
 transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
@@ -1383,7 +1428,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
                     all_local = false;
-                } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
+                } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` → general desugar */
                     all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
@@ -1395,28 +1441,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
                 NODE *acc = bake_lset(tc, tmp, transduce(tc, mw->value));
                 for (uint32_t i = 0; i < nt; i++) {
-                    const pm_node_t *t = mw->lefts.nodes[i];
-                    uint32_t line = kp_line(tc, t);
-                    NODE *assign;
-                    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                        pm_constant_id_t cid = ((const pm_local_variable_target_node_t *)t)->name;
-                        assign = lvar_write(tc, t, cid, 0, mw_index_get(tc, tmp, i, aref, line));
-                    } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
-                        uint32_t name = kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name);
-                        assign = ALLOC_node_ivar_set(-1 - tc->chain, name, mw_index_get(tc, tmp, i, aref, line));
-                    } else if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
-                        uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
-                        NODE *v; uint32_t sc = kind_node_const_set.slot_count;
-                        WITH_CHAIN(tc, sc, (v = mw_index_get(tc, tmp, i, aref, line)));
-                        assign = ALLOC_node_const_set(name, v);
-                    } else {   /* PM_CALL_TARGET_NODE: recv.setter=(t[i]) */
-                        const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
-                        uint32_t setter = kp_intern_cid(tc, ct->name);
-                        NODE *r, *v;
-                        WITH_CHAIN(tc, 2, (r = transduce(tc, ct->receiver),
-                                           v = mw_index_get(tc, tmp, i, aref, line)));
-                        assign = kp_send1(setter, line, r, v);
-                    }
+                    NODE *assign = mw_assign_target(tc, mw->lefts.nodes[i], tmp, i, aref);   /* local/ivar/const/call/nested */
+                    if (!assign) return kp_unsupported(tc, mw->lefts.nodes[i], "non-local multi-assign target");
                     acc = ALLOC_node_seq(acc, assign);
                 }
                 return ALLOC_node_seq(acc, bake_lget(tc, tmp));   /* massign value = rhs */
