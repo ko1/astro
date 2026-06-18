@@ -3728,9 +3728,23 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
     }
 
-    const VALUE klass = korb_dispatch_class(c, recv);
-    if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass))
-        return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+    /* receiver class: a plain user instance (no singleton override) reads its
+     * klass inline; everything else (override / builtin / exception / main)
+     * goes through korb_dispatch_class. */
+    VALUE klass;
+    if (LIKELY(KORB_OBJECT_P(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               (klass = VAL2OBJ(recv)->klass) != KORB_NIL)) {
+        /* plain user instance — klass set above */
+    } else {
+        klass = korb_dispatch_class(c, recv);
+    }
+    if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+        struct korb_method *const m = ic->m;
+        if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
+            return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
+        return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+    }
 
     VALUE def_class = KORB_NIL;
     struct korb_method *const m =
