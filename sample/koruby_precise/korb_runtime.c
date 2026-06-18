@@ -3429,6 +3429,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (SYMBOL_P(name)) rmid = SYM2ID(name);
             else if (KORB_STRING_P(name)) rmid = korb_intern(vm, VAL2STR(name)->buf->data, VAL2STR(name)->len);
             else return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(name));
+            /* public_send cannot reach top-level defs: CRuby exposes them as
+             * private Object methods (send/__send__ bypass privacy, public_send
+             * does not). */
+            if (mid == vm->mid_public_send &&
+                KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
+                !korb_responds_to(c, self, rmid) && korb_method_lookup(vm, rmid) != NULL)
+                return korb_raise(c, slots, KORB_E_NOMETHOD, line,
+                                  "private method '%s' called for main", korb_sym_name(vm, rmid));
             slots[-(intptr_t)argc] = self;                 /* recv → arg0 slot; args shift down by one */
             return korb_send_impl(c, slots, rmid, line, argc - 1, block, def_env, captured_self);
         }
@@ -3631,6 +3639,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     struct korb_method *const m =
         KORB_CLASS_P(start_cls) ? korb_mcache_find(vm, start_cls, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL)) {
+        /* `main` (klass-less): top-level defs live in the global function table,
+         * which CRuby exposes as private Object methods reachable via send. */
+        if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) {
+            struct korb_method *const gm = korb_method_lookup(vm, mid);
+            if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self);
+        }
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "undefined method '%s' for %s",
                           korb_sym_name(vm, mid), korb_a_type_name(self));
