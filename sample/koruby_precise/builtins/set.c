@@ -500,4 +500,13 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const char *nm = korb_etype_name(e->etype);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
+/* Exception#initialize([msg]) — stores msg (the super target for a user
+ * exception's `def initialize(msg); super; end`). */
+static RESULT korb_m_exc_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE sv = VALUE_REF_GET(self);
+    if (KORB_EXC_P(sv) && VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL)
+        ARO_STORE(c, VAL2EXC(sv), &VAL2EXC(sv)->msg, VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(sv);
+}
 

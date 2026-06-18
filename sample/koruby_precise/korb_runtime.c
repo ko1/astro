@@ -1780,6 +1780,16 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                           "super: no superclass method '%s'", korb_sym_name(c->vm, mid));
     if (m->kind == KORB_METHOD_ATTR_R)
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
+    if (m->kind == KORB_METHOD_CFUNC) {           /* super into a builtin (e.g. Exception#initialize) */
+        if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                              "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+        slots[0] = self;                          /* receiver in scratch (rooted below the rfn cursor) */
+        const VALUE_REF recv = VALUE_REF_AT(&slots[0]);
+        const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
+        return m->uses_block ? m->rbfn(c, slots + 1, recv, args, block, def_env, captured_self)
+                             : m->rfn(c, slots + 1, recv, args);
+    }
     return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
@@ -4155,6 +4165,7 @@ korb_register_core_methods(CTX *c)
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "initialize", korb_m_exc_initialize, -1);
 
     /* Float */
     korb_def_cmethod(c, KORB_C_FLOAT, "to_f", korb_m_flt_to_f, 0);
@@ -4939,9 +4950,23 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
             } else {
                 r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
             }
+            slots[1] = r.value;                          /* root the exception */
             if (VAL2CLASS(slots[0])->exc_etype < 0)      /* user subclass → tag the instance with it */
-                ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->exc_class, slots[0]);
-            return r;
+                ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
+            /* A user-defined #initialize runs so its `super` can set a custom
+             * message (the default msg above is the fallback / class name). */
+            const uint32_t init_mid = korb_intern(c->vm, "initialize", 10);
+            VALUE idef = KORB_NIL;
+            struct korb_method *const uinit = korb_class_find_method(slots[0], init_mid, &idef);
+            if (uinit != NULL && uinit->kind != KORB_METHOD_CFUNC) {
+                const uint32_t iargc = (n >= 2) ? (n - 1) : 0;   /* msg args (skip the class) */
+                for (uint32_t i = 0; i < iargc; i++) slots[2 + i] = VALUE_SLICE_GET(args, 1 + i);
+                VALUE *const icur = slots + 2 + iargc;
+                RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                return RESULT_RAISE_((icur - iargc)[uinit->locals_cnt - 1]);   /* the (moved) exception */
+            }
+            return RESULT_RAISE_(slots[1]);
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
     }
