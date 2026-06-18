@@ -854,16 +854,17 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 /* ---- def ----------------------------------------------------------------- */
 
 static NODE *
-transduce_def(struct kp_ctx *tc, const pm_def_node_t *dn)
+transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *recv_override)
 {
     /* `def recv.name` — singleton method.  Evaluate the receiver in the enclosing
      * scope (staged as the node's child, like node_class's super); attach to its
-     * singleton class. */
+     * singleton class.  recv_override (from `class << recv`) wins over dn->receiver. */
     NODE *recv_node = NULL;
+    const pm_node_t *recv = recv_override ? recv_override : dn->receiver;
     /* `module_function` mode: an instance def also becomes a singleton method on
      * self (the module).  recv_node = self for the singleton copy. */
-    bool mod_func = !dn->receiver && tc->frame->module_function_mode;
-    if (dn->receiver)   WITH_CHAIN(tc, 1, (recv_node = transduce(tc, dn->receiver)));
+    bool mod_func = !recv && tc->frame->module_function_mode;
+    if (recv)           WITH_CHAIN(tc, 1, (recv_node = transduce(tc, recv)));
     else if (mod_func)  WITH_CHAIN(tc, 1, (recv_node = ALLOC_node_self(-1 - tc->chain)));
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
@@ -1789,7 +1790,22 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_CALL_NODE:
         return transduce_call(tc, (const pm_call_node_t *)node);
       case PM_DEF_NODE:
-        return transduce_def(tc, (const pm_def_node_t *)node);
+        return transduce_def_recv(tc, (const pm_def_node_t *)node, NULL);
+      case PM_SINGLETON_CLASS_NODE: {     /* `class << recv; def m; …; end` → singleton defs on recv */
+        const pm_singleton_class_node_t *sc = (const pm_singleton_class_node_t *)node;
+        if (!sc->body || !PM_NODE_TYPE_P(sc->body, PM_STATEMENTS_NODE))
+            return lit_nil();
+        const pm_statements_node_t *st = (const pm_statements_node_t *)sc->body;
+        NODE *acc = NULL;
+        for (uint32_t i = 0; i < st->body.size; i++) {
+            const pm_node_t *s = st->body.nodes[i];
+            if (!PM_NODE_TYPE_P(s, PM_DEF_NODE))
+                return kp_unsupported(tc, s, "class << self body (only method defs)");
+            NODE *d = transduce_def_recv(tc, (const pm_def_node_t *)s, sc->expression);
+            acc = acc ? ALLOC_node_seq(acc, d) : d;
+        }
+        return acc ? acc : lit_nil();
+      }
       case PM_CLASS_NODE:
         return transduce_class(tc, (const pm_class_node_t *)node);
       case PM_MODULE_NODE:
