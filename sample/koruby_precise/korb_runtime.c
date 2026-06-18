@@ -1733,6 +1733,10 @@ korb_dispatch_class(CTX *c, VALUE self)
 {
     struct korb_vm *const vm = c->vm;
     if (KORB_OBJECT_P(self)) {
+        if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)) {
+            const VALUE ov = korb_klass_override_get(vm, self);   /* singleton class (super = real klass) */
+            if (ov != KORB_NIL) return ov;
+        }
         const VALUE k = VAL2OBJ(self)->klass;
         if (k != KORB_NIL) return k;                 /* user instance */
         /* `main` (klass==nil) falls through to Object */
