@@ -1351,3 +1351,17 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   か、各 heap struct への ivar スロット追加が要る。Fixnum/Symbol 等の
   immediate は別扱い (CRuby は generic_ivar table)。優先度低 (corpus に
   ほぼ無し)。
+
+### perf push 中に発覚した correctness gap (2026-06-18)
+
+- **`retry` 未実装**: begin/rescue 内の `retry` が "M0 unsupported: syntax
+  (prism node 131 = PM_RETRY_NODE)" で raise。parser (parse.c) + eval で
+  begin block を再実行する仕組みが要る。corpus にちらほらありそう。
+- **custom `hash`/`eql?` の Hash キーが効かない**: ユーザ定義 `hash`/`eql?`
+  を持つオブジェクトを Hash キーにしても dispatch されず、identity 扱いに
+  なる(別オブジェクトが別キー化、lookup miss)。korb_value_hash /
+  korb_value_eq が組み込み型のみ。object キーは user hash/eql? dispatch が要る
+  (= GC-sensitive: hash 計算が user code を呼ぶ → rehash 中の GC 安全性に注意)。
+  既知の大物。関連: `{1=>"a"}[1.0]` が "a"(eql? でなく == 的判定)。
+- (修正済 2026-06-18) Array#sort/min/max/min(n)/max(n) の <=> dispatch、
+  AOT の -DKORB_HAVE_GMP 欠落 → 別 commit で対応済。

@@ -579,6 +579,20 @@ static uint64_t korb_value_hash(VALUE v) {
     return 0x200000002ULL;                              /* KORB_FALSE (only remaining indexable) */
 }
 
+bool korb_value_eq(VALUE a, VALUE b);   /* defined below */
+
+/* Inlinable eql? for hot Hash scans: the dominant cases (identity, and a
+ * mismatched Symbol or Fixnum-pair — never eql? unless bit-equal) resolve
+ * without a call; only heterogeneous/heap keys fall to the out-of-line
+ * korb_value_eq (which the compiler won't inline — it carries the full
+ * Integer/String/Array/Set type cascade). */
+static inline bool korb_value_eq_fast(VALUE a, VALUE b)
+{
+    if (a == b) return true;
+    if (SYMBOL_P(a) || (FIXNUM_P(a) && FIXNUM_P(b))) return false;
+    return korb_value_eq(a, b);
+}
+
 /* index of key in the pair array, or -1 */
 static int32_t
 korb_hash_find(const KorbHash *h, VALUE key)
@@ -591,7 +605,7 @@ korb_hash_find(const KorbHash *h, VALUE key)
         for (;;) {
             uint32_t e = tab[slot];
             if (e == 0) return -1;
-            if (korb_value_eq(d[2 * (e - 1)], key)) return (int32_t)(e - 1);
+            if (korb_value_eq_fast(d[2 * (e - 1)], key)) return (int32_t)(e - 1);
             slot = (slot + 1) & mask;
         }
     }
@@ -601,7 +615,7 @@ korb_hash_find(const KorbHash *h, VALUE key)
         return -1;
     }
     for (uint32_t i = 0; i < h->len; i++)
-        if (korb_value_eq(d[2 * i], key)) return (int32_t)i;
+        if (korb_value_eq_fast(d[2 * i], key)) return (int32_t)i;
     return -1;
 }
 
