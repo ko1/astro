@@ -68,6 +68,18 @@ the SDs, so any unfilled node crashes.  Samples whose SDs are per-body
 unswapped `code_repo` body (+ program root) to a poison dispatcher —
 cheaper and gives a clean diagnostic instead of a raw NULL deref.
 
+**Compile-exempt bodies.**  A body whose root is an `@noinline` node
+(e.g. a method/lambda that is *just* a `node_make_proc` / `node_class` /
+`node_module`) carries a per-process `NODE*` entry operand that the SD
+machinery can't bake as a literal — that needs reload-time operand fixup,
+a framework feature that is not implemented (see
+`project_astro_value_consts_gap`).  Such bodies legitimately run on the
+interpreter, so the poison pass must **skip `head.flags.no_inline` body
+roots** — otherwise every real program with a class or proc false-positives.
+koruby_precise's sweep over all 47 benches then reports 0 *avoidable*
+misses; `closures` (a `def adder(n) = ->(x){x+n}` body) is the lone
+compile-exempt case.
+
 ## Port status
 
 | Sample | Status | Notes |

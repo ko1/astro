@@ -86,10 +86,17 @@ bake_code_store(NODE *ast)
 }
 
 /* --compiled-only poison: a body that was NOT swapped to a baked SD gets this
- * dispatcher.  Reaching it means an interpreter dispatch would have run — i.e.
+ * dispatcher.  Reaching it means an *avoidable* interpreter dispatch would run —
  * an AOT compile-miss.  Report which body + abort.  Installed only at startup
  * (in swap_in_cached_sds), so normal execution pays nothing: the dispatch site
- * is the same indirect call either way, with no per-call branch. */
+ * is the same indirect call either way, with no per-call branch.
+ *
+ * @noinline body roots (a method/lambda whose whole body is a single
+ * node_make_proc / node_class / node_module) are *compile-exempt*: their entry
+ * operand is a per-process NODE* that the SD machinery can't bake as a literal
+ * (needs reload-time fixup — an unimplemented framework feature), so they
+ * legitimately run on the interpreter and are NOT poisoned.  Without this
+ * exemption any real program with a class or proc would false-positive. */
 static RESULT
 korb_poison_dispatch(CTX *c, NODE *n, VALUE *slots)
 {
@@ -116,11 +123,11 @@ swap_in_cached_sds(NODE *ast)
 {
     unsigned int swaps = 0;
     if (astro_cs_load(ast, NULL)) swaps++;
-    else if (OPTION.compiled_only) ast->head.dispatcher = korb_poison_dispatch;
+    else if (OPTION.compiled_only && !ast->head.flags.no_inline) ast->head.dispatcher = korb_poison_dispatch;
     for (uint32_t i = 0; i < code_repo_count(); i++) {
         NODE *body = code_repo_body_at(i);
         if (astro_cs_load(body, NULL)) swaps++;
-        else if (OPTION.compiled_only) body->head.dispatcher = korb_poison_dispatch;
+        else if (OPTION.compiled_only && !body->head.flags.no_inline) body->head.dispatcher = korb_poison_dispatch;
     }
     return swaps;
 }
