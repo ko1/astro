@@ -2963,6 +2963,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
+static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.rest_slot; }   /* -1 = no rest param */
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
@@ -3019,6 +3020,29 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
         }
         for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else if (korb_entry_rest_slot(block) >= 0) {     /* |front..., *rest[, post...]| */
+        const uint32_t np = korb_entry_params_cnt(block);
+        const uint32_t rs = (uint32_t)korb_entry_rest_slot(block);
+        const uint32_t npost = (np > rs + 1) ? (np - rs - 1) : 0;
+        const bool splat = (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));   /* auto-splat one Array */
+        const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
+        /* Copy the source args into block-frame scratch FIRST (rooted): argv may
+         * point at non-scanned C-locals (builtin yielders pass &elem) that the
+         * rest-array alloc's GC would leave stale.  No alloc during this copy. */
+        VALUE *const stage = bf + 1 + blocals;
+        for (uint32_t i = 0; i < srcn; i++)
+            stage[i] = splat ? VAL2ARY(argv[0])->items->data[i] : argv[i];
+        const uint32_t surplus = (srcn > rs + npost) ? (srcn - rs - npost) : 0;
+        for (uint32_t i = 0; i < rs; i++) bf[1 + i] = (i < srcn) ? stage[i] : KORB_NIL;   /* front */
+        VALUE *const rcur = stage + srcn;                                    /* alloc above the staged source */
+        rcur[0] = UNWRAP(korb_ary_new(c, rcur, surplus ? surplus : 4));
+        VALUE_REF rarr = VALUE_REF_AT(&rcur[0]);
+        for (uint32_t i = 0; i < surplus; i++)
+            CHECK(korb_ary_push_val(c, rcur + 1, rarr, stage[rs + i]));      /* stage rooted below rcur */
+        bf[1 + rs] = VALUE_REF_GET(rarr);
+        for (uint32_t j = 0; j < npost; j++)                                 /* trailing post params */
+            bf[1 + rs + 1 + j] = (rs + surplus + j < srcn) ? stage[rs + surplus + j] : KORB_NIL;
+        for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else {
         const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
         if (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat: |a,b| yielded one Array */
