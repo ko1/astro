@@ -108,4 +108,5 @@ code_repo_add(const char *name, NODE *body, bool force)
 
 uint32_t code_repo_count(void) { return code_repo.size; }
 NODE *code_repo_body_at(uint32_t i) { return code_repo.entries[i].body; }
+const char *code_repo_name_at(uint32_t i) { return code_repo.entries[i].name; }
 bool code_repo_skip_specialize_at(uint32_t i) { return code_repo.entries[i].skip_specialize; }

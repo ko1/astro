@@ -85,16 +85,42 @@ bake_code_store(NODE *ast)
     astro_cs_reload();
 }
 
+/* --compiled-only poison: a body that was NOT swapped to a baked SD gets this
+ * dispatcher.  Reaching it means an interpreter dispatch would have run — i.e.
+ * an AOT compile-miss.  Report which body + abort.  Installed only at startup
+ * (in swap_in_cached_sds), so normal execution pays nothing: the dispatch site
+ * is the same indirect call either way, with no per-call branch. */
+static RESULT
+korb_poison_dispatch(CTX *c, NODE *n, VALUE *slots)
+{
+    (void)c; (void)slots;
+    const char *name = "(program root)";
+    for (uint32_t i = 0; i < code_repo_count(); i++)
+        if (code_repo_body_at(i) == n) { name = code_repo_name_at(i); break; }
+    fprintf(stderr,
+            "koruby_precise: --compiled-only: AOT compile-miss — interpreter "
+            "dispatch reached for body '%s' (node %s); it was not baked "
+            "(hash mismatch or not specialized).\n",
+            name, n->head.kind ? n->head.kind->default_dispatcher_name : "?");
+    fflush(stderr);
+    exit(7);   /* harness convention: 7 = interpreter fallback occurred */
+}
+
 /* Cached-SD swap: patch the program root + every method body whose hash
  * matches a baked SD.  Returns the number of swapped dispatchers (gate
- * diagnostic: "bare --aot-compile bakes nothing" must stay caught). */
+ * diagnostic: "bare --aot-compile bakes nothing" must stay caught).  In
+ * --compiled-only mode, any body that does NOT match a baked SD is poisoned
+ * (no normal-execution overhead — this is a one-time startup pass). */
 static unsigned int
 swap_in_cached_sds(NODE *ast)
 {
     unsigned int swaps = 0;
     if (astro_cs_load(ast, NULL)) swaps++;
+    else if (OPTION.compiled_only) ast->head.dispatcher = korb_poison_dispatch;
     for (uint32_t i = 0; i < code_repo_count(); i++) {
-        if (astro_cs_load(code_repo_body_at(i), NULL)) swaps++;
+        NODE *body = code_repo_body_at(i);
+        if (astro_cs_load(body, NULL)) swaps++;
+        else if (OPTION.compiled_only) body->head.dispatcher = korb_poison_dispatch;
     }
     return swaps;
 }
@@ -108,8 +134,9 @@ main(int argc, char *argv[])
     if (bcfg.help_requested)    { usage(stdout); return 0; }
     if (bcfg.version_requested) { printf("koruby_precise %s\n", ASTRO_VERSION); return 0; }
 
-    if (bcfg.plain)       OPTION.plain       = true;
-    if (bcfg.aot_compile) OPTION.aot_compile = true;
+    if (bcfg.plain)         OPTION.plain         = true;
+    if (bcfg.compiled_only) OPTION.compiled_only = true;   /* poison unswapped bodies */
+    if (bcfg.aot_compile)   OPTION.aot_compile   = true;
     if (bcfg.pg_compile)  OPTION.pg_compile  = true;   /* M0: same bake as AOT */
     if (bcfg.quiet)       OPTION.quiet       = true;
     if (bcfg.verbose)     OPTION.verbose     = true;

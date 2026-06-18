@@ -857,6 +857,7 @@ struct CTX_struct {
  * --------------------------------------------------------------------------- */
 struct koruby_option {
     bool plain;          /* --plain: ignore the code store */
+    bool compiled_only;  /* --compiled-only: run only baked SDs; poison unswapped bodies (compile-miss detect) */
     bool aot_compile;    /* --aot-compile: run + bake at exit */
     bool pg_compile;     /* --pg-compile: M0 = same bake as AOT */
     bool clear_store;    /* --ccs */

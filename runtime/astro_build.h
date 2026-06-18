@@ -40,6 +40,9 @@
 struct astro_build_config {
     // ---------- mode (from argv parsing) ----------
     bool plain;          // --plain        — don't use compiled code
+    bool compiled_only;  // --compiled-only — strict inverse of --plain: run only
+                         //   baked SDs; abort on any interpreter dispatch (AOT
+                         //   compile-miss detection).  Sample wires the poison.
     bool aot_compile;    // --aot-compile  — bake AOT specializations
     bool pg_compile;     // --pg-compile   — bake PG specializations (implies run)
     bool run;            // --run          — execute (default in runtime, opt-in for build)

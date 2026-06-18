@@ -213,6 +213,7 @@ astro_build_extract_flags(int *argc_io, char **argv,
         }
         // Attribute / action flags.
         if (strcmp(a, "--plain")       == 0) { cfg->plain = true;       continue; }
+        if (strcmp(a, "--compiled-only") == 0) { cfg->compiled_only = true; continue; }
         if (strcmp(a, "--aot-compile") == 0) { cfg->aot_compile = true; continue; }
         if (strcmp(a, "--pg-compile")  == 0) { cfg->pg_compile = true;
                                                cfg->run = true;         continue; }
@@ -241,6 +242,10 @@ astro_build_extract_flags(int *argc_io, char **argv,
     }
 
     // Contradiction checks (only relevant if any build-related flag was set).
+    if (cfg->plain && cfg->compiled_only) {
+        fprintf(stderr, "astro: --plain and --compiled-only are mutually exclusive\n");
+        return 1;
+    }
     if (cfg->plain && cfg->aot_compile) {
         fprintf(stderr, "astro: --plain and --aot-compile are mutually exclusive\n");
         return 1;
@@ -616,6 +621,7 @@ astro_print_build_help(FILE *fp)
     fprintf(fp,
         "ASTro common flags (handled by framework):\n"
         "  --plain          run without using compiled code\n"
+        "  --compiled-only  run only compiled code; abort on interpreter dispatch (compile-miss detect)\n"
         "  --aot-compile    AOT-compile (does not run unless --run is given)\n"
         "  --pg-compile     profile-guided compile (implies --run)\n"
         "  --run            execute the program\n"

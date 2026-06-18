@@ -283,6 +283,7 @@ extern uint32_t koruby_toplevel_locals_cnt;
  * because call sites dispatch through body->head.dispatcher at runtime. */
 uint32_t code_repo_count(void);
 NODE *code_repo_body_at(uint32_t i);
+const char *code_repo_name_at(uint32_t i);
 bool code_repo_skip_specialize_at(uint32_t i);
 
 extern size_t node_cnt;

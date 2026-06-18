@@ -6,11 +6,12 @@ This document is the single source of truth for "which sample is on
 the new framework CLI" and "what mapping each pending sample needs."
 Updated 2026-06-18 (added the canonical `--compiled-only` mode).
 
-> **Status of `--compiled-only`:** adopted as a canonical framework flag
-> (this doc). The `bcfg.compiled_only` field + parsing in
-> `runtime/astro_build.{c,h}`, and the per-sample poison-dispatcher
-> wiring, are still to be implemented (abruby already has the standalone
-> `--compiled-only`; new samples should match the name).
+> **Status of `--compiled-only`:** framework flag `bcfg.compiled_only`
+> (`runtime/astro_build.{c,h}`) **implemented**; **koruby_precise wired**
+> (post-swap poison of unswapped `code_repo` bodies + program root → exit 7
+> with the body name on the first interpreter dispatch).  Other standalone
+> samples still need the one-line `if (bcfg.compiled_only) …` wiring
+> (abruby has its own standalone `--compiled-only`).
 
 ## TL;DR — the canonical CLI
 
