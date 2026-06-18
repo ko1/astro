@@ -490,7 +490,9 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
     (void)n;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1); }
     const VALUE l = VALUE_REF_GET(lhs);
-    if (l == rhs) return RESULT_OK(KORB_TRUE);   /* identity: fixnum / symbol / same object (inlined; skips the PLT) */
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))    /* two fixnums: == is identity (skips korb_value_eq → korb_int_cmp PLT) */
+        return RESULT_OK(l == rhs ? KORB_TRUE : KORB_FALSE);
+    if (l == rhs) return RESULT_OK(KORB_TRUE);   /* identity: symbol / same object (inlined; skips the PLT) */
     if (KORB_OBJECT_P(l)) {                       /* user instance → dispatch its == (user / Comparable / Object identity) */
         slots[0] = l; slots[1] = rhs;
         return korb_send(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1);
@@ -504,6 +506,8 @@ node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
     (void)n;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "!=", 2), 0, 1); }
     const VALUE l = VALUE_REF_GET(lhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))    /* two fixnums: != is identity */
+        return RESULT_OK(l != rhs ? KORB_TRUE : KORB_FALSE);
     if (l == rhs) return RESULT_OK(KORB_FALSE);   /* identity → not-equal is false (inlined) */
     if (KORB_OBJECT_P(l)) {                        /* user instance → != is the negation of its == */
         slots[0] = l; slots[1] = rhs;
