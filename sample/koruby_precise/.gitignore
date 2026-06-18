@@ -15,3 +15,4 @@
 /.built_gc
 koruby_regex.so
 code_store/
+bench-report/

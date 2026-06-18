@@ -37,6 +37,7 @@ until args.empty?
   when '--timeout' then opts[:timeout] = Integer(args.shift)
   when '--pattern' then opts[:pattern] = args.shift
   when '--modes'   then opts[:modes]   = args.shift
+  when '--aot-flags' then opts[:aot_flags] = args.shift  # extra flags for the RUN step of aot modes (e.g. "--compiled-only")
   else abort "unknown option: #{a}"
   end
 end
@@ -44,6 +45,11 @@ abort 'need --interp KORUBY' unless opts[:interp]
 
 koruby = opts[:interp].split   # may be wrapped: "env ASTRO_GC_STRESS=1 ./koruby_precise"
 ruby   = opts[:ref].split
+# Extra flags injected into the RUN step (only) of the aot/pg modes.  Default
+# empty so other samples are unaffected; koruby passes "--compiled-only" so an
+# AOT run that would silently fall back to the interpreter aborts (exit 7 →
+# INTERP!) instead of reporting a misleadingly fast number.
+AOTRUN = (opts[:aot_flags] || '').split
 WIPE   = -> { FileUtils.rm_rf('code_store') }
 compile = ->(flag, f) { system(*koruby, flag, f, out: File::NULL, err: File::NULL) }
 
@@ -54,11 +60,11 @@ MODES = {
   'cruby+yjit'  => { run: ->(f) { ruby + ['--yjit', f] } },
   'interp'      => { prep: ->(_f) { WIPE.call }, run: ->(f) { koruby + [f] } },
   'aot+compile' => { aot: true, prep: ->(_f) { WIPE.call }, timed_setup: ->(f) { compile.call('--aot-compile', f) },
-                     run: ->(f) { koruby + [f] } },
+                     run: ->(f) { koruby + AOTRUN + [f] }, strict: true },
   'aot+cached'  => { aot: true, prep: ->(f) { WIPE.call; compile.call('--aot-compile', f) },
-                     run: ->(f) { koruby + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
+                     run: ->(f) { koruby + AOTRUN + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
   'pg+cached'   => { aot: true, prep: ->(f) { WIPE.call; compile.call('--pg-compile', f) },
-                     run: ->(f) { koruby + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
+                     run: ->(f) { koruby + AOTRUN + [f] }, env: { 'ASTRO_AOT_STRICT' => '1' }, strict: true },
 }.freeze
 DEFAULT = %w[cruby cruby+yjit interp aot+compile aot+cached].freeze
 modes = (opts[:modes]&.split(',') || DEFAULT)
