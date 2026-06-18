@@ -296,6 +296,23 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
     (void)c;(void)slots;(void)a;
     return RESULT_OK(VAL2CLASS(VALUE_REF_GET(self))->superclass);
 }
+/* Module#name → the class/module name (a frozen String), nil if anonymous. */
+static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t name_sym = VAL2CLASS(VALUE_REF_GET(self))->name_sym;
+    if (name_sym == 0) return RESULT_OK(KORB_NIL);          /* anonymous class/module */
+    const char *nm = korb_sym_name(c->vm, name_sym);        /* interned (stable across the alloc) */
+    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+}
+/* Module#to_s / #inspect → the name; an anonymous class stringifies to a
+ * placeholder rather than nil. */
+static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t name_sym = VAL2CLASS(VALUE_REF_GET(self))->name_sym;
+    if (name_sym == 0) return korb_str_new(c, slots, "#<Class>", 8);
+    const char *nm = korb_sym_name(c->vm, name_sym);
+    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+}
 /* Module#ancestors — self, its included modules (most-recent first), then the
  * superclass chain (each followed by its modules).  Singleton classes skipped. */
 static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -497,7 +514,11 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)a;
     const KorbException *e = VAL2EXC(VALUE_REF_GET(self));
     if (e->msg != KORB_NIL) return RESULT_OK(e->msg);
-    const char *nm = korb_etype_name(e->etype);
+    /* no explicit message → the class name (exc_class for an abstract/user class,
+     * else the builtin etype name), matching CRuby's default. */
+    const char *nm = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
+                         ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
+                         : korb_etype_name(e->etype);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
 /* Exception#initialize([msg]) — stores msg (the super target for a user

@@ -2794,6 +2794,19 @@ korb_etype_name(unsigned int etype)
     }
 }
 
+/* etype for `Klass.new` on an exception class (mirrors the `raise Klass` path):
+ * nearest builtin-exception ancestor's exc_etype, else KORB_E_RUNTIME for an
+ * abstract base / user subclass of Exception, else -1 (not an exception). */
+static int
+korb_class_exc_etype(struct korb_vm *vm, VALUE cls)
+{
+    for (VALUE cc = cls; KORB_CLASS_P(cc); cc = VAL2CLASS(cc)->superclass)
+        if (VAL2CLASS(cc)->exc_etype >= 0) return VAL2CLASS(cc)->exc_etype;
+    const VALUE exc_base = korb_builtin_class_obj(vm, KORB_C_EXCEPTION);
+    if (KORB_CLASS_P(exc_base) && korb_class_le(cls, exc_base)) return KORB_E_RUNTIME;
+    return -1;
+}
+
 void
 korb_report_uncaught(CTX *c, VALUE exc)
 {
@@ -3611,6 +3624,33 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 return RESULT_OK(slots[1]);
             }
         }
+        /* exception class → a KorbException (not a generic object): etype from
+         * its MRO, optional string message, user-subclass tagged for #class /
+         * rescue.  A user-defined ISEQ #initialize runs (its `super(msg)` reaches
+         * korb_m_exc_initialize); otherwise arg0 string is the message. */
+        const int et = korb_class_exc_etype(vm, *recv_slot);
+        if (et >= 0) {
+            slots[0] = *recv_slot;                                  /* root the class across allocs */
+            KorbException *const e = korb_alloc(c, slots + 1, sizeof(KorbException), KORB_OBJ_EXCEPTION);
+            e->etype = (unsigned)et;
+            e->line = line;
+            slots[1] = (VALUE)e;                                    /* root the exception */
+            if (VAL2CLASS(slots[0])->exc_etype < 0)                 /* user subclass → tag instance */
+                ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
+            VALUE eidef = KORB_NIL;
+            struct korb_method *const euinit = korb_class_find_method(slots[0], vm->mid_initialize, &eidef);
+            if (euinit && euinit->kind == KORB_METHOD_ISEQ) {
+                VALUE *const ibase = slots + 2;
+                for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(intptr_t)argc + (intptr_t)i];
+                RESULT ir = korb_invoke_method(c, ibase + argc, euinit, argc, line, vm->mid_initialize, slots[1], eidef, block, def_env, KORB_CSELF_VAL(captured_self));
+                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                return RESULT_OK(slots[1]);                          /* exception identity (mutated in place) */
+            }
+            if (argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) /* default: arg0 is the message */
+                ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->msg, slots[-(intptr_t)argc]);
+            return RESULT_OK(slots[1]);
+        }
+
         uint32_t init_mid = vm->mid_initialize;
         VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* klass=class (rooted) */
         /* find initialize AFTER the alloc-GC, re-reading the class from the
@@ -3672,6 +3712,8 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
         (cname == vm->name_struct) ||
         cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
         cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING]) {
+        kind = 2;
+    } else if (korb_class_exc_etype(vm, cls) >= 0) {   /* exception class → KorbException, not a generic object */
         kind = 2;
     } else {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
@@ -4422,6 +4464,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "ancestors", korb_m_class_ancestors, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "instance_methods", korb_m_class_instance_methods, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "include?", korb_m_class_include_q, 1);
