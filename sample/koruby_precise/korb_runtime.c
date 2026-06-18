@@ -1532,6 +1532,8 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
         if (strcmp(nm, ops[i]) == 0) { vm->basic_op_redefined = true; return; }
 }
 
+extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
+
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
@@ -1555,6 +1557,14 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block);
+    /* Auto-attr: a method whose body is exactly `@ivar` (no params, no block)
+     * is an attr_reader — dispatch returns the ivar directly, skipping a frame.
+     * A multi-statement body roots at node_seq, so only the bare single-read
+     * case matches (observably identical to attr_reader). */
+    if (params_cnt == 0 && !uses_block && body && body->head.kind == &kind_node_ivar_get) {
+        m->kind = KORB_METHOD_ATTR_R;
+        m->attr_ivar = body->u.node_ivar_get.name;
+    }
     c->vm->method_serial++;
 }
 
