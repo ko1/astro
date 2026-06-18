@@ -3785,6 +3785,8 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
+        if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
+            return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
         return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
     }
 
