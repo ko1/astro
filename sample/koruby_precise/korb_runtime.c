@@ -2934,6 +2934,28 @@ korb_yield(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
     return korb_block_yield(c, slots, entry, (VALUE *)(uintptr_t)def_env_cell, slots - argc, argc, captured_self);
 }
 
+/* `yield` from INSIDE a block: the block frame carries no method block trio, so
+ * walk `depth` env links (like node_eget) to the enclosing method frame and read
+ * its trio (block_entry/def_env/captured_self at node[trio_base..trio_base+2]),
+ * then yield.  Only the live slots-handle chain is reachable — an escaped block
+ * whose method has already returned (KorbEnv chain; trio not captured) raises
+ * LocalJumpError, matching Ruby.  args staged at slots[-argc..] as for korb_yield. */
+RESULT
+korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
+                 VALUE prev_handle, uint32_t depth, int32_t trio_base)
+{
+    if (UNLIKELY((prev_handle & 1u) == 0))   /* escaped KorbEnv: the method frame is gone */
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
+    VALUE *node = (VALUE *)(uintptr_t)(prev_handle & ~(uintptr_t)1u);
+    for (uint32_t k = 1; k < depth; k++) {   /* walk like node_eget */
+        const VALUE h = node[-1];
+        if (UNLIKELY((h & 1u) == 0))
+            return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
+        node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+    }
+    return korb_yield(c, slots, argc, line, node[trio_base], node[trio_base + 1], &node[trio_base + 2]);
+}
+
 /* ---------------------------------------------------------------------------
  * Receiver method dispatch (x.foo) — built-in methods on core types.
  * ------------------------------------------------------------------------- */

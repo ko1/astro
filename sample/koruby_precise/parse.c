@@ -36,6 +36,8 @@ struct kp_frame {
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
+    int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
+    uint32_t add_cnt, add_capa;
     struct kp_frame *prev;
 };
 
@@ -148,9 +150,25 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_mid = 0;
     f->method_params = 0;
     f->max_ref_depth = 0;
+    f->add_cells = NULL;
+    f->add_cnt = f->add_capa = 0;
     f->prev = tc->frame;
     tc->frame = f;
     tc->chain = 0;
+}
+
+/* Register `cell` to be fixed up by `+= frame_size` when frame `f` pops — for a
+ * yield-in-block trio index baked relative to the (ancestor) method frame's
+ * size (the block trio sits at method node[frame_size-5..-3]). */
+static void
+add_bake_to(struct kp_frame *f, int32_t *cell)
+{
+    if (f->add_cnt == f->add_capa) {
+        f->add_capa = f->add_capa ? f->add_capa * 2 : 4;
+        f->add_cells = realloc(f->add_cells, sizeof(int32_t *) * f->add_capa);
+        if (!f->add_cells) abort();
+    }
+    f->add_cells[f->add_cnt++] = cell;
 }
 
 /* Returns the frame size.  Every frame reserves self(fs-1) + def_class(fs-2)
@@ -167,6 +185,8 @@ pop_frame(struct kp_ctx *tc)
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
     tc->bake_cnt = f->bake_base;
+    for (uint32_t i = 0; i < f->add_cnt; i++) *f->add_cells[i] += (int32_t)frame_size;
+    free(f->add_cells);
     tc->chain = f->saved_chain;
     /* B3: a nested block reaching depth d reaches depth d-1 from its parent, so
      * the parent (if reified as a Proc) must materialize that far too.  prism's
@@ -1820,20 +1840,38 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_YIELD_NODE: {
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
-        tc->frame->uses_block = true;            /* this method reserves block cells */
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
-        if (yargc == 0) {
-            /* reserved cells: block_entry(fs-5), def_env(fs-4), captured_self(fs-3) */
-            return ALLOC_node_yield0(line, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
-        }
-        if (yargc == 1) {
-            /* yield1 slot_count 1: a0 at cursor[-1]; reserved cells below */
+        if (yargc > 1) return kp_unsupported(tc, node, "yield with more than 1 value");
+        /* `yield` reaches the enclosing METHOD's block, not a nested block's.
+         * Walk up to the method frame (method_mid != 0), counting block frames. */
+        struct kp_frame *mf = tc->frame;
+        uint32_t depth = 0;
+        while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
+        if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }  /* yield outside a method: legacy path (raises at runtime) */
+        mf->uses_block = true;                   /* the method reserves the block trio */
+
+        if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
+            if (yargc == 0)
+                return ALLOC_node_yield0(line, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
             return ALLOC_node_yield1(line, -5 - (tc->chain + 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), a0);
         }
-        return kp_unsupported(tc, node, "yield with more than 1 value");
+        /* yield inside a block: trio_base = method frame_size - 5 (add-baked at
+         * the method's pop); prev_off addresses this block frame's PREV cell. */
+        if (yargc == 0) {
+            NODE *yo = ALLOC_node_yield_outer0(line, -1 - tc->chain, depth, -5);
+            bake_add(tc, &yo->u.node_yield_outer0.prev_off);     /* this-block fixup */
+            add_bake_to(mf, &yo->u.node_yield_outer0.trio_base); /* += method frame_size */
+            return yo;
+        }
+        NODE *a0;
+        WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
+        NODE *yo = ALLOC_node_yield_outer1(line, -1 - (tc->chain + 1), depth, -5, a0);
+        bake_add(tc, &yo->u.node_yield_outer1.prev_off);
+        add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
+        return yo;
       }
       case PM_NEXT_NODE: {
         const pm_next_node_t *nn = (const pm_next_node_t *)node;

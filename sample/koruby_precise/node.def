@@ -1137,6 +1137,25 @@ node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int
     return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
 }
 
+// yield from INSIDE a block: `prev_off` reads this block frame's PREV handle;
+// korb_yield_outer walks `depth` env links to the enclosing method frame and
+// reads its block trio at node[trio_base..trio_base+2] (trio_base = method
+// frame_size - 5, add-baked at the method's pop).  Unlocks Enumerable mixins
+// (`def each; coll.each { yield }; end`).
+NODE_DEF
+node_yield_outer0(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base)
+{
+    (void)n;
+    return korb_yield_outer(c, slots, 0, line, slots[prev_off], depth, trio_base);
+}
+
+NODE_DEF
+node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF a0@child)
+{
+    (void)n; (void)a0;
+    return korb_yield_outer(c, slots, 1, line, slots[prev_off], depth, trio_base);
+}
+
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was
 // passed; nil when not).
 NODE_DEF @nogc
