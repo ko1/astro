@@ -3751,6 +3751,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "ancestors", korb_m_class_ancestors, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "instance_methods", korb_m_class_instance_methods, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "include?", korb_m_class_include_q, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "<",  korb_m_class_lt, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "<=", korb_m_class_le, 1);

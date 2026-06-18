@@ -315,6 +315,28 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(slots[0]);
 }
+/* Module#instance_methods(inherit=true) → public/protected method names (symbols).
+ * Excludes the private `initialize`; dedups across the ancestor chain. */
+static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));       /* result (rooted) */
+    slots[1] = VALUE_REF_GET(self);                         /* current class (rooted) */
+    while (KORB_CLASS_P(slots[1])) {
+        const KorbClass *k = VAL2CLASS(slots[1]);
+        for (uint32_t i = 0; i < k->method_cnt; i++) {
+            const struct korb_method *m = k->methods[i];
+            if (m->mid == c->vm->mid_initialize) continue;  /* private */
+            const VALUE sym = ID2SYM(m->mid);
+            const KorbArray *r = VAL2ARY(slots[0]);         /* dedup (a lower override shadows) */
+            bool seen = false;
+            for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { seen = true; break; }
+            if (!seen) CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), sym));
+        }
+        if (!inherit) break;
+        slots[1] = VAL2CLASS(slots[1])->superclass;
+    }
+    return RESULT_OK(slots[0]);
+}
 /* true if `sub` is `sup` or has `sup` among its ancestors (class chain + modules). */
 static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
     VALUE cls = sub;
