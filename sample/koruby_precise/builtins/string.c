@@ -282,6 +282,7 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)slots;
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
+    if (n == 0) return RESULT_OK(KORB_NIL);           /* empty → no-op → nil, before any sep-type check (CRuby) */
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp!(sep) */
         VALUE sv = VALUE_SLICE_GET(a, 0);
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
