@@ -196,6 +196,12 @@ main(int argc, char *argv[])
     if (bcfg.quiet)       OPTION.quiet       = true;
     if (bcfg.verbose)     OPTION.verbose     = true;
 
+    /* Run convention (docs/sample_cli.md): `--aot-compile` alone bakes WITHOUT
+     * running; `--run` (or `--pg-compile`) opts the run back in.  koruby
+     * registers every body in the code repo at parse time, so a no-run bake
+     * still covers the whole program. */
+    const bool skip_run = bcfg.aot_compile && !bcfg.run && !bcfg.pg_compile;
+
     if (bcfg.out_exe) {
         fprintf(stderr, "koruby_precise: --build is not supported in M0\n");
         return 2;
@@ -301,7 +307,7 @@ main(int argc, char *argv[])
      * `main`), defining its methods on the global Enumerable module before the
      * user program runs.  Bodies were registered in the code repo at parse time,
      * so the AOT swap above already patched their dispatchers. */
-    if (prelude_ast) {
+    if (prelude_ast && !skip_run) {
         VALUE *pcur = c->slots + prelude_locals;
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); return 1; }
@@ -310,35 +316,39 @@ main(int argc, char *argv[])
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); return 1; }
     }
 
-    /* Run.  Toplevel frame: locals at c->slots[0..L); the self cell is the
-     * frame top (base[fs-1] = c->slots[koruby_toplevel_locals_cnt-1]) holding
-     * the `main` object; cursor starts above it. */
-    VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
-    /* builtin/exception class objects are now set up inside korb_ctx_new (they
-     * must exist before core-method registration). */
-    {
-        RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
-        if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
-        c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
-    }
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    RESULT r = EVAL(c, ast, toplevel_cursor);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    fflush(stdout);
-    if (r.state == KORB_RAISE) {
-        korb_report_uncaught(c, r.value);
-        return 1;
-    }
+    /* Run (unless `--aot-compile` alone — then we bake below without running).
+     * Toplevel frame: locals at c->slots[0..L); the self cell is the frame top
+     * (base[fs-1] = c->slots[koruby_toplevel_locals_cnt-1]) holding the `main`
+     * object; cursor starts above it. */
+    if (!skip_run) {
+        VALUE *toplevel_cursor = c->slots + koruby_toplevel_locals_cnt;
+        /* builtin/exception class objects are now set up inside korb_ctx_new
+         * (they must exist before core-method registration). */
+        {
+            RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
+            if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
+            c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
+        }
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        RESULT r = EVAL(c, ast, toplevel_cursor);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        fflush(stdout);
+        if (r.state == KORB_RAISE) {
+            korb_report_uncaught(c, r.value);
+            return 1;
+        }
 
-    if (getenv("KORUBY_GC_STATS")) {
-        double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-        fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu elapsed=%.6f\n",
-                aro_gc_total_bytes(c), aro_gc_count(c), elapsed);
+        if (getenv("KORUBY_GC_STATS")) {
+            double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+            fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu elapsed=%.6f\n",
+                    aro_gc_total_bytes(c), aro_gc_count(c), elapsed);
+        }
     }
 
     if (OPTION.aot_compile || OPTION.pg_compile) {
-        /* koruby pattern: collect during the run, bake at exit. */
+        /* Bodies were registered in the code repo at parse time, so the whole
+         * program bakes whether or not it ran. */
         bake_code_store(ast);
         if (OPTION.verbose) {
             fprintf(stderr, "koruby_precise: aot: baked program + %u method bodies\n",
