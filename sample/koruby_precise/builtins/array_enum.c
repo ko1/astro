@@ -140,18 +140,27 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
     slots[0] = UNWRAP(korb_ary_new(c, slots, len));        /* sorted-ascending working copy */
     VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, tmp, SELF_ARY->items->data[i]));
-    KorbArray *t = VAL2ARY(VALUE_REF_GET(tmp));
-    KorbArrayItems *const dit = t->items;
-    const VALUE *d = dit->data;                            /* insertion sort ascending */
+    /* insertion sort ascending.  A user/Comparable element needs <=> dispatch
+     * (may GC/move tmp) → re-fetch the items pointer each step and root the key
+     * in slots[1]; native types stay on the GC-free korb_cmp_full path. */
     for (uint32_t i = 1; i < len; i++) {
-        VALUE key = d[i]; uint32_t j = i;
+        slots[1] = VAL2ARY(VALUE_REF_GET(tmp))->items->data[i];   /* key (rooted) */
+        uint32_t j = i;
         while (j > 0) {
-            int cmp = korb_cmp_full(c, d[j-1], key);
-            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(d[j-1]), korb_type_name(key));
+            const VALUE left = VAL2ARY(VALUE_REF_GET(tmp))->items->data[j-1];
+            int cmp;
+            if (UNLIKELY(KORB_OBJECT_P(left) || KORB_OBJECT_P(slots[1]))) {
+                CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
+            } else {
+                cmp = korb_cmp_full(c, left, slots[1]);
+                if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(left), korb_type_name(slots[1]));
+            }
             if (cmp <= 0) break;
-            ARO_STORE(c, dit, &d[j], d[j-1]); j--;
+            KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;   /* re-fetch (dispatch may have moved tmp) */
+            ARO_STORE(c, it, &it->data[j], it->data[j-1]); j--;
         }
-        ARO_STORE(c, dit, &d[j], key);
+        KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(tmp))->items;
+        ARO_STORE(c, it, &it->data[j], slots[1]);
     }
     uint32_t take = (uint32_t)n; if (take > len) take = len;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, take));
