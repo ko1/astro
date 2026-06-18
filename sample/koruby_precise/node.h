@@ -199,6 +199,12 @@ RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                      uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self);
 
+/* &block forwarding sentinel: when passed as `def_env`, the block was forwarded
+ * from a Proc and `captured_self` points to the (rooted) Proc slot — korb_block_
+ * yield re-reads proc->env / proc->self from it each yield (GC-safe; the Proc may
+ * move during the call, but its slot is scanned and its iseq is immortal). */
+#define KORB_BLK_FWD ((VALUE *)2)
+
 /* Invoke a block (node_entry + def_env) with `argc` args from `argv`.  The
  * block frame is laid out at the cursor `slots`; its self cell gets
  * `captured_self`.  NEXT is folded to NORMAL. */

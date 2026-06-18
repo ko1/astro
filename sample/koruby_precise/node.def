@@ -1161,6 +1161,24 @@ node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
 }
 
+// `recv.mid(args, &proc)` — forward a runtime Proc as the block.  `proc_off` is a
+// (rooted, caller-frame) slot holding the Proc; the block iseq is immortal, and
+// korb_block_yield re-reads proc->env/self per yield (KORB_BLK_FWD), so a moved
+// escaped env is never stale.  argv@children stages [recv, args...].
+NODE_DEF @noinline
+node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, NODE **argv@children)
+{
+    (void)n;
+    const VALUE pv = slots[proc_off];
+    if (pv == KORB_NIL) return korb_send(c, slots, mid, line, argv_cnt - 1);   /* &nil → no block */
+    if (UNLIKELY(!KORB_PROC_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
+    NODE *const iseq = VAL2PROC(pv)->iseq;
+    if (UNLIKELY(iseq == NULL))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "forwarding a Symbol#to_proc block");
+    return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off]);
+}
+
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
 // `cself_off` read the frame's reserved block cells (odd-tagged); korb_yield
 // masks and sets up the block frame (incl. its captured self).

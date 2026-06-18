@@ -984,6 +984,27 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 
     /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */
     if (cn->block) {
+        /* `recv.m(args, &proc)` — forward a runtime Proc.  Evaluate the proc into
+         * a rooted synth local, then node_send_blkproc reads it. */
+        if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
+            const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
+            if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
+                uint32_t pslot = alloc_synth_local(tc);
+                NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+                uint32_t sc = 1u + (uint32_t)argc;
+                NODE **argv = malloc(sizeof(NODE *) * sc);
+                if (!argv) abort();
+                int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)sc;
+                argv[0] = transduce(tc, cn->receiver);
+                for (size_t i = 0; i < argc; i++)
+                    argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                tc->chain = saved;
+                NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc, argv, sc);
+                bake_add(tc, &call->u.node_send_blkproc.proc_off);
+                return ALLOC_node_seq(pset, call);
+            }
+        }
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging

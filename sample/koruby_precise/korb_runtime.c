@@ -2979,7 +2979,10 @@ RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
-    const VALUE prev = (VALUE)(uintptr_t)def_env;   /* raw PREV: odd slots handle / even KorbEnv */
+    /* &block forward: re-read prev (proc->env) from the rooted Proc slot each
+     * call so a GC-moved escaped env is never stale. */
+    const bool fwd = (def_env == KORB_BLK_FWD);
+    const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
     /* block frame: bf[0]=PREV (tagged-odd slots handle, or even KorbEnv* for an
      * escaped Proc), bf[1..1+blocals)=block locals, self cell at bf[blocals]. */
@@ -3098,7 +3101,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             }
         }
     }
-    bf[blocals] = *captured_self;                       /* block's lexical self (re-read fresh) */
+    bf[blocals] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self (re-read fresh) */
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
