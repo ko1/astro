@@ -3,6 +3,15 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## ⚠️ pre-existing SEGV: `exc = SomeError.new("msg"); exc.message` (2026-06-18 発覚)
+
+- `e = StandardError.new("x"); p e.message` が **SEGV**。`e.class` も同様。
+  ローカル変数経由で例外オブジェクトの builtin メソッドを呼ぶと落ちる。
+- chained 形 `p StandardError.new("x").message` は crash しないが空出力
+  (誤り、"x" のはず)。`begin/raise/rescue=>e; e.message` は正しく動く。
+- HEAD でも再現する pre-existing バグ (perf 変更とは無関係、corpus 未検出)。
+  例外オブジェクトの dispatch / message ivar 取得まわりが怪しい。要調査。
+
 ## 共有 runtime への koruby 専用コード漏れ (2026-06-12 発覚 → 同日解決)
 
 `runtime/precise_gc/gc_copy.c` の forward_edge 診断 (commit ae983279,
