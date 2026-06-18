@@ -1796,8 +1796,11 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         slots[0] = self;                          /* receiver in scratch (rooted below the rfn cursor) */
         const VALUE_REF recv = VALUE_REF_AT(&slots[0]);
         const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
-        return m->uses_block ? m->rbfn(c, slots + 1, recv, args, block, def_env, captured_self)
-                             : m->rfn(c, slots + 1, recv, args);
+        if (m->uses_block) {
+            slots[1] = captured_self;             /* park in scanned slot for rbfn cself ptr */
+            return m->rbfn(c, slots + 2, recv, args, block, def_env, &slots[1]);
+        }
+        return m->rfn(c, slots + 1, recv, args);
     }
     return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
@@ -3446,6 +3449,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 uint32_t imid = vm->mid_initialize;
                 VALUE idef = KORB_NIL;
                 struct korb_method *uinit = korb_class_find_method(*recv_slot, imid, &idef);
+                /* a builtin CFUNC initialize (e.g. Array#initialize for send) is
+                 * not a user override — only ISEQ bodies customize construction. */
+                if (uinit && uinit->kind != KORB_METHOD_ISEQ) uinit = NULL;
                 slots[0] = *recv_slot;                         /* root the subclass (recv) */
                 VALUE inst;
                 if (base == KORB_C_ARRAY)      inst = UNWRAP(korb_ary_new(c, slots + 1, 0));
@@ -3915,6 +3921,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort!", korb_m_ary_sort_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "tally", korb_m_ary_tally, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "first", korb_m_ary_first, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "initialize", korb_m_ary_initialize, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "last", korb_m_ary_last, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "[]", korb_m_ary_aref, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "slice", korb_m_ary_aref, -1);

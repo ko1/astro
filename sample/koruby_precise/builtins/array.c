@@ -3,6 +3,37 @@
 /* ---- Array methods ------------------------------------------------------- */
 static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode);   /* enumerator.c */
 
+/* Array#initialize — callable via send/super; Array.new uses its own fast path.
+ * (), (size[, default]), (size){|i| ...}, (other_array). */
+static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* reset */
+    if (argc == 0) return RESULT_OK(VALUE_REF_GET(self));
+    const VALUE a0 = VALUE_SLICE_GET(a, 0);
+    if (KORB_ARRAY_P(a0)) {                               /* copy another array */
+        slots[0] = a0;
+        const uint32_t n = VAL2ARY(slots[0])->len;
+        for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(a0, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(a0));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    slots[0] = (!block && argc >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;   /* default (rooted) */
+    for (intptr_t i = 0; i < n; i++) {
+        VALUE el = slots[0];
+        if (block != NULL) {
+            VALUE iv = LONG2FIX(i);
+            RESULT y = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, cself);
+            if (y.state == KORB_BREAK) return RESULT_OK(y.value);   /* break v → the value */
+            if (UNLIKELY(y.state != KORB_NORMAL)) return y;
+            el = y.value;
+        }
+        slots[1] = el;
+        CHECK(korb_ary_push_val(c, slots + 2, self, slots[1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
 static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
