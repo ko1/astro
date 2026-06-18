@@ -75,19 +75,20 @@ static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if ((uint32_t)n > len) n = len;
     return korb_ary_subseq(c, slots, self, (uint32_t)n, len - (uint32_t)n);
 }
-static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
-    VALUE v = VALUE_SLICE_GET(a, 0);
+static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    slots[0] = VALUE_SLICE_GET(a, 0);             /* root the needle across a possible yield */
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     KorbArrayItems *it = ary->items;
     uint32_t w = 0; VALUE last = KORB_NIL; bool found = false;
     for (uint32_t r = 0; r < ary->len; r++) {
-        if (korb_value_eq(it->data[r], v)) { last = it->data[r]; found = true; }   /* return the deleted element */
+        if (korb_value_eq(it->data[r], slots[0])) { last = it->data[r]; found = true; }   /* return the deleted element */
         else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
     }
     for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
     ary->len = w;
-    return RESULT_OK(found ? last : KORB_NIL);
+    if (found) return RESULT_OK(last);
+    if (block != NULL) return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);   /* not found → block value */
+    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;

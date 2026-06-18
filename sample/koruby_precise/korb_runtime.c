@@ -3997,7 +3997,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "difference", korb_m_ary_difference, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "-", korb_m_ary_difference, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "replace", korb_m_ary_replace, 1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "delete", korb_m_ary_delete, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "delete_at", korb_m_ary_delete_at, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "rindex", korb_m_ary_rindex, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "member?", korb_m_ary_include, 1);
