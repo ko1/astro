@@ -3040,6 +3040,16 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
+        if (cname == vm->class_name[KORB_C_CLASS]) {       /* Class.new([super]) [do…end] → anonymous class */
+            slots[0] = (argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
+            if (UNLIKELY(!KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));
+            slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, slots[0]));   /* anonymous (name_sym 0) */
+            if (block != NULL) {                            /* body block: def's land on the new class */
+                RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
+                if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+            }
+            return RESULT_OK(slots[1]);
+        }
         if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
