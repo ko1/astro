@@ -312,6 +312,7 @@ typedef struct KorbException {
     uint32_t line;           /* current unwind line (raise site, then each
                               * call site as the unwind passes it) */
     VALUE ARO_GC_EDGE msg;   /* KorbString | nil */
+    VALUE ARO_GC_EDGE exc_class;  /* user exception Class (raise MyError) | nil → builtin etype class */
 } KorbException;
 
 /* Array: a header + a separately-allocated growable VALUE[] payload, so push
@@ -724,6 +725,7 @@ struct CTX_struct {
       case KORB_OBJ_EXCEPTION: {                                             \
         KorbException *_e = (KorbException *)(payload);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->msg);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->exc_class);               \
         break;                                                               \
       }                                                                      \
       case KORB_OBJ_ARRAY: {                                                 \

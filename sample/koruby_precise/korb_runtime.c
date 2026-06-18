@@ -1654,6 +1654,8 @@ bool
 korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
 {
     if (!KORB_CLASS_P(rescue_class) || !KORB_EXC_P(exc)) return false;
+    const VALUE uc = VAL2EXC(exc)->exc_class;            /* user exception subclass */
+    if (uc != KORB_NIL) return korb_class_le(uc, rescue_class);
     uint32_t et = VAL2EXC(exc)->etype;
     if (et >= 16) return false;
     VALUE exc_class = korb_const_get(c->vm, c->vm->exc_name[et]);
@@ -1710,6 +1712,7 @@ korb_class_obj_of(CTX *c, VALUE self)
         if (ov != KORB_NIL) return ov;
     }
     if (KORB_EXC_P(self)) {
+        if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass */
         uint32_t et = VAL2EXC(self)->etype;
         if (et < 16) return korb_const_get(c->vm, c->vm->exc_name[et]);
     }
@@ -1746,6 +1749,7 @@ korb_dispatch_class(CTX *c, VALUE self)
         if (ov != KORB_NIL) return ov;
     }
     if (KORB_EXC_P(self)) {
+        if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass → its MRO */
         const uint32_t et = VAL2EXC(self)->etype;
         if (et < 16 && vm->exc_name[et]) {
             const VALUE k = korb_const_get(vm, vm->exc_name[et]);
@@ -4719,14 +4723,29 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
         if (KORB_EXC_P(a0)) return RESULT_RAISE_(a0);   /* re-raise an exception object */
         if (KORB_CLASS_P(a0)) {                          /* raise SomeError[, msg] */
-            const KorbClass *k = VAL2CLASS(a0);
-            if (k->exc_etype < 0)
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            /* nearest builtin-exception ancestor supplies the etype; a user
+             * subclass is remembered in exc_class (for #class and rescue). */
+            int et = -1;
+            for (VALUE cc = a0; KORB_CLASS_P(cc); cc = VAL2CLASS(cc)->superclass)
+                if (VAL2CLASS(cc)->exc_etype >= 0) { et = VAL2CLASS(cc)->exc_etype; break; }
+            if (et < 0) {
+                /* abstract base (Exception/StandardError, et -1) or a user subclass
+                 * of one: carry a generic etype — exc_class drives rescue/#class. */
+                const VALUE exc_base = korb_builtin_class_obj(c->vm, KORB_C_EXCEPTION);
+                if (KORB_CLASS_P(exc_base) && korb_class_le(a0, exc_base)) et = KORB_E_RUNTIME;
+                else return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            }
+            slots[0] = a0;                               /* root the class across korb_raise's allocs */
+            RESULT r;
             if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(args, 1))) {
                 const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 1));
-                return korb_raise(c, slots, (unsigned)k->exc_etype, 0, "%.*s", (int)s->len, s->buf->data);
+                r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, s->buf->data);
+            } else {
+                r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
             }
-            return korb_raise(c, slots, (unsigned)k->exc_etype, 0, "%s", korb_sym_name(c->vm, k->name_sym));
+            if (VAL2CLASS(slots[0])->exc_etype < 0)      /* user subclass → tag the instance with it */
+                ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->exc_class, slots[0]);
+            return r;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
     }
