@@ -1771,6 +1771,34 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* `for VAR in COLL; BODY; end` — VAR + BODY share the enclosing frame
          * (for introduces no scope), so BODY is transduced here, not in a block. */
         const pm_for_node_t *fn = (const pm_for_node_t *)node;
+        if (PM_NODE_TYPE_P(fn->index, PM_MULTI_TARGET_NODE)) {
+            /* `for k, v in coll` — iterate into a temp, then destructure it into
+             * the (enclosing-frame) index targets at the top of the body. */
+            const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)fn->index;
+            if (mt->rest || mt->rights.size)
+                return kp_unsupported(tc, fn->index, "for-loop with splat/post index");
+            uint32_t orig_local = alloc_synth_local(tc);
+            uint32_t iter_local = alloc_synth_local(tc);
+            uint32_t e_local    = alloc_synth_local(tc);   /* each element */
+            NODE *coll = transduce(tc, fn->collection);
+            const uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+            NODE *decon = NULL;
+            for (uint32_t i = 0; i < mt->lefts.size; i++) {
+                NODE *asn = mw_assign_target(tc, mt->lefts.nodes[i], e_local, i, aref);
+                if (asn == NULL) return kp_unsupported(tc, mt->lefts.nodes[i], "for-loop index target");
+                decon = decon ? ALLOC_node_seq(decon, asn) : asn;
+            }
+            NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+            NODE *body = decon ? (body0 ? ALLOC_node_seq(decon, body0) : decon) : body0;
+            NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
+                                         (int32_t)iter_local - tc->chain,
+                                         (int32_t)e_local - tc->chain,
+                                         coll, body);
+            bake_add(tc, &fnode->u.node_for.orig_off);
+            bake_add(tc, &fnode->u.node_for.iter_off);
+            bake_add(tc, &fnode->u.node_for.var_off);
+            return fnode;
+        }
         if (!PM_NODE_TYPE_P(fn->index, PM_LOCAL_VARIABLE_TARGET_NODE))
             return kp_unsupported(tc, fn->index, "for-loop with non-local / destructured index");
         const pm_local_variable_target_node_t *iv = (const pm_local_variable_target_node_t *)fn->index;
