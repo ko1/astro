@@ -1752,7 +1752,7 @@ korb_dispatch_class(CTX *c, VALUE self)
 }
 
 /* True if `self` responds to `mid` (own MRO incl. inherited builtins). */
-static bool
+bool
 korb_responds_to(CTX *c, VALUE self, uint32_t mid)
 {
     const VALUE start = korb_dispatch_class(c, self);

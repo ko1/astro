@@ -1726,6 +1726,29 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
 
       /* ---- blocks ---- */
+      case PM_DEFINED_NODE: {
+        const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
+        const int32_t self_off = -1 - tc->chain;
+        if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(v, PM_IT_LOCAL_VARIABLE_READ_NODE))
+            return ALLOC_node_defined(4, 0, 0);                          /* "local-variable" */
+        if (PM_NODE_TYPE_P(v, PM_CONSTANT_READ_NODE))
+            return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), 0);
+        if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
+            return ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off);
+        if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE))
+            return ALLOC_node_defined(3, kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name), 0);
+        if (PM_NODE_TYPE_P(v, PM_CALL_NODE)) {                           /* method call */
+            const pm_call_node_t *cn = (const pm_call_node_t *)v;
+            if (cn->receiver == NULL && cn->arguments == NULL && cn->block == NULL)
+                return ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off);   /* bareword → method? */
+            return ALLOC_node_defined(7, 0, 0);                         /* recv.meth / op → "method" (optimistic) */
+        }
+        if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
+        if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
+        if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0);   /* "true" */
+        if (PM_NODE_TYPE_P(v, PM_FALSE_NODE)) return ALLOC_node_defined(10, 0, 0);  /* "false" */
+        return ALLOC_node_defined(5, 0, 0);                             /* literals / expr → "expression" */
+      }
       case PM_YIELD_NODE: {
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
         tc->frame->uses_block = true;            /* this method reserves block cells */

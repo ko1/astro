@@ -132,6 +132,7 @@ RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t 
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
 VALUE  korb_ivar_get(CTX *c, VALUE self, VALUE name_sym);
+bool   korb_responds_to(CTX *c, VALUE self, uint32_t mid);   /* defined?(method) */
 /* write val into an existing ivar slot (cache-hit fast path; routes the WB). */
 void   korb_ivar_store_at(CTX *c, struct KorbObject *o, uint32_t slot, VALUE val);
 /* ivar index of `sym` (raw id) in object `shape`, or -1 if absent (shape IC). */
