@@ -71,6 +71,41 @@ typedef intptr_t VALUE;
 #define ID2SYM(id)     ((VALUE)(((uintptr_t)(id) << 3) | 6u))
 #define SYM2ID(v)      ((uint32_t)((uintptr_t)(v) >> 3))
 
+/* -----------------------------------------------------------------------------
+ * Flonum — immediate Float, no heap box.  Lives in the low-3-bit quadrants
+ * {010, 100} (the slots otherwise holding only the false=2 / true=4 singletons,
+ * disambiguated by the > 4 guard).  CRuby's classic rotl-3 trick, but its 2-bit
+ * tag (low2==10) collides with our Symbol (low3==110), so the sign quadrant is
+ * remapped 110→100.  Representable: top-3 exponent bits ∈ {3,4} → |d| ∈ roughly
+ * [2^-255, 2^256), both signs (covers all ordinary floats); ±0.0 use a magic
+ * constant; doubles that would encode to ≤4 (2.0, -2.0) and out-of-range
+ * doubles heap-box.  Validated by an exhaustive round-trip test.
+ * GC-safe: (flonum & 7) ∈ {2,4} ≠ 0, so the edge filter / AROH_IS_GC_OBJECT
+ * never treat a flonum as a heap pointer. --------------------------------- */
+#define FLONUM_P(v)    ((((uintptr_t)(v) & 7u) == 2u || ((uintptr_t)(v) & 7u) == 4u) && (uintptr_t)(v) > 4u)
+#define KORB_FLO_ZERO  ((VALUE)(intptr_t)0x8000000000000002ULL)
+
+static inline VALUE korb_d2flo(double d) {   /* 0 → not representable (caller heap-boxes) */
+    union { double d; uintptr_t v; } t; t.d = d;
+    if (t.v == 0u) return KORB_FLO_ZERO;          /* +0.0 (−0.0 falls through → heap-box, keeps sign) */
+    unsigned top3 = (unsigned)((t.v >> 60) & 7u);
+    if (top3 != 3u && top3 != 4u) return 0;
+    uintptr_t e = ((t.v << 3 | t.v >> 61) & ~(uintptr_t)1u) | 2u;           /* rotl3, low2=10, bit2=sign */
+    if ((e & 7u) == 6u) e = (e & ~(uintptr_t)7u) | 4u;                      /* sign quadrant 110 → 100 */
+    if (e <= 4u) return 0;                                                  /* collides nil/false/true */
+    return (VALUE)e;
+}
+static inline double korb_flo2d(VALUE fv) {
+    uintptr_t v = (uintptr_t)fv;
+    if (v == (uintptr_t)KORB_FLO_ZERO) return 0.0;
+    uintptr_t e = ((v & 7u) == 4u) ? ((v & ~(uintptr_t)7u) | 6u) : v;       /* restore CRuby form */
+    uintptr_t b63 = e >> 63;
+    union { double d; uintptr_t v; } t;
+    uintptr_t x = (2u - b63) | (e & ~(uintptr_t)3u);
+    t.v = (x >> 3) | (x << 61);                                            /* rotr3 */
+    return t.d;
+}
+
 /* Falsy = nil (0) or false (2): one and + one compare. */
 #define KORB_TRUTHY(v)   (((uintptr_t)(v) | 2u) != 2u)
 
@@ -418,7 +453,8 @@ typedef struct KorbClass {
 #define KORB_RANGE_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE)
 #define KORB_OBJECT_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_OBJECT)
 #define KORB_CLASS_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CLASS)
-#define KORB_FLOAT_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
+#define KORB_FLOAT_P(v)    (FLONUM_P(v) || (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT))
+#define KORB_HEAP_FLOAT_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FLOAT)
 #define VAL2STR(v)         ((KorbString *)(uintptr_t)(v))
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
@@ -427,6 +463,8 @@ typedef struct KorbClass {
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
 #define VAL2FLT(v)         ((KorbFloat *)(uintptr_t)(v))
+/* the double value of any Float (flonum immediate or heap KorbFloat). */
+#define korb_float_val(v)  (FLONUM_P(v) ? korb_flo2d(v) : VAL2FLT(v)->val)
 #define KORB_RATIONAL_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RATIONAL)
 #define VAL2RAT(v)         ((KorbRational *)(uintptr_t)(v))
 #define KORB_COMPLEX_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_COMPLEX)

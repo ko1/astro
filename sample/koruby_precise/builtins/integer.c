@@ -146,7 +146,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE ev = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(ev)) {                            /* Integer ** Float → Float (Complex if neg base) */
         double base; (void)korb_num_to_d(selfv, &base);
-        double e = VAL2FLT(ev)->val;
+        double e = korb_float_val(ev);
         if (base < 0 && e != floor(e)) {
             double mag = pow(-base, e);
             slots[0] = UNWRAP(korb_float_new(c, slots, mag * korb_cospi(e)));
@@ -203,7 +203,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
-        double f = VAL2FLT(bv)->val, s = (double)SELF_INT;
+        double f = korb_float_val(bv), s = (double)SELF_INT;
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         slots[0] = LONG2FIX((intptr_t)floor(s / f));
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_fmod(s, f)));
@@ -225,7 +225,7 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#div(Float) → floor(self/f) Integer */
-        double f = VAL2FLT(bv)->val;
+        double f = korb_float_val(bv);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         return RESULT_OK(LONG2FIX((intptr_t)floor((double)SELF_INT / f)));
     }
@@ -238,7 +238,7 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#modulo(Float) → Float (floored) */
-        double f = VAL2FLT(bv)->val;
+        double f = korb_float_val(bv);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         return korb_float_new(c, slots, korb_float_fmod((double)SELF_INT, f));
     }
@@ -273,7 +273,7 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#ceildiv(Float) → ceil(self/f) Integer */
-        double f = VAL2FLT(bv)->val;
+        double f = korb_float_val(bv);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         return RESULT_OK(LONG2FIX((intptr_t)ceil((double)SELF_INT / f)));
     }
@@ -287,7 +287,7 @@ static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE o = VALUE_SLICE_GET(a, 0);
     intptr_t s = SELF_INT;
     if (KORB_FLOAT_P(o)) {
-        double od = VAL2FLT(o)->val;
+        double od = korb_float_val(o);
         slots[0] = UNWRAP(korb_float_new(c, slots, od));
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, (double)s));
     } else if (FIXNUM_P(o)) {

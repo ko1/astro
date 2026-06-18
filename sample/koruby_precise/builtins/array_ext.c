@@ -66,7 +66,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             else if (e == KORB_NIL) { ed = ""; elen = 0; }
             else if (coerce && FIXNUM_P(e)) { elen = korb_fmt_int((intptr_t)FIX2LONG(e), 10, cobuf); ed = cobuf; }
             else if (coerce && SYMBOL_P(e)) { ed = korb_sym_name(c->vm, SYM2ID(e)); elen = (uint32_t)strlen(ed); }
-            else if (coerce && KORB_FLOAT_P(e)) { elen = korb_float_to_s(VAL2FLT(e)->val, cobuf); ed = cobuf; }
+            else if (coerce && KORB_FLOAT_P(e)) { elen = korb_float_to_s(korb_float_val(e), cobuf); ed = cobuf; }
             else if (coerce && e == KORB_TRUE) { ed = "true"; elen = 4; }
             else if (coerce && e == KORB_FALSE) { ed = "false"; elen = 5; }
             else { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }

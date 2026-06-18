@@ -111,6 +111,8 @@ korb_str_cat(CTX *c, VALUE *slots, VALUE_REF sref, const char *src, uint32_t n)
 RESULT
 korb_float_new(CTX *c, VALUE *slots, double d)
 {
+    VALUE imm = korb_d2flo(d);                 /* immediate flonum — no heap box */
+    if (imm) return RESULT_OK(imm);
     KorbFloat *f = korb_alloc(c, slots, sizeof(KorbFloat), KORB_OBJ_FLOAT);
     f->val = d;
     return RESULT_OK((VALUE)f);
@@ -270,7 +272,7 @@ bool
 korb_num_to_d(VALUE v, double *out)
 {
     if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
-    if (KORB_FLOAT_P(v)) { *out = VAL2FLT(v)->val;     return true; }
+    if (KORB_FLOAT_P(v)) { *out = korb_float_val(v);     return true; }
     if (KORB_RATIONAL_P(v)) { *out = (double)VAL2RAT(v)->num / (double)VAL2RAT(v)->den; return true; }
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) { *out = korb_big_to_d(v); return true; }
@@ -283,7 +285,7 @@ static inline bool
 korb_to_index(VALUE v, intptr_t *out)
 {
     if (FIXNUM_P(v))     { *out = FIX2LONG(v);          return true; }
-    if (KORB_FLOAT_P(v)) { *out = (intptr_t)VAL2FLT(v)->val; return true; }
+    if (KORB_FLOAT_P(v)) { *out = (intptr_t)korb_float_val(v); return true; }
     return false;
 }
 
@@ -407,7 +409,7 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
         else if (p == KORB_TRUE)  { src = "true";  slen = 4; }
         else if (p == KORB_FALSE) { src = "false"; slen = 5; }
         else if (SYMBOL_P(p))     { src = korb_sym_name(c->vm, SYM2ID(p)); slen = (uint32_t)strlen(src); }  /* interned, GC-stable */
-        else if (KORB_OBJ_TYPE(p) == KORB_OBJ_FLOAT) { korb_float_to_s(VAL2FLT(p)->val, sb); slen = (uint32_t)strlen(sb); src = sb; }
+        else if (KORB_FLOAT_P(p)) { korb_float_to_s(korb_float_val(p), sb); slen = (uint32_t)strlen(sb); src = sb; }
         if (src) {
             const VALUE tmp = UNWRAP(korb_str_new(c, slots, src, slen));
             VALUE_REF tref = SLOTS_PUSH(slots, tmp);
@@ -2178,6 +2180,7 @@ korb_type_name(VALUE v)
     if (v == KORB_NIL)   return "NilClass";
     if (v == KORB_TRUE)  return "TrueClass";
     if (v == KORB_FALSE) return "FalseClass";
+    if (FLONUM_P(v))  return "Float";
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING:    return "String";
       case KORB_OBJ_EXCEPTION: return "Exception";
@@ -2205,6 +2208,7 @@ korb_a_type_name(VALUE v)
     if (v == KORB_FALSE) return "false";
     if (FIXNUM_P(v))     return "an instance of Integer";
     if (SYMBOL_P(v))     return "an instance of Symbol";
+    if (FLONUM_P(v))     return "an instance of Float";
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: return "an instance of String";
       case KORB_OBJ_ARRAY:  return "an instance of Array";
@@ -2586,7 +2590,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
     }
     if (KORB_ARRAY_P(l) && (FIXNUM_P(rhs) || KORB_FLOAT_P(rhs))) {   /* Array * n → repeated array (Float coerced via to_int) */
-        intptr_t cnt = FIXNUM_P(rhs) ? FIX2LONG(rhs) : (intptr_t)VAL2FLT(rhs)->val;
+        intptr_t cnt = FIXNUM_P(rhs) ? FIX2LONG(rhs) : (intptr_t)korb_float_val(rhs);
         if (cnt < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
         uint32_t len = VAL2ARY(l)->len;
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)cnt * len)));
@@ -3282,6 +3286,7 @@ korb_class_of(VALUE v)
     if (v == KORB_TRUE)  return KORB_C_TRUE;
     if (v == KORB_FALSE) return KORB_C_FALSE;
     if (SYMBOL_P(v))     return KORB_C_SYMBOL;
+    if (FLONUM_P(v))     return KORB_C_FLOAT;
     if (AROH_IS_GC_OBJECT(v)) {
         switch (KORB_OBJ_TYPE(v)) {
           case KORB_OBJ_STRING: return KORB_C_STRING;
@@ -4780,6 +4785,7 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
     if (v == KORB_TRUE)        { fputs("true", fp); return; }
     if (v == KORB_FALSE)       { fputs("false", fp); return; }
     if (SYMBOL_P(v))           { fputs(korb_sym_name(c->vm, SYM2ID(v)), fp); return; }
+    if (KORB_FLOAT_P(v))       { char b[40]; korb_float_to_s(korb_float_val(v), b); fputs(b, fp); return; }   /* flonum or heap */
     switch (KORB_OBJ_TYPE(v)) {
 #ifdef KORB_HAVE_GMP
       case KORB_OBJ_BIGNUM: {
@@ -4813,7 +4819,7 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         return;
       case KORB_OBJ_FLOAT: {
         char fb[40];
-        korb_float_to_s(VAL2FLT(v)->val, fb);
+        korb_float_to_s(korb_float_val(v), fb);
         fputs(fb, fp);
         return;
       }
@@ -4866,6 +4872,7 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         else { fputc(':', fp); korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm)); }
         return;
     }
+    if (KORB_FLOAT_P(v)) { char b[40]; korb_float_to_s(korb_float_val(v), b); fputs(b, fp); return; }   /* flonum or heap */
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
@@ -5071,7 +5078,7 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (FIXNUM_P(a0)) return RESULT_OK(a0);
     if (KORB_FLOAT_P(a0)) {
-        double d = VAL2FLT(a0)->val;
+        double d = korb_float_val(a0);
         if (UNLIKELY(!isfinite(d) || !FIXABLE((intptr_t)d)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "Integer(): value out of range");
         return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */

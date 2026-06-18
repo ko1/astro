@@ -45,7 +45,7 @@ static double korb_sinpi(double x) {
 }
 static RESULT korb_m_flt_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double e; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    double base = VAL2FLT(VALUE_REF_GET(self))->val;
+    double base = korb_float_val(VALUE_REF_GET(self));
     if (base < 0 && e != floor(e)) {                  /* negative base ^ non-integer → Complex */
         double mag = pow(-base, e);
         slots[0] = UNWRAP(korb_float_new(c, slots, mag * korb_cospi(e)));
@@ -55,7 +55,7 @@ static RESULT korb_m_flt_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return korb_float_new(c, slots, pow(base, e));
 }
 static RESULT korb_m_flt_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; double d = VAL2FLT(VALUE_REF_GET(self))->val;
+    (void)a; double d = korb_float_val(VALUE_REF_GET(self));
     return d < 0 ? korb_float_new(c, slots, M_PI) : RESULT_OK(LONG2FIX(0));   /* arg: 0 (Integer) or PI */
 }
 static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi);
@@ -63,7 +63,7 @@ static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double s = VAL2FLT(VALUE_REF_GET(self))->val, lo, hi;
+    double s = korb_float_val(VALUE_REF_GET(self)), lo, hi;
     VALUE vlo, vhi;
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));

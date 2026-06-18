@@ -30,7 +30,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           case 'd': case 'i': case 'u': {
             intptr_t v;
             if (FIXNUM_P(arg)) v = FIX2LONG(arg);
-            else if (KORB_FLOAT_P(arg)) v = (intptr_t)VAL2FLT(arg)->val;
+            else if (KORB_FLOAT_P(arg)) v = (intptr_t)korb_float_val(arg);
             else { err = true; errmsg = "expected a number"; break; }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
             fprintf(ms, spec, (long)v); ai++;

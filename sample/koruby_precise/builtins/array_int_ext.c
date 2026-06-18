@@ -179,7 +179,7 @@ static RESULT korb_m_int_inv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(o)) {                             /* Integer#remainder(Float) → Float, truncated */
-        double f = VAL2FLT(o)->val, s = (double)FIX2LONG(VALUE_REF_GET(self));
+        double f = korb_float_val(o), s = (double)FIX2LONG(VALUE_REF_GET(self));
         return korb_float_new(c, slots, fmod(s, f));   /* C fmod = truncated remainder (sign of dividend) */
     }
     if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
@@ -188,7 +188,7 @@ static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(LONG2FIX(FIX2LONG(VALUE_REF_GET(self)) % b));   /* truncated (sign of dividend) */
 }
 static RESULT korb_m_true_lit2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
-static RESULT korb_m_flt_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; double d = VAL2FLT(VALUE_REF_GET(self))->val; return korb_float_new(c, slots, d * d); }
+static RESULT korb_m_flt_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; double d = korb_float_val(VALUE_REF_GET(self)); return korb_float_new(c, slots, d * d); }
 
 static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t k = VALUE_SLICE_LEN(a);

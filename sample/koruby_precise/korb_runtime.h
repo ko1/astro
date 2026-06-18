@@ -26,7 +26,7 @@
  * In every builtin method `self` is the rooted VALUE_REF receiver; SELF_<T>
  * decodes it to the concrete payload (or scalar for Int/Float). */
 #define SELF_INT   FIX2LONG(VALUE_REF_GET(self))
-#define SELF_FLT   (VAL2FLT(VALUE_REF_GET(self))->val)
+#define SELF_FLT   (korb_float_val(VALUE_REF_GET(self)))
 #define SELF_STR   VAL2STR(VALUE_REF_GET(self))
 #define SELF_ARY   VAL2ARY(VALUE_REF_GET(self))
 #define SELF_HASH  VAL2HASH(VALUE_REF_GET(self))
