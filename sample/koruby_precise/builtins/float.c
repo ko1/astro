@@ -16,7 +16,12 @@ static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &eps))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
         eps = fabs(eps);
         if (eps == 0.0) return korb_flt_to_rat(c, slots, f);          /* exact */
-        if (!korb_rationalize_internal(f - eps, f + eps, &n, &d)) return korb_flt_to_rat(c, slots, f);
+        /* the ceil-based CF needs a positive interval → rationalize |f| and
+         * negate the numerator (matches CRuby float_rationalize). */
+        const bool neg = f < 0.0;
+        const double af = neg ? -f : f;
+        if (!korb_rationalize_internal(af - eps, af + eps, &n, &d)) return korb_flt_to_rat(c, slots, f);
+        if (neg) n = -n;
     } else {
         if (!korb_flt_simplest_roundtrip(f, &n, &d)) return korb_flt_to_rat(c, slots, f);
     }
