@@ -16,6 +16,11 @@
   `each{|x| yield(x)}` で1値しか転送せず誤り。完全対応は |*x|+yield(*x) が要るが
   hot path に array alloc が乗るので見送り (稀パターン)。yield-splat `yield(*a)` も未対応。
 - **anonymous splat target 未対応**: `first, *, last = ...`(無名 `*`)が parse 不可。
+- **`Object#object_id` 未対応**: moving GC 下で安定 id が要る(アドレスは移動で変わる)。
+  即値は値ベースで可だが heap object は per-object id field か GC 管理の id 表が必要。
+  中途半端な address ベースは `hash[obj.object_id]` を GC で壊すので保留。
+- (修正済 2026-06-19) `require`/`require_relative`/`load` を no-op true 化、
+  `Set[...]` クラス index コンストラクタ、`Set#disjoint?`/`#intersect?` 追加。
 - (修正済 2026-06-19) method_missing / respond_to_missing? / Object#instance_variables /
   Symbol#inspect の @ivar/@@cvar/$global を bare 表示。
 

@@ -3466,6 +3466,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
+             VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_SET]) {       /* Set[a, b, ...] */
+        VALUE *const base = &slots[-(intptr_t)argc];
+        slots[0] = UNWRAP(korb_ary_new(c, slots, argc));
+        VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 1, arr, base[i]));
+        return korb_set_from_array(c, slots + 1, arr);
+    }
+    else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
              (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] ||
               VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH])) {
         VALUE *const base = &slots[-(intptr_t)argc];
@@ -4691,6 +4699,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "empty?", korb_m_set_empty, 0);
     korb_def_cmethod(c, KORB_C_SET, "include?", korb_m_set_include, 1);
     korb_def_cmethod(c, KORB_C_SET, "member?", korb_m_set_include, 1);
+    korb_def_cmethod(c, KORB_C_SET, "disjoint?", korb_m_set_disjoint, 1);
+    korb_def_cmethod(c, KORB_C_SET, "intersect?", korb_m_set_intersect, 1);
     korb_def_cmethod(c, KORB_C_SET, "===", korb_m_set_include, 1);
     korb_def_cmethod(c, KORB_C_SET, "add", korb_m_set_add, 1);
     korb_def_cmethod(c, KORB_C_SET, "<<", korb_m_set_add, 1);
@@ -5073,6 +5083,17 @@ korb_puts_one(CTX *c, VALUE *slots, VALUE v)
     korb_fprint_to_s(c, stdout, v);
     fputc('\n', stdout);
     return RESULT_OK(KORB_NIL);
+}
+
+/* require / require_relative / load: no-op returning true.  koruby has the
+ * common stdlib (Set, etc.) built in and no real file loader, so a require of a
+ * supported feature just succeeds; code needing an unsupported one fails later
+ * on the missing feature, not here. */
+static RESULT
+korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)c; (void)slots; (void)args;
+    return RESULT_OK(KORB_TRUE);
 }
 
 static RESULT
@@ -5501,6 +5522,9 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "require", korb_bi_require, -1);
+    korb_builtin_define(c, "require_relative", korb_bi_require, -1);
+    korb_builtin_define(c, "load", korb_bi_require, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);

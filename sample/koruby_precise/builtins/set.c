@@ -31,6 +31,21 @@ static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_set_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_arr_has(VAL2ARY(SELF_SET->elems), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE); }
+/* disjoint?(o): no shared elements.  intersect?(o): some shared element. */
+static RESULT korb_m_set_disjoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE oe = korb_set_elems_of(VALUE_SLICE_GET(a, 0));   /* Set/enumerable → elems array */
+    if (oe == KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
+    const KorbArray *const ot = VAL2ARY(oe);
+    const KorbArray *const me = VAL2ARY(SELF_SET->elems);        /* re-read self after the line above (no GC since) */
+    for (uint32_t i = 0; i < me->len; i++)
+        if (korb_arr_has((KorbArray *)ot, me->items->data[i])) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_m_set_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const RESULT r = korb_m_set_disjoint(c, slots, self, a);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(r.value == KORB_TRUE ? KORB_FALSE : KORB_TRUE);
+}
 static RESULT korb_m_set_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE v = VALUE_SLICE_GET(a, 0);
     if (!korb_arr_has(VAL2ARY(SELF_SET->elems), v)) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), v)); }
