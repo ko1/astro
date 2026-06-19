@@ -2649,6 +2649,9 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         VALUE k = korb_const_get(vm, vm->class_name[enum_in[i]]);
         (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
     }
+    { slots[0] = korb_const_get(vm, enum_sym);                    /* Struct includes Enumerable (const-only class) */
+      VALUE st = korb_const_get(vm, korb_intern(vm, "Struct", 6));
+      if (KORB_CLASS_P(st)) (void)korb_do_include(c, slots + 1, st, VALUE_SLICE_MAKE(&slots[0], 1)); }
 }
 
 /* Build the builtin Exception class hierarchy + register constants.  `slots` is
