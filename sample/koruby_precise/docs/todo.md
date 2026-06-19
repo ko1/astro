@@ -1552,12 +1552,30 @@ Proc.new{}, Enumerator.new{} eager yielder).
   dependent"。matching 非現実的、skip。
 - **to_enum / enum_for(:method)**: block 無し Enumerator を method 名生成。
   block-from-C 駆動が要る。中規模。
-- **Set#compare_by_identity / Hash#compare_by_identity** (set_000)。
-- **Integer#[](range)** ビットスライス (integer_001 tail)。
-- **TOPLEVEL_BINDING / Kernel#binding** (main_000, binding_000)。Binding 大物。
+- **Set#compare_by_identity / Hash#compare_by_identity** (set_000)。object_id 基盤要、moving GC で大物。
 - **Method#parameters の名前** (ISEQ は node_entry に名前未保持 → 種別のみ。
-  名前を出すには parser 変更)。
-- **nested Complex()** (kernel_000)、Complex 演算の float ULP 差 (matching 不可)。
-- **lazy 無限 Enumerator** の各種 op。
+  名前を出すには parser で名前テーブルを node_entry に保持する変更)。
+- **nested Complex()** (kernel_000)。
+
+**RESOLVED (session 3, 2026-06-19 — 大物バッチ):**
+- Class < Module < Object MRO (Class.superclass/ancestors/is_a?(Module))。
+  残: module オブジェクトの metaclass がまだ Class (M.is_a?(Class) が誤 true)
+  — Module 系メソッドを KORB_C_CLASS から Module へ移す別作業。
+- define_method(name, Method/UnboundMethod) — 定義を copy + ancestor チェック。
+- lazy Enumerator drop/take/drop_while (無限ソース対応、per-op state)。
+- Complex 残り: marshal_dump, to_r, <=>, eql?, abs(0,0)=0、Integer#to_r/
+  rationalize の Bignum 精度バグ修正。complex_000 121→2 (残は float ULP)。
+- **float ULP (Complex**Float の polar)**: libm の演算順序依存で bit 一致不可
+  と確定 → skip。
+
+**残・大物 (要・腰を据えた設計):**
+- **Binding / TOPLEVEL_BINDING**: 局所変数は parse-time (depth,slot) で
+  runtime に name→offset 表が無い。正しい Binding は「クロージャ env +
+  名前アクセス + eval 時の parse-scope 注入 (prism pm_options scopes)」が要り、
+  クロージャ subsystem 並みの規模。中途実装は moving GC で stale / silent-wrong
+  になるため未着手。設計: node_binding (parser が scope の name→offset を bake
+  + closure cap)、KorbBinding 型 (env/self/cref/name_table)、
+  local_variable_get/set/local_variables は env 経由、eval(str,b) は
+  koruby_parse_source に scopes 引数追加。
 - skip 対象: regex (→astrorge), Encoding/US_ASCII, 非 ASCII case,
   Thread/Queue/Fiber 細部, IO/File/Dir/Process/Time, MT19937 完全一致, Marshal。
