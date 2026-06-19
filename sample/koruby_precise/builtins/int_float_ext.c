@@ -56,7 +56,8 @@ static RESULT korb_m_flt_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 static RESULT korb_m_flt_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; double d = korb_float_val(VALUE_REF_GET(self));
-    return d < 0 ? korb_float_new(c, slots, M_PI) : RESULT_OK(LONG2FIX(0));   /* arg: 0 (Integer) or PI */
+    if (isnan(d)) return RESULT_OK(VALUE_REF_GET(self));                      /* arg(NaN) = NaN */
+    return signbit(d) ? korb_float_new(c, slots, M_PI) : RESULT_OK(LONG2FIX(0));  /* arg: 0 or PI; -0.0 → PI (signbit) */
 }
 static RESULT korb_num_between(CTX *c, VALUE *slots, VALUE self, VALUE lo, VALUE hi);
 static RESULT korb_m_flt_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

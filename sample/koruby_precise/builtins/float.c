@@ -157,7 +157,17 @@ static RESULT korb_m_flt_neg_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_flt_pos_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT > 0 ? KORB_TRUE : KORB_FALSE); }
 /* coerce(other) → [Float(other), Float(self)] */
 static RESULT korb_m_flt_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    double o;
+    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) {
+        /* CRuby coerces via Float(): a numeric String parses, else TypeError. */
+        if (KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
+            RESULT fr = korb_bi_float(c, slots, a);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            o = korb_float_val(fr.value);
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+    }
     double s = SELF_FLT;
     slots[0] = UNWRAP(korb_float_new(c, slots, o));
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, s));

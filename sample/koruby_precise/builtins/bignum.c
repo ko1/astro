@@ -48,6 +48,21 @@ RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t l
     mpz_clear(zr);
     return r;
 }
+/* Integer &,|,^ (op 0..2) over Fixnum/Bignum; two's-complement semantics for
+ * negatives (GMP matches Ruby).  Result normalised back to Fixnum when it fits. */
+RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
+    mpz_t za, zb, zr;
+    korb_to_mpz(a, za); korb_to_mpz(b, zb); mpz_init(zr);
+    switch (op) {
+      case 0: mpz_and(zr, za, zb); break;
+      case 1: mpz_ior(zr, za, zb); break;
+      default: mpz_xor(zr, za, zb); break;
+    }
+    mpz_clear(za); mpz_clear(zb);
+    RESULT r = korb_big_from_mpz(c, slots, zr);
+    mpz_clear(zr);
+    return r;
+}
 /* base ** exp (both Integer).  Negative exp → Rational (delegated by caller for
  * the Fixnum case; here exp>=0 expected — negative falls back to a float-free
  * Rational via korb_rat_new). */

@@ -98,24 +98,27 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           }
           case 'b': case 'B': {
             intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
-            bool left = false, zero = false, alt = false, in_width = false; int width = 0;  /* parse flags/width from spec */
+            bool left = false, zero = false, alt = false, in_width = false, plus = false, space = false; int width = 0;  /* parse flags/width from spec */
             for (int k = 1; k < si; k++) {
                 char sc = spec[k];
                 if (in_width && isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');   /* width digit (incl. 0) */
                 else if (sc == '-') left = true;
                 else if (sc == '0') zero = true;                         /* leading 0 = pad flag */
                 else if (sc == '#') alt = true;                          /* 0b / 0B prefix */
-                else if (sc == '+' || sc == ' ') { /* ignored for binary */ }
+                else if (sc == '+') plus = true;                         /* explicit sign on non-negative */
+                else if (sc == ' ') space = true;                        /* space before non-negative */
                 else if (isdigit((unsigned char)sc)) { in_width = true; width = sc - '0'; }
                 else break;
             }
             char tmp[80]; uint32_t n = korb_fmt_int(v, 2, tmp);
             const char *pfx = alt ? (conv == 'B' ? "0B" : "0b") : "";
             const int pfxn = alt ? 2 : 0;
-            int pad = width > (int)n + pfxn ? width - (int)n - pfxn : 0;
-            if (left) { fputs(pfx, ms); fwrite(tmp, 1, n, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
-            else if (zero) { fputs(pfx, ms); for (int p = 0; p < pad; p++) fputc('0', ms); fwrite(tmp, 1, n, ms); }
-            else { for (int p = 0; p < pad; p++) fputc(' ', ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); }
+            const char sign = v >= 0 ? (plus ? '+' : space ? ' ' : 0) : 0;   /* + wins over space (CRuby) */
+            const int signn = sign ? 1 : 0;
+            int pad = width > (int)n + pfxn + signn ? width - (int)n - pfxn - signn : 0;
+            if (left)      { if (sign) fputc(sign, ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
+            else if (zero) { if (sign) fputc(sign, ms); fputs(pfx, ms); for (int p = 0; p < pad; p++) fputc('0', ms); fwrite(tmp, 1, n, ms); }
+            else           { for (int p = 0; p < pad; p++) fputc(' ', ms); if (sign) fputc(sign, ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); }
             break;
           }
           case 's': {

@@ -3365,6 +3365,15 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
     if (UNLIKELY(cc->serial != vm->method_serial)) {
         m = korb_method_lookup(vm, mid);
         if (UNLIKELY(m == NULL)) {
+            /* `main` (klass=nil): no global def by this name — fall back to
+             * Object/Kernel methods (to_s, inspect, class, freeze, ...) so the
+             * top-level self behaves like a real Object instance. */
+            if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
+                korb_responds_to(c, self, mid)) {
+                for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+                slots[0] = self;
+                return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
+            }
             return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s", korb_sym_name(vm, mid),
                               (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)
@@ -4333,6 +4342,10 @@ korb_fmt_int(intptr_t n, int base, char *buf)
 /* strict string→integer parse (defined below; declared in node.h so node_bignum
  * can build a beyond-Fixnum literal). */
 
+/* Kernel#Float(x) — strict parse (handles String/Integer/Float).  Defined far
+ * below but used by Float#coerce in builtins/float.c. */
+static RESULT korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args);
+
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
@@ -4778,7 +4791,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "assoc", korb_m_hash_assoc, 1);
     korb_def_cmethod(c, KORB_C_HASH, "keys", korb_m_hash_keys, 0);
     korb_def_cmethod(c, KORB_C_HASH, "values", korb_m_hash_values, 0);
-    korb_def_cmethod(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "delete", korb_m_hash_delete, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "merge", korb_m_hash_merge, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "update", korb_m_hash_update, -1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "merge!", korb_m_hash_update, -1);

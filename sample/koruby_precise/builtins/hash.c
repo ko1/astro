@@ -135,11 +135,16 @@ static RESULT korb_hash_collect(CTX *c, VALUE *slots, VALUE_REF self, int sel) {
 static RESULT korb_m_hash_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_hash_collect(c, slots, self, 0); }
 static RESULT korb_m_hash_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_collect(c, slots, self, 1); }
 
-static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
+static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KorbHash *h = SELF_HASH;
     int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
-    if (idx < 0) return RESULT_OK(KORB_NIL);
+    if (idx < 0) {
+        if (block != NULL) {                              /* miss + block: yield the key, return its result */
+            VALUE k = VALUE_SLICE_GET(a, 0);
+            return korb_block_yield(c, slots, block, def_env, &k, 1, cself);
+        }
+        return RESULT_OK(KORB_NIL);
+    }
     KorbArrayItems *it = h->items;
     VALUE removed = it->data[2 * idx + 1];               /* held; no GC before return */
     for (uint32_t i = (uint32_t)idx; i + 1 < h->len; i++) {  /* shift to keep order */

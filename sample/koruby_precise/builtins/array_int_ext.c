@@ -181,9 +181,13 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* bitwise & | ^ (kind 0/1/2) */
 static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int kind) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
-    intptr_t x = FIX2LONG(VALUE_REF_GET(self)), y = FIX2LONG(o);
-    return RESULT_OK(LONG2FIX(kind == 0 ? (x & y) : kind == 1 ? (x | y) : (x ^ y)));
+    VALUE s = VALUE_REF_GET(self);
+    if (LIKELY(FIXNUM_P(s) && FIXNUM_P(o))) {
+        intptr_t x = FIX2LONG(s), y = FIX2LONG(o);
+        return RESULT_OK(LONG2FIX(kind == 0 ? (x & y) : kind == 1 ? (x | y) : (x ^ y)));
+    }
+    if (UNLIKELY(!KORB_INTEGER_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
+    return korb_int_bitwise(c, slots, s, o, kind);     /* Bignum operand → GMP two's-complement bitop */
 }
 static RESULT korb_m_int_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_bitop(c, slots, self, a, 0); }
 static RESULT korb_m_int_or (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_bitop(c, slots, self, a, 1); }
