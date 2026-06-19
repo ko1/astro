@@ -2520,6 +2520,34 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         }
         return RESULT_OK(KORB_FALSE);
       }
+      case 6: {                                          /* array w/ rest: [pre..., *rest, post...] */
+        if (!KORB_ARRAY_P(VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE);
+        const uint32_t len = VAL2ARY(VALUE_REF_GET(subjref))->len;
+        if (len < p->n + p->npost) return RESULT_OK(KORB_FALSE);
+        for (uint32_t i = 0; i < p->n; i++) {            /* pre */
+            cur[0] = VAL2ARY(VALUE_REF_GET(subjref))->items->data[i];
+            RESULT r = korb_pat_match(c, base, cur + 1, VALUE_REF_AT(&cur[0]), p->elems[i]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
+        }
+        if (p->bind_off != INT32_MIN) {                  /* bind *rest to a fresh sub-array (subj stays rooted) */
+            const uint32_t rest_len = len - p->n - p->npost;
+            cur[0] = UNWRAP(korb_ary_new(c, cur, rest_len));
+            VALUE_REF rest = VALUE_REF_AT(&cur[0]);
+            for (uint32_t i = 0; i < rest_len; i++) {
+                cur[1] = VAL2ARY(VALUE_REF_GET(subjref))->items->data[p->n + i];   /* re-read (push may GC) */
+                CHECK(korb_ary_push_val(c, cur + 2, rest, cur[1]));
+            }
+            base[p->bind_off] = VALUE_REF_GET(rest);
+        }
+        for (uint32_t i = 0; i < p->npost; i++) {        /* post (from the tail) */
+            cur[0] = VAL2ARY(VALUE_REF_GET(subjref))->items->data[len - p->npost + i];
+            RESULT r = korb_pat_match(c, base, cur + 1, VALUE_REF_AT(&cur[0]), p->elems[p->n + i]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
+        }
+        return RESULT_OK(KORB_TRUE);
+      }
     }
     return RESULT_OK(KORB_FALSE);
 }

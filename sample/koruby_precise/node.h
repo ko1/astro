@@ -272,10 +272,11 @@ VALUE *korb_outer_frame_base(VALUE prev_handle, uint32_t depth);
  * 2 array ([elems...] exact length), 3 hash ({keys[i]: elems[i]...}). */
 struct korb_pat {
     uint8_t  kind;
-    int32_t  bind_off;            /* kind 0: frame slot offset (baked) */
+    int32_t  bind_off;            /* kind 0/4: frame slot offset (baked); kind 6: *rest slot (-1 = anonymous) */
     struct Node *value_node;      /* kind 1: NODE to EVAL → `pat === subject` */
-    uint32_t n;                   /* kind 2/3: element / pair count */
-    struct korb_pat **elems;      /* kind 2: element patterns; kind 3: value patterns */
+    uint32_t n;                   /* kind 2/3: count; kind 6: pre-rest count */
+    uint32_t npost;               /* kind 6: post-rest count (elems[n..n+npost) are the post patterns) */
+    struct korb_pat **elems;      /* kind 2/4/5/6: sub-patterns; kind 3: per-key patterns */
     VALUE   *keys;                /* kind 3: symbol keys */
 };
 RESULT korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct korb_pat *p);

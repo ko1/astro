@@ -396,6 +396,22 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
             for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
             return p;
         }
+        if (!ap->constant && ap->rest) {                      /* `[pre..., *rest, post...]` */
+            p->kind = 6; p->n = (uint32_t)ap->requireds.size; p->npost = (uint32_t)ap->posts.size;
+            const uint32_t total = p->n + p->npost;
+            p->elems = calloc(total ? total : 1, sizeof(struct korb_pat *));
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
+            for (uint32_t i = 0; i < p->npost; i++) p->elems[p->n + i] = build_pattern_desc(tc, ap->posts.nodes[i]);
+            p->bind_off = INT32_MIN;                          /* anonymous `*` (no bind); valid offsets are negative */
+            if (PM_NODE_TYPE_P(ap->rest, PM_SPLAT_NODE)) {
+                const pm_splat_node_t *sp = (const pm_splat_node_t *)ap->rest;
+                if (sp->expression && PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                    const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)sp->expression;
+                    if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, sp->expression, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+                }
+            }
+            return p;
+        }
     } else if (PM_NODE_TYPE_P(pat, PM_HASH_PATTERN_NODE)) {
         const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
         if (!hp->constant && !hp->rest) {
