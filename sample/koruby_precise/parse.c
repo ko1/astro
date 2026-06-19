@@ -1474,8 +1474,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_INTEGER_NODE: {
         const pm_integer_node_t *in = (const pm_integer_node_t *)node;
         intptr_t v;
-        if (!kp_integer_value(&in->value, &v))
-            return kp_unsupported(tc, node, "Integer literal beyond Fixnum range (Bignum)");
+        if (!kp_integer_value(&in->value, &v)) {       /* beyond Fixnum → bake source digits, rebuild Bignum at eval */
+            size_t slen = (size_t)(node->location.end - node->location.start);
+            char *buf = malloc(slen + 1);
+            if (!buf) abort();
+            memcpy(buf, node->location.start, slen);
+            buf[slen] = '\0';
+            return ALLOC_node_bignum(buf, (uint32_t)slen);
+        }
         return ALLOC_node_lit(LONG2FIX(v));
       }
       case PM_FLOAT_NODE:

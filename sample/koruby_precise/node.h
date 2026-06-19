@@ -310,6 +310,10 @@ enum korb_etype {
 const char *korb_type_name(VALUE v);
 const char *korb_a_type_name(VALUE v);
 
+/* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =
+ * auto-detect 0x/0b/0o/leading-0.  Used by node_bignum (beyond-Fixnum literal). */
+bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);
+
 /* symbols */
 uint32_t korb_intern(struct korb_vm *vm, const char *name, size_t len);
 const char *korb_sym_name(const struct korb_vm *vm, uint32_t id);

@@ -32,6 +32,19 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// Integer literal beyond Fixnum range (e.g. 10**100 written literally).  The
+// VALUE (a heap Bignum) can't be baked into an SD, so we bake the source digits
+// (`digits`, base 0 = auto-detect 0x/0b/0o/_) and rebuild the Bignum each eval.
+NODE_DEF
+node_bignum(CTX *c, NODE *n, VALUE *slots, const char *digits, uint32_t len)
+{
+    (void)n;
+    VALUE out;
+    if (UNLIKELY(!korb_str_to_int(c, slots, digits, len, 0, &out)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid integer literal");
+    return RESULT_OK(out);
+}
+
 // Regexp literal `/pat/` — fresh Regexp(source, flags) per evaluation.
 NODE_DEF
 node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t ci)

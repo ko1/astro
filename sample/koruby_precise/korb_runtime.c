@@ -3858,8 +3858,8 @@ korb_fmt_int(intptr_t n, int base, char *buf)
     return len;
 }
 
-/* strict string→integer parse (defined below); used by sprintf %d on a String. */
-static bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);
+/* strict string→integer parse (defined below; declared in node.h so node_bignum
+ * can build a beyond-Fixnum literal). */
 
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
@@ -5206,7 +5206,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
  * digit separators (single, between digits).  base==0 = auto-detect.  Returns
  * false on any malformation; on success *out is a Fixnum or (on overflow, with
  * GMP) a Bignum.  May allocate (the Bignum), so takes the slots cursor. */
-static bool
+bool
 korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out)
 {
     uint32_t i = 0, end = len;
