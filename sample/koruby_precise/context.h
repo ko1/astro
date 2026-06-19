@@ -439,6 +439,7 @@ typedef struct KorbClass {
     uint8_t  is_singleton;           /* 1 = per-object singleton class (transparent to .class) */
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
+    uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */

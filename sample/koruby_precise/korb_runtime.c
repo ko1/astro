@@ -1170,6 +1170,111 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     return RESULT_OK(VALUE_REF_GET(cls));
 }
 
+/* ---- Data.define (Ruby 3.2+ immutable value class) ---------------------- */
+/* true if every key of `h` is a Symbol that names a member of data class `k`. */
+static bool korb_data_all_keys_members(const struct korb_vm *vm, const KorbClass *k, const KorbHash *h) {
+    (void)vm;
+    const KorbArray *mem = VAL2ARY(k->members);
+    if (h->len == 0) return mem->len == 0;
+    for (uint32_t i = 0; i < h->len; i++) {
+        VALUE key = h->items->data[2 * i];
+        bool found = false;
+        for (uint32_t j = 0; j < mem->len; j++) if (mem->items->data[j] == key) { found = true; break; }
+        if (!found) return false;
+    }
+    return true;
+}
+
+/* Data#with(**changes) → a fresh instance with the named members replaced. */
+static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = VAL2OBJ(VALUE_REF_GET(self))->klass;          /* the data class (rooted) */
+    slots[1] = (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    slots[2] = UNWRAP(korb_obj_new(c, slots + 2, slots[0]));  /* new instance (rooted) */
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *mem = VAL2ARY(VAL2CLASS(slots[0])->members);   /* re-read (ivar_set may GC) */
+        if (i >= mem->len) break;
+        VALUE msym = mem->items->data[i];
+        VALUE iv = korb_member_ivar_sym(c->vm, msym);
+        VALUE val;
+        if (slots[1] != KORB_NIL) {
+            int32_t hi = korb_hash_find(VAL2HASH(slots[1]), msym);
+            val = hi >= 0 ? VAL2HASH(slots[1])->items->data[2 * hi + 1] : korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        } else {
+            val = korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        }
+        slots[3] = val;                                       /* root across ivar_set */
+        CHECK(korb_ivar_set(c, slots + 4, VALUE_REF_AT(&slots[2]), iv, slots[3]));
+    }
+    return RESULT_OK(slots[2]);
+}
+
+/* Data#inspect → "#<data Name member=val, ...>" (anonymous → no Name). */
+static RESULT korb_m_data_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
+    const KorbClass *const k = VAL2CLASS(klass);
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    fputs("#<data", ms);
+    if (k->name_sym) { fputc(' ', ms); fputs(korb_sym_name(c->vm, k->name_sym), ms); }
+    const KorbArray *const mem = VAL2ARY(k->members);
+    for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
+        const VALUE msym = mem->items->data[i];
+        const VALUE val = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
+        fputs(i == 0 ? " " : ", ", ms);
+        fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
+        fputc('=', ms);
+        korb_fprint_inspect(c, ms, val);
+    }
+    fputc('>', ms);
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+
+/* Data.define(*members [, &block]) → an anonymous immutable value class. */
+static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)self; (void)cself;
+    struct korb_vm *const vm = c->vm;
+    slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
+    VALUE_REF cls = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
+    VALUE_REF mem = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE sym = VALUE_SLICE_GET(a, i);
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
+        if (!SYMBOL_P(sym)) continue;
+        const char *nm = korb_sym_name(vm, SYM2ID(sym));
+        char buf[256];
+        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader only (immutable) */
+        CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
+    }
+    ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
+    VAL2CLASS(VALUE_REF_GET(cls))->is_data = 1;
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_to_h, -1);   /* arg (keys|nil) ignored → full hash */
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_data_inspect, 0);
+    slots[2] = VALUE_REF_GET(cls);                            /* root across singleton alloc */
+    slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
+    korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
+    if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
+        slots[2] = VALUE_REF_GET(cls);
+        RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+    }
+    return RESULT_OK(VALUE_REF_GET(cls));
+}
+
 /* ---- Regexp (matching via the astrogre engine in koruby_regex.so) -------- */
 typedef int (*korb_re_fn_t)(const char *, size_t, const char *, size_t, int, long *, long *);
 static korb_re_fn_t korb_re_load(struct korb_vm *vm) {
@@ -2056,6 +2161,12 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
     { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
+    /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
+    { uint32_t s = korb_intern(vm, "Data", 4);
+      slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
+      korb_const_define(c, s, slots[0]);
+      slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
+      korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
@@ -3512,9 +3623,20 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
+            const bool is_data = VAL2CLASS(*recv_slot)->is_data;
+            /* Data.new accepts positional OR keyword; detect keyword form as a single
+             * Hash arg whose keys all name members (no kwargs flag exists to test). */
+            if (is_data && !(argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
+                             korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc]))) &&
+                argc != VAL2ARY(VAL2CLASS(*recv_slot)->members)->len)
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %u)",
+                                  argc, VAL2ARY(VAL2CLASS(*recv_slot)->members)->len);
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
             slots[0] = obj;
-            const bool kwinit = VAL2CLASS(*recv_slot)->struct_kwinit && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]);
+            const bool kwinit = is_data
+                ? (argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
+                   korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc])))
+                : (VAL2CLASS(*recv_slot)->struct_kwinit && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]));
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (i >= mem->len) break;
