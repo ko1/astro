@@ -69,10 +69,33 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
 static RESULT korb_m_aseq_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_aseq_to_array(c, slots, self);
 }
+/* ArithmeticSequence#size — analytic (never materializes): an endless or
+ * step-toward-infinity sequence is Infinity; finite counts use the closed form
+ * (integer exact; float with CRuby's epsilon fudge to avoid drift off-by-one). */
 static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    slots[0] = UNWRAP(korb_aseq_to_array(c, slots, self));
-    return RESULT_OK(LONG2FIX(VAL2ARY(slots[0])->len));
+    const KorbArithSeq *as = VAL2ASEQ(VALUE_REF_GET(self));
+    VALUE beginv, limv, stepv; bool excl;
+    korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
+    if (limv == KORB_NIL) return korb_float_new(c, slots, INFINITY);          /* endless */
+    double bd, ld, sd;
+    if (UNLIKELY(!korb_num_to_d(beginv, &bd) || !korb_num_to_d(limv, &ld) || !korb_num_to_d(stepv, &sd)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
+    if (UNLIKELY(sd == 0.0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    if (isinf(ld)) return ((sd > 0) == (ld > 0)) ? korb_float_new(c, slots, INFINITY) : RESULT_OK(LONG2FIX(0));
+    if (FIXNUM_P(beginv) && FIXNUM_P(limv) && FIXNUM_P(stepv)) {              /* exact integer count */
+        intptr_t span = FIX2LONG(limv) - FIX2LONG(beginv), st = FIX2LONG(stepv);
+        intptr_t cnt;
+        if (st > 0) cnt = span < 0 ? 0 : span / st + 1;
+        else        cnt = span > 0 ? 0 : (-span) / (-st) + 1;
+        if (excl && cnt > 0 && span % st == 0) cnt--;                        /* endpoint excluded when hit exactly */
+        return RESULT_OK(LONG2FIX(cnt));
+    }
+    double n = (ld - bd) / sd;                                                /* float: CRuby ruby_float_step_size */
+    double err = (fabs(bd) + fabs(ld) + fabs(ld - bd)) / fabs(sd) * DBL_EPSILON;
+    if (err > 0.5) err = 0.5;
+    n = excl ? floor(n - err) : floor(n + err) + 1.0;
+    return RESULT_OK(LONG2FIX(n > 0 ? (intptr_t)n : 0));
 }
 static RESULT korb_m_aseq_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
