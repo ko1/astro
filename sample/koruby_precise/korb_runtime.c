@@ -2565,6 +2565,10 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         vm->class_obj_idx[defs[i].cls] = korb_const_index(vm, name_sym);
     }
     vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
+    /* ArithmeticSequence's display name is the nested path (const stays keyed by
+     * the rightmost "ArithmeticSequence", which is how flat const-paths resolve). */
+    { VALUE as = korb_const_get(vm, vm->class_name[KORB_C_ARITHSEQ]);
+      if (KORB_CLASS_P(as)) VAL2CLASS(as)->name_sym = korb_intern(vm, "Enumerator::ArithmeticSequence", 30); }
 
     /* BasicObject = Object's superclass; Kernel = a module mixed into Object.
      * Wiring both makes ancestors / is_a? / superclass reflect the real MRO tail. */
