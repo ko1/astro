@@ -784,6 +784,9 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (base == 0) base = 10;
     intptr_t n = 0; bool any = false, prev_us = false;
+#ifdef KORB_HAVE_GMP
+    bool big = false; mpz_t z;
+#endif
     for (; i < end; i++) {
         const char ch = d[i];
         if (ch == '_') { if (!any || prev_us) break; prev_us = true; continue; }
@@ -793,9 +796,28 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') dig = (ch | 0x20) - 'a' + 10;
         else break;
         if (dig >= base) break;
-        n = n * base + dig;
         any = true;
+#ifdef KORB_HAVE_GMP
+        if (big) { mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)dig); continue; }
+        intptr_t nn;
+        if (UNLIKELY(__builtin_mul_overflow(n, (intptr_t)base, &nn) || __builtin_add_overflow(nn, (intptr_t)dig, &nn))) {
+            mpz_init_set_si(z, n);                       /* overflow → keep parsing in GMP */
+            mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)dig);
+            big = true; continue;
+        }
+        n = nn;
+#else
+        n = n * base + dig;
+#endif
     }
+#ifdef KORB_HAVE_GMP
+    if (big) {
+        if (sign < 0) mpz_neg(z, z);
+        RESULT r = korb_big_from_mpz(c, slots, z);       /* normalizes back to Fixnum if it fits */
+        mpz_clear(z);
+        return r;
+    }
+#endif
     return RESULT_OK(LONG2FIX(sign * n));
 }
 

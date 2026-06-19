@@ -5122,9 +5122,10 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
 /* strict string→integer parse for Integer():  optional surrounding whitespace,
  * sign, base prefix (0x/0b/0o/0d, leading-0 octal when base auto), and `_`
  * digit separators (single, between digits).  base==0 = auto-detect.  Returns
- * false on any malformation or fixnum overflow. */
+ * false on any malformation; on success *out is a Fixnum or (on overflow, with
+ * GMP) a Bignum.  May allocate (the Bignum), so takes the slots cursor. */
 static bool
-korb_str_to_int(const char *s, uint32_t len, int base, intptr_t *out)
+korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out)
 {
     uint32_t i = 0, end = len;
     while (i < end && isspace((unsigned char)s[i])) i++;
@@ -5140,24 +5141,52 @@ korb_str_to_int(const char *s, uint32_t len, int base, intptr_t *out)
     }
     if (base == 0) base = 10;
     intptr_t acc = 0; bool any = false, prev_us = false;
+#ifdef KORB_HAVE_GMP
+    bool big = false; mpz_t z;
+#endif
     for (; i < end; i++) {
         char ch = s[i];
-        if (ch == '_') { if (!any || prev_us) return false; prev_us = true; continue; }
+        if (ch == '_') { if (!any || prev_us) goto bad; prev_us = true; continue; }
         prev_us = false;
         int d;
         if (ch >= '0' && ch <= '9') d = ch - '0';
         else if ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') d = (ch | 0x20) - 'a' + 10;
-        else return false;
-        if (d >= base) return false;
-        if (__builtin_mul_overflow(acc, base, &acc) ||
-            __builtin_add_overflow(acc, d, &acc)) return false;
+        else goto bad;
+        if (d >= base) goto bad;
         any = true;
+#ifdef KORB_HAVE_GMP
+        if (big) { mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)d); continue; }
+        intptr_t nn;
+        if (UNLIKELY(__builtin_mul_overflow(acc, (intptr_t)base, &nn) || __builtin_add_overflow(nn, (intptr_t)d, &nn))) {
+            mpz_init_set_si(z, acc); mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)d);
+            big = true; continue;
+        }
+        acc = nn;
+#else
+        if (__builtin_mul_overflow(acc, base, &acc) || __builtin_add_overflow(acc, d, &acc)) goto bad;
+#endif
     }
-    if (!any || prev_us) return false;
+    if (!any || prev_us) goto bad;
+#ifdef KORB_HAVE_GMP
+    if (big) {
+        if (sign < 0) mpz_neg(z, z);
+        RESULT r = korb_big_from_mpz(c, slots, z);
+        mpz_clear(z);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return false;
+        *out = r.value;
+        return true;
+    }
+#else
+    (void)c; (void)slots;
+#endif
     acc *= sign;
-    if (!FIXABLE(acc)) return false;
-    *out = acc;
+    *out = LONG2FIX(acc);   /* always FIXABLE: overflow promoted to Bignum above */
     return true;
+  bad:
+#ifdef KORB_HAVE_GMP
+    if (big) mpz_clear(z);
+#endif
+    return false;
 }
 
 /* Integer(arg[, base]) — Kernel conversion.  Integer→itself, Float→truncate
@@ -5184,10 +5213,10 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
             base = (int)FIX2LONG(b);
         }
         const KorbString *s = VAL2STR(a0);
-        intptr_t v;
-        if (UNLIKELY(!korb_str_to_int(s->buf->data, s->len, base, &v)))
+        VALUE v;
+        if (UNLIKELY(!korb_str_to_int(c, slots, s->buf->data, s->len, base, &v)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
-        return RESULT_OK(LONG2FIX(v));
+        return RESULT_OK(v);
     }
     if (a0 == KORB_NIL)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert nil into Integer");

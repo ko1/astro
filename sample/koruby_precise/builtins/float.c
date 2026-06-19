@@ -205,6 +205,15 @@ static RESULT korb_m_int_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
+        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);
+        if (mpz_sgn(z) < 0) mpz_com(z, z);             /* ~z = -z-1: two's-complement magnitude */
+        const size_t len = (mpz_sgn(z) == 0) ? 0 : mpz_sizeinbase(z, 2);
+        mpz_clear(z);
+        return RESULT_OK(LONG2FIX((intptr_t)len));
+    }
+#endif
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     if (n < 0) n = ~n;                                 /* -n-1: bits of the two's-complement magnitude */
     intptr_t len = 0;
@@ -212,14 +221,31 @@ static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(LONG2FIX(len));
 }
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t n = SELF_INT;
-    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain");
     intptr_t base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {
         if (!FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         base = FIX2LONG(VALUE_SLICE_GET(a, 0));
         if (base < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %ld", (long)base);
     }
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
+        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);   /* GMP copy: independent of the GC heap, survives the allocs below */
+        if (mpz_sgn(z) < 0) { mpz_clear(z); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain"); }
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 8)));
+        if (mpz_sgn(z) == 0) {
+            CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(0)));
+        } else {
+            while (mpz_sgn(z) > 0) {
+                const unsigned long d = mpz_fdiv_q_ui(z, z, (unsigned long)base);   /* z = z/base, returns z%base */
+                CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((intptr_t)d)));
+            }
+        }
+        mpz_clear(z);
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+#endif
+    intptr_t n = SELF_INT;
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     do {
         CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(n % base)));
