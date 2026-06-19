@@ -1890,6 +1890,19 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
  * body self is the class; the block becomes the method body (run with self =
  * receiver).  The captured env is force-closed immediately so it survives past
  * the defining frame.  Returns the method name symbol. */
+static VALUE korb_dispatch_class(CTX *c, VALUE self);            /* fwd */
+static struct korb_method *korb_method_lookup(struct korb_vm *vm, uint32_t mid);   /* fwd */
+static struct korb_method *korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def);   /* fwd */
+/* true if `anc` is `klass` or one of its ancestors (superclass chain + included modules). */
+static bool korb_class_has_ancestor(VALUE klass, VALUE anc) {
+    while (KORB_CLASS_P(klass)) {
+        if (klass == anc) return true;
+        const VALUE inc = VAL2CLASS(klass)->included;
+        if (inc != KORB_NIL) { const KorbArray *ia = VAL2ARY(inc); for (uint32_t j = 0; j < ia->len; j++) if (ia->items->data[j] == anc) return true; }
+        klass = VAL2CLASS(klass)->superclass;
+    }
+    return false;
+}
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
@@ -1911,6 +1924,21 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 1));
     } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_PROC_P(VALUE_SLICE_GET(a, 1))) {
         slots[1] = VALUE_SLICE_GET(a, 1);                /* proc form: already self-contained */
+    } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_METHOD_P(VALUE_SLICE_GET(a, 1))) {
+        /* Method / UnboundMethod form: copy the resolved definition under `mid`. */
+        const KorbMethod *const mo = VAL2METH(VALUE_SLICE_GET(a, 1));
+        const VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
+        const struct korb_method *src = KORB_CLASS_P(owner) ? korb_class_find_method(owner, mo->mid, NULL) : NULL;
+        if (src == NULL) src = korb_method_lookup(c->vm, mo->mid);
+        if (UNLIKELY(src == NULL))
+            return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s'", korb_sym_name(c->vm, mo->mid));
+        if (UNLIKELY(KORB_CLASS_P(owner) && !korb_class_has_ancestor(slots[0], owner)))   /* defining class must be ≤ the method's owner */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", korb_type_name(owner));
+        struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
+        *dst = *src;                                     /* copy the definition */
+        dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
+        c->vm->method_serial++;
+        return RESULT_OK(ID2SYM(mid));
     } else {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     }
