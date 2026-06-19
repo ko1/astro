@@ -55,15 +55,13 @@ wt=$(printf '%s' "$warm" | cut -f2); wf=$(printf '%s' "$warm" | cut -f3); wk=$(p
 printf 'aot+compile\t%s\t%s\t%s\n' "$(awk "BEGIN{printf \"%.3f\", $bake+$wt}")" "$wf" "$wk" >>"$TMP"
 printf '%s\n' "$warm" >>"$TMP"
 
-# cruby wall time = ratio baseline.
-base=$(awk -F'\t' '$1=="cruby"{print $2}' "$TMP")
-printf '%-12s %10s %10s %12s %10s\n' bench time_s fps time/cruby fps/cruby
-fbase=$(awk -F'\t' '$1=="cruby"{print $3}' "$TMP")
+# fps ratio baseline = YJIT (the strongest competitor).
+fbase=$(awk -F'\t' '$1=="cruby+yjit"{print $3}' "$TMP")
+printf '%-12s %10s %10s %10s\n' bench time_s fps fps/yjit
 while IFS=$'\t' read -r label t f k; do
-  tr=$(awk "BEGIN{printf \"%.2f\", $t/$base}")
   fr=$(awk "BEGIN{printf \"%.2f\", $f/$fbase}")
   f2=$(awk "BEGIN{printf \"%.1f\", $f}")
-  printf '%-12s %10s %10s %12s %10s\n' "$label" "$t" "$f2" "$tr" "$fr"
+  printf '%-12s %10s %10s %10s\n' "$label" "$t" "$f2" "$fr"
 done < "$TMP"
 
 # checksum sanity: every mode must agree (else the fps/time are meaningless).
