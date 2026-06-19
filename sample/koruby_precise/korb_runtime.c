@@ -3804,6 +3804,17 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
         if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
             return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
+        if (m->kind == KORB_METHOD_CFUNC && !m->uses_block &&       /* builtin (Array#<</[], String#..) — inline the CFUNC call, skip dispatch_method */
+            LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+            RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(intptr_t)argc - 1]),
+                              VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+            if (UNLIKELY(r.state == KORB_RAISE)) {
+                KorbException *e = VAL2EXC(r.value);
+                korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
+                e->line = line;
+            }
+            return r;
+        }
         return korb_dispatch_method(c, slots, m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
     }
 
