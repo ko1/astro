@@ -358,6 +358,7 @@ static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     (void)a; double re, im;
     if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
+    if (re == 0.0 && im == 0.0) return RESULT_OK(LONG2FIX(0));   /* Complex(0,0).abs → Integer 0 (CRuby) */
     return korb_float_new(c, slots, sqrt(re * re + im * im));
 }
 static int korb_cmp_full(CTX *c, VALUE a, VALUE b);   /* fwd (defined below) */
