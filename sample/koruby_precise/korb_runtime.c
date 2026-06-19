@@ -1659,7 +1659,7 @@ korb_mcache_find(struct korb_vm *vm, VALUE klass, uint32_t mid, VALUE *out_def)
  * instance dispatch, implicit self-calls, global calls, super, and new's init.
  * Frame reserved cells top-down: self(fs-1), def_class(fs-2), then the block
  * group {block_entry(fs-5), def_env(fs-4), captured_self(fs-3)} if it yields. */
-static RESULT
+static __attribute__((no_stack_protector)) RESULT
 korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class,
                    NODE *block, VALUE *def_env, VALUE captured_self)
@@ -1800,7 +1800,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
  * rest/opt/post/kw/block) — none of the generic argument machinery, fewer
  * params.  Caller guarantees m->is_simple.  always_inline so it folds into the
  * dispatch site (removes a call layer on the hot path). */
-static inline __attribute__((always_inline)) RESULT
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
 korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
 {
@@ -2882,7 +2882,7 @@ static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, 
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
  * receiver dispatch funnels through one place. */
-static RESULT
+static __attribute__((no_stack_protector)) RESULT
 korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                      uint32_t line, uint32_t argc, VALUE def_class,
                      NODE *block, VALUE *def_env, VALUE *captured_self)
@@ -3071,7 +3071,7 @@ korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
  * prologue + send/__send__ probe + mcache hash.  Everything else (main/global via
  * cc, builtin self, CFUNC, method_missing) falls to korb_call_impl; those sites
  * don't fill `ic`. */
-RESULT
+__attribute__((no_stack_protector)) RESULT
 korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                  struct korb_callcache *cc, struct korb_inlcache *ic,
                  uint32_t argc, VALUE self)
@@ -3139,7 +3139,7 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
  * params; extra dropped, missing → nil — CRuby semantics).  argv may alias the
  * cursor region (node_yield passes &slots[-argc]); copies happen before any
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
-RESULT
+__attribute__((no_stack_protector)) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
@@ -3777,7 +3777,7 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
  * here with an inline-cached `initialize` (the hot Klass.new path), other class
  * receivers fall through.  Lookup misses don't fill the cache, so such sites
  * simply stay on the slow path.  Only normal sites cache. */
-RESULT
+__attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                  struct korb_inlcache *ic)
 {
