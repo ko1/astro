@@ -1235,6 +1235,14 @@ node_yield1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int
     return korb_yield(c, slots, 1, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
 }
 
+// `yield a, b, ...` (≥2 values): stage all via argv@children, then yield argc.
+NODE_DEF
+node_yield_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, NODE **argv@children)
+{
+    (void)n;
+    return korb_yield(c, slots, argv_cnt, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
+}
+
 // yield from INSIDE a block: `prev_off` reads this block frame's PREV handle;
 // korb_yield_outer walks `depth` env links to the enclosing method frame and
 // reads its block trio at node[trio_base..trio_base+2] (trio_base = method
@@ -1252,6 +1260,14 @@ node_yield_outer1(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off
 {
     (void)n; (void)a0;
     return korb_yield_outer(c, slots, 1, line, slots[prev_off], depth, trio_base);
+}
+
+// `yield a, b, ...` from inside a block (≥2 values).
+NODE_DEF
+node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, NODE **argv@children)
+{
+    (void)n;
+    return korb_yield_outer(c, slots, argv_cnt, line, slots[prev_off], depth, trio_base);
 }
 
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was

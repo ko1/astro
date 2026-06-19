@@ -10,6 +10,12 @@
 - **`Integer.superclass` が Object** (CRuby は Numeric)。koruby は Numeric を
   module(include) 扱いで superclass にしていない。Float も同様。階層変更は要注意。
 - **`&blk` 引数転送の一部が prism node 139 で未対応**: `def m(*a, &b); x.send(n,*a,&b); end`。
+- (修正済 2026-06-19) **multi-value `yield a, b`**: node_yield_n / node_yield_outer_n
+  (@children) 追加。直接形 `def m; yield a,b; end; m{|a,b|}` は CRuby 一致。
+  残: Enumerable 経由 (custom each が multi-yield → map/select) は prelude が
+  `each{|x| yield(x)}` で1値しか転送せず誤り。完全対応は |*x|+yield(*x) が要るが
+  hot path に array alloc が乗るので見送り (稀パターン)。yield-splat `yield(*a)` も未対応。
+- **anonymous splat target 未対応**: `first, *, last = ...`(無名 `*`)が parse 不可。
 - (修正済 2026-06-19) method_missing / respond_to_missing? / Object#instance_variables /
   Symbol#inspect の @ivar/@@cvar/$global を bare 表示。
 

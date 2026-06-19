@@ -2077,7 +2077,6 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_yield_node_t *yn = (const pm_yield_node_t *)node;
         uint32_t line = kp_line(tc, node);
         size_t yargc = yn->arguments ? yn->arguments->arguments.size : 0;
-        if (yargc > 1) return kp_unsupported(tc, node, "yield with more than 1 value");
         /* `yield` reaches the enclosing METHOD's block, not a nested block's.
          * Walk up to the method frame (method_mid != 0), counting block frames. */
         struct kp_frame *mf = tc->frame;
@@ -2089,9 +2088,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
             if (yargc == 0)
                 return ALLOC_node_yield0(line, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
-            NODE *a0;
-            WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            return ALLOC_node_yield1(line, -5 - (tc->chain + 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), a0);
+            if (yargc == 1) {
+                NODE *a0;
+                WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
+                return ALLOC_node_yield1(line, -5 - (tc->chain + 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), a0);
+            }
+            NODE **argv = malloc(sizeof(NODE *) * yargc);          /* yield a, b, ... */
+            if (!argv) abort();
+            const int32_t saved = tc->chain;
+            tc->chain = saved + (int32_t)yargc;
+            for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
+            tc->chain = saved;
+            const int32_t off = tc->chain + (int32_t)yargc;
+            return ALLOC_node_yield_n(line, -5 - off, -4 - off, -3 - off, argv, (uint32_t)yargc);
         }
         /* yield inside a block: trio_base = method frame_size - 5 (add-baked at
          * the method's pop); prev_off addresses this block frame's PREV cell. */
@@ -2101,11 +2110,23 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             add_bake_to(mf, &yo->u.node_yield_outer0.trio_base); /* += method frame_size */
             return yo;
         }
-        NODE *a0;
-        WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-        NODE *yo = ALLOC_node_yield_outer1(line, -1 - (tc->chain + 1), depth, -5, a0);
-        bake_add(tc, &yo->u.node_yield_outer1.prev_off);
-        add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
+        if (yargc == 1) {
+            NODE *a0;
+            WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
+            NODE *yo = ALLOC_node_yield_outer1(line, -1 - (tc->chain + 1), depth, -5, a0);
+            bake_add(tc, &yo->u.node_yield_outer1.prev_off);
+            add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
+            return yo;
+        }
+        NODE **argv = malloc(sizeof(NODE *) * yargc);              /* yield a, b, ... inside a block */
+        if (!argv) abort();
+        const int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)yargc;
+        for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
+        tc->chain = saved;
+        NODE *yo = ALLOC_node_yield_outer_n(line, -1 - (tc->chain + (int32_t)yargc), depth, -5, argv, (uint32_t)yargc);
+        bake_add(tc, &yo->u.node_yield_outer_n.prev_off);
+        add_bake_to(mf, &yo->u.node_yield_outer_n.trio_base);
         return yo;
       }
       case PM_NEXT_NODE: {
