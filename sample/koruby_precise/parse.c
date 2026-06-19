@@ -1051,7 +1051,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             for (uint32_t i = 0; i < pos_argc; i++) argv[i] = transduce(tc, args->arguments.nodes[i]);
             for (uint32_t j = 0; j < kw_cnt; j++) argv[pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
             tc->chain = saved;
-            return ALLOC_node_call_kw(mid, line, self_off, pos_argc, (void *)kw_syms, argv, total);
+            return ALLOC_node_call_kw(mid, line, self_off, pos_argc, (const char *)(const void *)kw_syms, argv, total);
         }
     }
 

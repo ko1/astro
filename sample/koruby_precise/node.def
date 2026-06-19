@@ -1000,13 +1000,15 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t se
 // Implicit-self keyword call `f(pos..., k: v...)`.  @children stages the pos args
 // then the keyword VALUES; `kw_syms` is a baked uint32_t[] of the keyword mids,
 // `pos_argc` the positional count (kw count = argv_cnt - pos_argc).  Hash-free
-// when the callee permits (korb_call_kw decides).  @noinline: kw_syms is a
-// per-process pointer (can't be baked into an SD literal — see node_match_pred).
-NODE_DEF @noinline
-node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, uint32_t pos_argc, void *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+// when the callee permits (korb_call_kw decides).  kw_syms is typed `const char *`
+// so the specializer emits a runtime reference (read from `n`) rather than baking
+// the per-process pointer — that keeps node_call_kw specializable (children get
+// their own SDs) and AOT-safe (SDs sharing across keyword sets read n->kw_syms).
+NODE_DEF
+node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
-    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)kw_syms, argv_cnt - pos_argc, slots[self_off]);
+    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - pos_argc, slots[self_off]);
 }
 
 // ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
