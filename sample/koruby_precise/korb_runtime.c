@@ -3830,6 +3830,9 @@ korb_fmt_int(intptr_t n, int base, char *buf)
     return len;
 }
 
+/* strict string→integer parse (defined below); used by sprintf %d on a String. */
+static bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);
+
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"

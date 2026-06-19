@@ -3,8 +3,9 @@
 /* ---- more String methods ------------------------------------------------- */
 
 /* String#% : printf-style formatting. Single arg or an Array of args.
- * Supports d/i/u, f/e/E/g/G, x/X/o, b, s, c, p, %% with C flags/width/precision
- * (binary `b` honors width/0-flag manually; `*` dynamic width is unsupported). */
+ * Supports d/i/u, f/e/E/g/G, x/X/o, b, s, c, p, %% with C flags/width/precision,
+ * `*` dynamic width/precision, `N$` positional refs, and `%<name>spec` / `%{name}`
+ * named refs from a Hash arg (binary `b` honors width/0-flag manually). */
 static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
     const char *fmt = fs->buf->data; uint32_t flen = fs->len;
@@ -17,54 +18,104 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
-        char spec[64]; int si = 0; spec[si++] = '%';
+        char spec[80]; int si = 0; spec[si++] = '%';
         i++;
         if (i < flen && fmt[i] == '%') { fputc('%', ms); continue; }
-        while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; }
-        while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; }
-        if (i < flen && fmt[i] == '.') { if (si < 58) spec[si++] = '.'; i++; while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 58) spec[si++] = fmt[i]; i++; } }
+        /* %<name>spec / %{name}: pull the arg from a Hash by name. */
+        VALUE named_arg = KORB_NIL; bool has_named = false;
+        if (i < flen && (fmt[i] == '<' || fmt[i] == '{')) {
+            const char close = (fmt[i] == '<') ? '>' : '}';
+            const bool bare = (fmt[i] == '{');
+            i++; const uint32_t nstart = i;
+            while (i < flen && fmt[i] != close) i++;
+            if (i >= flen || !KORB_HASH_P(single)) { err = true; errmsg = "malformed format sequence"; break; }
+            const int32_t hidx = korb_hash_find(VAL2HASH(single), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+            named_arg = (hidx >= 0) ? VAL2HASH(single)->items->data[2 * hidx + 1] : KORB_NIL;
+            has_named = true;                              /* i is at the close char */
+            if (bare) {                                    /* %{name} → to_s, no conversion */
+                if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
+                else korb_fprint_to_s(c, ms, named_arg);
+                continue;                                  /* for-loop i++ steps past the close */
+            }
+            i++;                                           /* %<name>spec: past close, parse the spec below */
+        }
+        /* %N$ positional index (1-based); only when not named. */
+        int explicit_idx = -1;
+        if (!has_named) {
+            const uint32_t save = i; int num = 0; bool any = false;
+            while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); any = true; i++; }
+            if (any && i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            else i = save;                                 /* plain width digits → reparse below */
+        }
+        while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        if (i < flen && fmt[i] == '*') {                   /* dynamic width from next arg */
+            i++; const VALUE wv = (ai < argn) ? args[ai++] : KORB_NIL;
+            if (!FIXNUM_P(wv)) { err = true; errmsg = "width too big"; break; }
+            si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)FIX2LONG(wv));
+        } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        if (i < flen && fmt[i] == '.') {
+            if (si < 70) spec[si++] = '.';
+            i++;
+            if (i < flen && fmt[i] == '*') {               /* dynamic precision from next arg */
+                i++; const VALUE pv = (ai < argn) ? args[ai++] : KORB_NIL;
+                if (!FIXNUM_P(pv)) { err = true; errmsg = "precision too big"; break; }
+                si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)FIX2LONG(pv));
+            } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        }
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
         char conv = fmt[i];
-        VALUE arg = (ai < argn) ? args[ai] : KORB_NIL;
+        const bool sequential = (!has_named && explicit_idx < 0);
+        VALUE arg = has_named ? named_arg
+                  : (explicit_idx >= 0 ? ((uint32_t)explicit_idx < argn ? args[explicit_idx] : KORB_NIL)
+                                       : ((ai < argn) ? args[ai] : KORB_NIL));
+        if (sequential && conv != '%') ai++;               /* advance only for a sequential arg */
         switch (conv) {
           case 'd': case 'i': case 'u': {
             intptr_t v;
             if (FIXNUM_P(arg)) v = FIX2LONG(arg);
             else if (KORB_FLOAT_P(arg)) v = (intptr_t)korb_float_val(arg);
+            else if (KORB_STRING_P(arg)) {               /* %d coerces a String via Integer() */
+                VALUE iv;
+                if (!korb_str_to_int(c, slots, VAL2STR(arg)->buf->data, VAL2STR(arg)->len, 0, &iv) || !FIXNUM_P(iv)) { err = true; errmsg = "invalid value for Integer()"; break; }
+                v = FIX2LONG(iv);
+            }
             else { err = true; errmsg = "expected a number"; break; }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
-            fprintf(ms, spec, (long)v); ai++;
+            fprintf(ms, spec, (long)v);
             break;
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': {
             double v; if (!korb_num_to_d(arg, &v)) { err = true; errmsg = "expected a number"; break; }
             spec[si++] = conv; spec[si] = '\0';
-            fprintf(ms, spec, v); ai++;
+            fprintf(ms, spec, v);
             break;
           }
           case 'x': case 'X': case 'o': {
             intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
             spec[si++] = 'l'; spec[si++] = conv; spec[si] = '\0';
-            fprintf(ms, spec, (long)v); ai++;
+            fprintf(ms, spec, (long)v);
             break;
           }
           case 'b': case 'B': {
             intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
-            bool left = false, zero = false; int width = 0;          /* parse flags/width from spec */
+            bool left = false, zero = false, alt = false, in_width = false; int width = 0;  /* parse flags/width from spec */
             for (int k = 1; k < si; k++) {
                 char sc = spec[k];
-                if (sc == '-') left = true;
-                else if (sc == '0') zero = true;
-                else if (sc == '+' || sc == ' ' || sc == '#') { /* ignored for binary */ }
-                else if (isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');
+                if (in_width && isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');   /* width digit (incl. 0) */
+                else if (sc == '-') left = true;
+                else if (sc == '0') zero = true;                         /* leading 0 = pad flag */
+                else if (sc == '#') alt = true;                          /* 0b / 0B prefix */
+                else if (sc == '+' || sc == ' ') { /* ignored for binary */ }
+                else if (isdigit((unsigned char)sc)) { in_width = true; width = sc - '0'; }
                 else break;
             }
             char tmp[80]; uint32_t n = korb_fmt_int(v, 2, tmp);
-            int pad = width > (int)n ? width - (int)n : 0;
-            if (!left) { char padc = zero ? '0' : ' '; for (int p = 0; p < pad; p++) fputc(padc, ms); }
-            fwrite(tmp, 1, n, ms);
-            if (left) for (int p = 0; p < pad; p++) fputc(' ', ms);
-            ai++;
+            const char *pfx = alt ? (conv == 'B' ? "0B" : "0b") : "";
+            const int pfxn = alt ? 2 : 0;
+            int pad = width > (int)n + pfxn ? width - (int)n - pfxn : 0;
+            if (left) { fputs(pfx, ms); fwrite(tmp, 1, n, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
+            else if (zero) { fputs(pfx, ms); for (int p = 0; p < pad; p++) fputc('0', ms); fwrite(tmp, 1, n, ms); }
+            else { for (int p = 0; p < pad; p++) fputc(' ', ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); }
             break;
           }
           case 's': {
@@ -75,20 +126,18 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (tms) { korb_fprint_to_s(c, tms, arg); fclose(tms); }
                 fprintf(ms, spec, tb ? tb : ""); free(tb);
             }
-            ai++;
             break;
           }
           case 'p': {
             char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
             if (tms) { korb_fprint_inspect(c, tms, arg); fclose(tms); }
             spec[si++] = 's'; spec[si] = '\0';
-            fprintf(ms, spec, tb ? tb : ""); free(tb); ai++;
+            fprintf(ms, spec, tb ? tb : ""); free(tb);
             break;
           }
           case 'c': {
             if (FIXNUM_P(arg)) fputc((int)FIX2LONG(arg), ms);
             else if (KORB_STRING_P(arg) && VAL2STR(arg)->len > 0) fwrite(VAL2STR(arg)->buf->data, 1, 1, ms);
-            ai++;
             break;
           }
           default: err = true; errmsg = "malformed format sequence"; break;
