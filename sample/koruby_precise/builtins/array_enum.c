@@ -1351,3 +1351,24 @@ static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, 
     return RESULT_OK(slots[0]);
 }
 
+
+/* Enumerator#each_slice / each_cons — delegate to the Array versions on the
+ * enumerator's (eager-forced) value array, so Enumerable chains like
+ * `str.each_char.each_slice(2)` work.  No block → an Enumerator of the
+ * slices/windows (Array#each_slice handles that). */
+static RESULT korb_m_enum_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);     /* eager array (forces a finite lazy enum) */
+    if (UNLIKELY(av.state != KORB_NORMAL)) return av;
+    slots[0] = av.value;
+    RESULT r = korb_m_ary_each_slice(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(VALUE_REF_GET(self));   /* block form returns the enumerator */
+    return r;
+}
+static RESULT korb_m_enum_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);
+    if (UNLIKELY(av.state != KORB_NORMAL)) return av;
+    slots[0] = av.value;
+    RESULT r = korb_m_ary_each_cons(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+    if (block != NULL && r.state == KORB_NORMAL) return RESULT_OK(VALUE_REF_GET(self));   /* block form returns the enumerator */
+    return r;
+}
