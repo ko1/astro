@@ -57,10 +57,13 @@
   残: **find pattern** `[*, x, *]` のみ unsupported (稀)。
 - (実装済 2026-06-19) **`Data.define`** (Ruby 3.2+ immutable value class)。
   positional/keyword 両対応 init + with + to_h/members/==/deconstruct_keys/inspect。
+- (実装済 2026-06-19) **Bignum Rational 全面対応**: KorbRational num/den を VALUE
+  (Fixnum or Bignum) 化 + GC edge + korb_int_arith 経由の overflow→bignum 演算
+  + 既存の生 intptr 乗算 overflow バグも修正。リテラル `99999...r` も対応
+  (node_rational_big、pm_integer→decimal via mpz_import)。
 - (修正済 2026-06-19) **Bignum 整数リテラル**: node_bignum が source digits を
   焼いて eval 時に korb_str_to_int で再構築 (AOT も const char* operand で OK)。
-  残: **Bignum Rational リテラル** (`99999...r`) は未対応 (node_rational が
-  uint64 num/den 固定、bignum-aware Rational node が要る。稀)。
+  (Bignum Rational リテラル `99999...r` も対応済 — 上記参照)。
 - (修正済 2026-06-19) **`Integer.sqrt`**: mpz_sqrt 経由で fixnum/bignum 厳密。
 - (修正済 2026-06-19) **Enumerator#each_slice/each_cons**, **Hash#each_with_index
   (no block)**, **Hash key eql?** ({1=>x}[1.0]→nil)。
