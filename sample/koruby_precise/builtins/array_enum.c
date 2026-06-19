@@ -505,11 +505,7 @@ static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* flat_map: map then flatten one level (Array results spliced). */
 static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a;
-    if (UNLIKELY(block == NULL)) {                          /* → Enumerator over the elements (matches map's no-block) */
-        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "flat_map"));
-        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
-    }
+    (void)a; ARY_REQUIRE_BLOCK("Array#flat_map");           /* no-block enum would map, not flat_map → raise */
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
@@ -1042,10 +1038,10 @@ static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* select (keep==true) / reject (keep==false) */
 static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
-    if (UNLIKELY(block == NULL)) {                          /* → Enumerator over the elements (matches map's no-block) */
-        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), keep ? "select" : "reject"));
-        return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
-    }
+    /* No block → would need an Enumerator that remembers the filter op (so a later
+     * .with_index block filters, not maps); returning a plain elements-Enumerator
+     * gives a silent wrong answer for select.with_index{...}, so raise instead. */
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#%s without a block (Enumerator) is not supported", keep ? "select" : "reject");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
