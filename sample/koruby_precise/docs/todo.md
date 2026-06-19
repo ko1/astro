@@ -7,6 +7,17 @@
 
 - **`define_method` 未対応** (class body): `define_method(:foo) { }` が
   「undefined method 'define_method'」。block/proc を method body 化する機構が要る。
+  ※ 2026-06-19 に実装試行→revert。判明事項:
+    - インフラ: korb_method に `VALUE proc` + KORB_METHOD_DM kind、GC は owner と
+      並べて forward (context.h global-fn 行 + KORB_OBJ_CLASS 行)、korb_class_method_slot
+      で proc=nil リセット。dispatch は korb_dispatch_method の DM case で
+      korb_block_yield(entry=p->iseq, env=p->env, self=receiver)。
+    - **非クロージャ block (cap_depth==0) は動く**。**クロージャ捕捉 block が
+      captured 変数 read で SEGV**。同等クロージャの proc.call は動くので、原因は
+      「define_method の CFUNC 内で作った proc を保存して後で呼ぶ」と captured env
+      (open KorbEnv, loc=定義フレーム) が呼び出し時に無効化していること。
+    - 想定 fix: DM に格納する際 captured env を即 CLOSE/promote (vals を stack から
+      コピー) して loc 依存をやめる。要 focused session。
 - **`Integer.superclass` が Object** (CRuby は Numeric)。koruby は Numeric を
   module(include) 扱いで superclass にしていない。Float も同様。階層変更は要注意。
 - **`&blk` 引数転送の一部が prism node 139 で未対応**: `def m(*a, &b); x.send(n,*a,&b); end`。
