@@ -3565,9 +3565,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(VALUE_REF_GET(dst));
         }
-        if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) */
+        if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
-            if (argc >= 1) ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(intptr_t)argc]);
+            if (block != NULL) {                            /* default_proc: called on [] miss with (hash, key) */
+                slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+                ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_proc, slots[1]);
+            } else if (argc >= 1) {
+                ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(intptr_t)argc]);
+            }
             return RESULT_OK(slots[0]);
         }
         if (cname == vm->class_name[KORB_C_SET]) {          /* Set.new([enumerable]) */

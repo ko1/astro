@@ -382,6 +382,7 @@ typedef struct KorbHash {
     uint32_t len, capa;              /* pair count / pair capacity */
     KorbArrayItems *ARO_GC_EDGE items;       /* 2*capa VALUEs */
     VALUE ARO_GC_EDGE default_val;   /* [] miss result (nil unless set) */
+    VALUE ARO_GC_EDGE default_proc;  /* Hash.new { |h,k| } block (nil unless set); called on [] miss */
     /* O(1) lookup index for large hashes: open-addressing table of pair indices
      * (slot = pair_idx + 1; 0 = empty), a raw KORB_OBJ_STR_BUF of uint32.  NULL
      * for small hashes (linear scan is faster) or when KORB_FL_HASH_NOINDEX is
@@ -804,6 +805,7 @@ struct CTX_struct {
         KorbHash *_hh = (KorbHash *)(payload);                              \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->items);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_val);            \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_hh->default_proc);           \
         if (_hh->index) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_hh->index); /* raw uint32 table */ \
         (void)(payload_size);                                               \
         break;                                                               \

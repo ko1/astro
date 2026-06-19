@@ -18,10 +18,16 @@ static RESULT korb_m_hash_cmp_by_id_q(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK((((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_CMP_BY_ID) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     const KorbHash *h = SELF_HASH;
-    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
-    return RESULT_OK(idx < 0 ? h->default_val : h->items->data[2 * idx + 1]);
+    const int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
+    if (h->default_proc != KORB_NIL) {                    /* Hash.new { |h,k| } → default_proc.call(self, key) */
+        slots[0] = h->default_proc;
+        slots[1] = VALUE_REF_GET(self);
+        slots[2] = VALUE_SLICE_GET(a, 0);
+        return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
+    }
+    return RESULT_OK(h->default_val);
 }
 
 static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
