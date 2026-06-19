@@ -342,8 +342,10 @@ main(int argc, char *argv[])
 
         if (getenv("KORUBY_GC_STATS")) {
             double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-            fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu elapsed=%.6f\n",
-                    aro_gc_total_bytes(c), aro_gc_count(c), elapsed);
+            fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu minor=%zu major=%zu "
+                            "gc_seconds=%.6f max_pause=%.6f elapsed=%.6f\n",
+                    aro_gc_total_bytes(c), aro_gc_count(c), aro_gc_minor_count(c), aro_gc_major_count(c),
+                    aro_gc_total_seconds(c), aro_gc_max_pause_seconds(c), elapsed);
         }
     }
 

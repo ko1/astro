@@ -796,3 +796,18 @@ yield 用に共有 fp 方式を採用した結果、**escape する Proc では 
 3. **型に基づくノード rewrite** (`node_plus` → `node_fixnum_plus`)
 4. **FLONUM 即値化**
 5. **polymorphic IC** (mc->klass[2] 程度)
+
+## 世代別GC ベンチ (gen_gc, 2026-06-19)
+
+`bench/gen_gc.rb` — 長寿命の retained set (40k hash, old gen 化) + call ごとの
+大量短命アロケーション (young gen)。世代別 GC が「minor は young だけ走査し
+retained を copy しない」効果を出すワークロード。`KORUBY_GC_STATS=1` で計測:
+
+| GC | collections | GC time | wall |
+|----|-------------|---------|------|
+| copy (非世代) | 20 full | 0.092s | 0.48s |
+| copy_gen (世代別) | 26 minor / **0 major** | **0.025s (−73%)** | 0.43s |
+
+copy_gen は **GC 時間 3.7× 削減**(retained を一度も copy しない)。出力は CRuby 一致
+(60002883500)、STRESS+PURGE / AOT も green。`make GC=copy_gen` で再現。
+`KORUBY_GC_STATS=1` の出力に minor/major/gc_seconds/max_pause を追加。
