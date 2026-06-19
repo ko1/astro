@@ -3,6 +3,51 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## perf: 全マイクロベンチで CRuby+YJIT 超え (2026-06-19 進行中)
+
+目標: aot+cached が **すべての** microbench で cruby+yjit を下回る (<1.00)。
+
+### 本セッションで勝ち越したベンチ
+- floatcalc 1.21→0.97, mathfn 1.22→0.98: mixed Float·Integer 算術を node.def の
+  四則 (plus/minus/mul/div) に inline (korb_num_arith/num_to_d/float_new の PLT 回避)。
+- gcd 1.39→0.97, send 1.13→0.86, object 1.07→0.94: call fast-path を SD に inline。
+- gen_gc 0.99 (勝ち越し)。
+
+### call fast-path を SD に inline (commit ebb4996c)
+- korb_invoke_simple を node.h の always_inline 化 → code_store SD にも畳まれる。
+  node_call/node_send が cache-hit 時に korb_call_cached/korb_send_cached への
+  cross-module call を回避。korb_inlcache に kind 弁別子 (INSTANCE/SMETHOD/NEW) 追加。
+- 効果: fib 1.86→1.39, ackermann 2.32→1.63, tak 2.09→1.51, method_call 1.66→1.11,
+  ivar 1.94→1.39, structacc 1.71→1.34。
+
+### 残る負け (structural, tree-walker の限界に近い)
+- 再帰/per-call cluster: fib 1.39, ackermann 1.63, tak 1.51, binary_trees ~2.0,
+  ivar 1.39, structacc 1.34, method_call 1.11。残コストは per-call の indirect
+  body dispatch (`*body->head.dispatcher`) + 16-byte RESULT 返り + argc/stack check。
+  YJIT は tiny method を loop に inline + native register call。tree-walker で
+  <1.0 にするには method body の cross-call devirtualize (自己再帰の直接呼び等)
+  が要る。要 framework 改造、難。
+
+### 最大の単独勝機: kwargs hash-free (現状 2.56、未着手)
+- `box(x:,y:,z:)` が呼び出しごとに Hash を heap alloc → callee で korb_hash_find
+  抽出。YJIT は hash 無しで kw slot に直接渡す。
+- 設計: call site が「callee の signature を知らない」ため callee-decides 方式。
+  - 新ノード node_call_kw/node_send_kw: pos args + kw 値を stack に staging、
+    kw_syms(mid配列) を baked operand で持つ。Hash を作らない。
+  - callee (korb_invoke_method 変種): kw params があれば stack の (sym,value) を
+    slot に直接 bind。**kwrest があれば必要時のみ hash 構築。kw params 無し
+    (&& **rest 無し) なら CRuby 通り positional Hash に変換 (fallback、hot では稀)。
+  - 空 kwsplat drop (FL_KWARGS, [[project_koruby_kwsplat]]) との整合に注意。
+- 大物・risk 高。要: parser + dispatch + node.def + STRESS 検証。
+
+### その他の負け (小〜中)
+- casewhen 1.36: case/when chain が node 列 (各 indirect dispatch)。dense int when
+  を jump table 化する余地 (要 parser で node_case_jump 検出)。
+- ary 1.23 / array_access 1.07: `a<<x` / `a[i]` が builtin receiver (Array は
+  KORB_OBJECT_P でない) → 常に korb_send_cached + dispatch_method 経由。
+  builtin-receiver CFUNC の inline cache 余地 (CFUNC 多様で汎用 inline 難)。
+- sprintfb 1.12 / strfmt 1.00: format()/補間。bignum 1.11, mandelbrot 1.12。
+
 ## 差分テストで発覚した未対応 (2026-06-19)
 
 - **`define_method` 未対応** (class body): `define_method(:foo) { }` が
