@@ -34,7 +34,23 @@ static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op) {
 static RESULT korb_m_str_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_str_transform(c, slots, self, 0); }
 static RESULT korb_m_str_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform(c, slots, self, 1); }
 static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform(c, slots, self, 2); }
-static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)a; return korb_str_transform(c, slots, self, 3); }
+/* String#reverse — reverse CHARACTERS (UTF-8 sequences kept intact), not bytes. */
+static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t len = SELF_STR->len;
+    KorbString *r = korb_str_alloc(c, slots, len);
+    const KorbString *s = SELF_STR;                      /* re-read after alloc */
+    uint32_t wi = len, i = 0;
+    while (i < len) {
+        const unsigned char b = (unsigned char)s->buf->data[i];
+        uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+        if (i + clen > len) clen = 1;                    /* truncated lead → one byte */
+        wi -= clen;
+        memcpy(r->buf->data + wi, s->buf->data + i, clen);
+        i += clen;
+    }
+    return RESULT_OK((VALUE)r);
+}
 
 /* byte-substring search: index of needle in hay[0..hlen), or -1 (empty matches at 0) */
 static int32_t
@@ -160,8 +176,17 @@ static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int 
     (void)c;(void)slots;
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t len = s->len; bool changed = false;
-    if (op == 4) {                                     /* reverse! (byte reverse) */
-        for (uint32_t i = 0; i < len / 2; i++) { char t = s->buf->data[i]; s->buf->data[i] = s->buf->data[len-1-i]; s->buf->data[len-1-i] = t; }
+    if (op == 4) {                                     /* reverse! (UTF-8 char-aware) */
+        char *tmp = malloc(len ? len : 1);
+        if (!tmp) abort();
+        uint32_t wi = len, i = 0;
+        while (i < len) {
+            const unsigned char b = (unsigned char)s->buf->data[i];
+            uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+            if (i + clen > len) clen = 1;
+            wi -= clen; memcpy(tmp + wi, s->buf->data + i, clen); i += clen;
+        }
+        memcpy(s->buf->data, tmp, len); free(tmp);
         return RESULT_OK(VALUE_REF_GET(self));
     }
     for (uint32_t i = 0; i < len; i++) {
