@@ -1217,16 +1217,29 @@ static RESULT korb_m_ary_map_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (block == NULL) {                                  /* no block → lazy ArithmeticSequence */
-        uint32_t na = VALUE_SLICE_LEN(a);
-        VALUE a0 = na >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-        VALUE a1 = na >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
-        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), a0, a1, (uint8_t)(na > 2 ? 2 : na), 0);
+    /* keyword form `step(to:, by:)`: a trailing Hash with :to / :by maps to the
+     * limit / step (limit nil ⇒ endless). */
+    uint32_t na = VALUE_SLICE_LEN(a);
+    VALUE kwlim = KORB_NIL, kwstep = KORB_NIL; bool kw = false;
+    if (na >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
+        const VALUE h = VALUE_SLICE_GET(a, na - 1);
+        const int32_t ti = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "to", 2)));
+        const int32_t bi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "by", 2)));
+        if (ti >= 0 || bi >= 0) {
+            kw = true;
+            if (ti >= 0) kwlim  = VAL2HASH(h)->items->data[2 * ti + 1];
+            if (bi >= 0) kwstep = VAL2HASH(h)->items->data[2 * bi + 1];
+            na--;
+        }
     }
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    const VALUE limv0 = na >= 1 ? VALUE_SLICE_GET(a, 0) : kwlim;                       /* limit (nil ⇒ endless) */
+    const VALUE stepv0 = na >= 2 ? VALUE_SLICE_GET(a, 1) : (kwstep != KORB_NIL ? kwstep : LONG2FIX(1));
+    if (block == NULL) {                                  /* no block → lazy ArithmeticSequence */
+        return korb_arithseq_new(c, slots, VALUE_REF_GET(self), limv0, stepv0, (uint8_t)((kw || na >= 2) ? 2 : na), 0);
+    }
     VALUE selfv = VALUE_REF_GET(self);
-    VALUE limv = VALUE_SLICE_GET(a, 0);
-    VALUE stepv = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(1);
+    VALUE limv = limv0;
+    VALUE stepv = stepv0;
     bool use_float = KORB_FLOAT_P(selfv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
     const bool collect = (block == NULL);             /* no block → materialize into an Enumerator */
     VALUE_REF dst = {0};
