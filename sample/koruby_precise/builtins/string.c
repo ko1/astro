@@ -213,11 +213,16 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     intptr_t st, ln;
     if (KORB_RANGE_P(idx)) {
         const KorbRange *r = VAL2RANGE(idx);
+        const bool beginless = (r->rbegin == KORB_NIL);
+        const bool endless   = (r->rend   == KORB_NIL);
         intptr_t b, e;
-        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (beginless) b = 0;
+        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (endless) e = (intptr_t)ncp;
+        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (b < 0) b += ncp;
-        if (e < 0) e += ncp;
-        st = b; ln = (r->exclude_end ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
+        if (!endless && e < 0) e += ncp;
+        st = b; ln = ((endless || r->exclude_end) ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
     } else {
         if (UNLIKELY(!korb_to_index(idx, &st))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(idx));
         if (st < 0) st += ncp;
@@ -1081,12 +1086,16 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (KORB_RANGE_P(i0)) {
         const KorbRange *r = VAL2RANGE(i0);
-        if (UNLIKELY(!FIXNUM_P(r->rbegin) || !FIXNUM_P(r->rend))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        intptr_t b = FIX2LONG(r->rbegin), e = FIX2LONG(r->rend);
+        const bool beginless = (r->rbegin == KORB_NIL);   /* s[..e] → from 0 */
+        const bool endless   = (r->rend   == KORB_NIL);   /* s[b..] → to the end */
+        if (UNLIKELY((!beginless && !FIXNUM_P(r->rbegin)) || (!endless && !FIXNUM_P(r->rend))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        intptr_t b = beginless ? 0 : FIX2LONG(r->rbegin);
+        intptr_t e = endless ? (intptr_t)ncp : FIX2LONG(r->rend);
         if (b < 0) b += ncp;
-        if (e < 0) e += ncp;
+        if (!endless && e < 0) e += ncp;
         if (b < 0 || b > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
-        intptr_t last = r->exclude_end ? e - 1 : e;
+        intptr_t last = (endless || r->exclude_end) ? e - 1 : e;
         intptr_t cnt = last - b + 1;
         if (cnt < 0) cnt = 0;
         if (b + cnt > (intptr_t)ncp) cnt = (intptr_t)ncp - b;

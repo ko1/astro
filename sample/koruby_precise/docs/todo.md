@@ -1378,8 +1378,10 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   無く、bignum self を FIX2LONG してゴミを返していた（lshift にはあった）。
   bignum→korb_int_shift(self,-sh)、負シフト(=左シフト)の Fixnum overflow も
   Bignum 昇格するよう lshift と対称化。
-- **`arr[1..]`（Array の endless range index）が TypeError**: CRuby は
-  `[20, 30]`。String の bounded range index は動く。pre-existing。
+- (修正済 2026-06-19) **beginless/endless range index**: `arr[1..]` / `s[..3]`
+  等が「no implicit conversion into Integer」で raise していた（rbegin/rend が
+  nil を弾いていた）。Array#[]/[]=/slice!、String#[]/[]= の5箇所で nil 端点を
+  beginless→0 / endless→長さ として扱うよう統一。
 - **`Integer == user_obj` の reverse coercion 未対応**: `42 == E.new`
   (E が `==` を true 返しで定義) が CRuby では true だが koruby は false。
   Integer#== が相手を理解できない時、CRuby は逆方向 (`E.new == 42`) を

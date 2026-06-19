@@ -82,14 +82,18 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     uint32_t n = SELF_ARY->len;
     VALUE i0 = VALUE_SLICE_GET(a, 0);
-    if (KORB_RANGE_P(i0)) {                                 /* a[b..e] → subarray */
+    if (KORB_RANGE_P(i0)) {                                 /* a[b..e] → subarray (incl. beginless/endless) */
         const KorbRange *r = VAL2RANGE(i0);
-        if (UNLIKELY(!FIXNUM_P(r->rbegin) || !FIXNUM_P(r->rend))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        intptr_t b = FIX2LONG(r->rbegin), e = FIX2LONG(r->rend);
+        const bool beginless = (r->rbegin == KORB_NIL);    /* a[..e] → from 0 */
+        const bool endless   = (r->rend   == KORB_NIL);    /* a[b..] → to the end */
+        if (UNLIKELY((!beginless && !FIXNUM_P(r->rbegin)) || (!endless && !FIXNUM_P(r->rend))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        intptr_t b = beginless ? 0 : FIX2LONG(r->rbegin);
+        intptr_t e = endless ? (intptr_t)n : FIX2LONG(r->rend);
         if (b < 0) b += n;
-        if (e < 0) e += n;
+        if (!endless && e < 0) e += n;
         if (b < 0 || b > (intptr_t)n) return RESULT_OK(KORB_NIL);
-        intptr_t last = r->exclude_end ? e - 1 : e, cnt = last - b + 1;
+        intptr_t last = (endless || r->exclude_end) ? e - 1 : e, cnt = last - b + 1;   /* endless end is exclusive of n */
         if (cnt < 0) cnt = 0;
         if (b + cnt > (intptr_t)n) cnt = (intptr_t)n - b;
         return korb_ary_subseq(c, slots, self, (uint32_t)b, (uint32_t)cnt);
@@ -155,14 +159,19 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
         return korb_ary_splice(c, slots, self, start, dellen, VALUE_SLICE_REF(a, 2));
     }
-    if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val */
+    if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val (incl. beginless/endless) */
         const KorbRange *r = VAL2RANGE(iv);
+        const bool beginless = (r->rbegin == KORB_NIL);
+        const bool endless   = (r->rend   == KORB_NIL);
+        const intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
         intptr_t b, e;
-        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+        if (beginless) b = 0;
+        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (endless) e = len;
+        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (b < 0) b += len;
-        if (e < 0) e += len;
-        intptr_t last = r->exclude_end ? e - 1 : e, dellen = last - b + 1;
+        if (!endless && e < 0) e += len;
+        intptr_t last = (endless || r->exclude_end) ? e - 1 : e, dellen = last - b + 1;
         if (dellen < 0) dellen = 0;
         return korb_ary_splice(c, slots, self, b, dellen, VALUE_SLICE_REF(a, 1));
     }
@@ -191,11 +200,16 @@ static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     intptr_t start, dellen; bool subseq_form = false;
     if (KORB_RANGE_P(iv)) {
         const KorbRange *r = VAL2RANGE(iv);
+        const bool beginless = (r->rbegin == KORB_NIL);
+        const bool endless   = (r->rend   == KORB_NIL);
         intptr_t b, e;
-        if (UNLIKELY(!korb_to_index(r->rbegin, &b) || !korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (beginless) b = 0;
+        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (endless) e = n;
+        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (b < 0) b += n;
-        if (e < 0) e += n;
-        intptr_t last = r->exclude_end ? e - 1 : e;
+        if (!endless && e < 0) e += n;
+        intptr_t last = (endless || r->exclude_end) ? e - 1 : e;
         start = b; dellen = last - b + 1; if (dellen < 0) dellen = 0;
         subseq_form = true;
     } else if (VALUE_SLICE_LEN(a) >= 2) {
