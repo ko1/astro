@@ -336,6 +336,7 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 3, line);
 #endif
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 3);   /* before Float (a Complex/Float must not fall into korb_num_arith) */
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float/Float inline */
         return korb_flo(c, slots, korb_float_val(l) / korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float/Integer inline */

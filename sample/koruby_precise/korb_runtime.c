@@ -425,14 +425,13 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
     if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(KORB_COMPLEX_P(l) ? r : l));
-    if (UNLIKELY(op == 3)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#/ is not implemented");
     slots[0] = lre; slots[1] = lim; slots[2] = rre; slots[3] = rim;   /* root inputs */
     VALUE res_re, res_im;
     if (op == 0 || op == 1) {
         RESULT a = korb_num_binop(c, slots + 4, slots[0], slots[2], op); if (UNLIKELY(a.state != KORB_NORMAL)) return a; slots[4] = a.value;
         RESULT b = korb_num_binop(c, slots + 5, slots[1], slots[3], op); if (UNLIKELY(b.state != KORB_NORMAL)) return b; slots[5] = b.value;
         res_re = slots[4]; res_im = slots[5];
-    } else {   /* mul: (lre*rre - lim*rim) + (lre*rim + lim*rre)i */
+    } else if (op == 2) {   /* mul: (lre*rre - lim*rim) + (lre*rim + lim*rre)i */
         RESULT m1 = korb_num_binop(c, slots + 4, slots[0], slots[2], 2); if (UNLIKELY(m1.state != KORB_NORMAL)) return m1; slots[4] = m1.value;
         RESULT m2 = korb_num_binop(c, slots + 5, slots[1], slots[3], 2); if (UNLIKELY(m2.state != KORB_NORMAL)) return m2; slots[5] = m2.value;
         RESULT re = korb_num_binop(c, slots + 6, slots[4], slots[5], 1); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[6] = re.value;
@@ -440,13 +439,31 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         RESULT m4 = korb_num_binop(c, slots + 8, slots[1], slots[2], 2); if (UNLIKELY(m4.state != KORB_NORMAL)) return m4; slots[8] = m4.value;
         RESULT im = korb_num_binop(c, slots + 9, slots[7], slots[8], 0); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[9] = im.value;
         res_re = slots[6]; res_im = slots[9];
+    } else if (!KORB_COMPLEX_P(r)) {   /* div by a real: divide each component with `/` (Integer-exact, Float, or Rational) */
+        RESULT re = korb_num_binop(c, slots + 4, slots[0], slots[2], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[4] = re.value;
+        RESULT im = korb_num_binop(c, slots + 5, slots[1], slots[2], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[5] = im.value;
+        res_re = slots[4]; res_im = slots[5];
+    } else {   /* div by complex: ((lre*rre+lim*rim) + (lim*rre-lre*rim)i) / (rre²+rim²) */
+        RESULT c2 = korb_num_binop(c, slots + 4, slots[2], slots[2], 2); if (UNLIKELY(c2.state != KORB_NORMAL)) return c2; slots[4] = c2.value;
+        RESULT d2 = korb_num_binop(c, slots + 5, slots[3], slots[3], 2); if (UNLIKELY(d2.state != KORB_NORMAL)) return d2; slots[5] = d2.value;
+        RESULT dn = korb_num_binop(c, slots + 6, slots[4], slots[5], 0); if (UNLIKELY(dn.state != KORB_NORMAL)) return dn; slots[6] = dn.value;  /* denom */
+        RESULT ac = korb_num_binop(c, slots + 7, slots[0], slots[2], 2); if (UNLIKELY(ac.state != KORB_NORMAL)) return ac; slots[7] = ac.value;
+        RESULT bd = korb_num_binop(c, slots + 8, slots[1], slots[3], 2); if (UNLIKELY(bd.state != KORB_NORMAL)) return bd; slots[8] = bd.value;
+        RESULT rn = korb_num_binop(c, slots + 9, slots[7], slots[8], 0); if (UNLIKELY(rn.state != KORB_NORMAL)) return rn; slots[9] = rn.value;   /* re numerator */
+        RESULT bc = korb_num_binop(c, slots + 10, slots[1], slots[2], 2); if (UNLIKELY(bc.state != KORB_NORMAL)) return bc; slots[10] = bc.value;
+        RESULT ad = korb_num_binop(c, slots + 11, slots[0], slots[3], 2); if (UNLIKELY(ad.state != KORB_NORMAL)) return ad; slots[11] = ad.value;
+        RESULT in = korb_num_binop(c, slots + 12, slots[10], slots[11], 1); if (UNLIKELY(in.state != KORB_NORMAL)) return in; slots[12] = in.value;  /* im numerator */
+        RESULT re = korb_rat_arith(c, slots + 13, slots[9], slots[6], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[13] = re.value;
+        RESULT im = korb_rat_arith(c, slots + 14, slots[12], slots[6], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[14] = im.value;
+        res_re = slots[13]; res_im = slots[14];
     }
-    slots[10] = res_re; slots[11] = res_im;
-    return korb_cpx_new(c, slots + 12, slots[10], slots[11]);
+    slots[15] = res_re; slots[16] = res_im;
+    return korb_cpx_new(c, slots + 17, slots[15], slots[16]);
 }
 static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
 static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
+static RESULT korb_m_cpx_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
 
 bool
 korb_num_to_d(VALUE v, double *out)
@@ -5289,6 +5306,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "+", korb_m_cpx_add, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "-", korb_m_cpx_sub, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "*", korb_m_cpx_mul, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "/", korb_m_cpx_div, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "quo", korb_m_cpx_div, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
@@ -5688,9 +5707,25 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         fputc('>', fp);
         return;
       }
-      case KORB_OBJ_COMPLEX:                            /* inspect: (re±|im|i) */
-        fputc('(', fp); korb_fprint_to_s(c, fp, v); fputc(')', fp);
+      case KORB_OBJ_COMPLEX: {                          /* inspect: (re±|im|i); compound (Rational) parts get parens + *i */
+        const KorbComplex *x = VAL2CPX(v);
+        const bool re_comp = KORB_RATIONAL_P(x->re) || KORB_COMPLEX_P(x->re);
+        const bool im_comp = KORB_RATIONAL_P(x->im) || KORB_COMPLEX_P(x->im);
+        fputc('(', fp);
+        if (re_comp) fputc('(', fp);
+        korb_fprint_to_s(c, fp, x->re);
+        if (re_comp) fputc(')', fp);
+        char *ib = NULL; size_t isz = 0; FILE *ims = open_memstream(&ib, &isz);
+        if (ims) { korb_fprint_to_s(c, ims, x->im); fclose(ims); }
+        const bool neg = ib && ib[0] == '-';
+        const char *mag = neg ? ib + 1 : (ib ? ib : "0");
+        fputc(neg ? '-' : '+', fp);
+        if (im_comp) { fputc('(', fp); fputs(mag, fp); fputs(")*i", fp); }
+        else fprintf(fp, "%si", mag);
+        free(ib);
+        fputc(')', fp);
         return;
+      }
       case KORB_OBJ_ARITHSEQ: {                         /* inspect: (recv.step(args)) / (recv.%(arg)) */
         const KorbArithSeq *as = VAL2ASEQ(v);
         const bool rng = KORB_RANGE_P(as->recv);
