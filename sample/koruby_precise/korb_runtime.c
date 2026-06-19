@@ -2448,6 +2448,9 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     uint32_t num_sym = korb_intern(vm, "Numeric", 7);
     korb_const_define(c, num_sym, KORB_NIL);
     { VALUE num = korb_class_new(c, slots, num_sym, KORB_NIL).value; VAL2CLASS(num)->is_module = 1; korb_const_define(c, num_sym, num); }
+    { slots[0] = korb_const_get(vm, comp_sym);                   /* Numeric includes Comparable (CRuby) */
+      VALUE num = korb_const_get(vm, num_sym);
+      (void)korb_do_include(c, slots + 1, num, VALUE_SLICE_MAKE(&slots[0], 1)); }
     static const int num_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX };
     for (size_t i = 0; i < sizeof(num_in)/sizeof(num_in[0]); i++) {
         slots[0] = korb_const_get(vm, num_sym);
@@ -4980,6 +4983,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_name, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "arity", korb_m_meth_arity, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "owner", korb_m_meth_owner, 0);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);

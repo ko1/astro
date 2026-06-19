@@ -162,6 +162,48 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(ID2SYM(VAL2METH(VALUE_REF_GET(self))->mid));
 }
+/* Resolve a bound Method to its korb_method entry: receiver-class MRO first,
+ * then the global function table (top-level def / builtin like `p`). */
+static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
+    const VALUE klass = korb_dispatch_class(c, m->recv);
+    const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, NULL) : NULL;
+    if (km == NULL) km = korb_method_lookup(c->vm, m->mid);
+    return km;
+}
+/* CRuby Method#arity: required positional count, negated as -(req+1) when an
+ * optional / rest param makes the count variable.  Variadic builtins → -1. */
+static intptr_t korb_method_arity(const struct korb_method *km) {
+    switch (km->kind) {
+      case KORB_METHOD_ATTR_R: return 0;
+      case KORB_METHOD_ATTR_W: return 1;
+      case KORB_METHOD_BUILTIN:
+      case KORB_METHOD_CFUNC:  return km->params_cnt;          /* -1 = variadic */
+      case KORB_METHOD_DM: {
+        const KorbProc *p = VAL2PROC(km->dm_proc);
+        if (p->iseq == NULL) return -2;
+        const NODE *e = p->iseq;
+        const bool var = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+        const uint32_t req = var ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
+        return var ? -((intptr_t)req + 1) : (intptr_t)req;
+      }
+      default: {                                               /* ISEQ */
+        const bool var = (km->opt_defaults != NULL) || (km->rest_slot >= 0);
+        const uint32_t req = km->req_cnt + km->post_cnt;
+        return var ? -((intptr_t)req + 1) : (intptr_t)req;
+      }
+    }
+}
+static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    return RESULT_OK(LONG2FIX(km ? korb_method_arity(km) : -1));
+}
+static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
+    return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
+}
 
 /* generic to_s / inspect — render via the printer into a fresh String.
  * Specific types (Integer#to_s, String#to_s, ...) override via their own table. */

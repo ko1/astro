@@ -2226,6 +2226,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return ALLOC_node_defined(4, 0, 0);                          /* "local-variable" */
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_READ_NODE))
             return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), 0);
+        if (PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_NODE))               /* `A::B` — flat const table: probe rightmost name */
+            return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_path_node_t *)v)->name), 0);
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
             return ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off);
         if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE))
