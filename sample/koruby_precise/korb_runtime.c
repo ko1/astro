@@ -1979,6 +1979,102 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     return r;
 }
 
+/* True if `m` can take the hash-free keyword fast path: an ISEQ with keyword
+ * params but no **kwrest / *rest / post params (the box(x:,y:,z:) shape). */
+static inline bool korb_kw_fast_eligible(const struct korb_method *m) {
+    const struct korb_kw_info *kw = (const struct korb_kw_info *)m->kw_info;
+    return m->kind == KORB_METHOD_ISEQ && kw != NULL && kw->kwrest_slot < 0 &&
+           m->rest_slot < 0 && m->post_cnt == 0;
+}
+
+/* Hash-free keyword invoke (eligibility checked by korb_kw_fast_eligible).
+ * Positionals at base[0..pos_argc); keyword VALUES at base[pos_argc..+kw_argc)
+ * with names kw_syms[].  Binds keywords straight to their param slots — no
+ * kwargs Hash is built.  GC discipline: the present keyword values are copied
+ * into their (rooted) frame slots BEFORE any default expression runs, so the
+ * stack-captured kwbuf is dead before the first GC. */
+static __attribute__((no_stack_protector)) RESULT
+korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_argc,
+                      const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
+                      VALUE self, VALUE def_class)
+{
+    struct korb_vm *const vm = c->vm;
+    const struct korb_kw_info *const kw = (const struct korb_kw_info *)m->kw_info;
+    VALUE *const base = slots - (pos_argc + kw_argc);
+    (void)def_class;
+    if (UNLIKELY(pos_argc < m->req_cnt || pos_argc > (uint32_t)m->params_cnt))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %u..%d)", pos_argc, m->req_cnt, m->params_cnt);
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit || &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    VALUE kwbuf[64];
+    if (UNLIKELY(kw_argc > 64)) return korb_raise(c, slots, KORB_E_NOTIMPL, line, "too many keyword arguments");
+    for (uint32_t p = 0; p < kw_argc; p++) kwbuf[p] = base[pos_argc + p];   /* capture before memset */
+    if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
+    base[locals_cnt - 1] = self;
+    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);
+    /* bind present keywords now (pure copies, no GC) → kwbuf dead afterwards */
+    uint64_t present = 0;
+    for (uint32_t j = 0; j < kw->count; j++) {
+        for (uint32_t p = 0; p < kw_argc; p++)
+            if (kw_syms[p] == kw->entries[j].mid) { base[kw->entries[j].slot] = kwbuf[p]; if (j < 64) present |= (1ull << j); break; }
+    }
+    /* unknown-keyword check (no **rest here) */
+    for (uint32_t p = 0; p < kw_argc; p++) {
+        bool declared = false;
+        for (uint32_t j = 0; j < kw->count; j++) if (kw_syms[p] == kw->entries[j].mid) { declared = true; break; }
+        if (UNLIKELY(!declared)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, kw_syms[p]));
+    }
+    /* optional positional defaults (after the provided positionals) */
+    for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {
+        NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
+        RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        base[pi] = dr.value;
+    }
+    /* keyword defaults / required-missing check */
+    for (uint32_t j = 0; j < kw->count; j++) {
+        if (j < 64 && (present & (1ull << j))) continue;
+        if (kw->entries[j].deflt) {
+            RESULT dr = (*kw->entries[j].deflt->head.dispatcher)(c, kw->entries[j].deflt, base + locals_cnt);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            base[kw->entries[j].slot] = dr.value;
+        } else {
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, kw->entries[j].mid));
+        }
+    }
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
+    else if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
+    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
+/* Build a kwargs Hash from stacked (kw_syms[p], base[pos_argc+p]) pairs at
+ * base[pos_argc], then dispatch m via korb_invoke_method as a trailing-hash
+ * call — the fallback for callees the fast path can't take (**rest / no kw
+ * params / rest+kw).  base is slots-(pos_argc+kw_argc). */
+static RESULT
+korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_argc,
+                       const uint32_t *kw_syms, uint32_t kw_argc, uint32_t line, uint32_t mid,
+                       VALUE self, VALUE def_class)
+{
+    VALUE *const base = slots - (pos_argc + kw_argc);
+    VALUE *const cur = slots;                              /* scratch above the staged args */
+    cur[0] = UNWRAP(korb_hash_new(c, cur, kw_argc));
+    VALUE_REF h = VALUE_REF_AT(&cur[0]);
+    for (uint32_t p = 0; p < kw_argc; p++) {
+        cur[1] = ID2SYM(kw_syms[p]);
+        cur[2] = base[pos_argc + p];                      /* re-read each iter (hash_set may GC) */
+        CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
+    }
+    base[pos_argc] = VALUE_REF_GET(h);                    /* trailing hash replaces the kw region head */
+    return korb_invoke_method(c, base + pos_argc + 1, m, pos_argc + 1, line, mid, self, def_class, NULL, NULL, KORB_NIL);
+}
+
 /* korb_invoke_simple — the streamlined is_simple ISEQ invoke — now lives in
  * node.h as an always_inline so it folds into the code_store SDs too (node_call
  * inlines its own fast path). */
@@ -3299,6 +3395,50 @@ korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         }
     }
     return korb_call_impl(c, slots, mid, line, cc, argc, self, NULL, NULL, NULL);
+}
+
+/* Implicit-self keyword call `f(pos..., k: v...)`.  Positionals at
+ * base[0..pos_argc); keyword VALUES at base[pos_argc..+kw_argc) with names
+ * kw_syms[].  Resolves the method (cc/ic cached) and, when it's a kw-param ISEQ
+ * with no **rest/rest/post, binds keywords straight to slots (no Hash).  Anything
+ * else builds a kwargs Hash and routes through the normal call path. */
+__attribute__((no_stack_protector)) RESULT
+korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc,
+             struct korb_inlcache *ic, uint32_t pos_argc, const uint32_t *kw_syms,
+             uint32_t kw_argc, VALUE self)
+{
+    struct korb_vm *const vm = c->vm;
+    struct korb_method *m = NULL; VALUE def_class = KORB_NIL;
+    if (LIKELY(KORB_OBJECT_P(self))) {
+        const VALUE klass = VAL2OBJ(self)->klass;
+        if (LIKELY(klass != KORB_NIL)) {                 /* user-instance self-call */
+            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                if (m) { ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = KORB_IC_INSTANCE; }
+            }
+        } else {                                         /* main / top-level global function */
+            if (LIKELY(cc->serial == vm->method_serial && cc->m != NULL)) m = cc->m;
+            else { m = korb_method_lookup(vm, mid); if (m) { cc->serial = vm->method_serial; cc->m = m; } }
+        }
+    }
+    if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {
+        if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64))
+            return korb_invoke_kw_simple(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
+        return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
+    }
+    /* unresolved / CFUNC / ATTR → materialize a kwargs Hash and use the normal path. */
+    VALUE *const base = slots - (pos_argc + kw_argc);
+    VALUE *const cur = slots;
+    cur[0] = UNWRAP(korb_hash_new(c, cur, kw_argc));
+    VALUE_REF h = VALUE_REF_AT(&cur[0]);
+    for (uint32_t p = 0; p < kw_argc; p++) {
+        cur[1] = ID2SYM(kw_syms[p]); cur[2] = base[pos_argc + p];
+        CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
+    }
+    base[pos_argc] = VALUE_REF_GET(h);
+    return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, self);
 }
 
 RESULT

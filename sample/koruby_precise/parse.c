@@ -1025,6 +1025,36 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
     }
 
+    /* `f(pos..., k: v...)` — trailing keyword hash with literal symbol keys (no
+     * **splat, no `k:` shorthand) → hash-free keyword call (node_call_kw). */
+    if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_KEYWORD_HASH_NODE)) {
+        const pm_keyword_hash_node_t *kh = (const pm_keyword_hash_node_t *)args->arguments.nodes[argc - 1];
+        bool ok = kh->elements.size > 0;
+        for (size_t i = 0; ok && i < kh->elements.size; i++) {
+            const pm_node_t *e = kh->elements.nodes[i];
+            if (!PM_NODE_TYPE_P(e, PM_ASSOC_NODE)) { ok = false; break; }
+            const pm_assoc_node_t *as = (const pm_assoc_node_t *)e;
+            if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE) || !as->value || PM_NODE_TYPE_P(as->value, PM_IMPLICIT_NODE)) ok = false;
+        }
+        if (ok) {
+            const uint32_t pos_argc = (uint32_t)argc - 1, kw_cnt = (uint32_t)kh->elements.size, total = pos_argc + kw_cnt;
+            uint32_t *kw_syms = malloc(sizeof(uint32_t) * kw_cnt);
+            if (!kw_syms) abort();
+            for (uint32_t j = 0; j < kw_cnt; j++) {
+                const pm_symbol_node_t *sn = (const pm_symbol_node_t *)((const pm_assoc_node_t *)kh->elements.nodes[j])->key;
+                kw_syms[j] = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), pm_string_length(&sn->unescaped));
+            }
+            int32_t self_off = -1 - tc->chain - (int32_t)total;
+            NODE **argv = malloc(sizeof(NODE *) * total);
+            if (!argv) abort();
+            int32_t saved = tc->chain; tc->chain = saved + (int32_t)total;
+            for (uint32_t i = 0; i < pos_argc; i++) argv[i] = transduce(tc, args->arguments.nodes[i]);
+            for (uint32_t j = 0; j < kw_cnt; j++) argv[pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
+            tc->chain = saved;
+            return ALLOC_node_call_kw(mid, line, self_off, pos_argc, (void *)kw_syms, argv, total);
+        }
+    }
+
     /* caller self cell (base[fs-1]); the argc staged args advance the body
      * cursor, so offset back past them too.  node_call stages the args via
      * argv@children (any fixed arity). */

@@ -219,6 +219,12 @@ RESULT korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint3
 RESULT korb_call_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                         struct korb_callcache *cc, struct korb_inlcache *ic,
                         uint32_t argc, VALUE self);
+/* Implicit-self keyword call: positionals at base[0..pos_argc), keyword VALUEs at
+ * base[pos_argc..+kw_argc) named by kw_syms[]; binds keywords without a Hash when
+ * the callee allows (else materializes one). */
+RESULT korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc,
+                    struct korb_inlcache *ic, uint32_t pos_argc, const uint32_t *kw_syms,
+                    uint32_t kw_argc, VALUE self);
 /* Same, with a literal block (recv.mid(args) { ... }) handed to the method.
  * `captured_self` is the caller's self (the block's lexical self). */
 RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
