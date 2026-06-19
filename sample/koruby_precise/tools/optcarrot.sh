@@ -6,6 +6,8 @@
 #   OPTC_MODE=aot             — bake the bundle (--aot-compile) then run it
 #                               --compiled-only (poisons unswapped bodies), the
 #                               AOT FPS number.
+#   OPTC_MODE=build           — only write the bundle, print its path, don't run
+#                               (used by tools/optcarrot_bench.sh).
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OPT="$HERE/../abruby/benchmark/optcarrot"
@@ -45,6 +47,7 @@ SHIM
   done
   echo "Optcarrot::NES.new([\"-b\", \"--frames\", \"$FRAMES\", \"examples/Lan_Master.nes\"]).run"
 } > "$BUNDLE"
+if [ "$MODE" = build ]; then echo "$BUNDLE"; exit 0; fi
 cd "$OPT" || exit 1
 if [ "$MODE" = aot ]; then
   rm -rf code_store

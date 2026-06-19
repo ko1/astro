@@ -135,4 +135,16 @@ optcarrot: koruby_precise
 	tools/optcarrot.sh $(FRAMES)
 optcarrot-aot: koruby_precise
 	OPTC_MODE=aot tools/optcarrot.sh $(FRAMES)
-.PHONY: optcarrot optcarrot-aot
+# Same modes as bench-report (cruby/cruby+yjit/interp/aot+cached) but for the
+# optcarrot workload, reporting BOTH wall time and the emulator fps.  Saved to
+# bench-report/.  Knobs: FRAMES=, BENCHRUNS=.
+optcarrot-report: koruby_precise
+	@mkdir -p bench-report
+	@f="bench-report/$$(date +%Y%m%d-%H%M%S)-$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)-optcarrot.txt"; \
+	{ printf '# koruby_precise optcarrot  %s  %s\n# frames: %s   runs: %s   host: %s\n\n' \
+	    "$$(date '+%Y-%m-%d %H:%M:%S')" "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)" \
+	    "$(FRAMES)" "$(BENCHRUNS)" "$$(uname -sr)"; \
+	  tools/optcarrot_bench.sh $(FRAMES) $(BENCHRUNS); \
+	} | tee "$$f"; \
+	echo "saved: $$f"
+.PHONY: optcarrot optcarrot-aot optcarrot-report
