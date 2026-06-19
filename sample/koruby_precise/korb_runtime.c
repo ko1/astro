@@ -412,15 +412,17 @@ static RESULT korb_m_cpx_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     slots[0] = LONG2FIX(rn * (d / rd)); slots[1] = LONG2FIX(in * (d / id));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
-static RESULT korb_m_cpx_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* only when imaginary part is 0 */
+static RESULT korb_m_cpx_to_rat_via(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *meth, uint32_t mlen) {   /* re.<meth> when imaginary is 0 */
     double im;
     if (UNLIKELY(!(korb_num_to_d(SELF_CPX->im, &im) && im == 0.0)))
         return korb_raise(c, slots, KORB_E_RANGE, 0, "can't convert %s into Rational", korb_type_name(VALUE_REF_GET(self)));
     const uint32_t argc = VALUE_SLICE_LEN(a);
     slots[0] = SELF_CPX->re;                                 /* recv below the staged args */
     for (uint32_t j = 0; j < argc; j++) slots[1 + j] = VALUE_SLICE_GET(a, j);
-    return korb_send(c, slots + 1 + argc, korb_intern(c->vm, "rationalize", 11), 0, argc);
+    return korb_send(c, slots + 1 + argc, korb_intern(c->vm, meth, mlen), 0, argc);
 }
+static RESULT korb_m_cpx_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "rationalize", 11); }
+static RESULT korb_m_cpx_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "to_r", 4); }
 static RESULT korb_m_cpx_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
@@ -5430,6 +5432,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "**", korb_m_cpx_pow, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "eql?", korb_m_cpx_eql, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "marshal_dump", korb_m_cpx_rect, 0);   /* [re, im] */
+    korb_def_cmethod(c, KORB_C_COMPLEX, "to_r", korb_m_cpx_to_r, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
