@@ -360,6 +360,26 @@ static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
     return korb_float_new(c, slots, sqrt(re * re + im * im));
 }
+static int korb_cmp_full(CTX *c, VALUE a, VALUE b);   /* fwd (defined below) */
+/* Complex#<=>: comparable only when both are real (imaginary part 0) → compare
+ * the real parts; otherwise nil (CRuby). */
+static RESULT korb_m_cpx_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const KorbComplex *x = SELF_CPX;
+    double sim;
+    if (!(korb_num_to_d(x->im, &sim) && sim == 0.0)) return RESULT_OK(KORB_NIL);
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    VALUE ore;
+    if (KORB_COMPLEX_P(o)) {
+        double oim;
+        if (!(korb_num_to_d(VAL2CPX(o)->im, &oim) && oim == 0.0)) return RESULT_OK(KORB_NIL);
+        ore = VAL2CPX(o)->re;
+    } else if (FIXNUM_P(o) || KORB_FLOAT_P(o) || KORB_RATIONAL_P(o) || KORB_BIGNUM_P(o)) {
+        ore = o;
+    } else return RESULT_OK(KORB_NIL);
+    const int r = korb_cmp_full(c, x->re, ore);
+    return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r));
+}
 static RESULT korb_m_cpx_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* re² + im² (exact when components are) */
     (void)a;
     slots[0] = SELF_CPX->re; slots[1] = SELF_CPX->im;
@@ -5308,6 +5328,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "*", korb_m_cpx_mul, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "/", korb_m_cpx_div, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "quo", korb_m_cpx_div, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "<=>", korb_m_cpx_cmp, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
