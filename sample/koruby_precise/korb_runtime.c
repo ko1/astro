@@ -1710,8 +1710,46 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
         m->mid = mid;
         k->methods[k->method_cnt++] = m;
     }
-    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0;
+    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
     return m;
+}
+
+/* Module#define_method(name, &block) / define_method(name, proc).  In a class
+ * body self is the class; the block becomes the method body (run with self =
+ * receiver).  The captured env is force-closed immediately so it survives past
+ * the defining frame.  Returns the method name symbol. */
+static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    VALUE klass = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(klass)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "define_method called on a non-class");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    uint32_t mid;
+    if (SYMBOL_P(nv))            mid = SYM2ID(nv);
+    else if (KORB_STRING_P(nv))  mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+    slots[0] = klass;                                    /* root class across allocs */
+    if (block != NULL) {                                 /* block form → a (lambda) proc */
+        /* a block-arg's def_env arrives in tagged prev form (base|1); korb_make_proc
+         * wants the raw frame base (it reads base[-1] for outer scopes).  The
+         * captured open env is shared (korb_open_env_find) and promoted to heap when
+         * the defining frame returns — so closures over a shared mutable local work. */
+        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
+        slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 1));
+    } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_PROC_P(VALUE_SLICE_GET(a, 1))) {
+        slots[1] = VALUE_SLICE_GET(a, 1);                /* proc form: already self-contained */
+    } else {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
+    }
+    struct korb_method *m = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
+    m->kind = KORB_METHOD_DM;
+    m->dm_proc = slots[1];
+    m->owner = slots[0];
+    m->params_cnt = -1;                                  /* lenient arity (block semantics) */
+    m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
+    c->vm->method_serial++;
+    return RESULT_OK(ID2SYM(mid));
 }
 
 /* A user redefinition of a node-fastpathed basic op on Integer/Float must deopt
@@ -3236,6 +3274,18 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         }
         return r;
       }
+      case KORB_METHOD_DM: {   /* define_method: run the (env-pre-closed) Proc body with self = receiver */
+        const KorbProc *const p = VAL2PROC(m->dm_proc);
+        RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
+                                    &slots[-(intptr_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
+        if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
+        else if (UNLIKELY(r.state == KORB_RAISE)) {
+            KorbException *e = VAL2EXC(r.value);
+            korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+            e->line = line;
+        }
+        return r;
+      }
       default: /* KORB_METHOD_ISEQ */
         if (LIKELY(m->is_simple))
             return korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class);
@@ -4131,7 +4181,8 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
     const uint32_t cname = k->name_sym;
     uint8_t kind = 1;
     if (k->is_module || k->members != KORB_NIL || cname == vm->name_fiber ||
-        (cname == vm->name_struct) ||
+        (cname == vm->name_struct) || cname == vm->name_module ||
+        cname == vm->class_name[KORB_C_CLASS]  ||   /* Class.new / Module.new → real class, not a generic object */
         cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
         cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING]) {
         kind = 2;
@@ -4927,6 +4978,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);

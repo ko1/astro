@@ -509,6 +509,7 @@ enum korb_method_kind {
     KORB_METHOD_ATTR_R = 2,   /* attr reader: return @ivar */
     KORB_METHOD_ATTR_W = 3,   /* attr writer: @ivar = arg0 */
     KORB_METHOD_CFUNC = 4,    /* receiver-dispatch C method (Array#push, ...): rfn/rbfn with self ref */
+    KORB_METHOD_DM = 5,       /* define_method: body is a Proc (dm_proc) run with self = receiver */
 };
 
 struct CTX_struct;
@@ -556,6 +557,8 @@ struct korb_method {
                               * Manually GC-forwarded (entry is immortal libc, so the class
                               * visitor + roots forward this field — like const_vals).  owner/mid
                               * never change, so a frame-held entry yields a live owner + stable mid. */
+    VALUE dm_proc;           /* KORB_METHOD_DM: the define_method Proc (env pre-closed). nil otherwise.
+                              * Manually GC-forwarded next to owner (entry is immortal libc). */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     korb_builtin_fn bfn;     /* BUILTIN (global C fn) */
@@ -735,6 +738,7 @@ struct CTX_struct {
     /* global fn entries (immortal libc): forward each entry's owner edge. */ \
     for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->owner); \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->dm_proc); \
     }                                                                        \
     /* per-instance class override table: forward both columns in lockstep   \
      * so the (object, class) pairing survives compaction. */                \
@@ -895,8 +899,10 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->members);             \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->cvars);              \
         /* method entries are immortal libc; forward each entry's owner edge. */ \
-        for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++)               \
+        for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++) {              \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->dm_proc); \
+        }                                                                  \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
