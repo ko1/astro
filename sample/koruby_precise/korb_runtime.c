@@ -2594,6 +2594,11 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
       korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
+    /* Class < Module < Object (CRuby).  Module was created with super=Object above;
+     * re-parent Class's superclass from Object to Module. */
+    { VALUE cls = korb_const_get(vm, vm->class_name[KORB_C_CLASS]), mod = korb_const_get(vm, vm->name_module);
+      if (KORB_CLASS_P(cls) && KORB_CLASS_P(mod))
+          ARO_STORE(c, VAL2CLASS(cls), (VALUE *)(uintptr_t)&VAL2CLASS(cls)->superclass, mod); }
     /* Complex.polar class method (on Complex's singleton). */
     { slots[0] = korb_const_get(vm, korb_intern(vm, "Complex", 7));
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;
