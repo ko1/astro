@@ -1568,14 +1568,21 @@ Proc.new{}, Enumerator.new{} eager yielder).
 - **float ULP (Complex**Float の polar)**: libm の演算順序依存で bit 一致不可
   と確定 → skip。
 
-**残・大物 (要・腰を据えた設計):**
-- **Binding / TOPLEVEL_BINDING**: 局所変数は parse-time (depth,slot) で
-  runtime に name→offset 表が無い。正しい Binding は「クロージャ env +
-  名前アクセス + eval 時の parse-scope 注入 (prism pm_options scopes)」が要り、
-  クロージャ subsystem 並みの規模。中途実装は moving GC で stale / silent-wrong
-  になるため未着手。設計: node_binding (parser が scope の name→offset を bake
-  + closure cap)、KorbBinding 型 (env/self/cref/name_table)、
-  local_variable_get/set/local_variables は env 経由、eval(str,b) は
-  koruby_parse_source に scopes 引数追加。
+- **Binding / TOPLEVEL_BINDING (実装済 session 3)**: KORB_OBJ_BINDING 型。
+  `binding` = node_binding (parser が scope の name→sym 表 + frame base + self
+  を bake、frame を closure と同じ open-KorbEnv で捕捉 → closure と共有・frame
+  退出後も生存)。local_variable_get/set/defined?/local_variables/receiver
+  (新規 local は extra side-hash)。eval(str, binding) は prism declared-scope
+  で binding local を宣言 (prism は単一 scope を program 自身に畳み込む →
+  depth-0) → eval frame を binding から seed、実行、write-back (既存→env、
+  新規→extra)。TOPLEVEL_BINDING は main.c で toplevel frame を捕捉。
+  GC 罠: write-back の hash alloc で GC が binding を動かす → cached VALUE が
+  stale → args slot から再読込で修正。t/hand/binding.rb (28 assert) で
+  interp+STRESS+AOT 検証。残: extra-local の eval 順序の細部、cref/定数解決。
+
+**残:**
 - skip 対象: regex (→astrorge), Encoding/US_ASCII, 非 ASCII case,
   Thread/Queue/Fiber 細部, IO/File/Dir/Process/Time, MT19937 完全一致, Marshal。
+- module オブジェクトの metaclass が Class (M.is_a?(Class) 誤 true)。
+- Method#parameters の ISEQ 名前 (node_entry に名前未保持)。
+- nested Complex(); Set/Hash#compare_by_identity (object_id 基盤要)。
