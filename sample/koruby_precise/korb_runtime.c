@@ -640,6 +640,10 @@ static inline bool korb_value_eq_fast(VALUE a, VALUE b)
     return korb_value_eq(a, b);
 }
 
+/* eql? (numeric-type-strict equality) — defined below; Hash keys use it so 1
+ * and 1.0 are distinct keys (CRuby Hash uses eql?, not ==). */
+static bool korb_value_eql(VALUE a, VALUE b);
+
 /* index of key in the pair array, or -1 */
 static int32_t
 korb_hash_find(const KorbHash *h, VALUE key)
@@ -662,7 +666,7 @@ korb_hash_find(const KorbHash *h, VALUE key)
         return -1;
     }
     for (uint32_t i = 0; i < h->len; i++)
-        if (korb_value_eq_fast(d[2 * i], key)) return (int32_t)i;
+        if (korb_value_eql(d[2 * i], key)) return (int32_t)i;   /* eql?: 1 and 1.0 are distinct keys */
     return -1;
 }
 

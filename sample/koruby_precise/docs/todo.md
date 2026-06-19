@@ -1461,7 +1461,11 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   なる(別オブジェクトが別キー化、lookup miss)。korb_value_hash /
   korb_value_eq が組み込み型のみ。object キーは user hash/eql? dispatch が要る
   (= GC-sensitive: hash 計算が user code を呼ぶ → rehash 中の GC 安全性に注意)。
-  既知の大物。関連: `{1=>"a"}[1.0]` が "a"(eql? でなく == 的判定)。
+  既知の大物。
+- (修正済 2026-06-19) **`{1=>"a"}[1.0]` が "a" を返していた** (eql? でなく ==):
+  korb_hash_find の linear scan が korb_value_eq_fast (==) を使い、1 と 1.0 を
+  同一キー扱いしていた。korb_value_eql (numeric-type-strict、既存だが Hash で
+  未使用だった) に切替。Integer/Float/Rational が別キーに (Set#uniq は既に正)。
 - (修正済 2026-06-18) Array#sort/min/max/min(n)/max(n) の <=> dispatch、
   AOT の -DKORB_HAVE_GMP 欠落 → 別 commit で対応済。
 - (修正済 2026-06-19) **Bignum `>>`**: korb_m_int_rshift に bignum ガードが
