@@ -371,7 +371,7 @@ node_bxor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
 }
 
 NODE_DEF
-node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
+node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const VALUE l = VALUE_REF_GET(lhs);
@@ -383,8 +383,8 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         }
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
-    slots[0] = l; slots[1] = rhs;
-    return korb_send(c, slots + 2, c->vm->mid_shl, line, 1);
+    slots[0] = l; slots[1] = rhs;   /* Array#<< / String#<< / bignum / user — inline-cached dispatch */
+    return korb_send_cached(c, slots + 2, c->vm->mid_shl, line, 1, ic);
 }
 
 NODE_DEF
