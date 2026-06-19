@@ -1014,8 +1014,11 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **arg
             struct korb_method *const m = ic->m;
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
                 return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
-            if (m->kind == KORB_METHOD_ATTR_R)
-                return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
+            if (m->kind == KORB_METHOD_ATTR_R) {             /* attr/struct reader: inline shape walk, no cross-module hop */
+                const KorbObject *const ob = VAL2OBJ(recv);
+                const int32_t idx = korb_shape_index(c->vm, ob->shape_id, m->attr_ivar);
+                return RESULT_OK(idx < 0 ? KORB_NIL : ob->ivars->data[idx]);
+            }
         }
     }
     return korb_send_cached(c, slots, mid, line, argc, ic);

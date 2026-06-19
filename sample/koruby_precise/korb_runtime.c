@@ -815,17 +815,7 @@ korb_shape_transition(struct korb_vm *vm, uint32_t shape, uint32_t sym)
     return child;
 }
 
-/* ivar index of `sym` in `shape` (walk to root via edge_sym), or -1 if absent. */
-int32_t
-korb_shape_index(struct korb_vm *vm, uint32_t shape, uint32_t sym)
-{
-    while (shape) {
-        const struct korb_shape *s = &vm->shapes[shape];
-        if (s->edge_sym == sym) return (int32_t)s->ivar_count - 1;
-        shape = s->parent;
-    }
-    return -1;
-}
+/* korb_shape_index is now an inline in node.h (folds into the SDs). */
 
 VALUE
 korb_ivar_get(CTX *c, VALUE self, VALUE name_sym)

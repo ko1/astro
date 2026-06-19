@@ -149,8 +149,18 @@ VALUE  korb_ivar_get(CTX *c, VALUE self, VALUE name_sym);
 bool   korb_responds_to(CTX *c, VALUE self, uint32_t mid);   /* defined?(method) */
 /* write val into an existing ivar slot (cache-hit fast path; routes the WB). */
 void   korb_ivar_store_at(CTX *c, struct KorbObject *o, uint32_t slot, VALUE val);
-/* ivar index of `sym` (raw id) in object `shape`, or -1 if absent (shape IC). */
-int32_t korb_shape_index(struct korb_vm *vm, uint32_t shape, uint32_t sym);
+/* ivar index of `sym` (raw id) in object `shape`, or -1 if absent (shape IC).
+ * inline (walks the shape parent chain) so it folds into the SDs — node_ivar_*
+ * and node_send's attr-reader fast path call it without a cross-module hop. */
+static inline int32_t korb_shape_index(struct korb_vm *vm, uint32_t shape, uint32_t sym)
+{
+    while (shape) {
+        const struct korb_shape *s = &vm->shapes[shape];
+        if (s->edge_sym == sym) return (int32_t)s->ivar_count - 1;
+        shape = s->parent;
+    }
+    return -1;
+}
 RESULT korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val);
 
 /* Classes + constants (korb_runtime.c) */
