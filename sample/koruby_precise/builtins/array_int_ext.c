@@ -633,7 +633,21 @@ static RESULT korb_m_hash_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VAL
 
 /* Hash#each_with_index — yield ([k,v], index); return self. */
 static RESULT korb_m_hash_each_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; HASH_REQ_BLOCK("Hash#each_with_index");
+    if (block == NULL) {                  /* → Enumerator of [[k,v], index]: build [k,v] pairs, delegate to Array#each_with_index */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
+        VALUE_REF pairs = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            if (i >= h->len) break;
+            slots[1] = h->items->data[2 * i];
+            slots[2] = h->items->data[2 * i + 1];
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
+            CHECK(korb_ary_push_val(c, slots + 4, pairs, slots[3]));
+        }
+        return korb_m_ary_each_wi(c, slots + 1, pairs, a, NULL, def_env, cself);
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
