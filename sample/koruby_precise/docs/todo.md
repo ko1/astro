@@ -48,6 +48,21 @@
   builtin-receiver CFUNC の inline cache 余地 (CFUNC 多様で汎用 inline 難)。
 - sprintfb 1.12 / strfmt 1.00: format()/補間。bignum 1.11, mandelbrot 1.12。
 
+## 差分テストで発覚した未対応 (2026-06-19 session 2 probe sweep)
+
+- **パターンマッチ `case/in` 未対応** (prism node 24 = PM_CASE_MATCH_NODE)。
+  array/hash/find pattern + binding + guard + deconstruct/deconstruct_keys が
+  要る大物。modern Ruby で頻出。`x => pat` / `x in pat` の one-line 形も。
+- **`Data.define` 未実装** (Ruby 3.2+ の immutable value class)。Struct に近い
+  (korb_struct_define 流用可) が immutable + positional/keyword 両対応 init +
+  `with` + `to_h`/`members`/`==`/`deconstruct_keys`。中規模。
+- **Bignum リテラル parse 未対応**: `99999999999999999999999999` が parse 時に
+  "Integer literal beyond Fixnum range" で raise。計算 bignum は動く。parser で
+  範囲外 Integer literal を bignum const に焼く必要 (GMP の mpz_set_str)。
+- (修正済 2026-06-19) **`Integer.sqrt`**: mpz_sqrt 経由で fixnum/bignum 厳密。
+- (修正済 2026-06-19) **Enumerator#each_slice/each_cons**, **Hash#each_with_index
+  (no block)**, **Hash key eql?** ({1=>x}[1.0]→nil)。
+
 ## 差分テストで発覚した未対応 (2026-06-19)
 
 - **`define_method` 未対応** (class body): `define_method(:foo) { }` が

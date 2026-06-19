@@ -102,4 +102,24 @@ RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v) {
     return r;
 }
 
+/* Integer.sqrt(n) — exact integer square root (floor of √n) for any non-negative
+ * Integer; via mpz_sqrt so Bignums are exact (no Float rounding).  Class method. */
+static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE n = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(n)) n = LONG2FIX((intptr_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
+    if (UNLIKELY(!KORB_INTEGER_P(n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    mpz_t z, r;
+    korb_to_mpz(n, z);
+    if (UNLIKELY(mpz_sgn(z) < 0)) { mpz_clear(z); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Numerical argument is out of domain - \"isqrt\""); }
+    mpz_init(r);
+    mpz_sqrt(r, z);
+    RESULT res = korb_big_from_mpz(c, slots, r);
+    mpz_clear(z); mpz_clear(r);
+    return res;
+}
+
 #endif /* KORB_HAVE_GMP */

@@ -3930,6 +3930,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, ">=", korb_m_num_ge, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
+#ifdef KORB_HAVE_GMP
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_INTEGER), "sqrt", korb_m_integer_sqrt, 1);   /* Integer.sqrt class method */
+#endif
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "finite?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "fdiv", korb_m_int_fdiv, 1);
