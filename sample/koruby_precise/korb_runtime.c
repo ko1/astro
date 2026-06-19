@@ -519,6 +519,21 @@ static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, ep * sin(q)));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
+/* Complex.polar(abs, arg=0) → abs·(cos arg + i·sin arg) (Float components). */
+static RESULT korb_m_cpx_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    double ab, ar = 0;
+    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &ab))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    if (VALUE_SLICE_LEN(a) < 2) {                                    /* no angle → real part keeps its type, imag 0.0 */
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, 0.0));
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 1), &ar))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    slots[0] = UNWRAP(korb_float_new(c, slots, ab * cos(ar)));
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, ab * sin(ar)));
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
 static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
 static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
@@ -2575,6 +2590,10 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
       korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
+    /* Complex.polar class method (on Complex's singleton). */
+    { slots[0] = korb_const_get(vm, korb_intern(vm, "Complex", 7));
+      slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;
+      korb_class_def_cfn(c, slots[1], "polar", korb_m_cpx_polar, -1); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
      * so is_a?/kind_of? report membership (the comparison/iteration methods
