@@ -91,6 +91,7 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
         return korb_flt_toint(c, slots, d, kind);
     }
     double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
+    if (ndig > 0 && (isinf(f) || !isfinite(d * f))) return korb_float_new(c, slots, d);   /* beyond float precision → self */
     double scaled = ndig > 0 ? d * f : d / f;
     double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? korb_round_half_apply(scaled, half) : trunc(scaled);
     if (ndig > 0) return korb_float_new(c, slots, t / f);
