@@ -2015,6 +2015,23 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);
+    /* fast path: all keywords supplied in declared order (the common call shape,
+     * e.g. box(x:,y:,z:) on def box(x:,y:,z:)) — direct positional bind, no scan,
+     * no missing/unknown checks (every param present, every arg consumed). */
+    if (LIKELY(kw_argc == kw->count)) {
+        bool ordered = true;
+        for (uint32_t j = 0; j < kw_argc; j++) if (kw_syms[j] != kw->entries[j].mid) { ordered = false; break; }
+        if (LIKELY(ordered)) {
+            for (uint32_t j = 0; j < kw_argc; j++) base[kw->entries[j].slot] = kwbuf[j];
+            for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {   /* optional positional defaults */
+                NODE *const dflt = m->opt_defaults[pi - m->req_cnt];
+                RESULT dr = (*dflt->head.dispatcher)(c, dflt, base + locals_cnt);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                base[pi] = dr.value;
+            }
+            goto run_body;
+        }
+    }
     /* bind present keywords now (pure copies, no GC) → kwbuf dead afterwards */
     uint64_t present = 0;
     for (uint32_t j = 0; j < kw->count; j++) {
@@ -2045,6 +2062,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, kw->entries[j].mid));
         }
     }
+  run_body:;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
