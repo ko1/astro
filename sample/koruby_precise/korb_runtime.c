@@ -5429,6 +5429,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "<=>", korb_m_cpx_cmp, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "**", korb_m_cpx_pow, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "eql?", korb_m_cpx_eql, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "marshal_dump", korb_m_cpx_rect, 0);   /* [re, im] */
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
