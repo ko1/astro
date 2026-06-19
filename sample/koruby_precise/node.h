@@ -342,6 +342,8 @@ void korb_ctx_free(CTX *c);
  * caller (main.c) reads the source (file / -e / stdin). */
 NODE *koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname);
 extern uint32_t koruby_toplevel_locals_cnt;
+extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
+extern uint32_t koruby_toplevel_local_cnt;
 
 /* code repo iteration (main.c) — every method body is its own AOT entry
  * because call sites dispatch through body->head.dispatcher at runtime. */

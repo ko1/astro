@@ -25,6 +25,8 @@
 #include "node.h"
 
 uint32_t koruby_toplevel_locals_cnt = 0;
+const uint32_t *koruby_toplevel_local_syms = NULL;
+uint32_t koruby_toplevel_local_cnt = 0;
 
 struct kp_frame {
     const pm_constant_id_list_t *locals;
@@ -1552,6 +1554,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
     switch (PM_NODE_TYPE(node)) {
       case PM_PROGRAM_NODE: {
         const pm_program_node_t *pn = (const pm_program_node_t *)node;
+        /* expose the toplevel local-name table (for TOPLEVEL_BINDING). */
+        koruby_toplevel_local_cnt = (uint32_t)pn->locals.size;
+        uint32_t *tl_syms = koruby_toplevel_local_cnt ? malloc(sizeof(uint32_t) * koruby_toplevel_local_cnt) : NULL;
+        for (uint32_t i = 0; i < koruby_toplevel_local_cnt; i++)
+            tl_syms[i] = kp_intern_cid(tc, pn->locals.ids[i]);
+        koruby_toplevel_local_syms = tl_syms;
         push_frame(tc, &pn->locals);
         NODE *body = transduce_statements(tc, pn->statements);
         koruby_toplevel_locals_cnt = pop_frame(tc);   /* frame_size for main's cursor */

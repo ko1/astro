@@ -330,6 +330,14 @@ main(int argc, char *argv[])
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
             c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
         }
+        /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
+        {
+            RESULT tb = korb_make_binding(c, toplevel_cursor, c->slots,
+                                          koruby_toplevel_local_syms, koruby_toplevel_local_cnt,
+                                          c->slots[koruby_toplevel_locals_cnt - 1]);
+            if (tb.state == KORB_NORMAL)
+                korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
+        }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         RESULT r = EVAL(c, ast, toplevel_cursor);

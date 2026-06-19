@@ -6098,14 +6098,21 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     const VALUE sv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    const bool have_bind = VALUE_SLICE_LEN(args) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(args, 1));
     const KorbString *s = VAL2STR(sv);
     NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     VALUE *const cur = slots + locals;                  /* the eval program's body cursor */
     memset(slots, 0, (size_t)locals * sizeof(VALUE));   /* zero its locals */
-    RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
-    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
-    slots[locals - 1] = mr.value;                       /* self cell (frame top) */
+    VALUE eval_self;
+    if (have_bind) {                                    /* eval(str, binding) — run with the binding's self */
+        eval_self = VAL2BIND(VALUE_SLICE_GET(args, 1))->self;
+    } else {
+        RESULT mr = korb_obj_new(c, cur, KORB_NIL);     /* fresh `main` self */
+        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+        eval_self = mr.value;
+    }
+    slots[locals - 1] = eval_self;                      /* self cell (frame top) */
     return EVAL(c, ast, cur);
 }
 
