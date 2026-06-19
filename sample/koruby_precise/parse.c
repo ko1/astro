@@ -2517,3 +2517,41 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname)
     pm_options_free(&options);
     return ast;
 }
+
+/* Parse `src` for eval(str, binding): the binding's local names are declared as
+ * the program's scope so bare references parse as (depth-0) locals.  Returns the
+ * program AST; koruby_toplevel_locals_cnt / koruby_toplevel_local_{syms,cnt} are
+ * set to the eval program's frame (caller seeds those slots from the binding and
+ * writes them back).  NULL on syntax error. */
+NODE *
+koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname,
+                          const uint32_t *name_syms, uint32_t name_cnt)
+{
+    pm_parser_t parser;
+    pm_options_t options = { 0 };
+    pm_options_filepath_set(&options, fname);
+    pm_options_line_set(&options, 1);
+    /* declare the binding's locals so the eval code recognises them as locals
+     * (prism folds a single declared scope into the parsed program's own scope). */
+    pm_options_scopes_init(&options, 1);
+    pm_options_scope_t *scope = &options.scopes[0];
+    pm_options_scope_init(scope, name_cnt);
+    for (uint32_t i = 0; i < name_cnt; i++) {
+        const char *nm = korb_sym_name(c->vm, name_syms[i]);
+        pm_string_constant_init(&scope->locals[i], nm, strlen(nm));
+    }
+    pm_parser_init(&parser, (const uint8_t *)src, len, &options);
+    pm_node_t *root = pm_parse(&parser);
+    if (parser.error_list.size > 0) {
+        pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
+        return NULL;
+    }
+    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname };
+    NODE *ast = transduce(&tc, root);
+    if (ast == NULL) ast = lit_nil();
+    free(tc.bake_list);
+    pm_node_destroy(&parser, root);
+    pm_parser_free(&parser);
+    pm_options_free(&options);
+    return ast;
+}

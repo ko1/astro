@@ -341,6 +341,8 @@ void korb_ctx_free(CTX *c);
 /* parser entry (parse.c).  `fname` is used for diagnostics only; the
  * caller (main.c) reads the source (file / -e / stdin). */
 NODE *koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname);
+NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname,
+                                const uint32_t *name_syms, uint32_t name_cnt);
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;

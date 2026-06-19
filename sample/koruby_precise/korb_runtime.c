@@ -1694,6 +1694,12 @@ static VALUE korb_bind_env_get(const KorbBinding *b, uint32_t i) {
     const VALUE *base = e->closed ? ((const KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc;
     return base[i];
 }
+/* write env index `i` (open → live slots, closed → heap vals via WB). */
+static void korb_bind_env_set(CTX *c, const KorbBinding *b, uint32_t i, VALUE v) {
+    KorbEnv *e = VAL2ENV(b->env);
+    if (e->closed) korb_env_store(c, e, i, v);
+    else e->loc[i] = v;
+}
 /* frame index of `sym` in the binding's scope, or -1. */
 static int korb_bind_find(const KorbBinding *b, uint32_t sym) {
     for (uint32_t i = 0; i < b->name_cnt; i++) if (b->name_syms[i] == sym) return (int)i;
@@ -6100,19 +6106,57 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
     const bool have_bind = VALUE_SLICE_LEN(args) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(args, 1));
     const KorbString *s = VAL2STR(sv);
+    if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
+        const VALUE bv = VALUE_SLICE_GET(args, 1);
+        const KorbBinding *b0 = VAL2BIND(bv);
+        /* declare every binding local (frame names + dynamically-added `extra`
+         * names) so the eval code recognises them as locals (no GC during parse). */
+        const uint32_t ecnt = (b0->extra != KORB_NIL) ? VAL2HASH(b0->extra)->len : 0;
+        const uint32_t declc = b0->name_cnt + ecnt;
+        uint32_t *decl = declc ? malloc(sizeof(uint32_t) * declc) : NULL;
+        for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = b0->name_syms[i];
+        for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(VAL2HASH(b0->extra)->items->data[2 * i]);
+        NODE *entry = koruby_parse_binding_eval(c, s->buf->data, s->len, "(eval)", decl, declc);
+        free(decl);
+        if (UNLIKELY(entry == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "syntax error in eval string");
+        const uint32_t L = koruby_toplevel_locals_cnt;
+        const uint32_t ncnt = koruby_toplevel_local_cnt;
+        const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
+        VALUE *const cur = slots + L;
+        memset(slots, 0, (size_t)L * sizeof(VALUE));
+        for (uint32_t i = 0; i < ncnt; i++) {           /* seed: copy binding values into the eval frame's locals */
+            const KorbBinding *b = VAL2BIND(bv);
+            const int j = korb_bind_find(b, nsyms[i]);
+            if (j >= 0) slots[i] = korb_bind_env_get(b, (uint32_t)j);
+            else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) slots[i] = VAL2HASH(b->extra)->items->data[2 * hi + 1]; }
+        }
+        slots[L - 1] = VAL2BIND(bv)->self;              /* self cell */
+        RESULT er = EVAL(c, entry, cur);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        slots[L] = er.value;                            /* park result across writeback allocs */
+        /* Re-read the binding from the rooted args slot each step — the hash
+         * allocs below trigger GC, which moves the binding (a cached VALUE goes
+         * stale). */
+        #define EVAL_BIND VAL2BIND(VALUE_SLICE_GET(args, 1))
+        for (uint32_t i = 0; i < ncnt; i++) {           /* write back: existing → env, new → extra hash */
+            if (i == L - 1) continue;                   /* the self cell, not a local */
+            const int j = korb_bind_find(EVAL_BIND, nsyms[i]);
+            if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, slots[i]); continue; }
+            slots[L + 1] = EVAL_BIND->extra;
+            if (slots[L + 1] == KORB_NIL) { slots[L + 1] = UNWRAP(korb_hash_new(c, slots + L + 2, 4)); ARO_STORE(c, EVAL_BIND, (VALUE *)(uintptr_t)&EVAL_BIND->extra, slots[L + 1]); }
+            slots[L + 2] = ID2SYM(nsyms[i]); slots[L + 3] = slots[i];
+            CHECK(korb_hash_set(c, slots + L + 4, VALUE_REF_AT(&slots[L + 1]), VALUE_REF_AT(&slots[L + 2]), slots[L + 3]));
+        }
+        #undef EVAL_BIND
+        return RESULT_OK(slots[L]);
+    }
     NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     VALUE *const cur = slots + locals;                  /* the eval program's body cursor */
     memset(slots, 0, (size_t)locals * sizeof(VALUE));   /* zero its locals */
-    VALUE eval_self;
-    if (have_bind) {                                    /* eval(str, binding) — run with the binding's self */
-        eval_self = VAL2BIND(VALUE_SLICE_GET(args, 1))->self;
-    } else {
-        RESULT mr = korb_obj_new(c, cur, KORB_NIL);     /* fresh `main` self */
-        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
-        eval_self = mr.value;
-    }
-    slots[locals - 1] = eval_self;                      /* self cell (frame top) */
+    RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
+    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+    slots[locals - 1] = mr.value;                       /* self cell (frame top) */
     return EVAL(c, ast, cur);
 }
 
