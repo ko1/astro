@@ -5,6 +5,14 @@
 
 ## 差分テストで発覚した未対応 (2026-06-19)
 
+- **`define_method` 未対応** (class body): `define_method(:foo) { }` が
+  「undefined method 'define_method'」。block/proc を method body 化する機構が要る。
+- **`Integer.superclass` が Object** (CRuby は Numeric)。koruby は Numeric を
+  module(include) 扱いで superclass にしていない。Float も同様。階層変更は要注意。
+- **`&blk` 引数転送の一部が prism node 139 で未対応**: `def m(*a, &b); x.send(n,*a,&b); end`。
+- (修正済 2026-06-19) method_missing / respond_to_missing? / Object#instance_variables /
+  Symbol#inspect の @ivar/@@cvar/$global を bare 表示。
+
 - **blockless enumerator が一部メソッドで未対応**: `(1..10).select.with_index { }`、
   `Hash#each_with_index`(no block) 等が NotImplementedError (REQUIRE_BLOCK)。
   ブロック無し呼び出しで Enumerator を返す機構が要る (broad / 優先度3)。

@@ -3690,6 +3690,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self);
         }
+        /* user-defined method_missing(name, *args) catches the miss. */
+        if (KORB_CLASS_P(start_cls)) {
+            const uint32_t mm_mid = korb_intern(vm, "method_missing", 14);
+            VALUE mm_def = KORB_NIL;
+            struct korb_method *const mm = korb_mcache_find(vm, start_cls, mm_mid, &mm_def);
+            if (mm) {                                          /* stage [self | :name | args...] */
+                slots[0] = self;
+                slots[1] = ID2SYM(mid);
+                for (uint32_t j = 0; j < argc; j++) slots[2 + j] = slots[-(intptr_t)argc + (intptr_t)j];
+                return korb_dispatch_method(c, slots + argc + 2, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self);
+            }
+        }
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                           "undefined method '%s' for %s",
                           korb_sym_name(vm, mid), korb_a_type_name(self));
@@ -4448,6 +4460,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "hash", korb_m_obj_hash, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "instance_variables", korb_m_obj_ivars, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_frozen_q, 0);
@@ -4807,6 +4820,16 @@ static bool
 korb_sym_inspect_bare(const char *nm)
 {
     if (korb_sym_label_bare(nm)) return true;
+    {   /* @ivar / @@cvar / $global names print bare */
+        const char *p = nm;
+        if (*p == '$') p++;
+        else if (*p == '@') { p++; if (*p == '@') p++; }
+        if (p != nm && (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) {
+            const char *q = p + 1;
+            while (*q == '_' || (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9')) q++;
+            if (*q == '\0') return true;
+        }
+    }
     if (nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z')) {
         const char *p = nm + 1;                      /* identifier with trailing '=' (setter) */
         while (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) p++;

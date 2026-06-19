@@ -74,6 +74,29 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (!KORB_OBJECT_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
 }
+/* Object#instance_variables → [:@a, :@b, ...] in definition order. */
+static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE sv = VALUE_REF_GET(self);
+    if (!KORB_OBJECT_P(sv)) return korb_ary_new(c, slots, 0);   /* immediates / builtins: none */
+    const uint32_t sid0 = VAL2OBJ(sv)->shape_id;                /* read shape BEFORE any alloc */
+    const uint32_t n = c->vm->shapes[sid0].ivar_count;
+    uint32_t *const syms = n ? (uint32_t *)malloc((size_t)n * sizeof(uint32_t)) : NULL;
+    if (n && UNLIKELY(!syms)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
+    for (uint32_t sid = sid0; sid; ) {                          /* leaf→root: place each ivar at its index */
+        const struct korb_shape *s = &c->vm->shapes[sid];
+        if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym;
+        sid = s->parent;
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, n));           /* (frees syms below; minor leak only on OOM) */
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < n; i++) {
+        slots[1] = ID2SYM(syms[i]);                             /* syms is libc memory, stable across GC */
+        CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+    }
+    free(syms);
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Object#method(:sym) → bound Method. */
 static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE name = VALUE_SLICE_GET(a, 0);

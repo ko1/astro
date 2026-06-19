@@ -219,8 +219,18 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     else if (KORB_STRING_P(mv)) mid = korb_intern(vm, VAL2STR(mv)->buf->data, VAL2STR(mv)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(mv));
     VALUE sv = VALUE_REF_GET(self);
-    (void)vm;
-    return RESULT_OK(korb_responds_to(c, sv, mid) ? KORB_TRUE : KORB_FALSE);
+    if (korb_responds_to(c, sv, mid)) return RESULT_OK(KORB_TRUE);
+    /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
+    const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
+    const VALUE dcls = korb_dispatch_class(c, sv);
+    VALUE rtm_def = KORB_NIL;
+    if (KORB_CLASS_P(dcls) && korb_class_find_method(dcls, rtm, &rtm_def)) {
+        slots[0] = sv;
+        slots[1] = ID2SYM(mid);
+        slots[2] = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
+        return korb_send_impl(c, slots + 3, rtm, 0, 2, NULL, NULL, NULL);
+    }
+    return RESULT_OK(KORB_FALSE);
 }
 static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);
