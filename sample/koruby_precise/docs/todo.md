@@ -1529,3 +1529,27 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
 - (修正済 2026-06-18) `send(:top_level)` / `__send__` が top-level def に
   届かなかった (private Object method 相当) → korb_send_impl の main miss で
   global function table fallback。public_send は privacy で raise。
+
+## rubyspec mining 由来 (2026-06-19, /tmp/rspec_gen バッチ)
+
+新規 mined assertion を CRuby と diff して発見・修正した分は commit 済
+(main self methods, bignum bitops, Float#arg/coerce, Hash#delete blk,
+sprintf %+b, Method#arity/owner, defined?(A::B), Numeric⊇Comparable,
+Integer div/divmod/modulo/remainder の Rational/Bignum operand)。残:
+
+- **UnboundMethod 未実装**: `Module#instance_method`, `Method#unbind`,
+  `Method#parameters` が無い (method_000 の大半)。UnboundMethod クラス +
+  bind が要る。中規模。
+- **Integer#size (Bignum)**: CRuby は limb 単位 (BDIGIT) で byte 数を返す
+  実装依存値 (9,10,11,...)。spec 自体 "machine dependent"。matching 非現実的、
+  skip 判断。
+- **Integer.try_convert / Float#try_convert 等**: module method 未実装。容易。
+- **to_enum / enum_for(:method)**: block 無し Enumerator を method 名で生成
+  (enumerable_000)。中規模。
+- **Set#compare_by_identity**, **Hash#compare_by_identity** 未実装 (set_000)。
+- **Integer#[](range)** ビットスライス: `0b101..[2..6]` 等 (integer_001 tail)。
+- **TOPLEVEL_BINDING / Kernel#binding 未実装** (main_000, binding_000)。Binding 大物。
+- **Object#singleton_class / SingletonClass#attached_object** (class_000)。
+- **ruby2_keywords_hash? / Hash.new(capacity:)** 等の niche (hash_000)。
+- skip 対象: regex (→astrorge), Encoding/US_ASCII, 非 ASCII upcase/downcase,
+  Thread/Queue/Fiber 細部, IO/File/Dir/Process, MT19937 完全一致, Marshal。
