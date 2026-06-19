@@ -3,6 +3,27 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## Ruby 準拠 probe sweep (2026-06-19 session 3) — 修正済み
+
+差分テスト probe で発見・修正 (全て corpus 89267/5 維持・STRESS+AOT 検証):
+- **String#unpack / Array#pack 'U'** (UTF-8 codepoints)。
+- **BasicObject + Kernel を MRO に** (ancestors / is_a? / Object.superclass)。
+- **begin/rescue の else 節** (seq(body, else) に lowering)。
+- **String#reverse / reverse!** を UTF-8 文字単位に (byte 反転バグ修正)。
+- **Array#each_index / cycle(n)** の no-block Enumerator。
+- **無名 splat target** `first, *, last = ...` (中間を synth local に捨てる)。
+
+### 残る準拠ギャップ (hard / niche / out-of-scope)
+- **define_method**: closure 捕捉 block が呼び出し時 SEGV (env が open/stack 依存)。
+  infra 設計は判明済 (上記 §define_method)。env promotion 要・focused session。最有力。
+- **op-aware no-block Enumerator**: select/reject/flat_map/transform_values を
+  block なしで呼ぶと、後続 .with_index{} が filter でなく map になる (silent 誤答)
+  → 現状は raise (honest)。正しくは Enumerator に op を保持させる必要。
+- **to_enum / enum_for(:method)**: 任意メソッドを collecting block で駆動する機構が要る。
+- **upcase/downcase の非 ASCII** (é→É 等): full-unicode case mapping、scope 外。
+- **regex** (gsub/sub/scan/match の Regexp 形): astrorge 待ち。
+- **Integer.superclass == Numeric**: Numeric を module→class 化 + 階層変更、risky・低価値。
+
 ## perf: 全マイクロベンチで CRuby+YJIT 超え (2026-06-19 進行中)
 
 目標: aot+cached が **すべての** microbench で cruby+yjit を下回る (<1.00)。
