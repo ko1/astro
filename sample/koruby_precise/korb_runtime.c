@@ -360,6 +360,47 @@ static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#abs with non-real components");
     return korb_float_new(c, slots, sqrt(re * re + im * im));
 }
+static RESULT korb_m_cpx_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* re² + im² (exact when components are) */
+    (void)a;
+    slots[0] = SELF_CPX->re; slots[1] = SELF_CPX->im;
+    RESULT r2 = korb_num_binop(c, slots + 2, slots[0], slots[0], 2); if (UNLIKELY(r2.state != KORB_NORMAL)) return r2; slots[2] = r2.value;
+    RESULT i2 = korb_num_binop(c, slots + 3, slots[1], slots[1], 2); if (UNLIKELY(i2.state != KORB_NORMAL)) return i2; slots[3] = i2.value;
+    return korb_num_binop(c, slots + 4, slots[2], slots[3], 0);
+}
+static RESULT korb_m_cpx_infinite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* 1 if a component is ±Inf, else nil */
+    (void)slots;(void)a; double re, im;
+    bool inf = (korb_num_to_d(SELF_CPX->re, &re) && isinf(re)) || (korb_num_to_d(SELF_CPX->im, &im) && isinf(im));
+    return RESULT_OK(inf ? LONG2FIX(1) : KORB_NIL);
+}
+/* num/den of a Complex component (Integer→(v,1), Rational→(num,den)); Fixnum-only. */
+static void korb_cpx_nd(VALUE v, intptr_t *num, intptr_t *den) {
+    if (KORB_RATIONAL_P(v) && FIXNUM_P(VAL2RAT(v)->num) && FIXNUM_P(VAL2RAT(v)->den)) {
+        *num = FIX2LONG(VAL2RAT(v)->num); *den = FIX2LONG(VAL2RAT(v)->den);
+    } else if (FIXNUM_P(v)) { *num = FIX2LONG(v); *den = 1; }
+    else { *num = 0; *den = 1; }
+}
+static intptr_t korb_igcd(intptr_t a, intptr_t b) { a = a < 0 ? -a : a; b = b < 0 ? -b : b; while (b) { intptr_t t = a % b; a = b; b = t; } return a ? a : 1; }
+static RESULT korb_m_cpx_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* lcm of component denominators */
+    (void)c;(void)slots;(void)a;
+    intptr_t rn, rd, in, id; korb_cpx_nd(SELF_CPX->re, &rn, &rd); korb_cpx_nd(SELF_CPX->im, &in, &id);
+    return RESULT_OK(LONG2FIX(rd / korb_igcd(rd, id) * id));
+}
+static RESULT korb_m_cpx_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* Complex(re*d/rd, im*d/id) where d=lcm */
+    (void)a;
+    intptr_t rn, rd, in, id; korb_cpx_nd(SELF_CPX->re, &rn, &rd); korb_cpx_nd(SELF_CPX->im, &in, &id);
+    const intptr_t d = rd / korb_igcd(rd, id) * id;
+    slots[0] = LONG2FIX(rn * (d / rd)); slots[1] = LONG2FIX(in * (d / id));
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
+static RESULT korb_m_cpx_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* only when imaginary part is 0 */
+    double im;
+    if (UNLIKELY(!(korb_num_to_d(SELF_CPX->im, &im) && im == 0.0)))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "can't convert %s into Rational", korb_type_name(VALUE_REF_GET(self)));
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    slots[0] = SELF_CPX->re;                                 /* recv below the staged args */
+    for (uint32_t j = 0; j < argc; j++) slots[1 + j] = VALUE_SLICE_GET(a, j);
+    return korb_send(c, slots + 1 + argc, korb_intern(c->vm, "rationalize", 11), 0, argc);
+}
 static RESULT korb_m_cpx_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
@@ -5362,6 +5403,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "rect", korb_m_num_rect, 0);
     korb_def_cmethod(c, KORB_C_FLOAT, "rectangular", korb_m_num_rect, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "real?", korb_m_lit_false, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "integer?", korb_m_lit_false, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "abs2", korb_m_cpx_abs2, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "infinite?", korb_m_cpx_infinite, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "numerator", korb_m_cpx_numerator, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "denominator", korb_m_cpx_denominator, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "rationalize", korb_m_cpx_rationalize, -1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "rect", korb_m_cpx_rect, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "rectangular", korb_m_cpx_rect, 0);
 }
