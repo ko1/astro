@@ -5118,6 +5118,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "unbind", korb_m_meth_unbind, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
+    korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);

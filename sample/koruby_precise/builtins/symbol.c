@@ -208,6 +208,35 @@ static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
     return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
 }
+/* push a [kind] (or [kind, name]) param descriptor onto the result array `res`. */
+static RESULT korb_param_push(CTX *c, VALUE *slots, VALUE_REF res, const char *kind) {
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 1));
+    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, kind, (uint32_t)strlen(kind)))));
+    return korb_ary_push_val(c, slots + 1, res, slots[0]);
+}
+/* Method/UnboundMethod#parameters — C methods are nameless: variadic → [[:rest]],
+ * fixed-arity → [[:req]]×n; ISEQ → positional kinds (names not retained). */
+static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    if (km == NULL) return RESULT_OK(VALUE_REF_GET(res));
+    if (km->kind == KORB_METHOD_ATTR_W) { CHECK(korb_param_push(c, slots + 1, res, "req")); return RESULT_OK(VALUE_REF_GET(res)); }
+    if (km->kind == KORB_METHOD_ATTR_R) return RESULT_OK(VALUE_REF_GET(res));
+    if (km->kind == KORB_METHOD_BUILTIN || km->kind == KORB_METHOD_CFUNC) {
+        if (km->params_cnt < 0) { CHECK(korb_param_push(c, slots + 1, res, "rest")); }
+        else for (int32_t i = 0; i < km->params_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
+        return RESULT_OK(VALUE_REF_GET(res));
+    }
+    /* ISEQ: required, optional, rest, post (names not stored) */
+    for (uint32_t i = 0; i < km->req_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
+    const uint32_t nopt = (km->params_cnt >= 0 && (uint32_t)km->params_cnt > km->req_cnt) ? (uint32_t)km->params_cnt - km->req_cnt : 0;
+    for (uint32_t i = 0; i < nopt; i++) CHECK(korb_param_push(c, slots + 1, res, "opt"));
+    if (km->rest_slot >= 0) CHECK(korb_param_push(c, slots + 1, res, "rest"));
+    for (uint32_t i = 0; i < km->post_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
+    return RESULT_OK(VALUE_REF_GET(res));
+}
 /* Module#instance_method(name) → UnboundMethod owned by the class. */
 static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE nv = VALUE_SLICE_GET(a, 0);
