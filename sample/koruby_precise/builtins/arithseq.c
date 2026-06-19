@@ -83,6 +83,8 @@ static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (limv == KORB_NIL) return korb_float_new(c, slots, INFINITY);          /* endless numeric */
     if (UNLIKELY(!korb_num_to_d(limv, &ld))) return RESULT_OK(KORB_NIL);
     if (UNLIKELY(sd == 0.0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    if (isinf(sd))                                                            /* infinite step: at most the first element */
+        return RESULT_OK(LONG2FIX((sd > 0 ? bd <= ld : bd >= ld) ? 1 : 0));
     if (isinf(ld)) return ((sd > 0) == (ld > 0)) ? korb_float_new(c, slots, INFINITY) : RESULT_OK(LONG2FIX(0));
     if (FIXNUM_P(beginv) && FIXNUM_P(limv) && FIXNUM_P(stepv)) {              /* exact integer count */
         intptr_t span = FIX2LONG(limv) - FIX2LONG(beginv), st = FIX2LONG(stepv);
