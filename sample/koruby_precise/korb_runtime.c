@@ -179,6 +179,27 @@ static RESULT korb_m_rat_den(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_float_new(c, slots, (double)SELF_RAT->num / (double)SELF_RAT->den); }
 static RESULT korb_m_rat_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_RAT->num / SELF_RAT->den)); }
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+/* floor/ceil/round → Integer (den>0 normalized; ndigits arg not supported). */
+static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const intptr_t n = SELF_RAT->num, d = SELF_RAT->den;
+    intptr_t q = n / d;
+    if (n % d != 0 && n < 0) q--;
+    return RESULT_OK(LONG2FIX(q));
+}
+static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const intptr_t n = SELF_RAT->num, d = SELF_RAT->den;
+    intptr_t q = n / d;
+    if (n % d != 0 && n > 0) q++;
+    return RESULT_OK(LONG2FIX(q));
+}
+static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const intptr_t n = SELF_RAT->num, d = SELF_RAT->den;
+    const intptr_t q = n / d, r = n % d, ar = r < 0 ? -r : r;
+    return RESULT_OK(LONG2FIX(ar * 2 >= d ? q + (n < 0 ? -1 : 1) : q));   /* half away from zero */
+}
 static RESULT korb_m_rat_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; intptr_t n = SELF_RAT->num; return korb_rat_new(c, slots, n < 0 ? -n : n, SELF_RAT->den); }
 static RESULT korb_m_rat_neg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_new(c, slots, -SELF_RAT->num, SELF_RAT->den); }
 static RESULT korb_m_rat_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
@@ -2123,7 +2144,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         VALUE k = korb_const_get(vm, vm->class_name[comp_in[i]]);
         (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
     }
-    static const int enum_in[] = { KORB_C_ARRAY, KORB_C_HASH, KORB_C_RANGE, KORB_C_SET, KORB_C_ENUMERATOR };
+    static const int enum_in[] = { KORB_C_ARRAY, KORB_C_HASH, KORB_C_RANGE, KORB_C_SET, KORB_C_ENUMERATOR, KORB_C_ARITHSEQ };
     for (size_t i = 0; i < sizeof(enum_in)/sizeof(enum_in[0]); i++) {
         slots[0] = korb_const_get(vm, enum_sym);
         VALUE k = korb_const_get(vm, vm->class_name[enum_in[i]]);
@@ -4615,7 +4636,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_f", korb_m_rat_to_f, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_i", korb_m_rat_to_i, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_int", korb_m_rat_to_i, 0);
-    korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_to_i, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_to_i, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "floor", korb_m_rat_floor, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "ceil", korb_m_rat_ceil, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "round", korb_m_rat_round, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_r", korb_m_rat_self, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "rationalize", korb_m_rat_self, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "abs", korb_m_rat_abs, 0);

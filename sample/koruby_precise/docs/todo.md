@@ -21,6 +21,10 @@
   中途半端な address ベースは `hash[obj.object_id]` を GC で壊すので保留。
 - (修正済 2026-06-19) `require`/`require_relative`/`load` を no-op true 化、
   `Set[...]` クラス index コンストラクタ、`Set#disjoint?`/`#intersect?` 追加。
+- (修正済 2026-06-19) Rational#floor/ceil/round、ArithmeticSequence に Enumerable
+  mixin (sum/map/select 等が each 経由で動く)。
+- niche 残: `Integer.sqrt` (class method plumbing 要)、`Complex#**`、
+  pack/unpack の `l`/`L` 等の directive。いずれも稀。
 - (修正済 2026-06-19) method_missing / respond_to_missing? / Object#instance_variables /
   Symbol#inspect の @ivar/@@cvar/$global を bare 表示。
 
