@@ -1475,7 +1475,11 @@ RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *f
  * frame's return closes them, copying slots->vals) so the closure survives the
  * frame (escape).  cap_depth==0 → no outer refs → env left as a tagged slots
  * sentinel (never dereferenced by the body). */
+extern const struct NodeKind kind_node_entry;   /* node_alloc.c; distinguishes a real block entry from a node_unsupported placeholder */
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda) {
+    /* uncompilable block params (e.g. `|&b|`) → node_unsupported placeholder, not a
+     * node_entry; surface the NotImplementedError rather than reading a bad union. */
+    if (UNLIKELY(entry->head.kind != &kind_node_entry)) return EVAL(c, entry, slots);
     uint32_t depth = entry->u.node_entry.cap_depth;
     slots[0] = self_val;                                 /* root captured self across allocs */
     if (depth == 0) {                                    /* no captured outer locals */
@@ -3599,6 +3603,10 @@ __attribute__((no_stack_protector)) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
+    /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
+     * placeholder, not a node_entry — running it raises NotImplementedError instead
+     * of dereferencing node_entry fields off the wrong union member (→ SEGV). */
+    if (UNLIKELY(block->head.kind != &kind_node_entry)) return EVAL(c, block, slots);
     /* &block forward: re-read prev (proc->env) from the rooted Proc slot each
      * call so a GC-moved escaped env is never stale. */
     const bool fwd = (def_env == KORB_BLK_FWD);
@@ -4071,6 +4079,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
             }
             return RESULT_OK(VALUE_REF_GET(dst));
+        }
+        if (cname == vm->class_name[KORB_C_PROC]) {         /* Proc.new { } → a real Proc (not a generic Object) */
+            if (UNLIKELY(block == NULL))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "tried to create Proc object without a block");
+            /* block-arg def_env arrives tagged (base|1); korb_make_proc wants the raw base. */
+            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
+            return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0);
         }
         if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
