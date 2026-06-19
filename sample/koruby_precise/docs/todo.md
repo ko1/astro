@@ -50,12 +50,13 @@
 
 ## 差分テストで発覚した未対応 (2026-06-19 session 2 probe sweep)
 
-- **パターンマッチ `case/in` 未対応** (prism node 24 = PM_CASE_MATCH_NODE)。
-  array/hash/find pattern + binding + guard + deconstruct/deconstruct_keys が
-  要る大物。modern Ruby で頻出。`x => pat` / `x in pat` の one-line 形も。
-- **`Data.define` 未実装** (Ruby 3.2+ の immutable value class)。Struct に近い
-  (korb_struct_define 流用可) が immutable + positional/keyword 両対応 init +
-  `with` + `to_h`/`members`/`==`/`deconstruct_keys`。中規模。
+- (実装済 2026-06-19) **パターンマッチ `case/in`**: value/binding/fixed-array/
+  array-with-rest/hash(+shorthand)/capture(`=>`)/alternation(`|`)/pin(`^`)/guard
+  (`if`/`unless`)/nesting + rightward `expr => pat`。既存の korb_pat_match +
+  build_pattern_desc を流用、PM_CASE_MATCH_NODE を if/elsif chain に lowering。
+  残: **find pattern** `[*, x, *]` のみ unsupported (稀)。
+- (実装済 2026-06-19) **`Data.define`** (Ruby 3.2+ immutable value class)。
+  positional/keyword 両対応 init + with + to_h/members/==/deconstruct_keys/inspect。
 - (修正済 2026-06-19) **Bignum 整数リテラル**: node_bignum が source digits を
   焼いて eval 時に korb_str_to_int で再構築 (AOT も const char* operand で OK)。
   残: **Bignum Rational リテラル** (`99999...r`) は未対応 (node_rational が
