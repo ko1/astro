@@ -117,8 +117,21 @@ static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE o = VALUE_SLICE_GET(a, 0);
     intptr_t sh;
     if (UNLIKELY(!korb_to_index(o, &sh))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(o));
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) return korb_int_shift(c, slots, VALUE_REF_GET(self), -sh);   /* x >> sh == shift by -sh */
+#endif
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
-    intptr_t r = sh >= 0 ? (sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)) : (sh > -62 ? (n << -sh) : 0);
+    if (sh >= 0)   /* arithmetic right shift — always fits in a Fixnum */
+        return RESULT_OK(LONG2FIX(sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)));
+    /* sh < 0 → left shift by -sh; may overflow into Bignum */
+    const intptr_t ls = -sh;
+    const intptr_t r = (ls < 62) ? (n << ls) : 0;
+    if (ls >= 62 || (r >> ls) != n || !FIXABLE(r))
+#ifdef KORB_HAVE_GMP
+        return korb_int_shift(c, slots, VALUE_REF_GET(self), ls);
+#else
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
     return RESULT_OK(LONG2FIX(r));
 }
 /* Integer#[] — bit reference: int[i] (single bit), int[i, len] (len-bit field),
