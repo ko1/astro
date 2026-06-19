@@ -4442,6 +4442,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eql, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "itself", korb_m_obj_itself, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "hash", korb_m_obj_hash, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);

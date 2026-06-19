@@ -1,5 +1,49 @@
 /* koruby_precise — hash.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
+/* ---- Object#hash --------------------------------------------------------- *
+ * Deterministic structural hash for the public #hash method (distinct from
+ * korb_value_hash, which only the Hash open-addressing index uses and covers
+ * indexable immediates only).  Immediates/String reuse it; Array/Hash combine
+ * element hashes; Float/Bignum hash by value; everything else by identity. */
+static uint64_t korb_deep_hash(VALUE v) {
+    if (FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE)
+        return korb_value_hash(v);
+    if (KORB_FLOAT_P(v)) {
+        union { double d; uint64_t u; } t; t.d = korb_float_val(v);
+        uint64_t x = (t.d == 0.0) ? 0 : t.u;           /* +0.0 / -0.0 hash alike */
+        x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29;
+        return x;
+    }
+    if (KORB_ARRAY_P(v)) {
+        const KorbArray *a = VAL2ARY(v);
+        uint64_t h = 0x345678ULL + a->len;
+        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash(a->items->data[i]);
+        return h;
+    }
+    if (KORB_HASH_P(v)) {                              /* order-independent (xor) */
+        const KorbHash *hh = VAL2HASH(v);
+        uint64_t h = 0x9e3779b9ULL + hh->len;
+        for (uint32_t i = 0; i < hh->len; i++)
+            h ^= korb_deep_hash(hh->items->data[2*i]) * 31u + korb_deep_hash(hh->items->data[2*i+1]);
+        return h;
+    }
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(v)) {
+        mpz_t z; korb_to_mpz(v, z);
+        uint64_t h = (mpz_sgn(z) < 0) ? 0xABCDEF01ULL : 0x12345678ULL;
+        const size_t n = mpz_size(z);
+        for (size_t i = 0; i < n; i++) h = h * 1099511628211ULL + (uint64_t)mpz_getlimbn(z, (mp_size_t)i);
+        mpz_clear(z);
+        return h;
+    }
+#endif
+    return (uint64_t)(uintptr_t)v;                     /* identity (user objects etc.) */
+}
+static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK(LONG2FIX((intptr_t)(korb_deep_hash(VALUE_REF_GET(self)) >> 2)));   /* >>2 keeps it FIXABLE */
+}
+
 /* ---- Hash methods -------------------------------------------------------- */
 
 static RESULT korb_m_hash_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
