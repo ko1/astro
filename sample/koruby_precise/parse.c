@@ -1876,8 +1876,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
         /* splat path: lefts(npre) | *splat | rights(npost) */
         const pm_splat_node_t *sp = (const pm_splat_node_t *)mw->rest;
-        if (!sp->expression || !PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE))
-            return kp_unsupported(tc, node, "anonymous/non-local splat target");
+        const bool anon_splat = (sp->expression == NULL);    /* `first, *, last = ...` → discard middle */
+        if (!anon_splat && !PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE))
+            return kp_unsupported(tc, node, "non-local splat target");
         uint32_t npre = (uint32_t)mw->lefts.size, npost = (uint32_t)mw->rights.size;
         uint32_t no = npre + 1u + npost;
         int32_t *offs = malloc(sizeof(int32_t) * no);
@@ -1888,8 +1889,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             MW_LOCAL_CID(mw->lefts.nodes[i], cid);
             offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
         }
-        MW_LOCAL_CID(sp->expression, cid);
-        offs[npre] = (int32_t)lvar_index(tc, sp->expression, cid) - tc->chain;
+        if (anon_splat) {                                    /* middle → a throwaway synth local */
+            offs[npre] = (int32_t)alloc_synth_local(tc) - tc->chain;
+        } else {
+            MW_LOCAL_CID(sp->expression, cid);
+            offs[npre] = (int32_t)lvar_index(tc, sp->expression, cid) - tc->chain;
+        }
         for (uint32_t i = 0; i < npost; i++) {
             MW_LOCAL_CID(mw->rights.nodes[i], cid);
             offs[npre + 1u + i] = (int32_t)lvar_index(tc, mw->rights.nodes[i], cid) - tc->chain;
