@@ -72,11 +72,16 @@ struct korb_constcache {
  * `klass` is the receiver's dispatch-start class object; valid while serial ==
  * vm->method_serial (bumped on def AND GC, so a moved/reused class pointer can
  * never false-hit — same safety model as the VM mcache). */
+/* kind discriminates which fill path wrote the cache, so a call site whose
+ * receiver flips between an instance and a class (same mid resolving to both an
+ * instance method and a class/singleton method) never reads a stale entry. */
+enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2 };
 struct korb_inlcache {
     uint64_t serial;
     VALUE    klass;
     struct korb_method *m;
     VALUE    def_class;
+    uint8_t  kind;
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and

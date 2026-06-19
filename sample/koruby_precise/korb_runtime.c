@@ -3793,12 +3793,13 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         if (mid == vm->mid_new && KORB_CLASS_P(recv) && korb_class_new_kind(vm, recv) == 1) {
             struct korb_method *init;
             VALUE idef;
-            if (LIKELY(ic->serial == vm->method_serial && ic->klass == recv)) {
+            if (LIKELY(ic->kind == KORB_IC_NEW && ic->serial == vm->method_serial && ic->klass == recv)) {
                 init = ic->m; idef = ic->def_class;
             } else {
                 idef = KORB_NIL;
                 init = korb_class_find_method(recv, vm->mid_initialize, &idef);
                 ic->serial = vm->method_serial; ic->klass = recv; ic->m = init; ic->def_class = idef;
+                ic->kind = KORB_IC_NEW;
             }
             const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
             if (init) {
@@ -3812,6 +3813,25 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                                   "wrong number of arguments (given %u, expected 0)", argc);
             return RESULT_OK(obj);
+        }
+        /* class/module singleton-method call (e.g. Math.sqrt, a user class
+         * method) — cache the resolved method keyed on the receiver class,
+         * skipping korb_send_impl's special-case cascade + mcache hash.  yield
+         * and [] keep their builtin special cases (Fiber.yield / Array[] etc.);
+         * the send family and .new were handled above. */
+        if (LIKELY(KORB_CLASS_P(recv) && mid != vm->mid_yield && mid != vm->mid_aref)) {
+            if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv))
+                return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+            const VALUE start_cls = korb_dispatch_class(c, recv);
+            VALUE def_class = KORB_NIL;
+            struct korb_method *const m =
+                KORB_CLASS_P(start_cls) ? korb_mcache_find(vm, start_cls, mid, &def_class) : NULL;
+            if (LIKELY(m != NULL)) {
+                ic->serial = vm->method_serial; ic->klass = recv; ic->m = m;
+                ic->def_class = def_class; ic->kind = KORB_IC_SMETHOD;
+                return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+            }
+            /* miss (method_missing / NoMethodError) → korb_send_impl formats it */
         }
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
     }
@@ -3827,7 +3847,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     } else {
         klass = korb_dispatch_class(c, recv);
     }
-    if (LIKELY(ic->serial == vm->method_serial && ic->klass == klass)) {
+    if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
@@ -3842,6 +3862,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
     ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+    ic->kind = KORB_IC_INSTANCE;
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
 }
 
