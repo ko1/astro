@@ -859,8 +859,19 @@ static RESULT korb_m_ary_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     intptr_t n = 0;
     if (bounded && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    if (block == NULL)                                  /* no block → infinite cycle lazy enum */
-        return korb_lazy_new(c, slots, VALUE_REF_GET(self), 2);
+    if (block == NULL) {
+        if (bounded) {                                  /* finite → eager Enumerator of repeated elements */
+            const uint32_t blen = VAL2ARY(VALUE_REF_GET(self))->len;
+            slots[0] = UNWRAP(korb_ary_new(c, slots, (n > 0 ? (uint32_t)n : 0) * blen));
+            VALUE_REF out = VALUE_REF_AT(&slots[0]);
+            for (intptr_t pass = 0; pass < n; pass++)
+                for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++)
+                    CHECK(korb_ary_push_val(c, slots + 1, out, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+            slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "cycle"));
+            return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
+        }
+        return korb_lazy_new(c, slots, VALUE_REF_GET(self), 2);   /* unbounded → infinite lazy enum */
+    }
     if (bounded && n <= 0) return RESULT_OK(KORB_NIL);
     if (SELF_ARY->len == 0) return RESULT_OK(KORB_NIL);
     for (intptr_t pass = 0; !bounded || pass < n; pass++) {
@@ -901,7 +912,15 @@ static RESULT korb_m_ary_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#each_index");
+    (void)a;
+    if (block == NULL) {                                  /* → Enumerator of indices */
+        const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+        slots[0] = UNWRAP(korb_ary_new(c, slots, len));
+        VALUE_REF idx = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; i < len; i++) CHECK(korb_ary_push_val(c, slots + 1, idx, LONG2FIX(i)));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each_index"));
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(idx), slots[1]);
+    }
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;
         VALUE iv = LONG2FIX(i);
