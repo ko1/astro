@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Build a require-free optcarrot bundle (koruby_precise has no require/ARGV) and
 # run it.  Usage: tools/optcarrot.sh [FRAMES] [KORUBY_BIN]
+#   OPTC_MODE=plain (default) — run the pure tree-walker (--plain, ignores any
+#                               code store), the reproducible interpreter number.
+#   OPTC_MODE=aot             — bake the bundle (--aot-compile) then run it
+#                               --compiled-only (poisons unswapped bodies), the
+#                               AOT FPS number.
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OPT="$HERE/../abruby/benchmark/optcarrot"
 FRAMES=${1:-30}
 BIN=${2:-$HERE/koruby_precise}
+case "$BIN" in /*) ;; *) BIN="$PWD/$BIN";; esac   # absolutize: we cd into $OPT below
+MODE=${OPTC_MODE:-plain}
 BUNDLE=/tmp/optc_bundle.rb
 {
   # File shim: koruby_precise has only the __binread C primitive; layer File's
@@ -38,4 +45,10 @@ SHIM
   done
   echo "Optcarrot::NES.new([\"-b\", \"--frames\", \"$FRAMES\", \"examples/Lan_Master.nes\"]).run"
 } > "$BUNDLE"
-cd "$OPT" && exec "$BIN" "$BUNDLE"
+cd "$OPT" || exit 1
+if [ "$MODE" = aot ]; then
+  rm -rf code_store
+  CCACHE_DISABLE=1 "$BIN" --aot-compile "$BUNDLE" || exit 1   # bake the code store (no run)
+  exec "$BIN" --compiled-only "$BUNDLE"                        # run only baked SDs
+fi
+exec "$BIN" --plain "$BUNDLE"                                  # pure tree-walker

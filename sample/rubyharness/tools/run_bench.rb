@@ -61,7 +61,7 @@ compile = ->(flag, f) { WIPE.call; system({ 'CCACHE_DISABLE' => '1' }, *koruby, 
 MODES = {
   'cruby'       => { run: ->(f) { ruby + ['--yjit-disable', f] } },
   'cruby+yjit'  => { run: ->(f) { ruby + ['--yjit', f] } },
-  'interp'      => { prep: ->(_f) { WIPE.call }, run: ->(f) { koruby + [f] } },
+  'interp'      => { prep: ->(_f) { WIPE.call }, run: ->(f) { koruby + ['--plain', f] } },
   'aot+compile' => { aot: true, prep: ->(_f) { WIPE.call }, timed_setup: ->(f) { compile.call('--aot-compile', f) },
                      run: ->(f) { koruby + AOTRUN + [f] }, strict: true },
   # Reuses the code store left by a preceding aot+compile of the SAME bench

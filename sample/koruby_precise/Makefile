@@ -126,3 +126,13 @@ bench-report: koruby_precise
 	} | tee "$$f"; \
 	echo "saved: $$f"
 .PHONY: bench-report
+
+# optcarrot (NES emulator) — the real-workload benchmark.  FRAMES= adjusts the
+# frame count (default 180 ≈ a ~1s+ sustained run).  `optcarrot` = pure
+# tree-walker (--plain); `optcarrot-aot` = bake + --compiled-only (AOT FPS).
+FRAMES ?= 180
+optcarrot: koruby_precise
+	tools/optcarrot.sh $(FRAMES)
+optcarrot-aot: koruby_precise
+	OPTC_MODE=aot tools/optcarrot.sh $(FRAMES)
+.PHONY: optcarrot optcarrot-aot
