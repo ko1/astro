@@ -480,6 +480,15 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     slots[15] = res_re; slots[16] = res_im;
     return korb_cpx_new(c, slots + 17, slots[15], slots[16]);
 }
+static bool korb_value_eql(VALUE a, VALUE b);   /* fwd (defined below) */
+/* Complex#eql? — both Complex and components eql? (type-strict: 1 ≠ 1.0). */
+static RESULT korb_m_cpx_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_COMPLEX_P(o)) return RESULT_OK(KORB_FALSE);
+    const KorbComplex *x = SELF_CPX, *y = VAL2CPX(o);
+    return RESULT_OK((korb_value_eql(x->re, y->re) && korb_value_eql(x->im, y->im)) ? KORB_TRUE : KORB_FALSE);
+}
 /* Complex#** — exact repeated squaring for an Integer exponent (negative →
  * reciprocal); otherwise the polar formula z^w = exp(w·ln z) (Float result). */
 static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -5360,6 +5369,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "quo", korb_m_cpx_div, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "<=>", korb_m_cpx_cmp, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "**", korb_m_cpx_pow, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "eql?", korb_m_cpx_eql, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
