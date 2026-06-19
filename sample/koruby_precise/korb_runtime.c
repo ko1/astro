@@ -4690,6 +4690,16 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "take_while", korb_m_enum_take_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_slice", korb_m_enum_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_cons", korb_m_enum_each_cons, 1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "group_by", korb_m_enum_group_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "partition", korb_m_enum_partition, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "minmax", korb_m_enum_minmax, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "uniq", korb_m_enum_uniq, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "zip", korb_m_enum_zip, -1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "find_index", korb_m_enum_find_index, -1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "chunk_while", korb_m_enum_chunk_while, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "slice_when", korb_m_enum_slice_when, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "chunk", korb_m_enum_chunk, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "tally", korb_m_enum_tally, -1);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "lazy", korb_m_to_lazy, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "lazy", korb_m_to_lazy, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "lazy", korb_m_to_lazy, 0);

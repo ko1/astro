@@ -496,4 +496,34 @@ static RESULT korb_m_str_ljust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_str_rjust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_pad(c, slots, self, a, 1); }
 static RESULT korb_m_str_center(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_pad(c, slots, self, a, 2); }
 
+/* Enumerator Enumerable methods that aren't intrinsic to Enumerator: force the
+ * (eager) value array and delegate to the Array version.  Here at the end of the
+ * last builtin include so every korb_m_ary_* (array / range / array_int_ext /
+ * array_ext) is in scope.  These all return fresh values (hash / array /
+ * enumerator / index), never the receiver, so plain delegation is correct. */
+#define ENUM_DELEGATE_BLK(name, aryfn)                                                       \
+static RESULT korb_m_enum_##name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,         \
+                                 NODE *block, VALUE *def_env, VALUE *cself) {                 \
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);                                          \
+    if (UNLIKELY(av.state != KORB_NORMAL)) return av;                                         \
+    slots[0] = av.value;                                                                      \
+    return aryfn(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);            \
+}
+ENUM_DELEGATE_BLK(group_by,    korb_m_ary_group_by)
+ENUM_DELEGATE_BLK(partition,   korb_m_ary_partition)
+ENUM_DELEGATE_BLK(minmax,      korb_m_ary_minmax)
+ENUM_DELEGATE_BLK(uniq,        korb_m_ary_uniq_b)
+ENUM_DELEGATE_BLK(zip,         korb_m_ary_zip)
+ENUM_DELEGATE_BLK(find_index,  korb_m_ary_find_index)
+ENUM_DELEGATE_BLK(chunk_while, korb_m_ary_chunk_while)
+ENUM_DELEGATE_BLK(slice_when,  korb_m_ary_slice_when)
+ENUM_DELEGATE_BLK(chunk,       korb_m_ary_chunk)
+#undef ENUM_DELEGATE_BLK
+static RESULT korb_m_enum_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);
+    if (UNLIKELY(av.state != KORB_NORMAL)) return av;
+    slots[0] = av.value;
+    return korb_m_ary_tally(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
+}
+
 static void
