@@ -2356,6 +2356,21 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     }
     vm->class_name[KORB_C_EXCEPTION] = korb_intern(vm, "Exception", 9);
 
+    /* BasicObject = Object's superclass; Kernel = a module mixed into Object.
+     * Wiring both makes ancestors / is_a? / superclass reflect the real MRO tail. */
+    { uint32_t bo = korb_intern(vm, "BasicObject", 11);
+      slots[0] = korb_class_new(c, slots, bo, KORB_NIL).value;          /* super nil */
+      korb_const_define(c, bo, slots[0]);
+      VALUE objc = korb_const_get(vm, object_sym);                      /* Object (rooted in const table) */
+      ARO_STORE(c, VAL2CLASS(objc), (VALUE *)(uintptr_t)&VAL2CLASS(objc)->superclass, slots[0]); }
+    { uint32_t kn = korb_intern(vm, "Kernel", 6);
+      slots[0] = korb_class_new(c, slots, kn, KORB_NIL).value;
+      VAL2CLASS(slots[0])->is_module = 1;
+      korb_const_define(c, kn, slots[0]);
+      slots[1] = korb_const_get(vm, object_sym);                        /* Object */
+      slots[0] = korb_const_get(vm, kn);                               /* Kernel (re-read, rooted) */
+      (void)korb_do_include(c, slots + 2, slots[1], VALUE_SLICE_MAKE(&slots[0], 1)); }
+
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
     { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
     /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
