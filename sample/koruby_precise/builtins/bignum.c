@@ -63,6 +63,32 @@ RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
     mpz_clear(zr);
     return r;
 }
+/* Integer divmod family over Fixnum/Bignum operands (op 0 div=floor quotient,
+ * 1 modulo=floored remainder, 2 divmod=[q,r], 3 remainder=truncated remainder).
+ * Results normalised back to Fixnum when they fit. */
+RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op) {
+    mpz_t za, zb, zq, zr;
+    korb_to_mpz(a, za); korb_to_mpz(b, zb);
+    if (UNLIKELY(mpz_sgn(zb) == 0)) { mpz_clear(za); mpz_clear(zb); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+    mpz_init(zq); mpz_init(zr);
+    if (op == 3) mpz_tdiv_qr(zq, zr, za, zb);          /* truncated (remainder) */
+    else         mpz_fdiv_qr(zq, zr, za, zb);          /* floored (div / modulo / divmod) */
+    mpz_clear(za); mpz_clear(zb);
+    RESULT r;
+    if (op == 0)                  r = korb_big_from_mpz(c, slots, zq);
+    else if (op == 1 || op == 3)  r = korb_big_from_mpz(c, slots, zr);
+    else {                                              /* divmod → [q, r] */
+        slots[0] = korb_big_from_mpz(c, slots, zq).value;        /* park (rooted across next alloc) */
+        slots[1] = korb_big_from_mpz(c, slots + 1, zr).value;
+        slots[2] = korb_ary_new(c, slots + 2, 2).value;
+        VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
+        CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
+        r = RESULT_OK(slots[2]);
+    }
+    mpz_clear(zq); mpz_clear(zr);
+    return r;
+}
 /* base ** exp (both Integer).  Negative exp → Rational (delegated by caller for
  * the Fixnum case; here exp>=0 expected — negative falls back to a float-free
  * Rational via korb_rat_new). */

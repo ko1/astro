@@ -269,6 +269,35 @@ static RESULT korb_rat_intdiv(CTX *c, VALUE *slots, VALUE num, VALUE den, int mo
     return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Bignum Rational not available");
 #endif
 }
+/* Integer (self) combined with a Rational operand: op 0 div, 1 modulo,
+ * 2 divmod, 3 remainder.  div = floor(self/rat); modulo/divmod use the floored
+ * quotient, remainder the truncated one; rem = self - rat*q.  All operands are
+ * parked in slots so the GMP/Rational allocs below can't strand a moved VALUE. */
+RESULT korb_int_rat_divmod(CTX *c, VALUE *slots, VALUE s, VALUE rat, int op) {
+    slots[0] = s; slots[1] = rat;                              /* rooted across allocs */
+    RESULT qr = korb_rat_arith(c, slots + 2, slots[0], slots[1], 3);   /* self / rat */
+    if (UNLIKELY(qr.state != KORB_NORMAL)) return qr;
+    slots[2] = qr.value;                                       /* quotient (Rational or Integer) */
+    if (KORB_RATIONAL_P(slots[2])) {                           /* → integer quotient (floor, or trunc for remainder) */
+        RESULT ir = korb_rat_intdiv(c, slots + 3, VAL2RAT(slots[2])->num, VAL2RAT(slots[2])->den, op == 3 ? 2 : 0);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        slots[2] = ir.value;
+    }
+    if (op == 0) return RESULT_OK(slots[2]);                   /* div */
+    RESULT pr = korb_rat_arith(c, slots + 3, slots[1], slots[2], 2);   /* rat * q */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    slots[3] = pr.value;
+    RESULT rr = korb_rat_arith(c, slots + 4, slots[0], slots[3], 1);   /* self - rat*q */
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    if (op != 2) return rr;                                    /* modulo / remainder */
+    slots[3] = rr.value;                                       /* divmod: [q, rem]; slots[2]=q kept */
+    RESULT ar = korb_ary_new(c, slots + 4, 2);
+    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    slots[4] = ar.value;
+    CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[4]), slots[2]));
+    CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[4]), slots[3]));
+    return RESULT_OK(slots[4]);
+}
 static RESULT korb_m_rat_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 2); }
 static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 0); }
 static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 1); }

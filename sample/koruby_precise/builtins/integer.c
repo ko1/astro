@@ -203,7 +203,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
-        double f = korb_float_val(bv), s = (double)SELF_INT;
+        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         slots[0] = LONG2FIX((intptr_t)floor(s / f));
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_fmod(s, f)));
@@ -212,7 +212,10 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
         return RESULT_OK(slots[2]);
     }
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 2);
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
+        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 2);
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     intptr_t av = SELF_INT;
@@ -225,11 +228,14 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#div(Float) → floor(self/f) Integer */
-        double f = korb_float_val(bv);
+        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        return RESULT_OK(LONG2FIX((intptr_t)floor((double)SELF_INT / f)));
+        return RESULT_OK(LONG2FIX((intptr_t)floor(s / f)));
     }
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 0);
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
+        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 0);
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     return RESULT_OK(LONG2FIX(korb_int_fdiv(SELF_INT, b)));
@@ -238,11 +244,14 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#modulo(Float) → Float (floored) */
-        double f = korb_float_val(bv);
+        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        return korb_float_new(c, slots, korb_float_fmod((double)SELF_INT, f));
+        return korb_float_new(c, slots, korb_float_fmod(s, f));
     }
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 1);
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
+        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 1);
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     return RESULT_OK(LONG2FIX(korb_int_fmod(SELF_INT, b)));
