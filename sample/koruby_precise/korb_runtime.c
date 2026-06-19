@@ -872,7 +872,8 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
-static void korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
+/* korb_bt_append / korb_close_ret are declared in node.h (de-static'd so the
+ * inlined korb_invoke_simple in the SDs can reach them on cold paths). */
 
 /* ---------------------------------------------------------------------------
  * Classes + constants.  A class's instance-method table is a libc side-array
@@ -1250,7 +1251,7 @@ void korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base) {
  * doesn't bloat the always-inlined invoke fast paths.  Even when the guard is
  * false, inlining this code hurt i-cache/regalloc on call/loop-heavy programs
  * that never escape (collatz regressed ~16% before this split). */
-static RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r) {
+RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r) {
     scratch[0] = r.value;                              /* root return value across close's alloc */
     korb_close_envs(c, scratch + 1, frame_base);
     r.value = scratch[0];
@@ -1796,49 +1797,9 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     return r;
 }
 
-/* Streamlined ISEQ invoke for is_simple methods (fixed positional arity, no
- * rest/opt/post/kw/block) — none of the generic argument machinery, fewer
- * params.  Caller guarantees m->is_simple.  always_inline so it folds into the
- * dispatch site (removes a call layer on the hot path). */
-static inline __attribute__((always_inline, no_stack_protector)) RESULT
-korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
-                   uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
-{
-    if (UNLIKELY(argc != (uint32_t)m->params_cnt))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
-    VALUE *const base = slots - argc;
-    const uint32_t locals_cnt = m->locals_cnt;
-    char cstack_probe;
-    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
-                 &cstack_probe < c->cstack_limit))
-        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
-    /* zero only the genuine locals (body locals + synth temps) that the body
-     * may read/GC-scan; the top 2 cells (self, method-entry) are set just below,
-     * so zeroing them is wasted (a hot-path win for arg-only methods like fib). */
-    if (locals_cnt - 2 > argc) memset(base + argc, 0, (locals_cnt - 2 - argc) * sizeof(VALUE));
-    base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
-    (void)def_class;
-    NODE *const body = m->body;
-    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
-    if (r.state == KORB_RETURN) {
-        /* Consume only a return targeted at this method (NULL = nearest-method,
-         * the common case) — a block's `return` aimed at an outer method passes
-         * through unchanged. */
-        if (c->return_target == NULL || c->return_target == base) {
-            r.state = KORB_NORMAL;
-            c->return_target = NULL;
-        }
-    }
-    else if (UNLIKELY(r.state == KORB_RAISE)) {
-        KorbException *e = VAL2EXC(r.value);
-        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
-        e->line = line;
-    }
-    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
-    return r;
-}
+/* korb_invoke_simple — the streamlined is_simple ISEQ invoke — now lives in
+ * node.h as an always_inline so it folds into the code_store SDs too (node_call
+ * inlines its own fast path). */
 
 RESULT
 korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module)
@@ -2760,7 +2721,7 @@ korb_method_lookup(struct korb_vm *vm, uint32_t mid)
  * it allocates libc memory only.
  * ------------------------------------------------------------------------- */
 
-static void
+void
 korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name)
 {
     if (vm->bt_cnt == vm->bt_capa) {

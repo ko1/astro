@@ -947,7 +947,26 @@ NODE_DEF
 node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
-    return korb_call_cached(c, slots, mid, line, cc, ic, argv_cnt, slots[self_off]);
+    /* Inline the cached simple-ISEQ fast path right here so the specialized
+     * dispatcher (SD) avoids the cross-module call into korb_call_cached on the
+     * hot recursive / implicit-self method-call path (fib/ackermann/method_call/
+     * ivar/structacc...).  Mirrors korb_call_cached's two hot branches; anything
+     * else (cache miss, CFUNC, attr, non-simple, main-global) falls through. */
+    const VALUE self = slots[self_off];
+    if (LIKELY(KORB_OBJECT_P(self))) {
+        const VALUE klass = VAL2OBJ(self)->klass;
+        if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
+            if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass)) {
+                struct korb_method *const m = ic->m;
+                if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
+                    return korb_invoke_simple(c, slots, m, argv_cnt, line, mid, self, ic->def_class);
+            }
+        } else if (LIKELY(cc->serial == c->vm->method_serial && cc->m != NULL &&
+                          cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple)) {
+            return korb_invoke_simple(c, slots, cc->m, argv_cnt, line, mid, self, KORB_NIL);   /* top-level global (fib) */
+        }
+    }
+    return korb_call_cached(c, slots, mid, line, cc, ic, argv_cnt, self);
 }
 
 // ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
@@ -980,7 +999,26 @@ NODE_DEF
 node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     (void)n;
-    return korb_send_cached(c, slots, mid, line, argv_cnt - 1, ic);
+    const uint32_t argc = argv_cnt - 1;
+    /* Inline the cached plain-user-instance fast path so the SD skips the
+     * cross-module korb_send_cached call for the two hottest method kinds:
+     * a simple ISEQ (method_call/object) and an attr/struct reader (ivar/
+     * structacc).  The ic->kind == INSTANCE guard is mandatory: a site whose
+     * receiver flips class/instance must not reuse a class-method entry. */
+    const VALUE recv = slots[-(intptr_t)argc - 1];
+    if (LIKELY(KORB_OBJECT_P(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))) {
+        const VALUE klass = VAL2OBJ(recv)->klass;
+        if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
+                   ic->serial == c->vm->method_serial && ic->klass == klass)) {
+            struct korb_method *const m = ic->m;
+            if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
+                return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
+            if (m->kind == KORB_METHOD_ATTR_R)
+                return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
+        }
+    }
+    return korb_send_cached(c, slots, mid, line, argc, ic);
 }
 
 // safe navigation `recv&.m(args)`: if recv is nil, yield nil without dispatch.

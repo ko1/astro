@@ -326,4 +326,62 @@ bool code_repo_skip_specialize_at(uint32_t i);
 
 extern size_t node_cnt;
 
+/* Frame-push headroom: covers in-frame expression staging without a per-node
+ * check (v2_design §3.5).  Defined here (not only korb_runtime.h) so the
+ * inlined call fast path below sees it in every TU, including the SDs. */
+#ifndef KORB_FRAME_SLACK
+#define KORB_FRAME_SLACK 1024
+#endif
+
+/* Cold helpers used by the inlined simple-call fast path below; defined in
+ * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
+ * the rare open-env-close / exception-backtrace paths). */
+RESULT korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r);
+void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
+
+/* Streamlined invocation of a "simple" ISEQ method (only required positional
+ * params; the caller guarantees m->is_simple).  always_inline so it folds into
+ * the dispatch site — both korb_call_cached / korb_send_cached (korb_runtime.c)
+ * and node_call's specialized dispatcher (code_store SD) inline it, removing a
+ * cross-module call layer on the hot recursive / method-call path. */
+static inline __attribute__((always_inline, no_stack_protector)) RESULT
+korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
+                   uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
+{
+    if (UNLIKELY(argc != (uint32_t)m->params_cnt))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line,
+                          "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+    VALUE *const base = slots - argc;
+    const uint32_t locals_cnt = m->locals_cnt;
+    char cstack_probe;
+    if (UNLIKELY(base + locals_cnt + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
+    /* zero only the genuine locals (body locals + synth temps) that the body
+     * may read/GC-scan; the top 2 cells (self, method-entry) are set just below,
+     * so zeroing them is wasted (a hot-path win for arg-only methods like fib). */
+    if (locals_cnt - 2 > argc) memset(base + argc, 0, (locals_cnt - 2 - argc) * sizeof(VALUE));
+    base[locals_cnt - 1] = self;
+    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
+    (void)def_class;
+    NODE *const body = m->body;
+    RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (r.state == KORB_RETURN) {
+        /* Consume only a return targeted at this method (NULL = nearest-method,
+         * the common case) — a block's `return` aimed at an outer method passes
+         * through unchanged. */
+        if (c->return_target == NULL || c->return_target == base) {
+            r.state = KORB_NORMAL;
+            c->return_target = NULL;
+        }
+    }
+    else if (UNLIKELY(r.state == KORB_RAISE)) {
+        KorbException *e = VAL2EXC(r.value);
+        korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
+        e->line = line;
+    }
+    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    return r;
+}
+
 #endif /* KORUBY_NODE_H */

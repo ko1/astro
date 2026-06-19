@@ -12,9 +12,8 @@
 #include <math.h>
 #include "node.h"
 
-/* Frame-push headroom: covers in-frame expression staging without a per-node
- * check (v2_design §3.5). */
-#define KORB_FRAME_SLACK 1024
+/* KORB_FRAME_SLACK is defined in node.h (included above) so the inlined call
+ * fast path sees it in every TU, including the code_store SDs. */
 
 /* captured_self is threaded as a POINTER to the defining frame's (scanned,
  * GC-stable) self cell so it never goes stale across the GCs a block-iterating
