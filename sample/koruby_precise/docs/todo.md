@@ -1454,9 +1454,8 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
 
 ### perf push 中に発覚した correctness gap (2026-06-18)
 
-- **`retry` 未実装**: begin/rescue 内の `retry` が "M0 unsupported: syntax
-  (prism node 131 = PM_RETRY_NODE)" で raise。parser (parse.c) + eval で
-  begin block を再実行する仕組みが要る。corpus にちらほらありそう。
+- (実装済 — todo 誤記、2026-06-19 確認) **`retry`**: node_retry +
+  node_begin の KORB_RETRY ループ + parser PM_RETRY_NODE すべて存在し動作。
 - **custom `hash`/`eql?` の Hash キーが効かない**: ユーザ定義 `hash`/`eql?`
   を持つオブジェクトを Hash キーにしても dispatch されず、identity 扱いに
   なる(別オブジェクトが別キー化、lookup miss)。korb_value_hash /
