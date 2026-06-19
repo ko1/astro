@@ -294,8 +294,9 @@ typedef struct KorbMatchData {
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */
 typedef struct KorbMethod {
     AroObjectHeader head;            /* KORB_OBJ_METHOD */
-    VALUE ARO_GC_EDGE recv;          /* bound receiver */
+    VALUE ARO_GC_EDGE recv;          /* bound: the receiver; unbound: the owner class */
     uint32_t mid;                    /* interned method name */
+    uint8_t  unbound;                /* 1 = UnboundMethod (recv holds the owner class) */
 } KorbMethod;
 
 /* Closure env (one captured scope activation), materialized when a Proc escapes

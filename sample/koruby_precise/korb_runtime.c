@@ -1450,9 +1450,15 @@ RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint8_t ci) {
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid) {
     VALUE_REF rref = SLOTS_PUSH(slots, recv);            /* root recv across alloc */
     KorbMethod *m = korb_alloc(c, slots, sizeof(KorbMethod), KORB_OBJ_METHOD);
-    m->mid = mid;
+    m->mid = mid; m->unbound = 0;
     ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv, VALUE_REF_GET(rref));
     return RESULT_OK((VALUE)m);
+}
+/* UnboundMethod: recv holds the OWNER class (no instance); bind re-attaches it. */
+RESULT korb_unbound_new(CTX *c, VALUE *slots, VALUE owner, uint32_t mid) {
+    RESULT r = korb_method_new(c, slots, owner, mid);
+    if (LIKELY(r.state == KORB_NORMAL)) VAL2METH(r.value)->unbound = 1;
+    return r;
 }
 
 /* Write VALUE `v` into a closed env's captured-locals array, with the write
@@ -5109,6 +5115,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_name, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "arity", korb_m_meth_arity, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "owner", korb_m_meth_owner, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "unbind", korb_m_meth_unbind, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
+    korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);

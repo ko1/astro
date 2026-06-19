@@ -110,6 +110,7 @@ static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * below a fresh cursor and reuse the send machinery (polymorphic with Array#[]). */
 static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
+    if (UNLIKELY(m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'call' for an UnboundMethod (use #bind)");
     uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a);
     slots[0] = m->recv;                                  /* recv below the args */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
@@ -165,7 +166,8 @@ static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Resolve a bound Method to its korb_method entry: receiver-class MRO first,
  * then the global function table (top-level def / builtin like `p`). */
 static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) {
-    const VALUE klass = korb_dispatch_class(c, m->recv);
+    /* unbound: recv IS the owner class → look the method up directly there. */
+    const VALUE klass = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
     const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, m->mid, NULL) : NULL;
     if (km == NULL) km = korb_method_lookup(c->vm, m->mid);
     return km;
@@ -200,9 +202,48 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
-    const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    if (m->unbound) return RESULT_OK(m->recv);                      /* unbound: recv is the owner */
+    const struct korb_method *km = korb_meth_resolve(c, m);
     if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
     return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
+}
+/* Module#instance_method(name) → UnboundMethod owned by the class. */
+static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE nv = VALUE_SLICE_GET(a, 0);
+    uint32_t mid;
+    if (SYMBOL_P(nv))           mid = SYM2ID(nv);
+    else if (KORB_STRING_P(nv)) mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+    const VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL))
+        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for class '%s'",
+                          korb_sym_name(c->vm, mid), korb_type_name(cls));
+    return korb_unbound_new(c, slots, cls, mid);
+}
+/* Method#unbind → UnboundMethod owned by the receiver's class. */
+static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    if (m->unbound) return RESULT_OK(VALUE_REF_GET(self));
+    return korb_unbound_new(c, slots, korb_dispatch_class(c, m->recv), m->mid);
+}
+/* UnboundMethod#bind(obj) → Method bound to obj (obj must be a kind_of owner). */
+static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    if (UNLIKELY(!m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'bind' for a Method");
+    const VALUE obj = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_case_eq(c, m->recv, obj)))                    /* owner === obj  ⇔  obj.is_a?(owner) */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", korb_type_name(m->recv));
+    return korb_method_new(c, slots, obj, m->mid);
+}
+/* UnboundMethod#bind_call(obj, *args) → bind then call. */
+static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    const uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a) - 1;
+    slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
+    return korb_send(c, slots + 1 + argc, mid, 0, argc);
 }
 
 /* generic to_s / inspect — render via the printer into a fresh String.
