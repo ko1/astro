@@ -1374,6 +1374,12 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
   既知の大物。関連: `{1=>"a"}[1.0]` が "a"(eql? でなく == 的判定)。
 - (修正済 2026-06-18) Array#sort/min/max/min(n)/max(n) の <=> dispatch、
   AOT の -DKORB_HAVE_GMP 欠落 → 別 commit で対応済。
+- **Bignum `>>` (右シフト) が壊れている**: `(1<<70) >> 4` が CRuby
+  73786976294838206464 に対し koruby はゴミ値（ビルドごとに非決定的＝
+  未初期化/アドレス依存読み）。Fixnum `>>` と Bignum `<<` は正常。
+  HEAD でも再現する pre-existing バグ。Integer#>> の bignum パスを要調査。
+- **`arr[1..]`（Array の endless range index）が TypeError**: CRuby は
+  `[20, 30]`。String の bounded range index は動く。pre-existing。
 - **`Integer == user_obj` の reverse coercion 未対応**: `42 == E.new`
   (E が `==` を true 返しで定義) が CRuby では true だが koruby は false。
   Integer#== が相手を理解できない時、CRuby は逆方向 (`E.new == 42`) を

@@ -344,8 +344,8 @@ node_band(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) & FIX2LONG(rhs)));
-    slots[0] = l; slots[1] = rhs;
-    return korb_send(c, slots + 2, c->vm->mid_band, line, 1);
+    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
+    return korb_send(c, slots + 1, c->vm->mid_band, line, 1);
 }
 
 NODE_DEF
@@ -355,8 +355,8 @@ node_bor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) | FIX2LONG(rhs)));
-    slots[0] = l; slots[1] = rhs;
-    return korb_send(c, slots + 2, c->vm->mid_bor, line, 1);
+    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
+    return korb_send(c, slots + 1, c->vm->mid_bor, line, 1);
 }
 
 NODE_DEF
@@ -366,8 +366,8 @@ node_bxor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) ^ FIX2LONG(rhs)));
-    slots[0] = l; slots[1] = rhs;
-    return korb_send(c, slots + 2, c->vm->mid_bxor, line, 1);
+    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
+    return korb_send(c, slots + 1, c->vm->mid_bxor, line, 1);
 }
 
 NODE_DEF
@@ -383,8 +383,8 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         }
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
-    slots[0] = l; slots[1] = rhs;   /* Array#<< / String#<< / bignum / user — inline-cached dispatch */
-    return korb_send_cached(c, slots + 2, c->vm->mid_shl, line, 1, ic);
+    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached Array#<< / String#<< / bignum / user */
+    return korb_send_cached(c, slots + 1, c->vm->mid_shl, line, 1, ic);
 }
 
 NODE_DEF
@@ -398,8 +398,8 @@ node_shr(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         if (sh >= 63) return RESULT_OK(LONG2FIX(a < 0 ? -1 : 0));
         /* sh < 0 (= left shift) may overflow → dispatch */
     }
-    slots[0] = l; slots[1] = rhs;
-    return korb_send(c, slots + 2, c->vm->mid_shr, line, 1);
+    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
+    return korb_send(c, slots + 1, c->vm->mid_shr, line, 1);
 }
 
 // Unary minus.  Single child → register form.
@@ -1009,8 +1009,8 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         if (LIKELY((uintptr_t)i < a->len)) return RESULT_OK(a->items->data[i]);
         return RESULT_OK(KORB_NIL);
     }
-    slots[0] = r; slots[1] = idx;                          /* deopt → [] send */
-    return korb_send(c, slots + 2, c->vm->mid_aref, line, 1);
+    slots[0] = idx;   /* recv already rooted at slots[-1]; stage only the index — deopt → [] send */
+    return korb_send(c, slots + 1, c->vm->mid_aref, line, 1);
 }
 
 // `recv[idx] = val` — type-fast-path for Array + in-range fixnum index; growth /
