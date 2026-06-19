@@ -1288,6 +1288,16 @@ node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, 
     return korb_make_proc(c, slots, block, &slots[def_env_off], slots[self_off], is_lambda);
 }
 
+// `binding` — capture the current frame's local scope into a Binding object.
+// def_env_off = frame base (locals at base[0..name_cnt)), self_off = lexical self,
+// name_syms = immortal sym table (a const char* runtime-ref so the SD stays shared).
+NODE_DEF
+node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt)
+{
+    (void)n;
+    return korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off]);
+}
+
 // Receiver method call with a literal block (arr.each { ... }), any fixed arity.
 // argv@children stages [recv, args...]; korb_send_blk resolves the built-in and
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.

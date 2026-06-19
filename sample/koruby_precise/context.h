@@ -187,6 +187,7 @@ enum korb_obj_type {
     KORB_OBJ_ENV         = 20,  /* closure env: [prev|loc|vals], open(loc→slots)/closed(loc→vals) */
     KORB_OBJ_PROC        = 21,  /* Proc/lambda: iseq(immortal) + captured env + self */
     KORB_OBJ_MATCHDATA   = 22,  /* MatchData (whole-match substring; no captures) */
+    KORB_OBJ_BINDING     = 23,  /* Binding: captured local scope (env) + self + name table */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -290,6 +291,19 @@ typedef struct KorbMatchData {
     AroObjectHeader head;            /* KORB_OBJ_MATCHDATA */
     VALUE ARO_GC_EDGE matched;       /* the matched substring (group 0) */
 } KorbMatchData;
+
+/* Binding: a captured local scope.  `env` is the frame's closure env (open →
+ * live slots, or closed → heap vals after the frame returned), `self` the
+ * captured receiver, `names` an immortal NODE carrying the (name_sym, index)
+ * table for that scope.  KORB_OBJ_BINDING. */
+typedef struct KorbBinding {
+    AroObjectHeader head;            /* KORB_OBJ_BINDING */
+    VALUE ARO_GC_EDGE env;           /* KorbEnv (open → live slots, closed → heap vals) */
+    VALUE ARO_GC_EDGE self;          /* captured self */
+    VALUE ARO_GC_EDGE extra;         /* Hash {sym=>val} of locals added after capture (nil until used) */
+    const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
+    uint32_t name_cnt;
+} KorbBinding;
 
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */
 typedef struct KorbMethod {
@@ -480,6 +494,8 @@ typedef struct KorbClass {
 #define VAL2RE(v)          ((KorbRegexp *)(uintptr_t)(v))
 #define KORB_METHOD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_METHOD)
 #define VAL2METH(v)        ((KorbMethod *)(uintptr_t)(v))
+#define KORB_BINDING_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_BINDING)
+#define VAL2BIND(v)        ((KorbBinding *)(uintptr_t)(v))
 #define KORB_FIBER_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER)
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
@@ -528,7 +544,7 @@ enum korb_class {
     KORB_C_RANGE, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE, KORB_C_CLASS,
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
-    KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA,
+    KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA, KORB_C_BINDING,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -872,6 +888,14 @@ struct CTX_struct {
       case KORB_OBJ_METHOD: {                                                \
         KorbMethod *_m = (KorbMethod *)(payload);                           \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_m->recv);                    \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
+      case KORB_OBJ_BINDING: {                                              \
+        KorbBinding *_b = (KorbBinding *)(payload);                         \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->env);                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->self);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->extra);                   \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

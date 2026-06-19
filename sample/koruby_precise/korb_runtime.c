@@ -1667,6 +1667,98 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
     return RESULT_OK((VALUE)p);
 }
+/* Build a Binding capturing the current frame: an open KorbEnv over `frame_base`
+ * (shared with any closures over the same activation, promoted on frame exit),
+ * `self`, and the immortal `names` table.  GC-safe (env/self rooted in slots). */
+RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
+    slots[0] = self_val;                                  /* root self across allocs */
+    KorbEnv *e = korb_open_env_find(c->vm, frame_base);
+    if (e == NULL) {
+        e = korb_alloc(c, slots + 1, sizeof(KorbEnv), KORB_OBJ_ENV);
+        e->loc = frame_base; e->n = (uint16_t)name_cnt; e->closed = 0;
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, 0);
+        slots[1] = (VALUE)(uintptr_t)e;
+        korb_open_env_register(c->vm, slots[1]);          /* slots[1] keeps it rooted; register adds no GC point */
+    } else slots[1] = (VALUE)(uintptr_t)e;
+    KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
+    b->name_syms = name_syms; b->name_cnt = name_cnt;
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->env,  slots[1]);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->self, slots[0]);
+    ARO_STORE(c, b, (VALUE *)(uintptr_t)&b->extra, KORB_NIL);
+    return RESULT_OK((VALUE)b);
+}
+/* read env index `i` (open → live slots, closed → heap vals). */
+static VALUE korb_bind_env_get(const KorbBinding *b, uint32_t i) {
+    const KorbEnv *e = VAL2ENV(b->env);
+    const VALUE *base = e->closed ? ((const KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc;
+    return base[i];
+}
+/* frame index of `sym` in the binding's scope, or -1. */
+static int korb_bind_find(const KorbBinding *b, uint32_t sym) {
+    for (uint32_t i = 0; i < b->name_cnt; i++) if (b->name_syms[i] == sym) return (int)i;
+    return -1;
+}
+/* resolve a :sym / "str" arg to an interned id; SIZE_MAX on a type error (caller raises). */
+static uint32_t korb_bind_argsym(CTX *c, VALUE v) {
+    if (SYMBOL_P(v)) return SYM2ID(v);
+    if (KORB_STRING_P(v)) return korb_intern(c->vm, VAL2STR(v)->buf->data, VAL2STR(v)->len);
+    return UINT32_MAX;
+}
+static RESULT korb_m_bind_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2BIND(VALUE_REF_GET(self))->self);
+}
+static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
+    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Symbol", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const int i = korb_bind_find(b, sym);
+    if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
+    if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(VAL2HASH(b->extra)->items->data[2 * hi + 1]); }
+    return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
+}
+static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
+    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Symbol");
+    if (korb_bind_find(b, sym) >= 0) return RESULT_OK(KORB_TRUE);
+    if (b->extra != KORB_NIL && korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)) >= 0) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(KORB_FALSE);
+}
+static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
+    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Symbol");
+    const VALUE val = VALUE_SLICE_GET(a, 1);
+    const int i = korb_bind_find(b, sym);
+    if (i >= 0) {                                          /* existing frame local → write the env */
+        KorbEnv *e = VAL2ENV(b->env);
+        if (e->closed) korb_env_store(c, e, (uint32_t)i, val);
+        else e->loc[i] = val;
+        return RESULT_OK(val);
+    }
+    /* new local → the extra side-hash (frame can't grow) */
+    slots[0] = VALUE_REF_GET(self);                        /* root self (holds extra) */
+    if (b->extra == KORB_NIL) {
+        slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 4));
+        ARO_STORE(c, VAL2BIND(slots[0]), (VALUE *)(uintptr_t)&VAL2BIND(slots[0])->extra, slots[1]);
+    }
+    slots[1] = VAL2BIND(slots[0])->extra;
+    slots[2] = ID2SYM(sym); slots[3] = val;
+    CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
+    return RESULT_OK(val);
+}
+static RESULT korb_m_bind_lvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, b->name_cnt + 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2BIND(VALUE_REF_GET(self))->name_cnt; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(VAL2BIND(VALUE_REF_GET(self))->name_syms[i])));
+    const VALUE ex = VAL2BIND(VALUE_REF_GET(self))->extra;
+    if (ex != KORB_NIL) for (uint32_t i = 0; i < VAL2HASH(ex)->len; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2HASH(ex)->items->data[2 * i]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* `re =~ str` core: returns the match's CHARACTER index (Integer) or nil. */
 static RESULT korb_re_match_index(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) return RESULT_OK(KORB_NIL);
@@ -2580,7 +2672,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Enumerator", KORB_C_ENUMERATOR }, { "Set", KORB_C_SET }, { "Regexp", KORB_C_REGEXP },
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
-        { "MatchData", KORB_C_MATCHDATA },
+        { "MatchData", KORB_C_MATCHDATA }, { "Binding", KORB_C_BINDING },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -2770,6 +2862,7 @@ korb_type_name(VALUE v)
       case KORB_OBJ_BIGNUM:    return "Integer";
       case KORB_OBJ_SET: return "Set";
       case KORB_OBJ_MATCHDATA: return "MatchData";
+      case KORB_OBJ_BINDING:   return "Binding";
     }
     return "Object";
 }
@@ -2797,6 +2890,7 @@ korb_a_type_name(VALUE v)
       case KORB_OBJ_BIGNUM: return "an instance of Integer";
       case KORB_OBJ_SET: return "an instance of Set";
       case KORB_OBJ_MATCHDATA: return "an instance of MatchData";
+      case KORB_OBJ_BINDING:  return "an instance of Binding";
     }
     return "an instance of Object";
 }
@@ -4009,6 +4103,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
           case KORB_OBJ_PROC:   return KORB_C_PROC;
           case KORB_OBJ_MATCHDATA: return KORB_C_MATCHDATA;
+          case KORB_OBJ_BINDING:   return KORB_C_BINDING;
         }
     }
     return KORB_C_OBJECT;
@@ -4036,6 +4131,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
       case KORB_C_MATCHDATA: return "MatchData";
+      case KORB_C_BINDING:   return "Binding";
       case KORB_C_NIL:     return "NilClass";
       case KORB_C_TRUE:    return "TrueClass";
       case KORB_C_FALSE:   return "FalseClass";
@@ -5257,6 +5353,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
+    korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
+    korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
+    korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
+    korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
+    korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);

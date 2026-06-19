@@ -921,6 +921,21 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_block_given(-5 - tc->chain);   /* block_entry cell (fs-5) */
     }
 
+    /* `binding` — capture the current frame's local scope into a Binding.  Bakes
+     * the scope's local-name table (sym per slot index) + frame base + self. */
+    if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
+        strcmp(kp_cid_cstr(tc, cn->name), "binding") == 0) {
+        const pm_constant_id_list_t *locals = tc->frame->locals;
+        const uint32_t cnt = (uint32_t)locals->size;
+        uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));   /* immortal (baked into the node) */
+        if (!syms) abort();
+        for (uint32_t i = 0; i < cnt; i++) syms[i] = kp_intern_cid(tc, locals->ids[i]);
+        const int32_t self_off = -1 - tc->chain;
+        NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)syms, cnt);
+        bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
+        return nb;
+    }
+
     /* bare `module_function` — promote subsequent defs to module (singleton)
      * methods too.  (The `module_function :sym` arg form stays a runtime no-op.) */
     if (argc == 0 && cn->block == NULL &&
