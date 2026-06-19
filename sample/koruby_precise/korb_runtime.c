@@ -1181,6 +1181,7 @@ static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(slots[0]);
 }
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);                /* fwd (enumerator.c) */
+static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (enumerator.c) */
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);         /* fwd */
 static RESULT korb_m_struct_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block == NULL) {
@@ -4086,6 +4087,21 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             /* block-arg def_env arrives tagged (base|1); korb_make_proc wants the raw base. */
             VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
             return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0);
+        }
+        if (cname == vm->class_name[KORB_C_ENUMERATOR] && block != NULL) {   /* Enumerator.new { |y| ... } (eager) */
+            if (vm->yielder_class == KORB_NIL) {                        /* lazily build Enumerator::Yielder (a GC root) */
+                slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
+                korb_class_def_cfn(c, slots[0], "yield", korb_m_yielder_push, -1);
+                korb_class_def_cfn(c, slots[0], "<<",    korb_m_yielder_push, -1);
+                vm->yielder_class = slots[0];
+            }
+            slots[0] = UNWRAP(korb_ary_new(c, slots, 8));               /* collector */
+            slots[1] = UNWRAP(korb_obj_new(c, slots + 1, vm->yielder_class));
+            CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), korb_intern(vm, "@__c", 4), slots[0]));
+            slots[2] = slots[1];                                        /* arg0 = yielder */
+            RESULT br = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, captured_self);
+            if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+            return korb_enum_new(c, slots + 3, slots[0], KORB_NIL);     /* eager enum from collector */
         }
         if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));

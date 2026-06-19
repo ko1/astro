@@ -625,6 +625,10 @@ struct korb_vm {
      * to a builtin's class object for receiver dispatch. */
     uint32_t  class_obj_idx[KORB_NCLASS];
 
+    /* Enumerator::Yielder class (block arg of Enumerator.new); KORB_NIL until
+     * the enum init runs.  A GC root (forwarded in AROH_VISIT_ROOTS). */
+    VALUE     yielder_class;
+
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
     struct korb_cmethod {
@@ -750,6 +754,8 @@ struct CTX_struct {
     for (uint32_t _ei = 0; _ei < (c)->vm->open_env_cnt; _ei++) {              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->open_envs[_ei]);       \
     }                                                                        \
+    /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \

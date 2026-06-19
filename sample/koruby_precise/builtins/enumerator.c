@@ -12,6 +12,27 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->desc,   slots[1]);
     return RESULT_OK((VALUE)e);
 }
+/* Enumerator::Yielder#yield / #<< — append the yielded value(s) to the collector
+ * array stashed in the yielder's @__c ivar.  Multiple args → an array element;
+ * none → nil.  Returns self (`y << v << w` chains).  Eager model: the block runs
+ * once at Enumerator.new, so an unbounded generator (`loop { y << ... }`) would
+ * not terminate — only finite generators are supported. */
+static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t ac = VALUE_SLICE_LEN(a);
+    const uint32_t csym = korb_intern(c->vm, "@__c", 4);
+    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), csym);     /* collector (rooted across allocs) */
+    VALUE v;
+    if (ac == 1) v = VALUE_SLICE_GET(a, 0);
+    else if (ac == 0) v = KORB_NIL;
+    else {                                                      /* y.yield(a, b) → [a, b] */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, ac));
+        for (uint32_t i = 0; i < ac; i++)
+            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_GET(a, i)));
+        v = slots[1];
+    }
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), v));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* ---- lazy / cycle enumerators (deferred, possibly-infinite source) -------- */
 /* A lazy enumerator carries a `source` (Array/Range) + a chain of deferred `ops`
  * (Array of [op_sym, proc] pairs) + a mode (1 lazy, 2 cycle).  Terminal methods
