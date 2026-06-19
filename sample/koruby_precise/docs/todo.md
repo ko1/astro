@@ -3,6 +3,18 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 差分テストで発覚した未対応 (2026-06-19)
+
+- **blockless enumerator が一部メソッドで未対応**: `(1..10).select.with_index { }`、
+  `Hash#each_with_index`(no block) 等が NotImplementedError (REQUIRE_BLOCK)。
+  ブロック無し呼び出しで Enumerator を返す機構が要る (broad / 優先度3)。
+  ※ map/each/select は一部 enumerator 化済 (map.with_index 等は動く)。
+- (修正済 2026-06-19) **`round(half: :even/:up/:down)`**: Float/Integer 両対応。
+  残: `2.45.round(1, half: :even)` が 2.4 (CRuby 2.5) — float の十進近似精度問題
+  (scaled-multiply 方式の限界、decimal-string rounding が要る。default round にも
+  同種の精度限界あり、稀)。
+- **Unicode case mapping 非対応** (`"café".upcase` → "CAFé")。ASCII のみ。設計範囲外。
+
 ## (修正済 2026-06-18) SEGV: `exc = SomeError.new("msg"); exc.message`
 
 - 原因: `ExcClass.new` が generic KorbObject を作っていた (new_kind が

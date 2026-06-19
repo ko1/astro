@@ -51,15 +51,48 @@ static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
 }
 /* round/floor/ceil/trunc with an optional digit count.
  * ndig>0 → Float to ndig decimals; ndig<=0 → Integer (rounded to 10^-ndig). */
+/* round()'s `half:` keyword → 0=up (default, ties away from zero), 1=even
+ * (banker's), 2=down (ties toward zero).  *npos = positional arg count with any
+ * trailing keyword Hash excluded. */
+static int korb_round_half(CTX *c, VALUE_SLICE a, uint32_t *npos) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    *npos = n;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {     /* trailing kwargs Hash */
+        *npos = n - 1;
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
+        const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
+        if (idx >= 0 && SYMBOL_P(h->items->data[2 * idx + 1])) {
+            const uint32_t id = SYM2ID(h->items->data[2 * idx + 1]);
+            if (id == korb_intern(c->vm, "even", 4)) return 1;
+            if (id == korb_intern(c->vm, "down", 4)) return 2;
+        }
+    }
+    return 0;
+}
+/* round v to an integer-valued double under the given half mode. */
+static double korb_round_half_apply(double v, int half) {
+    if (half == 1) return nearbyint(v);                        /* :even (FP default mode = round-half-even) */
+    if (half == 2) { double tr = trunc(v), fr = v - tr; return (fabs(fr) > 0.5) ? tr + (v < 0 ? -1.0 : 1.0) : tr; }
+    return round(v);                                           /* :up — ties away from zero */
+}
 static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
+    uint32_t npos; const int half = korb_round_half(c, a, &npos);
     intptr_t ndig = 0;
-    if (VALUE_SLICE_LEN(a) >= 1) {
+    if (npos >= 1) {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
-    if (ndig == 0) return korb_flt_toint(c, slots, d, kind);
+    if (ndig == 0) {
+        if (kind == 2 && half != 0) {                          /* round to integer with explicit half mode */
+            const double t = korb_round_half_apply(d, half);
+            if (UNLIKELY(!isfinite(t) || t < (double)FIXNUM_MIN || t > (double)FIXNUM_MAX))
+                return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
+            return RESULT_OK(LONG2FIX((intptr_t)t));
+        }
+        return korb_flt_toint(c, slots, d, kind);
+    }
     double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
     double scaled = ndig > 0 ? d * f : d / f;
-    double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? round(scaled) : trunc(scaled);
+    double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? korb_round_half_apply(scaled, half) : trunc(scaled);
     if (ndig > 0) return korb_float_new(c, slots, t / f);
     double res = t * f;
     if (UNLIKELY(!isfinite(res) || res < (double)FIXNUM_MIN || res > (double)FIXNUM_MAX))
@@ -153,8 +186,9 @@ static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Integer round/floor/ceil/truncate(ndigits). ndig>=0 → self; ndig<0 → snap to 10^-ndig.
  * kind: 0=floor 1=ceil 2=round 3=trunc */
 static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALUE_SLICE a) {
+    uint32_t npos; const int half = korb_round_half(c, a, &npos);
     intptr_t ndig = 0;
-    if (VALUE_SLICE_LEN(a) >= 1) {
+    if (npos >= 1) {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
@@ -168,10 +202,15 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
       case 0:  res = (r != 0 && v < 0) ? (q - 1) * f : q * f; break;   /* floor */
       case 1:  res = (r != 0 && v > 0) ? (q + 1) * f : q * f; break;   /* ceil */
       case 3:  res = q * f; break;                                     /* truncate */
-      default: {                                                       /* round half up */
+      default: {                                                       /* round (half: mode) */
         intptr_t ar = r < 0 ? -r : r;
         res = q * f;
-        if (ar * 2 >= f) res += (v < 0 ? -f : f);
+        const intptr_t twice = ar * 2;
+        if (twice > f) res += (v < 0 ? -f : f);                        /* clear majority → away from zero */
+        else if (twice == f) {                                         /* exact tie */
+            if (half == 1) { if (q & 1) res += (v < 0 ? -f : f); }     /* :even → nearest even multiple */
+            else if (half != 2) res += (v < 0 ? -f : f);              /* :up (default); :down keeps q (toward zero) */
+        }
         break;
       }
     }
