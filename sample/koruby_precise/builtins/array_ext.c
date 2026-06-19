@@ -38,6 +38,17 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
                 PK_PUT(b & 0xFF);
             }
+        } else if (d == 'U') {                            /* UTF-8: codepoints → bytes */
+            uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t k = 0; k < emit; k++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                VALUE e = ary->items->data[ai++];
+                uint32_t cp = FIXNUM_P(e) ? (uint32_t)FIX2LONG(e) : 0;
+                if (cp < 0x80) PK_PUT(cp);
+                else if (cp < 0x800) { PK_PUT(0xC0 | (cp >> 6)); PK_PUT(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x10000) { PK_PUT(0xE0 | (cp >> 12)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
+                else { PK_PUT(0xF0 | (cp >> 18)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
+            }
         } else if (d == 'x') {
             uint32_t emit = star ? 0 : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) PK_PUT(0);
@@ -201,6 +212,21 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 uint64_t v = 0;
                 for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); if (si < s->len) v |= (uint64_t)(unsigned char)s->buf->data[si] << (8 * k); si++; }
                 CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
+            }
+        } else if (d == 'U') {                            /* UTF-8 codepoints */
+            for (long r = 0; (star || r < cnt); r++) {
+                const KorbString *s = VAL2STR(slots[1]);
+                if (si >= s->len) { if (star) break; CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); continue; }
+                const unsigned char b0 = (unsigned char)s->buf->data[si];
+                uint32_t cp; int len;
+                if (b0 < 0x80)            { cp = b0;        len = 1; }
+                else if ((b0 & 0xE0) == 0xC0) { cp = b0 & 0x1F; len = 2; }
+                else if ((b0 & 0xF0) == 0xE0) { cp = b0 & 0x0F; len = 3; }
+                else if ((b0 & 0xF8) == 0xF0) { cp = b0 & 0x07; len = 4; }
+                else                      { cp = b0;        len = 1; }   /* invalid lead → one byte */
+                for (int k = 1; k < len && si + (uint32_t)k < s->len; k++) cp = (cp << 6) | ((unsigned char)s->buf->data[si + k] & 0x3F);
+                si += (uint32_t)len;
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)cp)));
             }
         } else {                                          /* P/p and anything else → nil */
             const long reps = star ? 0 : cnt;
