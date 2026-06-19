@@ -229,7 +229,7 @@ typedef struct KorbFloat {
 /* exact rational (always reduced, den > 0; no GC edges). */
 typedef struct KorbRational {
     AroObjectHeader head;            /* KORB_OBJ_RATIONAL */
-    intptr_t num, den;
+    VALUE ARO_GC_EDGE num, den;      /* Integer (Fixnum or Bignum); den > 0, reduced */
 } KorbRational;
 
 /* complex number re + im*i; components are arbitrary numerics (GC edges). */
@@ -773,10 +773,16 @@ struct CTX_struct {
     switch (_h->flags & KORB_OBJ_TYPE_MASK) {                                \
       case KORB_OBJ_FLOAT:                                                    \
       case KORB_OBJ_STR_BUF:                                                  \
-      case KORB_OBJ_RATIONAL:                                                 \
-        /* raw double / char[] / num,den — no edges */                       \
-        (void)(payload_size);                                                \
+        /* raw double / char[] — no edges */                                 \
+        (void)(payload_size);                                               \
         break;                                                               \
+      case KORB_OBJ_RATIONAL: {                                              \
+        KorbRational *_rt = (KorbRational *)(payload);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rt->num);                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_rt->den);                     \
+        (void)(payload_size);                                               \
+        break;                                                               \
+      }                                                                      \
       case KORB_OBJ_STRING: {                                                \
         KorbString *_s = (KorbString *)(payload);                            \
         ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);                  \

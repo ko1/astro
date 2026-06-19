@@ -28,10 +28,10 @@ static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
 }
 static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(LONG2FIX(VAL2RAT(r.value)->num));
+    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->num);
 }
 static RESULT korb_m_flt_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(LONG2FIX(VAL2RAT(r.value)->den));
+    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->den);
 }
 static RESULT korb_m_flt_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_float_new(c, slots, fabs(SELF_FLT)); }
 static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT == 0.0 ? KORB_TRUE : KORB_FALSE); }
