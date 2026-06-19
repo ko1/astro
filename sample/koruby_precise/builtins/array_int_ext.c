@@ -138,43 +138,47 @@ static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * int[range] (bits in range).  Two's-complement semantics for negatives. */
 static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE selfv = VALUE_REF_GET(self);
-    intptr_t i = 0, len = 0; bool have_len = false;
+    /* result = (self >> i), then: single_bit → &1 (n[i]); zero → 0; mask_len>0 →
+     * low mask_len bits; mask_len==0 → all bits from the offset (endless/reversed
+     * range, or n[i] with no length). */
+    intptr_t i = 0, mask_len = 0; bool single_bit = false, zero = false;
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* int[i..j] */
         const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0));
-        if (!FIXNUM_P(rg->rbegin)) return RESULT_OK(LONG2FIX(0));
-        i = FIX2LONG(rg->rbegin);
-        if (rg->rend != KORB_NIL && FIXNUM_P(rg->rend)) { intptr_t j = FIX2LONG(rg->rend); len = j - i + (rg->exclude_end ? 0 : 1); have_len = true; if (len < 0) len = 0; }
+        i = (rg->rbegin == KORB_NIL) ? 0 : (FIXNUM_P(rg->rbegin) ? FIX2LONG(rg->rbegin) : 0);   /* beginless ⇒ 0 */
+        if (rg->rend != KORB_NIL && FIXNUM_P(rg->rend)) {
+            intptr_t len = FIX2LONG(rg->rend) - i + (rg->exclude_end ? 0 : 1);
+            if (len > 0) mask_len = len;                                    /* reversed/empty ⇒ no upper mask */
+        }                                                                  /* endless ⇒ no upper mask */
     } else {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        if (VALUE_SLICE_LEN(a) >= 2) {
+        if (VALUE_SLICE_LEN(a) >= 2) {                                      /* n[i, len] */
+            intptr_t len;
             if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-            have_len = true;
-        }
+            if (len == 0) zero = true; else if (len > 0) mask_len = len;   /* len<0 ⇒ no upper mask (all bits) */
+        } else single_bit = true;                                          /* n[i] */
     }
 #ifdef KORB_HAVE_GMP
     {
         mpz_t z, r; korb_to_mpz(selfv, z); mpz_init(r);
         if (i >= 0) mpz_fdiv_q_2exp(r, z, (mp_bitcnt_t)i);     /* self >> i (arith) */
         else        mpz_mul_2exp(r, z, (mp_bitcnt_t)(-i));     /* self << -i */
-        if (have_len) {
-            if (len == 0) mpz_set_ui(r, 0);
-            else if (len > 0) { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
-            /* len < 0: no upper mask — all bits from the offset (CRuby) */
-        } else {
-            mpz_t one; mpz_init_set_ui(one, 1); mpz_and(r, r, one); mpz_clear(one);   /* single bit */
-        }
+        if (zero) mpz_set_ui(r, 0);
+        else if (single_bit) { mpz_t one; mpz_init_set_ui(one, 1); mpz_and(r, r, one); mpz_clear(one); }
+        else if (mask_len > 0) { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)mask_len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
+        /* else (mask_len==0, range no-mask): all bits from offset */
         mpz_clear(z);
         RESULT res = korb_big_from_mpz(c, slots, r); mpz_clear(r); return res;
     }
 #else
     intptr_t n = FIX2LONG(selfv);
-    if (!have_len) {
+    if (zero) return RESULT_OK(LONG2FIX(0));
+    intptr_t shifted = i >= 0 ? (i < 63 ? (n >> i) : (n < 0 ? -1 : 0)) : (n << (-i));
+    if (single_bit) {
         if (i < 0 || i >= 63) return RESULT_OK(LONG2FIX(n < 0 && i >= 63 ? 1 : 0));
         return RESULT_OK(LONG2FIX((n >> i) & 1));
     }
-    if (len <= 0) return RESULT_OK(LONG2FIX(0));
-    intptr_t shifted = i >= 0 ? (i < 63 ? (n >> i) : (n < 0 ? -1 : 0)) : (n << (-i));
-    intptr_t mask = len >= 63 ? -1 : ((intptr_t)1 << len) - 1;
+    if (mask_len <= 0) return RESULT_OK(LONG2FIX(shifted));                /* no upper mask */
+    intptr_t mask = mask_len >= 63 ? -1 : ((intptr_t)1 << mask_len) - 1;
     return RESULT_OK(LONG2FIX(shifted & mask));
 #endif
 }
