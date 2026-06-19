@@ -1532,24 +1532,32 @@ scan_edges に load する必要あり。 さらに大規模、 別 session 規�
 
 ## rubyspec mining 由来 (2026-06-19, /tmp/rspec_gen バッチ)
 
-新規 mined assertion を CRuby と diff して発見・修正した分は commit 済
-(main self methods, bignum bitops, Float#arg/coerce, Hash#delete blk,
-sprintf %+b, Method#arity/owner, defined?(A::B), Numeric⊇Comparable,
-Integer div/divmod/modulo/remainder の Rational/Bignum operand)。残:
+新規 mined assertion を CRuby と diff して発見・修正 (20 commit, 全て
+corpus 89267/5 + STRESS+PURGE + AOT verify 済)。total diff 4165→3678。
 
-- **UnboundMethod 未実装**: `Module#instance_method`, `Method#unbind`,
-  `Method#parameters` が無い (method_000 の大半)。UnboundMethod クラス +
-  bind が要る。中規模。
-- **Integer#size (Bignum)**: CRuby は limb 単位 (BDIGIT) で byte 数を返す
-  実装依存値 (9,10,11,...)。spec 自体 "machine dependent"。matching 非現実的、
-  skip 判断。
-- **Integer.try_convert / Float#try_convert 等**: module method 未実装。容易。
-- **to_enum / enum_for(:method)**: block 無し Enumerator を method 名で生成
-  (enumerable_000)。中規模。
-- **Set#compare_by_identity**, **Hash#compare_by_identity** 未実装 (set_000)。
-- **Integer#[](range)** ビットスライス: `0b101..[2..6]` 等 (integer_001 tail)。
-- **TOPLEVEL_BINDING / Kernel#binding 未実装** (main_000, binding_000)。Binding 大物。
-- **Object#singleton_class / SingletonClass#attached_object** (class_000)。
-- **ruby2_keywords_hash? / Hash.new(capacity:)** 等の niche (hash_000)。
-- skip 対象: regex (→astrorge), Encoding/US_ASCII, 非 ASCII upcase/downcase,
-  Thread/Queue/Fiber 細部, IO/File/Dir/Process, MT19937 完全一致, Marshal。
+**RESOLVED (session 2, 2026-06-19):** main self methods; bignum bitops;
+Float#arg(-0.0)/coerce(String); Hash#delete blk; sprintf %+b;
+Method#arity/owner/original_name/parameters; **UnboundMethod**
+(instance_method/unbind/bind/bind_call); defined?(A::B); Numeric⊇Comparable;
+Object#singleton_class + attached_object; Integer/String.try_convert;
+Integer div/divmod/modulo/remainder の Rational/Bignum operand;
+String#to_r (leading-dot/_/dec÷den); tr/delete lone-^ literal;
+ArithmeticSequence#size analytic (HANG fix + float); Numeric#step(to:,by:);
+**Complex** abs2/numerator/denominator/rationalize/infinite?/integer?/
+<=>/eql?/**(pow)/(div)/polar + inspect; **3 SEGV fix** (|&b| block,
+Proc.new{}, Enumerator.new{} eager yielder).
+
+**残 (deferred — 大物 or skip):**
+- **Integer#size (Bignum)**: limb 単位の実装依存値。spec も "machine
+  dependent"。matching 非現実的、skip。
+- **to_enum / enum_for(:method)**: block 無し Enumerator を method 名生成。
+  block-from-C 駆動が要る。中規模。
+- **Set#compare_by_identity / Hash#compare_by_identity** (set_000)。
+- **Integer#[](range)** ビットスライス (integer_001 tail)。
+- **TOPLEVEL_BINDING / Kernel#binding** (main_000, binding_000)。Binding 大物。
+- **Method#parameters の名前** (ISEQ は node_entry に名前未保持 → 種別のみ。
+  名前を出すには parser 変更)。
+- **nested Complex()** (kernel_000)、Complex 演算の float ULP 差 (matching 不可)。
+- **lazy 無限 Enumerator** の各種 op。
+- skip 対象: regex (→astrorge), Encoding/US_ASCII, 非 ASCII case,
+  Thread/Queue/Fiber 細部, IO/File/Dir/Process/Time, MT19937 完全一致, Marshal。
