@@ -18,9 +18,6 @@ NES=examples/Lan_Master.nes
 
 BUNDLE=$(OPTC_MODE=build "$HERE/tools/optcarrot.sh" "$FRAMES")
 cd "$OPT" || exit 1
-# Bake the koruby code store once, untimed (the aot+cached convention).
-rm -rf code_store
-CCACHE_DISABLE=1 "$BIN" --aot-compile "$BUNDLE" >/dev/null 2>&1
 
 # run_mode LABEL CMD...  → prints "LABEL<TAB>best_time<TAB>fps<TAB>checksum"
 run_mode() {
@@ -44,7 +41,19 @@ TMP=$(mktemp)
 run_mode cruby       $RUBY --yjit-disable -Ilib bin/optcarrot --benchmark --frames "$FRAMES" "$NES" >>"$TMP"
 run_mode cruby+yjit  $RUBY --yjit         -Ilib bin/optcarrot --benchmark --frames "$FRAMES" "$NES" >>"$TMP"
 run_mode interp      "$BIN" --plain "$BUNDLE"            >>"$TMP"
-run_mode aot+cached  "$BIN" --compiled-only "$BUNDLE"    >>"$TMP"
+
+# AOT: time the cold bake once, then the warm --compiled-only run (best of RUNS).
+# aot+compile = bake + warm run (cold start, includes the C compile);
+# aot+cached  = warm run only (store reused) — same as bench-report's split.
+bt0=$(date +%s.%N)
+rm -rf code_store
+CCACHE_DISABLE=1 "$BIN" --aot-compile "$BUNDLE" >/dev/null 2>&1
+bt1=$(date +%s.%N)
+bake=$(awk "BEGIN{printf \"%.3f\", $bt1-$bt0}")
+warm=$(run_mode aot+cached "$BIN" --compiled-only "$BUNDLE")   # "aot+cached\tt\tfps\tcks"
+wt=$(printf '%s' "$warm" | cut -f2); wf=$(printf '%s' "$warm" | cut -f3); wk=$(printf '%s' "$warm" | cut -f4)
+printf 'aot+compile\t%s\t%s\t%s\n' "$(awk "BEGIN{printf \"%.3f\", $bake+$wt}")" "$wf" "$wk" >>"$TMP"
+printf '%s\n' "$warm" >>"$TMP"
 
 # cruby wall time = ratio baseline.
 base=$(awk -F'\t' '$1=="cruby"{print $2}' "$TMP")
