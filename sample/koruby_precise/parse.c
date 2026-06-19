@@ -502,6 +502,25 @@ kp_integer_value(const pm_integer_t *integer, intptr_t *out)
     return true;
 }
 
+/* pm_integer → malloc'd decimal string (immortal; for Bignum literals).  Limbs
+ * are uint32, least-significant first (prism convention). */
+static char *
+kp_integer_to_decimal(const pm_integer_t *iv)
+{
+    mpz_t z; mpz_init(z);
+    if (iv->values == NULL) mpz_set_ui(z, iv->value);
+    else                    mpz_import(z, iv->length, -1, sizeof(uint32_t), 0, 0, iv->values);
+    if (iv->negative) mpz_neg(z, z);
+    char *gs = mpz_get_str(NULL, 10, z);                 /* GMP-malloc'd */
+    mpz_clear(z);
+    size_t len = strlen(gs);
+    char *buf = malloc(len + 1);
+    if (!buf) abort();
+    memcpy(buf, gs, len + 1);
+    void (*freefn)(void *, size_t); mp_get_memory_functions(NULL, NULL, &freefn); freefn(gs, len + 1);
+    return buf;
+}
+
 /* malloc-backed copy of a pm_string (NODE operands are immortal) */
 static const char *
 kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
@@ -1549,8 +1568,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_RATIONAL_NODE: {     /* `2r` / `1.5r` → Rational */
         const pm_rational_node_t *rn = (const pm_rational_node_t *)node;
         intptr_t num, den;
-        if (!kp_integer_value(&rn->numerator, &num) || !kp_integer_value(&rn->denominator, &den))
-            return kp_unsupported(tc, node, "Rational literal beyond Fixnum range (Bignum)");
+        if (!kp_integer_value(&rn->numerator, &num) || !kp_integer_value(&rn->denominator, &den)) {
+            char *ns = kp_integer_to_decimal(&rn->numerator);     /* beyond Fixnum → bake digit strings */
+            char *ds = kp_integer_to_decimal(&rn->denominator);
+            return ALLOC_node_rational_big(ns, (uint32_t)strlen(ns), ds, (uint32_t)strlen(ds));
+        }
         return ALLOC_node_rational((uint64_t)num, (uint64_t)den);
       }
 

@@ -71,6 +71,21 @@ node_rational(CTX *c, NODE *n, VALUE *slots, uint64_t num, uint64_t den)
     return korb_rat_new(c, slots, (intptr_t)num, (intptr_t)den);
 }
 
+// Rational literal whose numerator/denominator exceed Fixnum (e.g. 999...r):
+// the VALUEs can't be baked, so bake the decimal digit strings + rebuild.
+NODE_DEF
+node_rational_big(CTX *c, NODE *n, VALUE *slots, const char *num, uint32_t nlen, const char *den, uint32_t dlen)
+{
+    (void)n;
+    VALUE nv, dv;
+    if (UNLIKELY(!korb_str_to_int(c, slots, num, nlen, 10, &nv)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid rational literal");
+    slots[0] = nv;                                       /* root num across den parse (bignum alloc) */
+    if (UNLIKELY(!korb_str_to_int(c, slots + 1, den, dlen, 10, &dv)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid rational literal");
+    return korb_rat_new_v(c, slots + 1, slots[0], dv);
+}
+
 // Imaginary literal `3i` / `1.5i` / `2ri` → Complex(0, <numeric>) per evaluation.
 NODE_DEF
 node_imaginary(CTX *c, NODE *n, VALUE *slots, VALUE_REF im@child)
