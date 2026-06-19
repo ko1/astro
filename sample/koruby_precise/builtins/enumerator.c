@@ -82,6 +82,18 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
     slots[0] = UNWRAP(korb_ary_new(c, slots, limit > 0 ? (uint32_t)limit : 8));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);                     /* result (rooted) */
     const uint8_t mode = SELF_ENUM->mode;
+    /* per-op state for stateful ops: drop/take counter, drop_while "still dropping"
+     * flag.  Indexed by op position; bounded so we can use a C-stack array. */
+    intptr_t op_state[64];
+    { const KorbArray *ops0 = VAL2ARY(SELF_ENUM->ops);
+      uint32_t nop = ops0->len < 64 ? ops0->len : 64;
+      for (uint32_t oi = 0; oi < nop; oi++) {
+          const KorbArray *pair = VAL2ARY(ops0->items->data[oi]);
+          const char *opn = korb_sym_name(c->vm, SYM2ID(pair->items->data[0]));
+          if (!strcmp(opn, "drop") || !strcmp(opn, "take")) op_state[oi] = FIX2LONG(pair->items->data[1]);
+          else if (!strcmp(opn, "drop_while")) op_state[oi] = 1;            /* 1 = still dropping */
+          else op_state[oi] = 0;
+      } }
     /* source enumeration index/value lives in slots[1] (the candidate value). */
     intptr_t produced = 0;
     /* helper: process one candidate value `cand` (in slots[1]); returns via
@@ -93,15 +105,18 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
         for (uint32_t oi = 0; oi < ops->len && keep; oi++) {                               \
             const KorbArray *pair = VAL2ARY(ops->items->data[oi]);                         \
             uint32_t opid = SYM2ID(pair->items->data[0]);                                  \
+            const char *opn = korb_sym_name(c->vm, opid);                                  \
+            if (!strcmp(opn, "drop")) { if (oi < 64 && op_state[oi] > 0) { op_state[oi]--; keep = false; } continue; } \
+            if (!strcmp(opn, "take")) { if (oi >= 64 || op_state[oi] <= 0) { keep = false; goto lazy_done; } op_state[oi]--; continue; } \
             slots[2] = pair->items->data[1];                                               \
             RESULT cr = korb_call1(c, slots + 3, slots[2], slots[1]);                      \
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;                              \
-            const char *opn = korb_sym_name(c->vm, opid);                                  \
             if (!strcmp(opn, "select") || !strcmp(opn, "filter")) { if (!KORB_TRUTHY(cr.value)) keep = false; } \
             else if (!strcmp(opn, "reject")) { if (KORB_TRUTHY(cr.value)) keep = false; }  \
             else if (!strcmp(opn, "map") || !strcmp(opn, "collect")) { slots[1] = cr.value; } \
             else if (!strcmp(opn, "filter_map")) { if (!KORB_TRUTHY(cr.value)) keep = false; else slots[1] = cr.value; } \
             else if (!strcmp(opn, "take_while")) { if (!KORB_TRUTHY(cr.value)) { keep = false; goto lazy_done; } } \
+            else if (!strcmp(opn, "drop_while")) { if (oi < 64 && op_state[oi]) { if (KORB_TRUTHY(cr.value)) keep = false; else op_state[oi] = 0; } } \
         }                                                                                  \
         if (keep) { CHECK(korb_ary_push_val(c, slots + 3, res, slots[1])); produced++; if (limit >= 0 && produced >= limit) goto lazy_done; } \
     } while (0)
@@ -216,6 +231,25 @@ static RESULT korb_m_enum_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_lazy_op(c, slots, self, "take_while", false, block, def_env, cself);
 }
+static RESULT korb_m_enum_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a; return korb_lazy_op(c, slots, self, "drop_while", false, block, def_env, cself);
+}
+/* lazy drop(n) / take(n): chain a counted op (lazy); eager → slice the values. */
+static RESULT korb_lazy_count_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *op) {
+    intptr_t n; if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (n < 0) n = 0;
+    if (SELF_ENUM->mode != 0) { slots[0] = LONG2FIX(n); return korb_lazy_chain(c, slots + 1, self, op, slots[0]); }
+    const bool is_take = !strcmp(op, "take");                    /* eager: slice values into a plain Array */
+    const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+    const uint32_t len = v->len, lo = is_take ? 0 : (uint32_t)(n < (intptr_t)len ? n : len);
+    const uint32_t hi = is_take ? (uint32_t)(n < (intptr_t)len ? n : len) : len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, hi - lo));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = lo; i < hi; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2ARY(SELF_ENUM->values)->items->data[i]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_enum_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_lazy_count_op(c, slots, self, a, "drop"); }
+static RESULT korb_m_enum_take_l(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_lazy_count_op(c, slots, self, a, "take"); }
 /* Enumerator#first([n]) — lazy: drive up to n; eager: head of values. */
 static RESULT korb_m_enum_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const bool has_n = VALUE_SLICE_LEN(a) >= 1;
@@ -236,7 +270,6 @@ static RESULT korb_m_enum_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (uint32_t i = 0; i < take; i++) CHECK(korb_ary_push_val(c, slots + 1, res, VAL2ARY(SELF_ENUM->values)->items->data[i]));
     return RESULT_OK(VALUE_REF_GET(res));
 }
-static RESULT korb_m_enum_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_enum_first(c, slots, self, a); }
 
 static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (SELF_ENUM->mode != 0) return korb_lazy_op(c, slots, self, "map", true, block, def_env, cself);

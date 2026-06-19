@@ -5450,7 +5450,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "first", korb_m_enum_first, -1);
-    korb_def_cmethod(c, KORB_C_ENUMERATOR, "take", korb_m_enum_take, 1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "take", korb_m_enum_take_l, 1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "drop", korb_m_enum_drop, 1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "drop_while", korb_m_enum_drop_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "select", korb_m_enum_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter", korb_m_enum_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "reject", korb_m_enum_reject, 0);
