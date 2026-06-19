@@ -4014,6 +4014,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_STRING] &&
+             mid == korb_intern(vm, "try_convert", 11)) {                  /* String.try_convert(obj) → obj/to_str/nil */
+        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        if (KORB_STRING_P(arg)) return RESULT_OK(arg);
+        const uint32_t to_str = korb_intern(vm, "to_str", 6);
+        if (korb_responds_to(c, arg, to_str)) {
+            slots[0] = arg;
+            return korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
+        }
+        return RESULT_OK(KORB_NIL);
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)

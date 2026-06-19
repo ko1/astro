@@ -348,7 +348,7 @@ static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * a-z ranges (ASCII-byte level). */
 static bool korb_charset_match(const char *set, uint32_t n, unsigned char ch) {
     bool neg = false; uint32_t i = 0;
-    if (n > 0 && set[0] == '^') { neg = true; i = 1; }
+    if (n > 1 && set[0] == '^') { neg = true; i = 1; }   /* a lone "^" is the literal char, not a complement */
     bool in = false;
     for (; i < n; i++) {
         if (i + 2 < n && set[i+1] == '-') {
@@ -452,7 +452,7 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
-    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
     uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
     uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
@@ -480,7 +480,7 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
-    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
     uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
     uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
@@ -892,16 +892,30 @@ static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     while (i < len && isspace((unsigned char)d[i])) i++;
     intptr_t sign = 1;
     if (i < len && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
+    /* integer part (underscores allowed between digits) */
     intptr_t num = 0; bool any = false;
-    while (i < len && d[i] >= '0' && d[i] <= '9') { num = num * 10 + (d[i] - '0'); i++; any = true; }
-    intptr_t den = 1;
-    if (any && i < len && d[i] == '/') {
-        i++; intptr_t dv = 0; bool dany = false;
-        while (i < len && d[i] >= '0' && d[i] <= '9') { dv = dv * 10 + (d[i] - '0'); i++; dany = true; }
-        if (dany) den = dv;                                  /* korb_rat_new raises on den 0 */
-    } else if (any && i < len && d[i] == '.') {
+    while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
+                       (d[i] == '_' && any && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
+        if (d[i] != '_') { num = num * 10 + (d[i] - '0'); any = true; }
         i++;
-        while (i < len && d[i] >= '0' && d[i] <= '9') { num = num * 10 + (d[i] - '0'); den *= 10; i++; }
+    }
+    intptr_t den = 1;
+    if (i < len && d[i] == '.') {                            /* fraction scales the denominator (also handles ".9") */
+        i++; bool fany = false;
+        while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
+                           (d[i] == '_' && fany && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
+            if (d[i] != '_') { num = num * 10 + (d[i] - '0'); den *= 10; any = true; fany = true; }
+            i++;
+        }
+    }
+    if (any && i < len && d[i] == '/') {                     /* explicit denominator (after int or decimal) */
+        i++; intptr_t dv = 0; bool dany = false;
+        while (i < len && ((d[i] >= '0' && d[i] <= '9') ||
+                           (d[i] == '_' && dany && i + 1 < len && isdigit((unsigned char)d[i + 1])))) {
+            if (d[i] != '_') { dv = dv * 10 + (d[i] - '0'); dany = true; }
+            i++;
+        }
+        if (dany) den *= dv;                                 /* korb_rat_new raises on den 0 */
     }
     if (!any) return korb_rat_new(c, slots, 0, 1);
     return korb_rat_new(c, slots, sign * num, den);
@@ -1281,7 +1295,7 @@ static RESULT korb_m_str_succ_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static bool korb_str_tr_matched(VALUE_REF self, VALUE fv) {
     if (!KORB_STRING_P(fv)) return false;
     const KorbString *fs = VAL2STR(fv);
-    bool neg = fs->len > 0 && fs->buf->data[0] == '^';
+    bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512];
     uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
