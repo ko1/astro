@@ -5084,12 +5084,12 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
  * on its own line), matching CRuby.  An empty array prints nothing.  User
  * objects dispatch their to_s method (slots-threaded, may GC). */
 static RESULT
-korb_puts_one(CTX *c, VALUE *slots, VALUE v)
+korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
 {
     if (KORB_ARRAY_P(v)) {
         slots[0] = v;                                   /* root across to_s GC in recursion */
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-            CHECK(korb_puts_one(c, slots + 1, VAL2ARY(slots[0])->items->data[i]));
+            CHECK(korb_puts_one_to(c, slots + 1, VAL2ARY(slots[0])->items->data[i], fp));
         return RESULT_OK(KORB_NIL);
     }
     if (KORB_OBJECT_P(v)) {                             /* user object → its to_s (user or default) */
@@ -5100,14 +5100,15 @@ korb_puts_one(CTX *c, VALUE *slots, VALUE v)
     }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v);
-        fwrite(s->buf->data, 1, s->len, stdout);
-        if (s->len == 0 || s->buf->data[s->len - 1] != '\n') fputc('\n', stdout);
+        fwrite(s->buf->data, 1, s->len, fp);
+        if (s->len == 0 || s->buf->data[s->len - 1] != '\n') fputc('\n', fp);
         return RESULT_OK(KORB_NIL);
     }
-    korb_fprint_to_s(c, stdout, v);
-    fputc('\n', stdout);
+    korb_fprint_to_s(c, fp, v);
+    fputc('\n', fp);
     return RESULT_OK(KORB_NIL);
 }
+static RESULT korb_puts_one(CTX *c, VALUE *slots, VALUE v) { return korb_puts_one_to(c, slots, v, stdout); }
 
 /* require / require_relative / load: no-op returning true.  koruby has the
  * common stdlib (Set, etc.) built in and no real file loader, so a require of a
@@ -5118,6 +5119,18 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     (void)c; (void)slots; (void)args;
     return RESULT_OK(KORB_TRUE);
+}
+
+/* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
+ * keyword Hash, e.g. uplevel:/category:, is ignored). */
+static RESULT
+korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) n--;   /* drop uplevel:/category: kwargs */
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stderr));
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT
@@ -5546,6 +5559,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "warn", korb_bi_warn, -1);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require, -1);
     korb_builtin_define(c, "load", korb_bi_require, -1);
