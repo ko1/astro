@@ -480,6 +480,36 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     slots[15] = res_re; slots[16] = res_im;
     return korb_cpx_new(c, slots + 17, slots[15], slots[16]);
 }
+/* Complex#** — exact repeated squaring for an Integer exponent (negative →
+ * reciprocal); otherwise the polar formula z^w = exp(w·ln z) (Float result). */
+static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE ev = VALUE_SLICE_GET(a, 0);
+    if (FIXNUM_P(ev)) {
+        intptr_t n = FIX2LONG(ev);
+        const bool neg = n < 0; uintptr_t k = neg ? (uintptr_t)(-n) : (uintptr_t)n;
+        slots[0] = UNWRAP(korb_cpx_new(c, slots, LONG2FIX(1), LONG2FIX(0)));   /* result = 1+0i */
+        slots[1] = VALUE_REF_GET(self);                                        /* base */
+        while (k) {
+            if (k & 1u) { RESULT r = korb_cpx_arith(c, slots + 2, slots[0], slots[1], 2); if (UNLIKELY(r.state != KORB_NORMAL)) return r; slots[0] = r.value; }
+            k >>= 1;
+            if (k)      { RESULT r = korb_cpx_arith(c, slots + 2, slots[1], slots[1], 2); if (UNLIKELY(r.state != KORB_NORMAL)) return r; slots[1] = r.value; }
+        }
+        if (!neg) return RESULT_OK(slots[0]);
+        slots[1] = UNWRAP(korb_cpx_new(c, slots + 1, LONG2FIX(1), LONG2FIX(0)));   /* 1 / result */
+        return korb_cpx_arith(c, slots + 2, slots[1], slots[0], 3);
+    }
+    /* float / complex exponent → polar */
+    double zre, zim, wre = 0, wim = 0;
+    if (!korb_num_to_d(SELF_CPX->re, &zre) || !korb_num_to_d(SELF_CPX->im, &zim))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "Complex#** with non-numeric components");
+    if (KORB_COMPLEX_P(ev)) { korb_num_to_d(VAL2CPX(ev)->re, &wre); korb_num_to_d(VAL2CPX(ev)->im, &wim); }
+    else if (!korb_num_to_d(ev, &wre)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(ev));
+    const double r = hypot(zre, zim), th = atan2(zim, zre), lnr = log(r);
+    const double p = wre * lnr - wim * th, q = wre * th + wim * lnr, ep = exp(p);
+    slots[0] = UNWRAP(korb_float_new(c, slots, ep * cos(q)));
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, ep * sin(q)));
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
 static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
 static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
@@ -5329,6 +5359,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "/", korb_m_cpx_div, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "quo", korb_m_cpx_div, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "<=>", korb_m_cpx_cmp, 1);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "**", korb_m_cpx_pow, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "==", korb_m_cpx_eq, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
