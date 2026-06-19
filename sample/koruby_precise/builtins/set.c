@@ -271,6 +271,21 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     korb_klass_override_set(c, slots[0], slots[2]);                               /* obj/sing rooted, no GC in set */
     return RESULT_OK(slots[2]);
 }
+/* Object#singleton_class — the object's (lazily-created) singleton class. */
+static RESULT korb_m_obj_singleton_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; VALUE sv = VALUE_REF_GET(self);
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
+    return korb_obj_singleton(c, slots, sv);
+}
+/* (singleton class)#attached_object — reverse the obj→singleton table. */
+static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; struct korb_vm *const vm = c->vm; VALUE cls = VALUE_REF_GET(self);
+    if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->is_singleton)
+        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+            if (vm->sklass_cls[i] == cls) return RESULT_OK(vm->sklass_obj[i]);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "'attached_object' called on a non-singleton class");
+}
 /* Object#extend(*mods) — mix the modules into the object's singleton class. */
 static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_REF_GET(self);

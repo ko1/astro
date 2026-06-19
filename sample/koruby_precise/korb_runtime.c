@@ -3994,6 +3994,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         return RESULT_OK(KORB_ARRAY_P(arg) ? arg : KORB_NIL);              /* no to_ary coercion of arbitrary objects */
     }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_INTEGER] &&
+             mid == korb_intern(vm, "try_convert", 11)) {                  /* Integer.try_convert(obj) → obj/to_int/nil */
+        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        if (KORB_INTEGER_P(arg)) return RESULT_OK(arg);
+        const uint32_t to_int = korb_intern(vm, "to_int", 6);
+        if (korb_responds_to(c, arg, to_int)) {
+            slots[0] = arg;
+            return korb_send_impl(c, slots + 1, to_int, line, 0, NULL, NULL, NULL);
+        }
+        return RESULT_OK(KORB_NIL);
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
@@ -5024,6 +5035,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "singleton_class", korb_m_obj_singleton_class, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "attached_object", korb_m_class_attached_object, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
