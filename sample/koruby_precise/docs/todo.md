@@ -14,8 +14,12 @@
 - **無名 splat target** `first, *, last = ...` (中間を synth local に捨てる)。
 
 ### 残る準拠ギャップ (hard / niche / out-of-scope)
-- **define_method**: closure 捕捉 block が呼び出し時 SEGV (env が open/stack 依存)。
-  infra 設計は判明済 (上記 §define_method)。env promotion 要・focused session。最有力。
+- (実装済 2026-06-19) **define_method** (closure 含む)。真因は env staleness では
+  なく **block-arg の def_env が tagged prev 形 (base|1)** で来るのに korb_make_proc が
+  raw base を期待していたこと → tag mask で解決。force-close は不要 (shared closure を
+  壊す red herring)。env は共有 open env → 定義フレーム exit で heap promote。
+  KORB_METHOD_DM kind + dm_proc (GC forward) + KORB_C_CLASS に登録。
+  **Class.new/Module.new も修正** (new_kind=1 で generic object 化していた → kind 2)。
 - **op-aware no-block Enumerator**: select/reject/flat_map/transform_values を
   block なしで呼ぶと、後続 .with_index{} が filter でなく map になる (silent 誤答)
   → 現状は raise (honest)。正しくは Enumerator に op を保持させる必要。
