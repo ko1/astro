@@ -1553,13 +1553,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       case PM_BEGIN_NODE: {
         const pm_begin_node_t *bn = (const pm_begin_node_t *)node;
-        if (bn->else_clause)
-            return kp_unsupported(tc, node, "begin/else");
-        if (!bn->rescue_clause && !bn->ensure_clause)   /* plain begin/end */
-            return transduce_statements(tc, bn->statements);
-
         uint32_t flags = 0;
         NODE *body = bn->statements ? transduce_statements(tc, bn->statements) : lit_nil();
+        if (bn->else_clause) {     /* else runs after a successful body; its value is the result */
+            NODE *eb = bn->else_clause->statements ? transduce_statements(tc, bn->else_clause->statements) : lit_nil();
+            body = ALLOC_node_seq(body, eb);   /* a raising body skips to rescue; an else exception is (rarely) caught here */
+        }
+        if (!bn->rescue_clause && !bn->ensure_clause)   /* plain begin[/else]/end */
+            return body;
         NODE *rescues = lit_nil();
         NODE *ensure_b = lit_nil();
 
