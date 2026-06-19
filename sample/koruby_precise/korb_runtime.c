@@ -2505,6 +2505,21 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         }
         return RESULT_OK(KORB_TRUE);
       }
+      case 4: {                                          /* capture: inner pattern, then bind */
+        RESULT r = korb_pat_match(c, base, cur, subjref, p->elems[0]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
+        base[p->bind_off] = VALUE_REF_GET(subjref);
+        return RESULT_OK(KORB_TRUE);
+      }
+      case 5: {                                          /* alternation: elems[0] | elems[1] */
+        for (uint32_t i = 0; i < p->n; i++) {
+            RESULT r = korb_pat_match(c, base, cur, subjref, p->elems[i]);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (r.value == KORB_TRUE) return RESULT_OK(KORB_TRUE);
+        }
+        return RESULT_OK(KORB_FALSE);
+      }
     }
     return RESULT_OK(KORB_FALSE);
 }

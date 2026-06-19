@@ -378,6 +378,8 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
 {
     struct korb_pat *p = calloc(1, sizeof(*p));
     if (!p) abort();
+    if (PM_NODE_TYPE_P(pat, PM_IMPLICIT_NODE))                      /* `{key:}` shorthand wraps the target */
+        pat = (const pm_node_t *)((const pm_implicit_node_t *)pat)->value;
     if (PM_NODE_TYPE_P(pat, PM_LOCAL_VARIABLE_TARGET_NODE)) {       /* binding */
         const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)pat;
         if (lt->depth == 0) {
@@ -404,14 +406,55 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
             for (uint32_t i = 0; i < p->n; i++) {
                 if (!PM_NODE_TYPE_P(hp->elements.nodes[i], PM_ASSOC_NODE)) { ok = false; break; }
                 const pm_assoc_node_t *as = (const pm_assoc_node_t *)hp->elements.nodes[i];
-                if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE) || !as->value) { ok = false; break; }
+                if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE)) { ok = false; break; }
                 const pm_symbol_node_t *sn = (const pm_symbol_node_t *)as->key;
-                p->keys[i] = ID2SYM(korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped),
-                                                pm_string_length(&sn->unescaped)));
-                p->elems[i] = build_pattern_desc(tc, as->value);
+                const char *kname = (const char *)pm_string_source(&sn->unescaped);
+                size_t klen = pm_string_length(&sn->unescaped);
+                p->keys[i] = ID2SYM(korb_intern(tc->c->vm, kname, klen));
+                if (as->value) {                              /* `key: pattern` */
+                    p->elems[i] = build_pattern_desc(tc, as->value);
+                } else {                                      /* `key:` shorthand → bind local named `key` */
+                    int32_t li = -1;
+                    for (size_t j = 0; j < tc->frame->locals->size; j++) {
+                        pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, tc->frame->locals->ids[j]);
+                        if (ct->length == klen && memcmp(ct->start, kname, klen) == 0) { li = (int32_t)j; break; }
+                    }
+                    if (li < 0) { ok = false; break; }
+                    struct korb_pat *bp = calloc(1, sizeof(*bp));
+                    if (!bp) abort();
+                    bp->kind = 0;
+                    bp->bind_off = li - tc->chain;
+                    bake_add(tc, &bp->bind_off);
+                    p->elems[i] = bp;
+                }
             }
             if (ok) return p;
         }
+    } else if (PM_NODE_TYPE_P(pat, PM_CAPTURE_PATTERN_NODE)) {     /* `pat => name` */
+        const pm_capture_pattern_node_t *cp = (const pm_capture_pattern_node_t *)pat;
+        if (cp->target->depth == 0) {
+            p->kind = 4; p->n = 1;
+            p->elems = calloc(1, sizeof(struct korb_pat *));
+            p->elems[0] = build_pattern_desc(tc, cp->value);
+            p->bind_off = (int32_t)lvar_index(tc, (const pm_node_t *)cp->target, cp->target->name) - tc->chain;
+            bake_add(tc, &p->bind_off);
+            return p;
+        }
+    } else if (PM_NODE_TYPE_P(pat, PM_ALTERNATION_PATTERN_NODE)) {  /* `a | b` (no bindings) */
+        const pm_alternation_pattern_node_t *ap = (const pm_alternation_pattern_node_t *)pat;
+        p->kind = 5; p->n = 2;
+        p->elems = calloc(2, sizeof(struct korb_pat *));
+        p->elems[0] = build_pattern_desc(tc, ap->left);
+        p->elems[1] = build_pattern_desc(tc, ap->right);
+        return p;
+    } else if (PM_NODE_TYPE_P(pat, PM_PINNED_VARIABLE_NODE)) {      /* `^var` → var === subject */
+        p->kind = 1;
+        p->value_node = transduce(tc, (const pm_node_t *)((const pm_pinned_variable_node_t *)pat)->variable);
+        return p;
+    } else if (PM_NODE_TYPE_P(pat, PM_PINNED_EXPRESSION_NODE)) {    /* `^(expr)` */
+        p->kind = 1;
+        p->value_node = transduce(tc, (const pm_node_t *)((const pm_pinned_expression_node_t *)pat)->expression);
+        return p;
     }
     /* value pattern: `pattern === subject` (constant / literal / range / etc.) */
     p->kind = 1;
@@ -1884,6 +1927,52 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_else_node_t *en = (const pm_else_node_t *)node;
         return transduce_statements(tc, en->statements);
       }
+      case PM_CASE_MATCH_NODE: {
+        /* `case subj; in pat; body; ...; [else e]; end` → subject once into a
+         * synth temp, then an if/elsif chain of node_match_pred tests (each binds
+         * locals as a side effect, like the one-line `subj in pat`).  No clause +
+         * no else → node_match_req on an always-fail desc raises NoMatchingPattern. */
+        const pm_case_match_node_t *cn = (const pm_case_match_node_t *)node;
+        uint32_t tmp = alloc_synth_local(tc);
+        NODE *subj = transduce(tc, cn->predicate);
+        NODE *assign = bake_lset(tc, tmp, subj);
+        NODE *chain;
+        if (cn->else_clause) {
+            chain = transduce_statements(tc, cn->else_clause->statements);
+        } else {
+            struct korb_pat *fail = calloc(1, sizeof(*fail));   /* unknown kind → matcher returns false → raise */
+            if (!fail) abort();
+            fail->kind = 255;
+            chain = ALLOC_node_match_req(bake_lget(tc, tmp), (void *)fail);
+        }
+        for (size_t i = cn->conditions.size; i-- > 0; ) {
+            const pm_in_node_t *in = (const pm_in_node_t *)cn->conditions.nodes[i];
+            /* `in pat if guard` / `unless guard` → prism wraps the pattern in an
+             * If/Unless node (predicate = guard, statements[0] = the real pattern). */
+            const pm_node_t *pat = in->pattern;
+            const pm_node_t *guard = NULL; bool guard_unless = false;
+            if (PM_NODE_TYPE_P(pat, PM_IF_NODE)) {
+                const pm_if_node_t *g = (const pm_if_node_t *)pat;
+                guard = g->predicate;
+                if (g->statements && g->statements->body.size > 0) pat = g->statements->body.nodes[0];
+            } else if (PM_NODE_TYPE_P(pat, PM_UNLESS_NODE)) {
+                const pm_unless_node_t *g = (const pm_unless_node_t *)pat;
+                guard = g->predicate; guard_unless = true;
+                if (g->statements && g->statements->body.size > 0) pat = g->statements->body.nodes[0];
+            }
+            NODE *body = in->statements ? transduce_statements(tc, in->statements) : lit_nil();
+            struct korb_pat *desc = build_pattern_desc(tc, pat);
+            NODE *test = ALLOC_node_match_pred(bake_lget(tc, tmp), (void *)desc);
+            if (guard) {                                       /* match binds first (lazy &&), then the guard reads bindings */
+                NODE *g = transduce(tc, guard);
+                if (guard_unless) g = ALLOC_node_not(g);
+                test = ALLOC_node_and(test, g);
+            }
+            chain = ALLOC_node_if(test, body, chain);
+        }
+        return ALLOC_node_seq(assign, chain);
+      }
+
       case PM_CASE_NODE: {
         /* `case subj; when a, b; body; ...; else e; end` desugared to an if/elsif
          * chain.  With a subject, each `when v` tests `v === subj`, the subject
