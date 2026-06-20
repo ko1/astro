@@ -330,8 +330,10 @@ main(int argc, char *argv[])
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
             c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
         }
-        /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
-        {
+        /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame.  Created
+         * only when the program references it — an open toplevel env otherwise taxes
+         * every method return with korb_close_ret (eval("TOPLEVEL_BINDING") edge aside). */
+        if (koruby_uses_toplevel_binding) {
             RESULT tb = korb_make_binding(c, toplevel_cursor, c->slots,
                                           koruby_toplevel_local_syms, koruby_toplevel_local_cnt,
                                           c->slots[koruby_toplevel_locals_cnt - 1]);

@@ -27,6 +27,7 @@
 uint32_t koruby_toplevel_locals_cnt = 0;
 const uint32_t *koruby_toplevel_local_syms = NULL;
 uint32_t koruby_toplevel_local_cnt = 0;
+bool koruby_uses_toplevel_binding = false;
 
 struct kp_frame {
     const pm_constant_id_list_t *locals;
@@ -2368,7 +2369,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_module(tc, (const pm_module_node_t *)node);
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
-        return ALLOC_node_const(kp_intern_cid(tc, cr->name));
+        const uint32_t cid = kp_intern_cid(tc, cr->name);
+        if (UNLIKELY(!koruby_uses_toplevel_binding) &&
+            cid == korb_intern(tc->c->vm, "TOPLEVEL_BINDING", 16))
+            koruby_uses_toplevel_binding = true;         /* defer the cost to programs that use it */
+        return ALLOC_node_const(cid);
       }
       case PM_CONSTANT_PATH_NODE: {       /* `A::B` — koruby's const table is flat,
                                            * so resolve the rightmost name; the
