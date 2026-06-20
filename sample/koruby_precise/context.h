@@ -266,8 +266,9 @@ typedef struct KorbArithSeq {
 #ifdef KORB_HAVE_GMP
 /* Arbitrary-precision Integer.  .class reports Integer (CRuby-unified); the mpz
  * limbs are external malloc — a moving GC copies this struct (limb pointer stays
- * valid) but does not free limbs of collected bignums (known leak; revisit with
- * a finalizer or custom limb-in-GC backing). */
+ * valid).  Collected bignums free their limbs via AROH_FINALIZE (mpz_clear), and
+ * the limb bytes are tracked as GC external pressure (account in korb_big_from_mpz
+ * / AROH_FINALIZE) so the GC fires on bignum-heavy load — no leak. */
 typedef struct KorbBignum {
     AroObjectHeader head;            /* KORB_OBJ_BIGNUM */
     mpz_t z;
