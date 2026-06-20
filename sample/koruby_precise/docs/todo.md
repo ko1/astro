@@ -3,6 +3,35 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## Ruby 準拠 probe sweep (2026-06-20 session 4) — 修正済み
+
+probe + 実ハーネス array spec で発見・修正 (corpus 89295/5 維持・STRESS+AOT 検証):
+- **&obj block 引数の to_proc coercion + Symbol/Method#to_proc 転送**: `&method`,
+  `&proc_var`, `def m(&b)` 経由の C-proc。block-trio に NODE* entry を持てない
+  proc (iseq==NULL) を KORB_BLK_CPROC sentinel + KORB_BLK_FWD plumbing で運び、
+  korb_block_yield 冒頭で捕捉して send dispatch (GC-safe、*captured_self から
+  fresh 読込)。Method#to_proc 追加 (is_lambda + self=recv で symbol proc と判別)。
+- **instance_exec / instance_eval (block form)**: self を receiver に再束縛、
+  def_env 保持で closure 維持。CPROC block は固定束縛なので self-rebind skip。
+  String 形式と singleton def は未対応。
+- **Integer#fdiv(Integer)**: bignum/大 Fixnum 被除数を exact rational (mpq) で
+  割り正しい subnormal (1.fdiv(10**323)=1.0e-323)。double/double は桁落ちで 0.0。
+- **Integer#size**: Bignum で |self| のバイト数 (mpz_sizeinbase)。従来は常に 8。
+- **Bignum#to_f round-to-nearest**: mpz_get_d は toward-zero truncate。nextafter
+  + mpz 距離比較で nearest-even。(10**308).to_f=1.0e308。
+
+**defer (発覚、未着手):**
+- *literal* `&:sym` block が unary 専用 (kp_symbol_block が `x.sym()`、追加引数を
+  転送せず)。`reduce(&:+)` 不可 (`reduce(:+)` は可)。n-ary 化は send_splat entry
+  構築が SEGV、or C-proc 経由 (per-call alloc) で要再挑戦。
+- **UnboundMethod#bind_call / Method#call が名前 re-dispatch** (captured entry を
+  直接 invoke しない)。BasicObject 跨ぎ bind や override 下で誤った実装を呼ぶ。
+- **to_enum / enum_for**: eager enum へ collector で materialize する設計が要 (C
+  collector block 機構)。enumerable probe の cascade blocker。
+- 実ハーネス array_004/005 の 5 fail は hard: pack 'P'/'p' (pointer、platform
+  依存)、shuffle/sample (MT 完全一致要)、`upto(Float::INFINITY)` (lazy 無限
+  enum + zip lazy take)。
+
 ## Ruby 準拠 probe sweep (2026-06-19 session 3) — 修正済み
 
 差分テスト probe で発見・修正 (全て corpus 89267/5 維持・STRESS+AOT 検証):
