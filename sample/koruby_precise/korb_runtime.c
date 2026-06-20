@@ -5461,6 +5461,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_exec", korb_m_obj_instance_exec, -1);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_eval", korb_m_obj_instance_eval, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "loop", korb_m_loop, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);

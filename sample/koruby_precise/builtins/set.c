@@ -549,6 +549,37 @@ static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* instance_exec(*args) { |*args| ... } — run the block with self rebound to the
+ * receiver; the block's lexical env (def_env) is preserved so closures still work.
+ * Method definitions inside (singleton def) are NOT redirected to the receiver. */
+static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)cself;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (block == KORB_BLK_CPROC) {                       /* forwarded Symbol/Method#to_proc: fixed binding, self-rebind is moot */
+        for (uint32_t i = 0; i < argc; i++) slots[i] = VALUE_SLICE_GET(a, i);
+        return korb_block_yield(c, slots + argc, block, def_env, slots, argc, cself);
+    }
+    slots[0] = VALUE_REF_GET(self);                      /* new self = receiver (rooted self cell) */
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    return korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
+}
+/* instance_eval { |obj| ... } — like instance_exec but with the receiver as the
+ * sole block argument (CRuby passes self).  The String form is not supported. */
+static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)cself;
+    if (UNLIKELY(block == NULL)) {
+        if (VALUE_SLICE_LEN(a) >= 1)
+            return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "instance_eval with a String is not supported");
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+    }
+    slots[0] = VALUE_REF_GET(self);
+    if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
+        return korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
+    slots[1] = slots[0];                                 /* arg0 = receiver */
+    return korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
+}
+
 /* Exception#message / to_s — the stored message, or the class name if none. */
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
