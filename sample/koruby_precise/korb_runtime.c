@@ -3871,6 +3871,45 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);
 
+/* Coerce a `&obj` block argument to a Proc (CRuby calls obj.to_proc).  No-op for a
+ * Proc or nil; otherwise sends #to_proc and writes the result back to *pslot — a
+ * scanned caller slot, so the coerced Proc stays rooted for the forward.  Raises
+ * TypeError when obj has no #to_proc (or it returns a non-Proc), matching CRuby. */
+RESULT korb_blockarg_to_proc(CTX *c, VALUE *slots, VALUE *restrict pslot, uint32_t line) {
+    const VALUE pv = *pslot;
+    if (LIKELY(KORB_PROC_P(pv)) || pv == KORB_NIL) return RESULT_OK(pv);
+    const uint32_t to_proc = korb_intern(c->vm, "to_proc", 7);
+    if (UNLIKELY(!korb_responds_to(c, pv, to_proc)))
+        return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
+    slots[0] = pv;
+    const RESULT r = korb_send_impl(c, slots + 1, to_proc, line, 0, NULL, NULL, NULL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(!KORB_PROC_P(r.value)))
+        return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
+    *pslot = r.value;
+    return RESULT_OK(r.value);
+}
+
+/* Yield to a forwarded C-proc (Symbol#to_proc / Method#to_proc): there is no block
+ * frame to build — dispatch the captured send with the yielded args.  `procv` is read
+ * fresh from the FWD-rooted slot by the caller, so a GC move before this is safe.
+ * Args are copied high-to-low so an argv that aliases the cursor below isn't clobbered. */
+static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
+                               const VALUE *restrict argv, uint32_t argc) {
+    const KorbProc *const p = VAL2PROC(procv);
+    const uint32_t mid = p->sym_mid;
+    if (p->is_lambda) {                                  /* Method#to_proc: recv.mid(args...) */
+        const VALUE recv = p->self;
+        for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[1 + i] = argv[i];
+        slots[0] = recv;
+        return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
+    }
+    if (UNLIKELY(argc < 1))                              /* Symbol#to_proc: args[0].mid(args[1..]) */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
+    for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[i] = argv[i];
+    return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
+}
+
 uint32_t korb_entry_params_cnt(NODE *entry) { return entry->u.node_entry.params_cnt; }
 uint32_t korb_entry_locals_cnt(NODE *entry) { return entry->u.node_entry.locals_cnt; }
 static uint32_t korb_entry_destructure_n(NODE *entry) { return entry->u.node_entry.destructure_n; }
@@ -3893,6 +3932,8 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
      * placeholder, not a node_entry — running it raises NotImplementedError instead
      * of dereferencing node_entry fields off the wrong union member (→ SEGV). */
+    if (UNLIKELY(block == KORB_BLK_CPROC))               /* forwarded Symbol/Method#to_proc: no frame, dispatch a send */
+        return korb_cproc_yield(c, slots, *captured_self, argv, argc);
     if (UNLIKELY(block->head.kind != &kind_node_entry)) return EVAL(c, block, slots);
     /* &block forward: re-read prev (proc->env) from the rooted Proc slot each
      * call so a GC-moved escaped env is never stale. */
@@ -5342,6 +5383,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_frozen_q, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
+    korb_def_cmethod(c, KORB_C_METHOD, "to_proc", korb_m_meth_to_proc, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "call", korb_m_proc_call, -1);

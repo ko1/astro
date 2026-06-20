@@ -119,15 +119,38 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_meth_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2METH(VALUE_REF_GET(self))->recv);
 }
+/* Method#to_proc — a lambda Proc bound to the method's receiver.  Encoded like a
+ * Symbol#to_proc proc (iseq == NULL, sym_mid = the method id) but with is_lambda = 1
+ * and self = the bound receiver, which both marks it a "method proc" (vs a symbol
+ * proc, self == nil) and roots the receiver.  korb_cproc_yield / Proc#call dispatch
+ * recv.mid(args...). */
+static RESULT korb_m_meth_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
+    if (UNLIKELY(m->unbound))
+        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'to_proc' for an UnboundMethod (use #bind)");
+    slots[0] = m->recv;                                  /* root recv across the alloc */
+    const uint32_t mid = m->mid;
+    KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
+    p->iseq = NULL; p->sym_mid = mid; p->is_lambda = 1;
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, 0);
+    ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);   /* bound receiver (non-nil ⇒ method proc) */
+    return RESULT_OK((VALUE)p);
+}
 /* Proc#call / [] / .() / === — invoke the captured block body.  Stage A: env is
  * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
 static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     uint32_t argc = VALUE_SLICE_LEN(a);
-    if (p->iseq == NULL) {                               /* Symbol#to_proc: arg0.sym(arg1..) */
+    if (p->iseq == NULL) {                               /* no body: symbol proc / method proc */
         uint32_t mid = p->sym_mid;
+        if (p->is_lambda) {                              /* Method#to_proc: recv.mid(args...) */
+            slots[0] = p->self;
+            for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+            return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
+        }
         if (UNLIKELY(argc < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
-        for (uint32_t i = 0; i < argc; i++) slots[i] = VALUE_SLICE_GET(a, i);
+        for (uint32_t i = 0; i < argc; i++) slots[i] = VALUE_SLICE_GET(a, i);   /* Symbol#to_proc: arg0.sym(arg1..) */
         return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
     }
     NODE *entry = p->iseq;

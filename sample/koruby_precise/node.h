@@ -240,6 +240,12 @@ RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
  * move during the call, but its slot is scanned and its iseq is immortal). */
 #define KORB_BLK_FWD ((VALUE *)2)
 
+/* `block` sentinel: a forwarded Symbol#to_proc / Method#to_proc proc (iseq == NULL,
+ * so there is no block frame to build).  Paired with def_env == KORB_BLK_FWD and a
+ * captured_self pointing at the (scanned) Proc slot; korb_block_yield re-reads the
+ * proc from *captured_self each yield and dispatches the send (GC-safe). */
+#define KORB_BLK_CPROC ((NODE *)2)
+
 /* Invoke a block (node_entry + def_env) with `argc` args from `argv`.  The
  * block frame is laid out at the cursor `slots`; its self cell gets
  * `captured_self`.  NEXT is folded to NORMAL. */
@@ -269,6 +275,9 @@ RESULT korb_call(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 RESULT korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                      struct korb_callcache *cc, uint32_t argc,
                      VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self);
+
+/* Coerce a `&obj` block argument to a Proc (obj.to_proc), writing it back to *pslot. */
+RESULT korb_blockarg_to_proc(CTX *c, VALUE *slots, VALUE *pslot, uint32_t line);
 
 /* yield to the current method's block.  `block_entry` / `def_env` /
  * `captured_self` are the (odd-tagged) reserved frame cells. */

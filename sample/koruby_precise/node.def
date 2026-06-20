@@ -1247,14 +1247,13 @@ NODE_DEF @noinline
 node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
+    RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const VALUE pv = slots[proc_off];
     NODE *iseq = NULL;
-    if (pv != KORB_NIL) {
-        if (UNLIKELY(!KORB_PROC_P(pv)))
-            return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
+    if (pv != KORB_NIL) {                                /* coercion guaranteed a Proc (or nil) */
         iseq = VAL2PROC(pv)->iseq;
-        if (UNLIKELY(iseq == NULL))
-            return korb_raise(c, slots, KORB_E_NOTIMPL, line, "forwarding a Symbol#to_proc block");
+        if (iseq == NULL) iseq = KORB_BLK_CPROC;         /* Symbol/Method#to_proc: forward as a C-proc block */
     }
     return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], iseq,
                          iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
@@ -1270,6 +1269,10 @@ node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off,
     VALUE bi = slots[biseq_off];
     if (!(bi & 1u)) { slots[dst_off] = KORB_NIL; return RESULT_OK(KORB_NIL); }   /* no block given */
     NODE *iseq  = (NODE *)(uintptr_t)(bi & ~(uintptr_t)1u);
+    if (iseq == KORB_BLK_CPROC) {                        /* &b of a forwarded Symbol/Method#to_proc: hand back the proc itself */
+        slots[dst_off] = slots[cself_off];
+        return RESULT_OK(slots[cself_off]);
+    }
     VALUE *denv = (VALUE *)(uintptr_t)((uintptr_t)slots[def_env_off] & ~(uintptr_t)1u);
     VALUE cself = slots[cself_off];
     RESULT pr = korb_make_proc(c, slots, iseq, denv, cself, 0);
@@ -1318,13 +1321,12 @@ NODE_DEF @noinline
 node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
+    RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const VALUE pv = slots[proc_off];
     if (pv == KORB_NIL) return korb_send(c, slots, mid, line, argv_cnt - 1);   /* &nil → no block */
-    if (UNLIKELY(!KORB_PROC_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
-    NODE *const iseq = VAL2PROC(pv)->iseq;
-    if (UNLIKELY(iseq == NULL))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "forwarding a Symbol#to_proc block");
+    NODE *iseq = VAL2PROC(pv)->iseq;
+    if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
     return korb_send_blk(c, slots, mid, line, argv_cnt - 1, iseq, KORB_BLK_FWD, &slots[proc_off]);
 }
 
