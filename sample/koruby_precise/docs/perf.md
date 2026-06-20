@@ -3,6 +3,24 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-06-20: eager TOPLEVEL_BINDING の regression を lazy 化で解消
+
+TOPLEVEL_BINDING を起動時に eager 作成していたため、Binding が toplevel frame 上に
+**open env を常時張り** `vm->open_env_cnt >= 1` が恒常化。全 method/block return が
+`if (UNLIKELY(open_env_cnt)) korb_close_ret(...)` を取り open-env list を walk する
+無駄が乗っていた (perf: `korb_close_envs` が method_call の ~40%)。bench は全て hot
+loop を `def bench` で包んで 1000 回呼ぶ構造なので **ほぼ全 bench が 3-8x 遅化**。
+
+修正: parser が `TOPLEVEL_BINDING` 参照を検出した時だけ作成 (lazy)。
+
+aot+cached の vs-YJIT 比 (修正前→後): nested_loop 6.34→0.82、ackermann 5.69→1.51、
+ivar 4.45→1.37、tak 4.59→1.61、while2 4.83→0.48、method_call 3.65→1.10、send→0.94。
+**geomean (vs CRuby): koruby AOT 0.51× / YJIT 0.48× / CRuby 1.00×** — YJIT とほぼ
+互角・CRuby の ~2x に回復。残る vs-YJIT 負けは array/numeric (array_access 2.61・
+bitops 2.58・mandelbrot 2.16 等、tree-walker の array 要素アクセス構造差) と再帰
+(ackermann 1.51・tak 1.61)。詳細 → [[project_koruby_precise_toplevel_binding_perf]]。
+教訓: **永続 frame 上に open env を張る機能は eager に作るな** (return fast-path に課税)。
+
 ## ベンチマーク環境
 
 - CPU: x86_64 (AMD Ryzen 9 5900HX)
