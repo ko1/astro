@@ -276,8 +276,35 @@ static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 
 static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    return korb_float_new(c, slots, (double)SELF_INT / o);
+    const VALUE sv = VALUE_REF_GET(self), bv = VALUE_SLICE_GET(a, 0);
+#ifdef KORB_HAVE_GMP
+    /* Integer#fdiv(Integer) when a plain double/double would lose precision (a
+     * Bignum operand, or a Fixnum past 2^53): divide as an exact rational so the
+     * result is correctly rounded — handles subnormals (1.fdiv(10**323)) and
+     * magnitudes a double can't represent.  CRuby does the same. */
+    if (KORB_INTEGER_P(bv)) {
+        bool exact = KORB_BIGNUM_P(bv) || KORB_BIGNUM_P(sv);
+        if (!exact) {
+            const intptr_t si = FIX2LONG(sv), bi = FIX2LONG(bv);
+            const intptr_t lim = (intptr_t)1 << 53;
+            exact = si > lim || si < -lim || bi > lim || bi < -lim;
+        }
+        if (exact) {
+            mpz_t zn, zd; korb_to_mpz(sv, zn); korb_to_mpz(bv, zd);
+            if (mpz_sgn(zd) != 0) {                       /* zero divisor → Float ±Inf/NaN below */
+                mpq_t q; mpq_init(q);
+                mpq_set_num(q, zn); mpq_set_den(q, zd); mpq_canonicalize(q);
+                const double r = mpq_get_d(q);
+                mpq_clear(q); mpz_clear(zn); mpz_clear(zd);
+                return korb_float_new(c, slots, r);
+            }
+            mpz_clear(zn); mpz_clear(zd);
+        }
+    }
+#endif
+    double s; korb_num_to_d(sv, &s);                      /* self may be a Bignum */
+    double o; if (UNLIKELY(!korb_num_to_d(bv, &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    return korb_float_new(c, slots, s / o);
 }
 static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
