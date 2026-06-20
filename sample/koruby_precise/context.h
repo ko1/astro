@@ -409,7 +409,7 @@ typedef struct KorbHash {
  * reorders pairs (delete/shift/clear/reject!) so pair indices can't go stale.
  * korb_hash_find falls back to linear; the next insert past the threshold
  * rebuilds.  (NOINDEX, if set, stays set.) */
-#define KORB_HASH_DROP_INDEX(h) do { (h)->index = NULL; (h)->idx_mask = 0; } while (0)
+#define KORB_HASH_DROP_INDEX(h) do { ARO_GC_RAW_STORE(&(h)->index, NULL); (h)->idx_mask = 0; } while (0)
 
 /* Range: begin/end + exclusivity.  Endpoints are arbitrary values (GC edges). */
 typedef struct KorbRange {

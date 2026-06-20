@@ -996,7 +996,7 @@ korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
     if (!(h->head.flags & (KORB_FL_HASH_NOINDEX | KORB_FL_CMP_BY_ID))) {
         if (UNLIKELY(!korb_key_indexable(VALUE_REF_GET(kref)))) {
             h->head.flags |= KORB_FL_HASH_NOINDEX;
-            h->index = NULL; h->idx_mask = 0;
+            ARO_GC_RAW_STORE(&h->index, NULL); h->idx_mask = 0;
         } else if (h->idx_mask) {
             if (UNLIKELY((size_t)h->len * 10 > (size_t)(h->idx_mask + 1) * 7))
                 CHECK(korb_hash_index_build(c, slots, href));
@@ -1627,7 +1627,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     if (depth == 0) {                                    /* no captured outer locals */
         KorbProc *p = korb_alloc(c, slots + 1, sizeof(KorbProc), KORB_OBJ_PROC);
         p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
-        p->env = (VALUE)((uintptr_t)def_env | 1u);       /* sentinel (unused by body) */
+        ARO_GC_RAW_STORE(&p->env, (VALUE)((uintptr_t)def_env | 1u));   /* sentinel non-pointer (unused by body); WB-exempt */
         ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, slots[0]);
         return RESULT_OK((VALUE)p);
     }

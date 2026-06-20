@@ -665,9 +665,17 @@ aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
  *   1) stack-allocated (alloca / on-stack) struct init — holder is not
  *      a GC object so reading head.gc_flags is undefined;
  *   2) SCAN_EDGES forwarding writeback — GC is running, mutator paused,
- *      remset doesn't apply.
- * Mutator writes that update an already-live heap object MUST use
- * ARO_STORE instead.  The macro preserves the slot's value type via
- * __typeof__ so it works for VALUE / typed-ptr / char * slots alike. */
+ *      remset doesn't apply;
+ *   3) storing a value that is provably NOT a heap edge — NULL, or a tagged
+ *      non-pointer sentinel (low bits set; the edge filter skips it) — so no
+ *      old->young reference can be created.
+ * Mutator writes that store a real heap pointer into an already-live heap
+ * object MUST use ARO_STORE instead.
+ *
+ * The value's bytes are copied through the slot's element type (memcpy strips
+ * the audit const cleanly; __typeof__ keeps the slot's size, so VALUE /
+ * typed-ptr / char * slots all work).  Release builds (ARO_GC_EDGE empty) fold
+ * the fixed-size memcpy to a plain store — identical to a direct assignment. */
 #define ARO_GC_RAW_STORE(slot, val) \
-    (*(__typeof__(*(slot)) *)(uintptr_t)(slot) = (val))
+    do { __typeof__(*(slot)) _aro_rs_ = (val); \
+         __builtin_memcpy((void *)(uintptr_t)(slot), &_aro_rs_, sizeof(_aro_rs_)); } while (0)
