@@ -963,8 +963,17 @@ struct CTX_struct {
            (size_bytes) - sizeof(AroObjectHeader))
 #define AROH_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 
-/* No sample-managed external resources in M0. */
-#define AROH_FINALIZE(payload) ((void)(payload))
+/* Finalizer: free a collected Bignum's external GMP limbs.  Only KORB_OBJ_BIGNUM
+ * is registered (aro_gc_finalize_register in korb_big_from_mpz), so the walk only
+ * ever hands this macro a dead bignum — the type check is belt-and-suspenders. */
+#ifdef KORB_HAVE_GMP
+#  define AROH_FINALIZE(payload) do {                                          \
+       if ((((AroObjectHeader *)(payload))->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_BIGNUM) \
+           mpz_clear(((KorbBignum *)(payload))->z);                            \
+   } while (0)
+#else
+#  define AROH_FINALIZE(payload) ((void)(payload))
+#endif
 
 /* -----------------------------------------------------------------------------
  * Options
