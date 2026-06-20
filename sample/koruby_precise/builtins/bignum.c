@@ -23,6 +23,7 @@ static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src) {
     KorbBignum *b = korb_alloc(c, slots, sizeof(KorbBignum), KORB_OBJ_BIGNUM);   /* may GC; src is local */
     mpz_init_set(b->z, src);
     aro_gc_finalize_register(c, b);   /* free the mpz limbs (AROH_FINALIZE → mpz_clear) when b is collected */
+    aro_gc_account_external(c, (ssize_t)KORB_BIG_LIMB_BYTES(b->z));   /* limbs are external malloc → GC pressure (immutable, so the matching -delta is in AROH_FINALIZE) */
     return RESULT_OK((VALUE)b);
 }
 double korb_big_to_d(VALUE v) { return mpz_get_d(VAL2BIG(v)->z); }

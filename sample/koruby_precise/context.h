@@ -965,11 +965,21 @@ struct CTX_struct {
 
 /* Finalizer: free a collected Bignum's external GMP limbs.  Only KORB_OBJ_BIGNUM
  * is registered (aro_gc_finalize_register in korb_big_from_mpz), so the walk only
- * ever hands this macro a dead bignum — the type check is belt-and-suspenders. */
+ * ever hands this macro a dead bignum — the type check is belt-and-suspenders.
+ *
+ * Also drops the limb bytes from the GC's external-pressure counter (the malloc-
+ * increase analogue) so it tracks live external memory.  `c` here is the CTX
+ * parameter of aro_gc_finalize_walk — the macro's ONLY expansion site (gc_common.c)
+ * — so no GMP allocator hook / process-global is needed (the create site,
+ * korb_big_from_mpz, accounts the matching +delta with its own c). */
 #ifdef KORB_HAVE_GMP
+#  define KORB_BIG_LIMB_BYTES(z) ((size_t)mpz_size(z) * sizeof(mp_limb_t))
 #  define AROH_FINALIZE(payload) do {                                          \
-       if ((((AroObjectHeader *)(payload))->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_BIGNUM) \
-           mpz_clear(((KorbBignum *)(payload))->z);                            \
+       if ((((AroObjectHeader *)(payload))->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_BIGNUM) { \
+           KorbBignum *_aro_bz = (KorbBignum *)(payload);                      \
+           aro_gc_account_external(c, -(ssize_t)KORB_BIG_LIMB_BYTES(_aro_bz->z)); \
+           mpz_clear(_aro_bz->z);                                             \
+       }                                                                       \
    } while (0)
 #else
 #  define AROH_FINALIZE(payload) ((void)(payload))
