@@ -26,7 +26,31 @@ static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src) {
     aro_gc_account_external(c, (ssize_t)KORB_BIG_LIMB_BYTES(b->z));   /* limbs are external malloc → GC pressure (immutable, so the matching -delta is in AROH_FINALIZE) */
     return RESULT_OK((VALUE)b);
 }
-double korb_big_to_d(VALUE v) { return mpz_get_d(VAL2BIG(v)->z); }
+/* mpz_get_d truncates toward zero; CRuby rounds an Integer to the nearest double
+ * (ties to even), so (10**308).to_f == 1.0e308, not 9.999...e307.  Take the
+ * truncated value and its neighbour toward ±Inf, then pick whichever is closer
+ * by exact mpz distance (tie → the candidate with an even significand bit). */
+double korb_big_to_d(VALUE v) {
+    mpz_srcptr z = VAL2BIG(v)->z;
+    const double lo = mpz_get_d(z);                       /* |lo| <= |z| (toward zero) */
+    if (isinf(lo)) return lo;                             /* magnitude overflows double */
+    const double hi = nextafter(lo, lo < 0 ? -HUGE_VAL : HUGE_VAL);
+    if (isinf(hi)) return lo;                             /* lo already the max finite */
+    mpz_t zl, zh, dl, dh;
+    mpz_init(zl); mpz_init(zh); mpz_init(dl); mpz_init(dh);
+    mpz_set_d(zl, lo); mpz_set_d(zh, hi);
+    mpz_sub(dl, z, zl); mpz_abs(dl, dl);                  /* |z - lo| */
+    mpz_sub(dh, zh, z); mpz_abs(dh, dh);                  /* |hi - z| */
+    const int cmp = mpz_cmp(dh, dl);                      /* <0: hi nearer, >0: lo nearer */
+    double r = lo;
+    if (cmp < 0) r = hi;
+    else if (cmp == 0) {                                  /* exact tie → round to even significand */
+        uint64_t hbits; __builtin_memcpy(&hbits, &hi, sizeof hbits);
+        r = (hbits & 1u) == 0 ? hi : lo;
+    }
+    mpz_clear(zl); mpz_clear(zh); mpz_clear(dl); mpz_clear(dh);
+    return r;
+}
 
 /* Integer +,-,*,/,% (op 0..4) over Fixnum/Bignum; result normalised. */
 RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t line) {

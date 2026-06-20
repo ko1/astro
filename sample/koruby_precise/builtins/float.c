@@ -251,7 +251,16 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_int_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(8));   /* bytes in a machine word (Fixnum) */
+    (void)c;(void)slots;(void)a;
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {              /* Bignum: bytes needed to hold |self| */
+        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);
+        const size_t bytes = (mpz_sizeinbase(z, 2) + 7) / 8;
+        mpz_clear(z);
+        return RESULT_OK(LONG2FIX((intptr_t)bytes));
+    }
+#endif
+    return RESULT_OK(LONG2FIX(8));   /* a Fixnum occupies a machine word */
 }
 static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
