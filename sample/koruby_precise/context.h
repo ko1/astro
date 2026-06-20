@@ -973,18 +973,37 @@ struct CTX_struct {
  * parameter of aro_gc_finalize_walk — the macro's ONLY expansion site (gc_common.c)
  * — so no GMP allocator hook / process-global is needed (the create site,
  * korb_big_from_mpz, accounts the matching +delta with its own c). */
+/* `c` is the CTX parameter of aro_gc_finalize_walk — the macro's ONLY expansion
+ * site (gc_common.c) — so finalizers reach the context without a process-global.
+ * Each case frees only memory the object OWNS; shared/immortal data (a method
+ * entry's body / opt_defaults / kw_info live in the immortal AST; both copies of
+ * a define_method'd entry share them) is NOT freed here. */
 #ifdef KORB_HAVE_GMP
 #  define KORB_BIG_LIMB_BYTES(z) ((size_t)mpz_size(z) * sizeof(mp_limb_t))
-#  define AROH_FINALIZE(payload) do {                                          \
-       if ((((AroObjectHeader *)(payload))->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_BIGNUM) { \
-           KorbBignum *_aro_bz = (KorbBignum *)(payload);                      \
-           aro_gc_account_external(c, -(ssize_t)KORB_BIG_LIMB_BYTES(_aro_bz->z)); \
-           mpz_clear(_aro_bz->z);                                             \
-       }                                                                       \
-   } while (0)
+#  define KORB_FINALIZE_BIGNUM_CASE                                            \
+      case KORB_OBJ_BIGNUM: {                                                  \
+        KorbBignum *_aro_bz = (KorbBignum *)_aro_h;   /* _aro_h = the payload */ \
+        aro_gc_account_external(c, -(ssize_t)KORB_BIG_LIMB_BYTES(_aro_bz->z)); \
+        mpz_clear(_aro_bz->z);                                                \
+        break;                                                                 \
+      }
 #else
-#  define AROH_FINALIZE(payload) ((void)(payload))
+#  define KORB_FINALIZE_BIGNUM_CASE
 #endif
+#define AROH_FINALIZE(payload) do {                                            \
+    AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);                    \
+    switch (_aro_h->flags & KORB_OBJ_TYPE_MASK) {                              \
+      case KORB_OBJ_CLASS: {                                                   \
+        KorbClass *_aro_cl = (KorbClass *)_aro_h;                             \
+        for (uint32_t _mi = 0; _mi < _aro_cl->method_cnt; _mi++)              \
+            free(_aro_cl->methods[_mi]);   /* per-class calloc'd entries */    \
+        free(_aro_cl->methods);            /* the libc method-ptr array */     \
+        break;                                                                 \
+      }                                                                        \
+      KORB_FINALIZE_BIGNUM_CASE                                                \
+      default: break;                                                          \
+    }                                                                          \
+  } while (0)
 
 /* -----------------------------------------------------------------------------
  * Options

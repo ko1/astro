@@ -1129,6 +1129,7 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
     k->exc_etype = -1;                                 /* not an exception class by default */
     if (superclass != KORB_NIL) ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->superclass, VALUE_REF_GET(sref));
+    aro_gc_finalize_register(c, k);                    /* free the libc methods[] + entries when k is collected */
     return RESULT_OK((VALUE)k);
 }
 

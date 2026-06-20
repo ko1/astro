@@ -102,6 +102,13 @@ $(NODE_GENFILES) &: node.def koruby_gen.rb $(LIB)/astrogen.rb
 run: koruby_precise
 	./koruby_precise -e 'def fib(n) = n < 2 ? n : fib(n-1) + fib(n-2); puts fib(25)'
 
+# Native-memory leak regression check (mpz limbs, class method tables, ...).
+# Churns leak-prone objects under GC stress in valgrind; asserts the
+# definitely-lost block count stays small.  Skips cleanly without valgrind.
+leak-check: koruby_precise
+	tools/leak_check.sh ./koruby_precise
+.PHONY: leak-check
+
 clean:
 	rm -f koruby_precise $(NODE_GENFILES) .built_gc
 	rm -rf code_store
