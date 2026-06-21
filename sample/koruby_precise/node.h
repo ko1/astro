@@ -355,7 +355,6 @@ NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char 
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;
-extern bool koruby_uses_toplevel_binding;            /* parser saw a TOPLEVEL_BINDING reference → create it (else skip: an eagerly-opened toplevel env taxes every method return) */
 
 /* code repo iteration (main.c) — every method body is its own AOT entry
  * because call sites dispatch through body->head.dispatcher at runtime. */
