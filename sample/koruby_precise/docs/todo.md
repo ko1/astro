@@ -27,10 +27,23 @@ probe + 実ハーネス array spec で発見・修正 (corpus 89295/5 維持・S
 - 正解 = **per-frame EP cell (CRuby の magic 相当)**: 各 frame が base[-1] に自分の open
   env を持ち、return は自分の base[-1] だけ見る (グローバル不読)。node_eget mixed-chain・
   korb_make_proc base[-1]=E・korb_frame_escaped までは実装でき動いた。
-- **ブロッカー**: base[-1] の recv 再利用は implicit-self 呼び出し (`#{speak}`等) で破綻
-  (implicit-self は recv を積まない)。→ **全コールで引数を1セル上げて base[-1] を予約する
-  呼び出し規約変更**が必須 (parser staging 全体)。toplevel/fiber slots は先頭スラックも要る。
-  この規約変更ありきで再着手すること。base[-2]=magic(型/フラグ/署名) も同時に。
+- **ブロッカーは解決済 (実装方針確定)**: 全面規約変更は不要。implicit-self の call が
+  **self を recv として base[-1] に積む** (node_send と同じ) ようにすれば base[-1]=recv が
+  全 call で揃い、recv 再利用の EP が成立。
+  - [済] **node_call を self-as-recv 化** (argv[0]=ALLOC_node_self、self=base[-1]、
+    behavior-neutral・green)。
+  - [残 1] 同様に **node_call_kw / node_call_splat / node_call_blkproc** も self を recv に
+    (今は self_off のまま → EP 適用時に base[-1]=呼出元生値で crash する)。super/yield/block は
+    korb_block_yield(bf[0]=prev) 経由なので EP セルは既にある (要確認)。
+  - [残 2] **EP 設計を再適用**: korb_invoke_{simple,method,kw} で `base[-1]=0` init +
+    return を `korb_frame_escaped(base)` 判定 (node.h に helper)。node_eget/eset を
+    mixed-chain (odd=live base / even=env を walk 途中で切替)。korb_make_proc/binding は
+    `bases[k][-1]=E` (E->prev に元の外側リンク)、korb_open_env_find は base[-1] 版。
+    open_envs/open_env_cnt/register/close_envs + AROH_VISIT_ROOTS の loop を撤去。
+    toplevel (c->slots) と fiber (vslots) は **先頭スラック1セル** + 走査を 1 つ手前から
+    (base[-1] が配列先頭手前で OOB になるため)。eval frame は fb=slots+1 で EP セル確保。
+  - [残 3] 検証: corpus / STRESS+PURGE (closure/binding/fiber 重点) / AOT / perf。
+  - base[-2]=magic (型/フラグ/署名・健全性 = CRuby の magic) も同時に入れられる (任意)。
 
 **defer (発覚、未着手):**
 - *literal* `&:sym` block が unary 専用 (kp_symbol_block が `x.sym()`、追加引数を
