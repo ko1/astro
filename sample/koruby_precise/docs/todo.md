@@ -20,6 +20,18 @@ probe + 実ハーネス array spec で発見・修正 (corpus 89295/5 維持・S
 - **Bignum#to_f round-to-nearest**: mpz_get_d は toward-zero truncate。nextafter
   + mpz 距離比較で nearest-even。(10**308).to_f=1.0e308。
 
+**性能: TOPLEVEL_BINDING の return 課税 (設計 A 待ち、最優先級):**
+- eager TOPLEVEL_BINDING で open env 常時 → 全 method/block return が `if (open_env_cnt)
+  korb_close_ret` の無駄 walk (method_call の ~40%、bench 3-8x 遅化)。
+- lazy 化は eval/const_get/defined? を壊すので不可 (revert 済)。
+- 正解 = **per-frame EP cell (CRuby の magic 相当)**: 各 frame が base[-1] に自分の open
+  env を持ち、return は自分の base[-1] だけ見る (グローバル不読)。node_eget mixed-chain・
+  korb_make_proc base[-1]=E・korb_frame_escaped までは実装でき動いた。
+- **ブロッカー**: base[-1] の recv 再利用は implicit-self 呼び出し (`#{speak}`等) で破綻
+  (implicit-self は recv を積まない)。→ **全コールで引数を1セル上げて base[-1] を予約する
+  呼び出し規約変更**が必須 (parser staging 全体)。toplevel/fiber slots は先頭スラックも要る。
+  この規約変更ありきで再着手すること。base[-2]=magic(型/フラグ/署名) も同時に。
+
 **defer (発覚、未着手):**
 - *literal* `&:sym` block が unary 専用 (kp_symbol_block が `x.sym()`、追加引数を
   転送せず)。`reduce(&:+)` 不可 (`reduce(:+)` は可)。n-ary 化は send_splat entry

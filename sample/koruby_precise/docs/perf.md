@@ -3,23 +3,29 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
-## 2026-06-20: eager TOPLEVEL_BINDING の regression を lazy 化で解消
+## 2026-06-20/21: TOPLEVEL_BINDING の return 課税問題 (未解決、設計 A 待ち)
 
-TOPLEVEL_BINDING を起動時に eager 作成していたため、Binding が toplevel frame 上に
-**open env を常時張り** `vm->open_env_cnt >= 1` が恒常化。全 method/block return が
-`if (UNLIKELY(open_env_cnt)) korb_close_ret(...)` を取り open-env list を walk する
-無駄が乗っていた (perf: `korb_close_envs` が method_call の ~40%)。bench は全て hot
-loop を `def bench` で包んで 1000 回呼ぶ構造なので **ほぼ全 bench が 3-8x 遅化**。
+**問題**: TOPLEVEL_BINDING を起動時に eager 作成すると Binding が toplevel frame 上に
+open env を張り `vm->open_env_cnt >= 1` が恒常化。全 method/block return が
+`if (open_env_cnt) korb_close_ret(...)` を取り open-env list を walk する無駄が乗る
+(perf: `korb_close_envs` が method_call の ~40%、bench は hot loop を `def bench` で
+包んで 1000 回呼ぶ構造なので影響大)。aot+cached vs-YJIT で nested_loop 6.34・ackermann
+5.69・ivar 4.45・while2 4.83・method_call 3.65 等。
 
-修正: parser が `TOPLEVEL_BINDING` 参照を検出した時だけ作成 (lazy)。
+**失敗した試み 1 — lazy 化** (revert 済): parser が `TOPLEVEL_BINDING` 参照を見た時だけ
+作成。bench は速くなるが **eval/const_get/defined? の動的アクセスで定数が見えず** 不正
+(TOPLEVEL_BINDING は常に存在すべき)。撤回。
 
-aot+cached の vs-YJIT 比 (修正前→後): nested_loop 6.34→0.82、ackermann 5.69→1.51、
-ivar 4.45→1.37、tak 4.59→1.61、while2 4.83→0.48、method_call 3.65→1.10、send→0.94。
-**geomean (vs CRuby): koruby AOT 0.51× / YJIT 0.48× / CRuby 1.00×** — YJIT とほぼ
-互角・CRuby の ~2x に回復。残る vs-YJIT 負けは array/numeric (array_access 2.61・
-bitops 2.58・mandelbrot 2.16 等、tree-walker の array 要素アクセス構造差) と再帰
-(ackermann 1.51・tak 1.61)。詳細 → [[project_koruby_precise_toplevel_binding_perf]]。
-教訓: **永続 frame 上に open env を張る機能は eager に作るな** (return fast-path に課税)。
+**失敗した試み 2 — per-frame EP cell (設計 A)、途中まで**: return が global を読まず、
+各 frame が自分の EP セル (base[-1]) に open env を持つ設計。node_eget の mixed-chain・
+korb_make_proc/binding の base[-1]=E 化までは動いたが、**base[-1] を recv スロット再利用
+する前提が implicit-self 呼び出し (`#{speak}` 等) で破綻** — implicit-self は recv を
+base[-1] に積まず、そこは呼び出し元の生きた値なので `base[-1]=0` が破壊し SEGV。
+正しくは **全コールが引数を1セル上にずらして base[-1] を予約する呼び出し規約変更**が必須
+(parser の staging 全体に及ぶ)。これは未着手。eager (correct, but slow) に戻して保留。
+
+教訓: 永続 frame 上の open env は return fast-path に課税する。直すには per-frame EP が要る
+が base[-1] の recv 再利用は不可 (implicit-self)。設計 A は規約変更ありきで再挑戦すること。
 
 ## ベンチマーク環境
 
