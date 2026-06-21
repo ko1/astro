@@ -312,7 +312,7 @@ main(int argc, char *argv[])
         VALUE *pcur = c->slots + prelude_locals;
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
         if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); return 1; }
-        c->slots[prelude_locals - 1] = pm.value;
+        c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); return 1; }
     }
@@ -328,13 +328,13 @@ main(int argc, char *argv[])
         {
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
             if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
-            c->slots[koruby_toplevel_locals_cnt - 1] = mr.value;
+            c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {
             RESULT tb = korb_make_binding(c, toplevel_cursor, c->slots,
                                           koruby_toplevel_local_syms, koruby_toplevel_local_cnt,
-                                          c->slots[koruby_toplevel_locals_cnt - 1]);
+                                          c->slots[-1]);
             if (tb.state == KORB_NORMAL)
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
         }

@@ -320,6 +320,16 @@ class KorubyNodeDef < ASTroGen::NodeDef
           arg
         end
       end
+      # cursor-advance line(s) emitted into the SD body.  @framehdr nodes must
+      # reserve + zero KORB_FRAME_HDR meta cells below the staged children, exactly
+      # like the interpreted dispatcher (build_children_dispatch) — otherwise the
+      # AOT path leaves EP/magic unreserved and corrupts the callee frame.
+      adv = if @option.include?('@framehdr')
+              'fprintf(fp, "    slots += %u + KORB_FRAME_HDR;\\n", _cnt);' + "\n" +
+              '          fprintf(fp, "    for (uint32_t _h = 0; _h < KORB_FRAME_HDR; _h++) slots[-(intptr_t)%u - 1 - (intptr_t)_h] = 0;\\n", _cnt);'
+            else
+              'fprintf(fp, "    slots += %u;\\n", _cnt);'
+            end
       <<~C
       static void
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
@@ -344,7 +354,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
           fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
           fprintf(fp, "{\\n");
-          fprintf(fp, "    slots += %u;\\n", _cnt);
+          #{adv}
           for (uint32_t _i = 0; _i < _cnt; _i++) {
               /* no_inline child → indirect call via its stored dispatcher (index
                * baked); inlinable child → direct call to its baked SD name. */

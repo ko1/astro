@@ -423,11 +423,12 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     /* zero only the genuine locals (body locals + synth temps) that the body
      * may read/GC-scan; the top 2 cells (self, method-entry) are set just below,
      * so zeroing them is wasted (a hot-path win for arg-only methods like fib). */
-    if (locals_cnt - 2 > argc) memset(base + argc, 0, (locals_cnt - 2 - argc) * sizeof(VALUE));
-    base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
+    if (locals_cnt - 1 > argc) memset(base + argc, 0, (locals_cnt - 1 - argc) * sizeof(VALUE));
+    base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged); super/__method__ source */
     korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
-    (void)def_class;
+    /* self is already at base[-1] (the caller's staged receiver) — not copied to a
+     * top cell.  Every korb_invoke_simple caller stages self there (bottom header). */
+    (void)def_class; (void)self;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) {

@@ -2230,14 +2230,14 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
     for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
-    base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged -> GC skips); super reads owner, __method__ reads mid */
+    base[-1] = self;                                     /* self at base[-1] (bottom header); needed for Klass.new where base[-1]=class != obj */
+    base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged -> GC skips); super reads owner, __method__ reads mid */
     korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
     (void)def_class;
     if (block != NULL && m->uses_block) {
-        base[locals_cnt - 5] = (VALUE)((uintptr_t)block | 1u);
-        base[locals_cnt - 4] = (VALUE)(uintptr_t)def_env;   /* raw PREV (odd slots / clean KorbEnv) */
-        base[locals_cnt - 3] = captured_self;
+        base[locals_cnt - 4] = (VALUE)((uintptr_t)block | 1u);
+        base[locals_cnt - 3] = (VALUE)(uintptr_t)def_env;   /* raw PREV (odd slots / clean KorbEnv) */
+        base[locals_cnt - 2] = captured_self;
     }
     if (kw && kw->kwrest_slot >= 0) base[kw->kwrest_slot] = kwhash;   /* root kwhash across the GC below (kwrest slot is never a positional/keyword slot) */
     /* fill missing optional params by evaluating their defaults in method scope
@@ -2339,9 +2339,9 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (UNLIKELY(kw_argc > 64)) return korb_raise(c, slots, KORB_E_NOTIMPL, line, "too many keyword arguments");
     for (uint32_t p = 0; p < kw_argc; p++) kwbuf[p] = base[pos_argc + p];   /* capture before memset */
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
-    base[locals_cnt - 1] = self;
-    base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);
+    base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top */
     korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
+    (void)self;                                          /* self already at base[-1] (staged receiver, bottom header) */
     /* fast path: all keywords supplied in declared order (the common call shape,
      * e.g. box(x:,y:,z:) on def box(x:,y:,z:)) — direct positional bind, no scan,
      * no missing/unknown checks (every param present, every arg consumed). */
@@ -4056,7 +4056,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             }
         }
     }
-    bf[blocals] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self (re-read fresh) */
+    bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self → B[-1] (bottom header; re-read fresh) */
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
@@ -4512,7 +4512,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     VALUE *ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-                    return RESULT_OK(ibase[uinit->locals_cnt - 1]);   /* the (possibly moved) instance */
+                    return RESULT_OK(ibase[-1]);   /* the (possibly moved) instance */
                 }
                 return RESULT_OK(slots[1]);
             }
@@ -4554,7 +4554,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE *base = slots - argc;
             RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, init_def, block, def_env, KORB_CSELF_VAL(captured_self));
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-            return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
+            return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
         }
         if (UNLIKELY(argc != 0))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -4669,7 +4669,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                 const RESULT ir = korb_invoke_method(c, slots, init, argc, line, vm->mid_initialize,
                                                      obj, idef, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-                return RESULT_OK(base[init->locals_cnt - 1]);        /* the (possibly moved) obj */
+                return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
             if (UNLIKELY(argc != 0))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -6189,7 +6189,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
             if (j >= 0) fb[i] = korb_bind_env_get(b, (uint32_t)j);
             else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) fb[i] = VAL2HASH(b->extra)->items->data[2 * hi + 1]; }
         }
-        fb[L - 1] = VAL2BIND(bv)->self;                 /* self cell */
+        fb[-1] = VAL2BIND(bv)->self;                 /* self cell (base[-1]) */
         RESULT er = EVAL(c, entry, cur);
         if (UNLIKELY(er.state != KORB_NORMAL)) return er;
         fb[L] = er.value;                               /* park result across writeback allocs */
@@ -6198,7 +6198,6 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
          * stale). */
         #define EVAL_BIND VAL2BIND(VALUE_SLICE_GET(args, 1))
         for (uint32_t i = 0; i < ncnt; i++) {           /* write back: existing → env, new → extra hash */
-            if (i == L - 1) continue;                   /* the self cell, not a local */
             const int j = korb_bind_find(EVAL_BIND, nsyms[i]);
             if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, fb[i]); continue; }
             fb[L + 1] = EVAL_BIND->extra;
@@ -6217,7 +6216,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
-    fb[locals - 1] = mr.value;                          /* self cell (frame top) */
+    fb[-1] = mr.value;                          /* self cell (base[-1]) */
     return EVAL(c, ast, cur);
 }
 
@@ -6490,7 +6489,7 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
                 VALUE *const icur = slots + 2 + iargc;
                 RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-                return RESULT_RAISE_((icur - iargc)[uinit->locals_cnt - 1]);   /* the (moved) exception */
+                return RESULT_RAISE_((icur - iargc)[-1]);   /* the (moved) exception */
             }
             return RESULT_RAISE_(slots[1]);
         }

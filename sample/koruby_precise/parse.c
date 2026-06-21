@@ -192,7 +192,9 @@ static uint32_t
 pop_frame(struct kp_ctx *tc)
 {
     struct kp_frame *f = tc->frame;
-    uint32_t frame_size = (uint32_t)f->locals->size + f->synth_cnt + 2u + (f->uses_block ? 3u : 0u);
+    /* bottom-header: self lives at base[-1] (not a top cell); the only reserved
+     * top cell is the method entry.  +1u (entry) instead of +2u (entry+self). */
+    uint32_t frame_size = (uint32_t)f->locals->size + f->synth_cnt + 1u + (f->uses_block ? 3u : 0u);
     for (uint32_t i = f->bake_base; i < tc->bake_cnt; i++) {
         *tc->bake_list[i] -= (int32_t)frame_size;
     }
@@ -288,6 +290,50 @@ bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
 {
     NODE *n = ALLOC_node_eset(-2 - tc->chain, depth, index, rval);
     bake_add(tc, &n->u.node_eset.prev_off);
+    return n;
+}
+
+/* node_self reading the frame's self cell at base[-1] (bottom header).  The
+ * initial offset -1-chain is fixed up by pop_frame (-= frame_size) to
+ * -(frame_size+1)-chain = base[-1].  Other self_off readers (ivar/def/attr/
+ * cvar/super/...) follow the same rule: keep their initial -1-chain (cursor →
+ * base[fs-1]) value and bake the field so it becomes base[-1]. */
+static NODE *
+bake_self(struct kp_ctx *tc)
+{
+    NODE *n = ALLOC_node_self(-1 - tc->chain);
+    bake_add(tc, &n->u.node_self.self_off);
+    return n;
+}
+/* @x read/write: self at base[-1] (bottom header) — bake the self_off field. */
+static NODE *
+bake_ivar_get(struct kp_ctx *tc, uint32_t name)
+{
+    NODE *n = ALLOC_node_ivar_get(-1 - tc->chain, name);
+    bake_add(tc, &n->u.node_ivar_get.self_off);
+    return n;
+}
+static NODE *
+bake_ivar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
+{
+    NODE *n = ALLOC_node_ivar_set(-1 - tc->chain, name, val);
+    bake_add(tc, &n->u.node_ivar_set.self_off);
+    return n;
+}
+/* @@x read/write: self at base[-1] (baked); the method-entry / def_class cell is
+ * now the frame top (base[fs-1] = -1-chain, not baked, since the self cell is gone). */
+static NODE *
+bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
+{
+    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -1 - tc->chain, name, soft);
+    bake_add(tc, &n->u.node_cvar_get.self_off);
+    return n;
+}
+static NODE *
+bake_cvar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
+{
+    NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -1 - tc->chain, name, val);
+    bake_add(tc, &n->u.node_cvar_set.self_off);
     return n;
 }
 
@@ -908,7 +954,7 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
     if (!argv) abort();
     int32_t saved = tc->chain;
     tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;  /* @framehdr cursor +HDR */
-    argv[0] = ALLOC_node_self(-1 - tc->chain);          /* self → base[-1] (also the block's captured self) */
+    argv[0] = bake_self(tc);          /* self → base[-1] (also the block's captured self) */
     for (size_t i = 0; i < argc; i++)
         argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
     tc->chain = saved;
@@ -929,7 +975,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
         tc->frame->uses_block = true;
-        return ALLOC_node_block_given(-5 - tc->chain);   /* block_entry cell (fs-5) */
+        return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-5) */
     }
 
     /* `binding` — capture the current frame's local scope into a Binding.  Bakes
@@ -944,6 +990,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         const int32_t self_off = -1 - tc->chain;
         NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)syms, cnt);
         bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
+        bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
         return nb;
     }
 
@@ -984,7 +1031,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                     if (mode != 1) { descs[di].mid = rmid; descs[di].ivar = ivar; descs[di].is_writer = 0; di++; }
                     if (mode != 0) { descs[di].mid = wmid; descs[di].ivar = ivar; descs[di].is_writer = 1; di++; }
                 }
-                return ALLOC_node_attr(-1 - tc->chain, descs, count);
+                { NODE *_na = ALLOC_node_attr(-1 - tc->chain, descs, count); bake_add(tc, &_na->u.node_attr.self_off); return _na; }
             }
         }
     }
@@ -1000,6 +1047,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 int32_t self_off = -1 - tc->chain;
                 NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam);
                 bake_add(tc, &mk->u.node_make_proc.def_env_off);
+        bake_add(tc, &mk->u.node_make_proc.self_off);   /* self at base[-1] */
                 return mk;
             }
         }
@@ -1014,7 +1062,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 if (!argv) abort();
                 int32_t saved = tc->chain;
                 tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
-                argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
+                argv[0] = bake_self(tc);   /* self → base[-1] */
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
                 tc->chain = saved;
@@ -1036,7 +1084,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         int32_t self_off = -1 - tc->chain - 1;
         NODE *arr;
         WITH_CHAIN(tc, 1, (arr = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
-        return ALLOC_node_call_splat(mid, line, self_off, arr);
+        { NODE *_cs = ALLOC_node_call_splat(mid, line, self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
     }
 
     /* actual `*splat` call f(*arr): build the args Array, dispatch dynamically */
@@ -1048,7 +1096,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             int32_t self_off = -1 - tc->chain - 1;       /* one staged child: the args array */
             NODE *arr;
             WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
-            return ALLOC_node_call_splat(mid, line, self_off, arr);
+            { NODE *_cs = ALLOC_node_call_splat(mid, line, self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
         }
     }
 
@@ -1075,7 +1123,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             NODE **argv = malloc(sizeof(NODE *) * cnt);
             if (!argv) abort();
             int32_t saved = tc->chain; tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
-            argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
+            argv[0] = bake_self(tc);   /* self → base[-1] */
             for (uint32_t i = 0; i < pos_argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
             for (uint32_t j = 0; j < kw_cnt; j++) argv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
             tc->chain = saved;
@@ -1092,7 +1140,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (!argv) abort();
         int32_t saved = tc->chain;
         tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr: dispatcher reserves HDR cells → cursor +HDR */
-        argv[0] = ALLOC_node_self(-1 - tc->chain);      /* self → base[-1] */
+        argv[0] = bake_self(tc);      /* self → base[-1] */
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
         tc->chain = saved;
@@ -1191,6 +1239,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         tc->chain = saved;
         NODE *call = ALLOC_node_send_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)sc + KORB_FRAME_HDR), argv, sc);
         bake_add(tc, &call->u.node_send_blk.def_env_off);
+        bake_add(tc, &call->u.node_send_blk.self_off);    /* captured self at base[-1] (bottom header) */
         return call;
     }
     /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
@@ -1238,7 +1287,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
      * self (the module).  recv_node = self for the singleton copy. */
     bool mod_func = !recv && tc->frame->module_function_mode;
     if (recv)           WITH_CHAIN(tc, 1, (recv_node = transduce(tc, recv)));
-    else if (mod_func)  WITH_CHAIN(tc, 1, (recv_node = ALLOC_node_self(-1 - tc->chain)));
+    else if (mod_func)  WITH_CHAIN(tc, 1, (recv_node = bake_self(tc)));
 
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
@@ -1367,7 +1416,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
         tc->frame->uses_block = true;      /* reserve the frame's block cells */
         int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
-        NODE *bp = ALLOC_node_blkparam(dst, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
+        NODE *bp = ALLOC_node_blkparam(dst, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
         body = ALLOC_node_seq(bp, body);
     }
@@ -1380,12 +1429,14 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (mod_func) {
         /* module_function: define as instance method AND as a singleton on self. */
         NODE *idef = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+        bake_add(tc, &idef->u.node_def.self_off);          /* definee = self at base[-1] */
         NODE *sdef = ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node);
         def = ALLOC_node_seq(idef, sdef);
+    } else if (recv_node) {
+        def = ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node);
     } else {
-        def = recv_node
-            ? ALLOC_node_singleton_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, recv_node)
-            : ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+        def = ALLOC_node_def(mid, body, params_cnt, req_cnt, post_cnt, rest_slot, frame_size, uses_block, opt_defaults, kw_info, -1 - tc->chain);
+        bake_add(tc, &def->u.node_def.self_off);           /* definee = self at base[-1] */
     }
 
     /* Every method body is its own AOT entry: call sites reach it through
@@ -1449,7 +1500,7 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         return lvar_write(tc, t, lt->name, 0, mw_index_get(tc, src_tmp, idx, aref, line));
     }
     if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE))
-        return ALLOC_node_ivar_set(-1 - tc->chain, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
+        return bake_ivar_set(tc, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
                                    mw_index_get(tc, src_tmp, idx, aref, line));
     if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
         uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
@@ -1673,16 +1724,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       /* ---- self / instance variables (self cell at base[fs-1], -1-chain) ---- */
       case PM_SELF_NODE:
-        return ALLOC_node_self(-1 - tc->chain);
+        return bake_self(tc);
       case PM_INSTANCE_VARIABLE_READ_NODE: {
         const pm_instance_variable_read_node_t *iv = (const pm_instance_variable_read_node_t *)node;
-        return ALLOC_node_ivar_get(-1 - tc->chain, kp_intern_cid(tc, iv->name));
+        return bake_ivar_get(tc, kp_intern_cid(tc, iv->name));
       }
       case PM_INSTANCE_VARIABLE_WRITE_NODE: {
         const pm_instance_variable_write_node_t *iw = (const pm_instance_variable_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, iw->name);
         NODE *val = transduce(tc, iw->value);    /* register child, current chain */
-        return ALLOC_node_ivar_set(-1 - tc->chain, name, val);
+        return bake_ivar_set(tc, name, val);
       }
       case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: {   /* @x op= v */
         const pm_instance_variable_operator_write_node_t *ow =
@@ -1693,41 +1744,41 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
         NODE *lhs, *rhs, *comb;
         if (op != KP_BINOP_NONE) {
-            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = bake_ivar_get(tc, name),
                                                        rhs = transduce(tc, ow->value)));
             comb = alloc_binop(op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
-            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = ALLOC_node_ivar_get(-1 - tc->chain, name),
+            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = bake_ivar_get(tc, name),
                                                         rhs = transduce(tc, ow->value)));
             comb = kp_send1(opmid, line, lhs, rhs);
         }
-        return ALLOC_node_ivar_set(-1 - tc->chain, name, comb);
+        return bake_ivar_set(tc, name, comb);
       }
       case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: {        /* @x &&= v */
         const pm_instance_variable_and_write_node_t *aw =
             (const pm_instance_variable_and_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, aw->name);
-        return ALLOC_node_and(ALLOC_node_ivar_get(-1 - tc->chain, name),
-                              ALLOC_node_ivar_set(-1 - tc->chain, name, transduce(tc, aw->value)));
+        return ALLOC_node_and(bake_ivar_get(tc, name),
+                              bake_ivar_set(tc, name, transduce(tc, aw->value)));
       }
       case PM_INSTANCE_VARIABLE_OR_WRITE_NODE: {         /* @x ||= v */
         const pm_instance_variable_or_write_node_t *ow =
             (const pm_instance_variable_or_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, ow->name);
-        return ALLOC_node_or(ALLOC_node_ivar_get(-1 - tc->chain, name),
-                             ALLOC_node_ivar_set(-1 - tc->chain, name, transduce(tc, ow->value)));
+        return ALLOC_node_or(bake_ivar_get(tc, name),
+                             bake_ivar_set(tc, name, transduce(tc, ow->value)));
       }
 
       /* ---- class variables `@@x` (self at base[fs-1], def_class at fs-2) ---- */
       case PM_CLASS_VARIABLE_READ_NODE: {
         const pm_class_variable_read_node_t *cv = (const pm_class_variable_read_node_t *)node;
-        return ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, kp_intern_cid(tc, cv->name), 0);
+        return bake_cvar_get(tc, kp_intern_cid(tc, cv->name), 0);
       }
       case PM_CLASS_VARIABLE_WRITE_NODE: {
         const pm_class_variable_write_node_t *cw = (const pm_class_variable_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, cw->name);
         NODE *val = transduce(tc, cw->value);
-        return ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, val);
+        return bake_cvar_set(tc, name, val);
       }
       case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE: {      /* @@x op= v */
         const pm_class_variable_operator_write_node_t *ow =
@@ -1738,29 +1789,29 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
         NODE *lhs, *rhs, *comb;
         if (op != KP_BINOP_NONE) {
-            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 0),
+            WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs = bake_cvar_get(tc, name, 0),
                                                        rhs = transduce(tc, ow->value)));
             comb = alloc_binop(op, lhs, rhs, line);
         } else {   /* &= |= ^= <<= >>= → method send */
-            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 0),
+            WITH_CHAIN(tc, KP_SEND1_SC, (lhs = bake_cvar_get(tc, name, 0),
                                          rhs = transduce(tc, ow->value)));
             comb = kp_send1(opmid, line, lhs, rhs);
         }
-        return ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, comb);
+        return bake_cvar_set(tc, name, comb);
       }
       case PM_CLASS_VARIABLE_AND_WRITE_NODE: {           /* @@x &&= v */
         const pm_class_variable_and_write_node_t *aw =
             (const pm_class_variable_and_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, aw->name);
-        return ALLOC_node_and(ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 1),
-                              ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, transduce(tc, aw->value)));
+        return ALLOC_node_and(bake_cvar_get(tc, name, 1),
+                              bake_cvar_set(tc, name, transduce(tc, aw->value)));
       }
       case PM_CLASS_VARIABLE_OR_WRITE_NODE: {            /* @@x ||= v */
         const pm_class_variable_or_write_node_t *ow =
             (const pm_class_variable_or_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, ow->name);
-        return ALLOC_node_or(ALLOC_node_cvar_get(-1 - tc->chain, -2 - tc->chain, name, 1),
-                             ALLOC_node_cvar_set(-1 - tc->chain, -2 - tc->chain, name, transduce(tc, ow->value)));
+        return ALLOC_node_or(bake_cvar_get(tc, name, 1),
+                             bake_cvar_set(tc, name, transduce(tc, ow->value)));
       }
 
       case PM_ARRAY_NODE: {
@@ -1905,6 +1956,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 }
             }
             NODE *mn = ALLOC_node_massign_het(descs, nt, -1 - tc->chain, rhs);
+            bake_add(tc, &mn->u.node_massign_het.self_off);   /* self at base[-1] (bottom header) */
             for (uint32_t i = 0; i < nt; i++) if (descs[i].kind == 0) bake_add(tc, &descs[i].data);
             return mn;
         }
@@ -2152,6 +2204,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         int32_t self_off = -1 - tc->chain;
         NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);
         bake_add(tc, &mk->u.node_make_proc.def_env_off);
+        bake_add(tc, &mk->u.node_make_proc.self_off);   /* self at base[-1] */
         return mk;
       }
       case PM_MATCH_PREDICATE_NODE: {                /* `expr in pattern` → bool */
@@ -2264,13 +2317,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_NODE))               /* `A::B` — flat const table: probe rightmost name */
             return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_path_node_t *)v)->name), 0);
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
-            return ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off);
+            { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE))
             return ALLOC_node_defined(3, kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name), 0);
         if (PM_NODE_TYPE_P(v, PM_CALL_NODE)) {                           /* method call */
             const pm_call_node_t *cn = (const pm_call_node_t *)v;
             if (cn->receiver == NULL && cn->arguments == NULL && cn->block == NULL)
-                return ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off);   /* bareword → method? */
+                { NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }   /* bareword → method? */
             return ALLOC_node_defined(7, 0, 0);                         /* recv.meth / op → "method" (optimistic) */
         }
         if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
@@ -2293,11 +2346,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
         if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
             if (yargc == 0)
-                return ALLOC_node_yield0(line, -5 - tc->chain, -4 - tc->chain, -3 - tc->chain);
+                return ALLOC_node_yield0(line, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
             if (yargc == 1) {
                 NODE *a0;
                 WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-                return ALLOC_node_yield1(line, -5 - (tc->chain + 1), -4 - (tc->chain + 1), -3 - (tc->chain + 1), a0);
+                return ALLOC_node_yield1(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), a0);
             }
             NODE **argv = malloc(sizeof(NODE *) * yargc);          /* yield a, b, ... */
             if (!argv) abort();
@@ -2308,10 +2361,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             const int32_t off = tc->chain + (int32_t)yargc;
             return ALLOC_node_yield_n(line, -5 - off, -4 - off, -3 - off, argv, (uint32_t)yargc);
         }
-        /* yield inside a block: trio_base = method frame_size - 5 (add-baked at
+        /* yield inside a block: trio_base = method frame_size - 4 (add-baked at
          * the method's pop); prev_off addresses this block frame's PREV cell. */
         if (yargc == 0) {
-            NODE *yo = ALLOC_node_yield_outer0(line, -2 - tc->chain, depth, -5);
+            NODE *yo = ALLOC_node_yield_outer0(line, -2 - tc->chain, depth, -4);
             bake_add(tc, &yo->u.node_yield_outer0.prev_off);     /* this-block fixup */
             add_bake_to(mf, &yo->u.node_yield_outer0.trio_base); /* += method frame_size */
             return yo;
@@ -2319,7 +2372,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (yargc == 1) {
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            NODE *yo = ALLOC_node_yield_outer1(line, -2 - (tc->chain + 1), depth, -5, a0);
+            NODE *yo = ALLOC_node_yield_outer1(line, -2 - (tc->chain + 1), depth, -4, a0);
             bake_add(tc, &yo->u.node_yield_outer1.prev_off);
             add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
             return yo;
@@ -2330,7 +2383,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         tc->chain = saved + (int32_t)yargc;
         for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        NODE *yo = ALLOC_node_yield_outer_n(line, -2 - (tc->chain + (int32_t)yargc), depth, -5, argv, (uint32_t)yargc);
+        NODE *yo = ALLOC_node_yield_outer_n(line, -2 - (tc->chain + (int32_t)yargc), depth, -4, argv, (uint32_t)yargc);
         bake_add(tc, &yo->u.node_yield_outer_n.prev_off);
         add_bake_to(mf, &yo->u.node_yield_outer_n.trio_base);
         return yo;
@@ -2446,19 +2499,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_arguments_node_t *args = sn->arguments;
         size_t argc = args ? args->arguments.size : 0;
         if (argc > 3) return kp_unsupported(tc, node, "super with more than 3 arguments");
-        int32_t soff = -1 - tc->chain - (int32_t)argc, dco = -2 - tc->chain - (int32_t)argc;
+        int32_t soff = -1 - tc->chain - (int32_t)argc, dco = -1 - tc->chain - (int32_t)argc;
         NODE *a[3];
         switch (argc) {
-          case 0: return ALLOC_node_super0(m_mid, line, soff, dco);
+          case 0: { NODE *_s = ALLOC_node_super0(m_mid, line, soff, dco); bake_add(tc, &_s->u.node_super0.self_off); return _s; }
           case 1: WITH_CHAIN(tc, 1, (a[0] = transduce(tc, args->arguments.nodes[0])));
-                  return ALLOC_node_super1(m_mid, line, soff, dco, a[0]);
+                  { NODE *_s = ALLOC_node_super1(m_mid, line, soff, dco, a[0]); bake_add(tc, &_s->u.node_super1.self_off); return _s; }
           case 2: WITH_CHAIN(tc, 2, (a[0] = transduce(tc, args->arguments.nodes[0]),
                                      a[1] = transduce(tc, args->arguments.nodes[1])));
-                  return ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]);
+                  { NODE *_s = ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]); bake_add(tc, &_s->u.node_super2.self_off); return _s; }
           default: WITH_CHAIN(tc, 3, (a[0] = transduce(tc, args->arguments.nodes[0]),
                                       a[1] = transduce(tc, args->arguments.nodes[1]),
                                       a[2] = transduce(tc, args->arguments.nodes[2])));
-                  return ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]);
+                  { NODE *_s = ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]); bake_add(tc, &_s->u.node_super3.self_off); return _s; }
         }
       }
       case PM_FORWARDING_SUPER_NODE: {   /* bare super — forward the method's params */
@@ -2469,16 +2522,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t line = kp_line(tc, node);
         uint32_t np = tc->frame->method_params;
         if (np > 3) return kp_unsupported(tc, node, "forwarding super with more than 3 params");
-        int32_t soff = -1 - tc->chain - (int32_t)np, dco = -2 - tc->chain - (int32_t)np;
+        int32_t soff = -1 - tc->chain - (int32_t)np, dco = -1 - tc->chain - (int32_t)np;
         NODE *a[3];
         switch (np) {
-          case 0: return ALLOC_node_super0(m_mid, line, soff, dco);
+          case 0: { NODE *_s = ALLOC_node_super0(m_mid, line, soff, dco); bake_add(tc, &_s->u.node_super0.self_off); return _s; }
           case 1: WITH_CHAIN(tc, 1, (a[0] = bake_lget(tc, 0)));
-                  return ALLOC_node_super1(m_mid, line, soff, dco, a[0]);
+                  { NODE *_s = ALLOC_node_super1(m_mid, line, soff, dco, a[0]); bake_add(tc, &_s->u.node_super1.self_off); return _s; }
           case 2: WITH_CHAIN(tc, 2, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1)));
-                  return ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]);
+                  { NODE *_s = ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]); bake_add(tc, &_s->u.node_super2.self_off); return _s; }
           default: WITH_CHAIN(tc, 3, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1), a[2] = bake_lget(tc, 2)));
-                  return ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]);
+                  { NODE *_s = ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]); bake_add(tc, &_s->u.node_super3.self_off); return _s; }
         }
       }
 

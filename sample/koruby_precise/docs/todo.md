@@ -1649,3 +1649,56 @@ Proc.new{}, Enumerator.new{} eager yielder).
 - module オブジェクトの metaclass が Class (M.is_a?(Class) 誤 true)。
 - Method#parameters の ISEQ 名前 (node_entry に名前未保持)。
 - nested Complex(); Set/Hash#compare_by_identity (object_id 基盤要)。
+
+---
+## bottom-header (self-copy 排除 + magic) — 2026-06-21
+
+目的: frame top の self-copy (`base[locals_cnt-1]=self`) を排除し perf を上げる
++ CRuby 風の magic セル (frame type/flags/integrity) を base[-3] に持つ。
+self と EP が base[-1] を奪い合う構造のため、まず EP を退避する必要がある。
+
+レイアウト最終形 (locals base = `base`):
+- base[-1] = self  (staged receiver を常駐; copy しない)
+- base[-2] = EP    (open closure env / PREV link)
+- base[-3] = magic (frame type/flags/signature; release では 0、debug で書く)
+
+### Step 1 (DONE, commit 2cbfa2c0): EP を base[-1]→base[-2]
+- `KORB_EP_OFF(-2)` + `korb_ep_get/set` (node.h) に EP オフセット一元化。
+- 内部 C dispatch は korb_send_impl 入口で 1 回 relocate して base[-2]/-3 確保
+  (~35 builtin send サイト不変)。korb_super/node_call_splat/method_missing は
+  手動 restage で 2 メタセル予約。block frame は bf=slots+2、eval は fb=slots+3、
+  fiber/toplevel は leading slack 2 セル。
+- env-chain walk の live-base deref [-1]→korb_ep_get。parse.c prev_off ×6 (-1→-2)。
+  context.h scan 開始 slots-1→slots-2。
+- 検証: corpus 89295/5 (parity)、hand STRESS+PURGE clean。
+- **この時点で base[-1] には staged recv (=self) がそのまま残る** (korb_invoke は
+  もう base[-1] を上書きしない) → Step 2 は self を base[-1] から読むだけ。
+
+### Step 2 (TODO): self-copy 排除 — self を base[-1] 常駐に
+規模: ~30 の self_off baking + entry/trio オフセット shift + korb_invoke ×3 +
+frame_size。all-or-nothing (中途半端だと 189-regression 型の silent offset 破壊)。
+- **規則: 各 self_off サイトは初期値 (`-1 - tc->chain` 等) をそのまま残し
+  `bake_add(tc, &n->u.<type>.self_off)` を足すだけ** (bake が fs を引いて
+  base[fs-1]→base[-1] になる)。node_self は `bake_self()` ヘルパ化。
+  対象: node_self(911,1017,1078,1095,1241,1676), ivar_get/set, def(definee),
+  attr, massign_het, cvar(self側), super(self側), defined, binding, make_proc,
+  blkparam(cself), call_splat(self_off は初期 -1-chain-1 等のまま+bake)。
+- **entry/def_class オフセット (-2-chain)** を **-1-chain** へ (self セル除去で
+  frame_size-1 → entry が base[fs-2]→base[fs-1] へ上がる): cvar 第2引数, super dc_off。
+- **block trio** base[fs-3/-4/-5] → base[fs-2/-3/-4] (blkparam -3/-4/-5-chain →
+  -2/-3/-4-chain; korb_invoke の trio 書込みも)。
+- **frame_size**: `+ 2u` → `+ 1u` (parse.c pop_frame)。
+- **korb_invoke ×3** (node.h korb_invoke_simple, korb_runtime korb_invoke_method,
+  korb_invoke_kw_simple): `base[locals_cnt-1]=self` を削除 (self は base[-1] に staged
+  済み); entry を base[locals_cnt-1] (旧 -2) へ; memset 上限を locals_cnt-1 に;
+  trio を locals_cnt-2/-3/-4 へ。self 引数は (void) 化可。
+- **magic (base[-3])**: debug build で `KORB_MAGIC | flags` を書き return 時 assert。
+  release は reserve 経路が 0 で埋める (既に Step 1 で 0)。
+- 検証: corpus → STRESS+PURGE (closure/binding/fiber) → AOT → benchmark。
+
+### pre-existing flake (Step 1 とは無関係、commit daed240e でも再現)
+- `Hash#select { } / filter / reject{}(keep一致時)` = **korb_hash_filter** が
+  STRESS+PURGE 下で SEGV。worktree で daed240e でも 100% 再現を確認した
+  pre-existing GC バグ (korb_hash_set と block frame の相互作用の疑い)。
+  method/hash_042, hash_118 が該当。STRESS audit から除外 or 別途修正。
+- method/array_283 は STRESS 下の低速 timeout (no-stress は PASS、benign)。
