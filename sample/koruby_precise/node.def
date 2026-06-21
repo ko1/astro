@@ -972,7 +972,7 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, VALUE val@child
 
 // implicit-self call `mid(args...)` (any fixed arity).  argv@children stages the
 // args (no recv — self is slots[self_off]); replaces the call0..3 family.
-NODE_DEF
+NODE_DEF @framehdr
 node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
@@ -1007,7 +1007,7 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct kor
 // so the specializer emits a runtime reference (read from `n`) rather than baking
 // the per-process pointer — that keeps node_call_kw specializable (children get
 // their own SDs) and AOT-safe (SDs sharing across keyword sets read n->kw_syms).
-NODE_DEF
+NODE_DEF @framehdr
 node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
@@ -1042,7 +1042,7 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
 // stages [recv, arg0..arg_{n-1}] into consecutive slots (zero-alloc); the body
 // gets only the count (argv_cnt).  Replaces the send0..3 family.  Per-call-site
 // inline cache via ic@ref.  Actual `*splat` still uses node_send_splat.
-NODE_DEF
+NODE_DEF @framehdr
 node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     (void)n;
@@ -1076,7 +1076,7 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **arg
 // minor, practically-unobservable deviation from CRuby's lazy arg eval.)
 // safe navigation `recv&.m(args...)` (any fixed arity).  argv@children stages
 // [recv, args...]; recv is at slots[-argv_cnt].  Replaces send_safe0..2.
-NODE_DEF
+NODE_DEF @framehdr
 node_send_safe(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **argv@children)
 {
     (void)n;
@@ -1236,7 +1236,7 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
 // the callee's self and the block's captured (lexical) self.
 // implicit-self call with a literal block, any fixed arity.  argv@children stages
 // the args (no recv).  Replaces call_blk0..1.
-NODE_DEF @noinline
+NODE_DEF @noinline @framehdr
 node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
@@ -1249,7 +1249,7 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct
 
 // `m(args, &proc)` (implicit self) — forward a runtime Proc as the block.  Like
 // node_send_blkproc but for an implicit-self call (no staged receiver).
-NODE_DEF @noinline
+NODE_DEF @noinline @framehdr
 node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
@@ -1312,7 +1312,7 @@ node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_of
 // argv@children stages [recv, args...]; korb_send_blk resolves the built-in and
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.
 // `self_off` = the caller's self = the block's captured (lexical) self.
-NODE_DEF @noinline
+NODE_DEF @noinline @framehdr
 node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
@@ -1324,7 +1324,7 @@ node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
 // (rooted, caller-frame) slot holding the Proc; the block iseq is immortal, and
 // korb_block_yield re-reads proc->env/self per yield (KORB_BLK_FWD), so a moved
 // escaped env is never stale.  argv@children stages [recv, args...].
-NODE_DEF @noinline
+NODE_DEF @noinline @framehdr
 node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, NODE **argv@children)
 {
     (void)n;

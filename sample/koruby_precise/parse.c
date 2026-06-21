@@ -87,7 +87,15 @@ static NODE *kp_send2(uint32_t mid, uint32_t line, NODE *recv, NODE *a0, NODE *a
     argv[0] = recv; argv[1] = a0; argv[2] = a1;
     return ALLOC_node_send(mid, line, argv, 3);
 }
-#define KP_SEND1_SC 2u   /* staging depth of a recv+1arg send */
+/* Staging depth a caller must reserve to build a kp_sendN node.  node_send is
+ * @framehdr, so its dispatcher advances the cursor by (children + KORB_FRAME_HDR)
+ * — the reserved meta cells (EP/magic) sit below the staged recv/args.  Any
+ * WITH_CHAIN that builds the recv/args of a kp_sendN MUST use these so the
+ * parse-time chain bump matches the runtime cursor advance (else the children's
+ * baked lget offsets are off by KORB_FRAME_HDR and read the wrong slot). */
+#define KP_SEND0_SC (1u + KORB_FRAME_HDR)   /* recv only            */
+#define KP_SEND1_SC (2u + KORB_FRAME_HDR)   /* recv + 1 arg         */
+#define KP_SEND2_SC (3u + KORB_FRAME_HDR)   /* recv + 2 args        */
 
 /* ---------------------------------------------------------------------- */
 
@@ -860,7 +868,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     pm_constant_id_list_t fake; fake.ids = one_id; fake.size = 1; fake.capacity = 1;
     push_frame(tc, &fake);
     NODE *recv;
-    WITH_CHAIN(tc, 1, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
+    WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
     NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
@@ -899,12 +907,12 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
     NODE **argv = malloc(sizeof(NODE *) * cnt);
     if (!argv) abort();
     int32_t saved = tc->chain;
-    tc->chain = saved + (int32_t)cnt;
+    tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;  /* @framehdr cursor +HDR */
     argv[0] = ALLOC_node_self(-1 - tc->chain);          /* self → base[-1] (also the block's captured self) */
     for (size_t i = 0; i < argc; i++)
         argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
     tc->chain = saved;
-    NODE *call = ALLOC_node_call_blk(mid, line, entry, -(tc->chain + (int32_t)cnt), argv, cnt);
+    NODE *call = ALLOC_node_call_blk(mid, line, entry, -(tc->chain + (int32_t)cnt + KORB_FRAME_HDR), argv, cnt);
     bake_add(tc, &call->u.node_call_blk.def_env_off);
     return call;
 }
@@ -1005,12 +1013,12 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 NODE **argv = malloc(sizeof(NODE *) * cnt);
                 if (!argv) abort();
                 int32_t saved = tc->chain;
-                tc->chain = saved + (int32_t)cnt;
+                tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
                 argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
                 tc->chain = saved;
-                NODE *call = ALLOC_node_call_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)cnt, argv, cnt);
+                NODE *call = ALLOC_node_call_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)cnt - KORB_FRAME_HDR, argv, cnt);
                 bake_add(tc, &call->u.node_call_blkproc.proc_off);
                 return ALLOC_node_seq(pset, call);
             }
@@ -1066,7 +1074,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             uint32_t cnt = 1u + total;                   /* self receiver + pos + kw */
             NODE **argv = malloc(sizeof(NODE *) * cnt);
             if (!argv) abort();
-            int32_t saved = tc->chain; tc->chain = saved + (int32_t)cnt;
+            int32_t saved = tc->chain; tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
             argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
             for (uint32_t i = 0; i < pos_argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
             for (uint32_t j = 0; j < kw_cnt; j++) argv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
@@ -1083,7 +1091,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE **argv = malloc(sizeof(NODE *) * cnt);
         if (!argv) abort();
         int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)cnt;
+        tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr: dispatcher reserves HDR cells → cursor +HDR */
         argv[0] = ALLOC_node_self(-1 - tc->chain);      /* self → base[-1] */
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
@@ -1156,12 +1164,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 NODE **argv = malloc(sizeof(NODE *) * sc);
                 if (!argv) abort();
                 int32_t saved = tc->chain;
-                tc->chain = saved + (int32_t)sc;
+                tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
                 argv[0] = transduce(tc, cn->receiver);
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
                 tc->chain = saved;
-                NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc, argv, sc);
+                NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc - KORB_FRAME_HDR, argv, sc);
                 bake_add(tc, &call->u.node_send_blkproc.proc_off);
                 return ALLOC_node_seq(pset, call);
             }
@@ -1172,16 +1180,16 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
          * = recv(1) + argc.  bake_add fixes up by the caller's frame_size.
          * node_send_blk stages [recv, args...] via argv@children (any arity). */
         uint32_t sc = 1u + (uint32_t)argc;
-        int32_t self_off = -1 - tc->chain - (int32_t)sc;
+        int32_t self_off = -1 - tc->chain - (int32_t)sc - KORB_FRAME_HDR;   /* block's captured self, from the +HDR-shifted cursor */
         NODE **argv = malloc(sizeof(NODE *) * sc);
         if (!argv) abort();
         int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)sc;
+        tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
         argv[0] = transduce(tc, cn->receiver);
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        NODE *call = ALLOC_node_send_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)sc), argv, sc);
+        NODE *call = ALLOC_node_send_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)sc + KORB_FRAME_HDR), argv, sc);
         bake_add(tc, &call->u.node_send_blk.def_env_off);
         return call;
     }
@@ -1206,7 +1214,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE **argv = malloc(sizeof(NODE *) * cnt);
         if (!argv) abort();
         int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)cnt;
+        tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr: cursor +HDR (node_send/safe reserve a frame header) */
         argv[0] = transduce(tc, cn->receiver);
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
@@ -1422,7 +1430,7 @@ static NODE *
 mw_index_get(struct kp_ctx *tc, uint32_t t, uint32_t i, uint32_t aref, uint32_t line)
 {
     NODE *r, *k;
-    WITH_CHAIN(tc, 2, (r = bake_lget(tc, t), k = ALLOC_node_lit(LONG2FIX((intptr_t)i))));
+    WITH_CHAIN(tc, KP_SEND1_SC, (r = bake_lget(tc, t), k = ALLOC_node_lit(LONG2FIX((intptr_t)i))));
     return kp_send1(aref, line, r, k);
 }
 
@@ -1453,7 +1461,7 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
         uint32_t setter = kp_intern_cid(tc, ct->name);
         NODE *r, *v;
-        WITH_CHAIN(tc, 2, (r = transduce(tc, ct->receiver), v = mw_index_get(tc, src_tmp, idx, aref, line)));
+        WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, ct->receiver), v = mw_index_get(tc, src_tmp, idx, aref, line)));
         return kp_send1(setter, line, r, v);
     }
     if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {     /* nested `(a, b[, *r], c)` → materialize then destructure */
@@ -1791,7 +1799,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_interpolated_symbol_node_t *in = (const pm_interpolated_symbol_node_t *)node;
         uint32_t to_sym = korb_intern(tc->c->vm, "to_sym", 6);
         NODE *str;
-        WITH_CHAIN(tc, 1, (str = build_dstr(tc, in->parts.nodes, in->parts.size)));
+        WITH_CHAIN(tc, KP_SEND0_SC, (str = build_dstr(tc, in->parts.nodes, in->parts.size)));
         return kp_send0(to_sym, kp_line(tc, node), str);
       }
       case PM_EMBEDDED_STATEMENTS_NODE: {
@@ -1976,10 +1984,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *store_recv = bake_lset(tc, t0, transduce(tc, iw->receiver));
         NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
         NODE *g_recv, *g_key;
-        WITH_CHAIN(tc, 2, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
+        WITH_CHAIN(tc, KP_SEND1_SC, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
         NODE *get = kp_send1(aref, line, g_recv, g_key);
         NODE *s_recv, *s_key, *s_val;
-        WITH_CHAIN(tc, 3, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1),
+        WITH_CHAIN(tc, KP_SEND2_SC, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1),
                            s_val  = transduce(tc, iw->value)));
         NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
         return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, ALLOC_node_or(get, set)));
@@ -2001,12 +2009,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* set(recv, key, (recv[key]) op value), nesting chains: set → binop → get */
         NODE *s_recv, *s_key, *newval;
         const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
-        WITH_CHAIN(tc, 3, (
+        WITH_CHAIN(tc, KP_SEND2_SC, (
             s_recv = bake_lget(tc, t0),
             s_key  = bake_lget(tc, t1),
             newval = WITH_CHAIN(tc, bsc, ({
                 NODE *g_recv, *g_key, *get, *val;
-                WITH_CHAIN(tc, 2, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
+                WITH_CHAIN(tc, KP_SEND1_SC, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
                 get = kp_send1(aref, line, g_recv, g_key);
                 val = transduce(tc, iw->value);
                 (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
