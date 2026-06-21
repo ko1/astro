@@ -1563,51 +1563,32 @@ void korb_env_store(CTX *c, KorbEnv *e, uint32_t index, VALUE v) {
     ARO_STORE(c, vi, &vi->data[index], v);
 }
 
-/* Find an already-open env for the given frame locals base (so multiple procs
- * capturing the same scope activation share one env → shared mutation). */
-static KorbEnv *korb_open_env_find(struct korb_vm *vm, VALUE *loc) {
-    for (uint32_t i = 0; i < vm->open_env_cnt; i++) {
-        KorbEnv *e = VAL2ENV(vm->open_envs[i]);
+/* The frame at `loc` owns an open env iff its EP cell loc[-1] is a clean even
+ * KorbEnv with loc[-1]->loc == loc (set by korb_make_proc/binding).  Lets multiple
+ * procs over the same activation share one env → shared mutation.  No global list. */
+static KorbEnv *korb_open_env_find(VALUE *loc) {
+    const VALUE pv = loc[-1];
+    if (pv != 0 && (pv & 1u) == 0) {
+        KorbEnv *e = VAL2ENV(pv);
         if (!e->closed && e->loc == loc) return e;
     }
     return NULL;
 }
-/* Register an open env as a GC root + close candidate. */
-static void korb_open_env_register(struct korb_vm *vm, VALUE env) {
-    if (vm->open_env_cnt == vm->open_env_capa) {
-        vm->open_env_capa = vm->open_env_capa ? vm->open_env_capa * 2 : 16;
-        vm->open_envs = realloc(vm->open_envs, sizeof(VALUE) * vm->open_env_capa);
-        if (!vm->open_envs) { fprintf(stderr, "koruby_precise: out of memory (open_envs)\n"); abort(); }
-    }
-    vm->open_envs[vm->open_env_cnt++] = env;
-}
-/* A frame at `frame_base` is returning: close (slots->vals) every open env
- * whose loc lies in [frame_base, top) — i.e. belongs to this frame (inner
- * frames already closed theirs, LIFO).  `slots` is scratch above the frame. */
-void korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base) {
-    struct korb_vm *const vm = c->vm;
-    for (uint32_t i = 0; i < vm->open_env_cnt; ) {
-        KorbEnv *e = VAL2ENV(vm->open_envs[i]);
-        if (e->loc < frame_base) { i++; continue; }       /* outer frame's env: keep open */
-        slots[0] = vm->open_envs[i];                       /* root env across vals alloc */
-        uint32_t n = VAL2ENV(slots[0])->n;
-        KorbArrayItems *vals = korb_alloc(c, slots + 1, sizeof(KorbArrayItems) + (size_t)n * sizeof(VALUE), KORB_OBJ_VALUE_ARRAY);
-        KorbEnv *ee = VAL2ENV(slots[0]);                   /* re-read after alloc/GC */
-        for (uint32_t j = 0; j < n; j++) ARO_STORE(c, vals, &vals->data[j], ee->loc[j]);
-        ARO_STORE(c, ee, (VALUE *)(uintptr_t)&ee->vals, (VALUE)(uintptr_t)vals);
-        ee->closed = 1;
-        vm->open_envs[i] = vm->open_envs[vm->open_env_cnt - 1];   /* swap-remove */
-        vm->open_env_cnt--;
-    }
-}
 
-/* Cold tail of the frame-return close hook: kept OUT-OF-LINE so the close logic
- * doesn't bloat the always-inlined invoke fast paths.  Even when the guard is
- * false, inlining this code hurt i-cache/regalloc on call/loop-heavy programs
- * that never escape (collatz regressed ~16% before this split). */
+/* Cold tail of the frame-return close hook: the returning frame's EP cell
+ * (frame_base[-1]) holds its own open env (clean even KorbEnv, loc==frame_base —
+ * see korb_frame_escaped).  Copy the live locals into a heap vals array so an
+ * escaped closure over this activation survives the frame.  OUT-OF-LINE so the
+ * (false) guard doesn't bloat the always-inlined invoke fast paths. */
 RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r) {
-    scratch[0] = r.value;                              /* root return value across close's alloc */
-    korb_close_envs(c, scratch + 1, frame_base);
+    scratch[0] = r.value;                              /* root return value across vals alloc */
+    scratch[1] = frame_base[-1];                       /* root the env (EP cell) across alloc */
+    const uint32_t n = VAL2ENV(scratch[1])->n;
+    KorbArrayItems *vals = korb_alloc(c, scratch + 2, sizeof(KorbArrayItems) + (size_t)n * sizeof(VALUE), KORB_OBJ_VALUE_ARRAY);
+    KorbEnv *e = VAL2ENV(scratch[1]);                  /* re-read after GC */
+    for (uint32_t j = 0; j < n; j++) ARO_STORE(c, vals, &vals->data[j], e->loc[j]);
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, (VALUE)(uintptr_t)vals);
+    e->closed = 1;
     r.value = scratch[0];
     return r;
 }
@@ -1651,16 +1632,19 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        KorbEnv *existing = korb_open_env_find(c->vm, bases[k]);
-        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share */
+        const VALUE pv = bases[k][-1];                   /* original outer link (preserve into e->prev) */
+        KorbEnv *existing = korb_open_env_find(bases[k]);
+        if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share this frame's env */
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
         e->loc = bases[k];                               /* open: live slots */
         e->n = ns[k];
         e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
-        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1]);   /* outer (forwarded) */
+        /* outer = materialized-so-far; for the outermost keep the original PREV
+         * link so a deeper sibling closure can still walk past this frame. */
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
-        korb_open_env_register(c->vm, slots[1]);
+        bases[k][-1] = slots[1];                         /* EP cell: this frame owns its env (clean even; GC roots via slots) */
     }
     KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
@@ -1673,14 +1657,15 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
  * `self`, and the immortal `names` table.  GC-safe (env/self rooted in slots). */
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
     slots[0] = self_val;                                  /* root self across allocs */
-    KorbEnv *e = korb_open_env_find(c->vm, frame_base);
+    const VALUE pv = frame_base[-1];                      /* original outer link (preserve into e->prev) */
+    KorbEnv *e = korb_open_env_find(frame_base);
     if (e == NULL) {
         e = korb_alloc(c, slots + 1, sizeof(KorbEnv), KORB_OBJ_ENV);
         e->loc = frame_base; e->n = (uint16_t)name_cnt; e->closed = 0;
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
-        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, 0);
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, pv);   /* keep the frame's outer link */
         slots[1] = (VALUE)(uintptr_t)e;
-        korb_open_env_register(c->vm, slots[1]);          /* slots[1] keeps it rooted; register adds no GC point */
+        frame_base[-1] = slots[1];                        /* EP cell: frame owns its env (GC roots via slots) */
     } else slots[1] = (VALUE)(uintptr_t)e;
     KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = name_syms; b->name_cnt = name_cnt;
@@ -2247,6 +2232,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged -> GC skips); super reads owner, __method__ reads mid */
+    base[-1] = 0;                                        /* EP cell (was recv slot): no open env yet */
     (void)def_class;
     if (block != NULL && m->uses_block) {
         base[locals_cnt - 5] = (VALUE)((uintptr_t)block | 1u);
@@ -2315,7 +2301,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
         e->line = line;
     }
-    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
 
@@ -2355,6 +2341,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);
+    base[-1] = 0;                                        /* EP cell (was recv slot): no open env yet */
     /* fast path: all keywords supplied in declared order (the common call shape,
      * e.g. box(x:,y:,z:) on def box(x:,y:,z:)) — direct positional bind, no scan,
      * no missing/unknown checks (every param present, every arg consumed). */
@@ -2407,7 +2394,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
     else if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
-    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
 
@@ -2523,7 +2510,11 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return m->rfn(c, slots + 1, recv, args);
     }
-    return korb_invoke_method(c, slots, m, argc, line, mid, self, found_def, block, def_env, captured_self);
+    /* restage [self, args] above the cursor so the callee's base[-1] is self
+     * (the EP cell); super's args sit at slots[-argc..-1], self is separate. */
+    for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
+    slots[0] = self;
+    return korb_invoke_method(c, slots + 1 + argc, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
 /* a descends from (or equals) b */
@@ -4061,8 +4052,8 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
-    if (UNLIKELY(c->vm->open_env_cnt))                 /* B3: escaped envs of this frame close now */
-        r = korb_close_ret(c, bf + 1 + blocals, bf, r);
+    if (UNLIKELY(korb_frame_escaped(bf + 1)))          /* block locals base = bf+1; close its own env if escaped */
+        r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return r;
 }
 
@@ -6167,18 +6158,20 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         const uint32_t L = koruby_toplevel_locals_cnt;
         const uint32_t ncnt = koruby_toplevel_local_cnt;
         const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
-        VALUE *const cur = slots + L;
-        memset(slots, 0, (size_t)L * sizeof(VALUE));
+        slots[0] = 0;                                   /* eval frame EP cell (fb[-1]) */
+        VALUE *const fb = slots + 1;                    /* eval frame base (fb[-1]=slots[0] is a real EP, not an arg) */
+        VALUE *const cur = fb + L;
+        memset(fb, 0, (size_t)L * sizeof(VALUE));
         for (uint32_t i = 0; i < ncnt; i++) {           /* seed: copy binding values into the eval frame's locals */
             const KorbBinding *b = VAL2BIND(bv);
             const int j = korb_bind_find(b, nsyms[i]);
-            if (j >= 0) slots[i] = korb_bind_env_get(b, (uint32_t)j);
-            else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) slots[i] = VAL2HASH(b->extra)->items->data[2 * hi + 1]; }
+            if (j >= 0) fb[i] = korb_bind_env_get(b, (uint32_t)j);
+            else if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(nsyms[i])); if (hi >= 0) fb[i] = VAL2HASH(b->extra)->items->data[2 * hi + 1]; }
         }
-        slots[L - 1] = VAL2BIND(bv)->self;              /* self cell */
+        fb[L - 1] = VAL2BIND(bv)->self;                 /* self cell */
         RESULT er = EVAL(c, entry, cur);
         if (UNLIKELY(er.state != KORB_NORMAL)) return er;
-        slots[L] = er.value;                            /* park result across writeback allocs */
+        fb[L] = er.value;                               /* park result across writeback allocs */
         /* Re-read the binding from the rooted args slot each step — the hash
          * allocs below trigger GC, which moves the binding (a cached VALUE goes
          * stale). */
@@ -6186,22 +6179,24 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         for (uint32_t i = 0; i < ncnt; i++) {           /* write back: existing → env, new → extra hash */
             if (i == L - 1) continue;                   /* the self cell, not a local */
             const int j = korb_bind_find(EVAL_BIND, nsyms[i]);
-            if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, slots[i]); continue; }
-            slots[L + 1] = EVAL_BIND->extra;
-            if (slots[L + 1] == KORB_NIL) { slots[L + 1] = UNWRAP(korb_hash_new(c, slots + L + 2, 4)); ARO_STORE(c, EVAL_BIND, (VALUE *)(uintptr_t)&EVAL_BIND->extra, slots[L + 1]); }
-            slots[L + 2] = ID2SYM(nsyms[i]); slots[L + 3] = slots[i];
-            CHECK(korb_hash_set(c, slots + L + 4, VALUE_REF_AT(&slots[L + 1]), VALUE_REF_AT(&slots[L + 2]), slots[L + 3]));
+            if (j >= 0) { korb_bind_env_set(c, EVAL_BIND, (uint32_t)j, fb[i]); continue; }
+            fb[L + 1] = EVAL_BIND->extra;
+            if (fb[L + 1] == KORB_NIL) { fb[L + 1] = UNWRAP(korb_hash_new(c, fb + L + 2, 4)); ARO_STORE(c, EVAL_BIND, (VALUE *)(uintptr_t)&EVAL_BIND->extra, fb[L + 1]); }
+            fb[L + 2] = ID2SYM(nsyms[i]); fb[L + 3] = fb[i];
+            CHECK(korb_hash_set(c, fb + L + 4, VALUE_REF_AT(&fb[L + 1]), VALUE_REF_AT(&fb[L + 2]), fb[L + 3]));
         }
         #undef EVAL_BIND
-        return RESULT_OK(slots[L]);
+        return RESULT_OK(fb[L]);
     }
     NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
     const uint32_t locals = koruby_toplevel_locals_cnt;
-    VALUE *const cur = slots + locals;                  /* the eval program's body cursor */
-    memset(slots, 0, (size_t)locals * sizeof(VALUE));   /* zero its locals */
+    slots[0] = 0;                                       /* eval frame EP cell (fb[-1]) */
+    VALUE *const fb = slots + 1;                        /* base (fb[-1]=slots[0] is a real EP, not an arg) */
+    VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
+    memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
-    slots[locals - 1] = mr.value;                       /* self cell (frame top) */
+    fb[locals - 1] = mr.value;                          /* self cell (frame top) */
     return EVAL(c, ast, cur);
 }
 
@@ -6512,7 +6507,11 @@ korb_ctx_new(void)
         abort();
     }
 
-    c->slots = (VALUE *)base;
+    /* Leading slack cell: every frame's EP is base[-1]; the toplevel frame sits at
+     * c->slots so its EP cell is c->slots[-1].  Reserve one VALUE before the logical
+     * base (AROH_VISIT_ROOTS scans from c->slots-1 to include it). */
+    c->slots = (VALUE *)base + 1;
+    c->slots[-1] = 0;                                  /* toplevel EP: no open env yet */
     c->slots_top = c->slots;
     c->slots_limit = (VALUE *)(base + bytes);
     c->slots_high_water = c->slots;

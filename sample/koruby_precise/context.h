@@ -623,11 +623,9 @@ struct korb_vm {
     VALUE    *sklass_cls;
     uint32_t  sklass_cnt, sklass_capa;
 
-    /* B3 escape: KorbEnv objects still "open" (their defining frame is live).
-     * Each holds a slots `loc`; closed (slots->vals copied) when that frame
-     * returns (korb_close_envs).  GC-rooted (heap KorbEnv pointers). */
-    VALUE    *open_envs;
-    uint32_t  open_env_cnt, open_env_capa;
+    /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-1]
+     * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
+     * copied) by that frame's return.  No global registry. */
 
     /* Regexp engine: lazily dlopen'd koruby_regex.so (astrogre).  re_fn is the
      * koruby_re_search entry, or (void*)-1 if the .so failed to load. */
@@ -750,7 +748,8 @@ struct CTX_struct {
         for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++)         \
             *_p = 0;                                                         \
     }                                                                        \
-    for (VALUE *_p = (c)->slots; _p < _aro_top; _p++) {                      \
+    /* start a cell early: the toplevel frame's EP lives at c->slots[-1]. */   \
+    for (VALUE *_p = (c)->slots - 1; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     /* constants (class values) are roots too */                            \
@@ -768,10 +767,8 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
     }                                                                        \
-    /* open closure envs (B3 escape): roots holding heap KorbEnv pointers. */  \
-    for (uint32_t _ei = 0; _ei < (c)->vm->open_env_cnt; _ei++) {              \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->open_envs[_ei]);       \
-    }                                                                        \
+    /* open closure envs now live in each frame's EP cell (base[-1]), scanned    \
+     * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
     /* class pointers may move/reuse this GC → invalidate method caches      \
@@ -780,7 +777,7 @@ struct CTX_struct {
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
-        for (VALUE *_p = (c)->vm->main_slots; _p < (c)->vm->main_slots_top; _p++) \
+        for (VALUE *_p = (c)->vm->main_slots - 1; _p < (c)->vm->main_slots_top; _p++) \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
     }                                                                        \
     /* every live fiber's transfer/captured_self roots + (suspended) value    \
@@ -790,7 +787,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
         if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
-            for (VALUE *_p = _fr->vslots; _p < _fr->vslots_top; _p++)         \
+            for (VALUE *_p = _fr->vslots - 1; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \

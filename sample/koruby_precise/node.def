@@ -1490,17 +1490,12 @@ NODE_DEF @nogc
 node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index)
 {
     (void)c; (void)n;
-    VALUE h = slots[prev_off];
-    if (LIKELY(h & 1u)) {                                  /* slots-handle chain */
-        VALUE *node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
-        for (uint32_t k = 1; k < depth; k++)
-            node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1u);
-        return RESULT_OK(node[index]);
-    }
-    KorbEnv *e = VAL2ENV(h);                               /* escaped KorbEnv chain */
-    for (uint32_t k = 1; k < depth; k++) e = VAL2ENV(e->prev);
-    VALUE *base = e->closed ? ((KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc;
-    return RESULT_OK(base[index]);
+    VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
+    for (uint32_t k = 1; k < depth; k++)
+        h = (h & 1u) ? ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[-1] : VAL2ENV(h)->prev;
+    if (h & 1u) return RESULT_OK(((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index]);
+    KorbEnv *e = VAL2ENV(h);
+    return RESULT_OK((e->closed ? ((KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc)[index]);
 }
 
 // Outer-variable write.  Slots handles + open envs target the (non-moving)
@@ -1510,16 +1505,11 @@ NODE_DEF @nogc
 node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint32_t index, VALUE val@child)
 {
     (void)c; (void)n;
-    VALUE h = slots[prev_off];
-    if (LIKELY(h & 1u)) {                                  /* slots-handle chain */
-        VALUE *node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
-        for (uint32_t k = 1; k < depth; k++)
-            node = (VALUE *)(uintptr_t)((uintptr_t)node[-1] & ~(uintptr_t)1u);
-        node[index] = val;
-        return RESULT_OK(val);
-    }
-    KorbEnv *e = VAL2ENV(h);                               /* escaped KorbEnv chain */
-    for (uint32_t k = 1; k < depth; k++) e = VAL2ENV(e->prev);
+    VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
+    for (uint32_t k = 1; k < depth; k++)
+        h = (h & 1u) ? ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[-1] : VAL2ENV(h)->prev;
+    if (h & 1u) { ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index] = val; return RESULT_OK(val); }
+    KorbEnv *e = VAL2ENV(h);
     if (e->closed) korb_env_store(c, e, index, val);       /* heap vals → WB-aware store */
     else e->loc[index] = val;
     return RESULT_OK(val);

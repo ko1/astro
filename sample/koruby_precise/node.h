@@ -202,7 +202,6 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
 RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, VALUE self_val, uint32_t is_lambda);
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val);
 void   korb_env_store(CTX *c, struct KorbEnv *e, uint32_t index, VALUE v);
-void   korb_close_envs(CTX *c, VALUE *slots, VALUE *frame_base);
 RESULT korb_str_mod(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs);
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);
@@ -383,6 +382,14 @@ void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
  * the dispatch site — both korb_call_cached / korb_send_cached (korb_runtime.c)
  * and node_call's specialized dispatcher (code_store SD) inline it, removing a
  * cross-module call layer on the hot recursive / method-call path. */
+/* True if frame `base` owns an open env in its EP cell base[-1] (a clean even
+ * KorbEnv whose loc is this frame) → its return must close it.  base[-1] is the
+ * receiver cell (staged by the caller): consumable as the EP once self is read. */
+static inline bool korb_frame_escaped(const VALUE *base) {
+    const VALUE pv = base[-1];
+    return pv != 0 && (pv & 1u) == 0 && VAL2ENV(pv)->loc == base;
+}
+
 static inline __attribute__((always_inline, no_stack_protector)) RESULT
 korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                    uint32_t line, uint32_t mid, VALUE self, VALUE def_class)
@@ -402,6 +409,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     if (locals_cnt - 2 > argc) memset(base + argc, 0, (locals_cnt - 2 - argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
+    base[-1] = 0;                                         /* EP cell (was the recv slot): no open env yet */
     (void)def_class;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
@@ -419,7 +427,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;
     }
-    if (UNLIKELY(c->vm->open_env_cnt)) r = korb_close_ret(c, base + locals_cnt, base, r);
+    if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
 
