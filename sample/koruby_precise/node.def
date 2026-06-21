@@ -1008,10 +1008,11 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct kor
 // the per-process pointer — that keeps node_call_kw specializable (children get
 // their own SDs) and AOT-safe (SDs sharing across keyword sets read n->kw_syms).
 NODE_DEF
-node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
-    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - pos_argc, slots[self_off]);
+    /* self staged as receiver (argv[0]) → base[-1]; pos+kw args follow. */
+    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - 1 - pos_argc, slots[-(intptr_t)argv_cnt]);
 }
 
 // ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
@@ -1027,8 +1028,9 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
     VALUE self = slots[self_off];
     VALUE arr = slots[-1];                              /* the staged args array */
     uint32_t N = VAL2ARY(arr)->len;
-    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
-    return korb_call(c, slots + N, mid, line, cc, N, self);
+    slots[0] = self;                                    /* self → base[-1] (EP cell) */
+    for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
+    return korb_call(c, slots + 1 + N, mid, line, cc, N, self);
 }
 
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
@@ -1235,18 +1237,20 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
 // implicit-self call with a literal block, any fixed arity.  argv@children stages
 // the args (no recv).  Replaces call_blk0..1.
 NODE_DEF @noinline
-node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
+node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
-    /* def_env carries the raw PREV form: tag the live slots base odd (eget slots path). */
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], block,
-                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
+    /* self staged as receiver (argv[0]) → base[-1]; it is also the block's captured
+     * self.  def_env carries the raw PREV: tag the live slots base odd (eget path). */
+    VALUE *const self_cell = &slots[-(intptr_t)argv_cnt];
+    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, *self_cell, block,
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self_cell);
 }
 
 // `m(args, &proc)` (implicit self) — forward a runtime Proc as the block.  Like
 // node_send_blkproc but for an implicit-self call (no staged receiver).
 NODE_DEF @noinline
-node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
+node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
@@ -1257,7 +1261,8 @@ node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, in
         iseq = VAL2PROC(pv)->iseq;
         if (iseq == NULL) iseq = KORB_BLK_CPROC;         /* Symbol/Method#to_proc: forward as a C-proc block */
     }
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt, slots[self_off], iseq,
+    /* self staged as receiver (argv[0]) → base[-1]. */
+    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, slots[-(intptr_t)argv_cnt], iseq,
                          iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
 }
 

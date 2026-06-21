@@ -895,15 +895,16 @@ transduce_call_with_block(struct kp_ctx *tc, const pm_call_node_t *cn, uint32_t 
     /* def_env_off: cursor → caller frame base = -(chain + staging); staging =
      * argc.  bake_add fixes up by the caller's frame_size.  node_call_blk stages
      * the args via argv@children (any fixed arity). */
-    int32_t self_off = -1 - tc->chain - (int32_t)argc;  /* caller self = block's captured self */
-    NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
-    if (argc && !argv) abort();
+    uint32_t cnt = 1u + (uint32_t)argc;                 /* self receiver + args */
+    NODE **argv = malloc(sizeof(NODE *) * cnt);
+    if (!argv) abort();
     int32_t saved = tc->chain;
-    tc->chain = saved + (int32_t)argc;
+    tc->chain = saved + (int32_t)cnt;
+    argv[0] = ALLOC_node_self(-1 - tc->chain);          /* self → base[-1] (also the block's captured self) */
     for (size_t i = 0; i < argc; i++)
-        argv[i] = transduce(tc, args->arguments.nodes[i]);
+        argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
     tc->chain = saved;
-    NODE *call = ALLOC_node_call_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)argc), argv, (uint32_t)argc);
+    NODE *call = ALLOC_node_call_blk(mid, line, entry, -(tc->chain + (int32_t)cnt), argv, cnt);
     bake_add(tc, &call->u.node_call_blk.def_env_off);
     return call;
 }
@@ -1000,15 +1001,16 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 uint32_t pslot = alloc_synth_local(tc);
                 NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
-                int32_t self_off = -1 - tc->chain - (int32_t)argc;
-                NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
-                if (argc && !argv) abort();
+                uint32_t cnt = 1u + (uint32_t)argc;     /* self receiver + args */
+                NODE **argv = malloc(sizeof(NODE *) * cnt);
+                if (!argv) abort();
                 int32_t saved = tc->chain;
-                tc->chain = saved + (int32_t)argc;
+                tc->chain = saved + (int32_t)cnt;
+                argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
                 for (size_t i = 0; i < argc; i++)
-                    argv[i] = transduce(tc, args->arguments.nodes[i]);
+                    argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
                 tc->chain = saved;
-                NODE *call = ALLOC_node_call_blkproc(mid, line, self_off, (int32_t)pslot - tc->chain - (int32_t)argc, argv, (uint32_t)argc);
+                NODE *call = ALLOC_node_call_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)cnt, argv, cnt);
                 bake_add(tc, &call->u.node_call_blkproc.proc_off);
                 return ALLOC_node_seq(pset, call);
             }
@@ -1061,14 +1063,15 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 const pm_symbol_node_t *sn = (const pm_symbol_node_t *)((const pm_assoc_node_t *)kh->elements.nodes[j])->key;
                 kw_syms[j] = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), pm_string_length(&sn->unescaped));
             }
-            int32_t self_off = -1 - tc->chain - (int32_t)total;
-            NODE **argv = malloc(sizeof(NODE *) * total);
+            uint32_t cnt = 1u + total;                   /* self receiver + pos + kw */
+            NODE **argv = malloc(sizeof(NODE *) * cnt);
             if (!argv) abort();
-            int32_t saved = tc->chain; tc->chain = saved + (int32_t)total;
-            for (uint32_t i = 0; i < pos_argc; i++) argv[i] = transduce(tc, args->arguments.nodes[i]);
-            for (uint32_t j = 0; j < kw_cnt; j++) argv[pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
+            int32_t saved = tc->chain; tc->chain = saved + (int32_t)cnt;
+            argv[0] = ALLOC_node_self(-1 - tc->chain);   /* self → base[-1] */
+            for (uint32_t i = 0; i < pos_argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
+            for (uint32_t j = 0; j < kw_cnt; j++) argv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
             tc->chain = saved;
-            return ALLOC_node_call_kw(mid, line, self_off, pos_argc, (const char *)(const void *)kw_syms, argv, total);
+            return ALLOC_node_call_kw(mid, line, pos_argc, (const char *)(const void *)kw_syms, argv, cnt);
         }
     }
 
