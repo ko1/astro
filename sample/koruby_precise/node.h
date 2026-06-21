@@ -371,6 +371,14 @@ extern size_t node_cnt;
 #define KORB_FRAME_SLACK 1024
 #endif
 
+/* Per-frame header cells reserved BELOW the locals base (design A bottom header):
+ *   base[-1] = self (staged receiver, read directly — no copy to a top cell)
+ *   base[-2] = EP   (open closure env / prev link)
+ *   base[-3] = magic (frame type/flags/signature — integrity)
+ * @children call nodes reserve KORB_FRAME_HDR cells via the dispatcher; internal
+ * dispatch (korb_send_impl/korb_call_impl) reserves them by shifting the frame. */
+#define KORB_FRAME_HDR 2
+
 /* Cold helpers used by the inlined simple-call fast path below; defined in
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
  * the rare open-env-close / exception-backtrace paths). */

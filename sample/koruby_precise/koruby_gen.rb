@@ -168,13 +168,23 @@ class KorubyNodeDef < ASTroGen::NodeDef
         else                       "n->u.#{@name}.#{op.name}"
         end
       end)
+      # @framehdr: reserve KORB_FRAME_HDR meta cells BELOW the staged children
+      # (the callee frame's EP + magic header at base[-2]/base[-3]).  The cursor
+      # advances by cnt+HDR but only cnt children are dispatched; the header cells
+      # are filled by korb_invoke.
+      framehdr = @option.include?('@framehdr')
+      hdr = framehdr ? ' + KORB_FRAME_HDR' : ''
+      # The reserved header cells (base[-2..]) sit in the GC-scanned slot range,
+      # so they MUST be zeroed before any arg eval (which can GC) — a stale value
+      # would be misread as a heap pointer.  korb_invoke fills EP/magic later.
+      zero = framehdr ? "\n          for (uint32_t _h = 0; _h < KORB_FRAME_HDR; _h++) slots[-(intptr_t)_cnt - 1 - (intptr_t)_h] = 0;" : ''
       <<~C
       static __attribute__((no_stack_protector)) #{result_type}
       DISPATCH_#{@name}(#{@prefix_args.join(', ')})
       {
           const uint32_t _cnt = #{f}_cnt;
           NODE *const *const _av = #{f};
-          slots += _cnt;
+          slots += _cnt#{hdr};#{zero}
           for (uint32_t _i = 0; _i < _cnt; _i++)
               slots[(intptr_t)_i - (intptr_t)_cnt] = UNWRAP((*_av[_i]->head.dispatcher)(c, _av[_i], slots));
           return EVAL_#{@name}(#{prefix_call_args.join(', ')}#{body_args});

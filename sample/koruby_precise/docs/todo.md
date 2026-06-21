@@ -20,6 +20,29 @@ probe + 実ハーネス array spec で発見・修正 (corpus 89295/5 維持・S
 - **Bignum#to_f round-to-nearest**: mpz_get_d は toward-zero truncate。nextafter
   + mpz 距離比較で nearest-even。(10**308).to_f=1.0e308。
 
+**性能: bottom-header 化 (self-copy 排除 + magic 同居) — foundation 済、本体は残 (2026-06-21)**
+狙い: self を base[-1] に常駐させ korb_invoke の self-copy (`base[fs-1]=self`) を排除 (~0.5%、
+free に近い) + EP を base[-2]・magic を base[-3] に同居 (CRuby の "magic" 流)。
+- [済] codegen: `@children` ノードに `@framehdr` で **先頭メタを KORB_FRAME_HDR(=2) 個予約**
+  (dispatcher が `slots += cnt+HDR`、予約セルは GC 走査前にゼロ化)。node.h に KORB_FRAME_HDR。
+  未使用なので no-op・green。
+- 残 (結合・GC/offset クリティカル。新規セッションで集中して):
+  1. `@framehdr` を 8 call ノードへ (node_call/send/kw/send_safe/call_blk/call_blkproc/
+     send_blk/send_blkproc)。base[-2]/base[-3] 予約+ゼロ。
+  2. **self_off を base[-1] に**: node_self 等の self_off に **bake_add を足す**
+     (bake は frame_size を引く → `-1-chain` が `-1-fs-chain` = base[-1] に解決)。self_off を
+     使う全箇所 (PM_SELF_NODE / 各 self-stage / super / def / attr / defined / massign /
+     call_splat / send_blk / ivar) を rebake。frame_size から self セル(+1)を除去。
+  3. EP を base[-2] へ: korb_invoke は base[-1]=0 をやめる (base[-2] は予約時ゼロ済)。
+     node_eget/eset の chain walk を `node[-1]`→`node[-2]`。korb_make_proc/binding/
+     korb_frame_escaped を base[-2]。self-copy (`base[fs-1]=self`) 削除。
+  4. 内部 dispatch: korb_send_impl/korb_call_impl で [recv,args] を 2 上げて base[-2]/base[-3]
+     を予約+ゼロ (全 ~36 内部サイトを一括カバー)。super・Object.new→initialize も予約。
+  5. frame setup: korb_block_yield (self=bf[0]=base[-1]・EP=bf[-1]=base[-2])、eval frame、
+     c->slots (toplevel)、fiber vslots ── いずれも先頭スラックを **3 セル** に、走査も -3 から。
+  6. magic を base[-3] に (型/フラグ/署名、debug-gated 可)。
+  7. 検証: corpus / STRESS+PURGE (closure/binding/fiber 網羅) / AOT / ベンチ。
+
 **性能: TOPLEVEL_BINDING の return 課税 → per-frame EP cell (設計 A) で解決済 (2026-06-21)**
 - open env を各 frame の base[-1] (= 受け手スロット) に置き、return は `korb_frame_escaped
   (base)` で自分の base[-1] だけ見る (グローバル不読)。open_envs/open_env_cnt/register/
