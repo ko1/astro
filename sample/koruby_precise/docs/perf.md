@@ -3,29 +3,33 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
-## 2026-06-20/21: TOPLEVEL_BINDING の return 課税問題 (未解決、設計 A 待ち)
+## 2026-06-21: per-frame EP cell (設計 A) — TOPLEVEL_BINDING の return 課税を解消 (解決済)
 
-**問題**: TOPLEVEL_BINDING を起動時に eager 作成すると Binding が toplevel frame 上に
-open env を張り `vm->open_env_cnt >= 1` が恒常化。全 method/block return が
-`if (open_env_cnt) korb_close_ret(...)` を取り open-env list を walk する無駄が乗る
-(perf: `korb_close_envs` が method_call の ~40%、bench は hot loop を `def bench` で
-包んで 1000 回呼ぶ構造なので影響大)。aot+cached vs-YJIT で nested_loop 6.34・ackermann
-5.69・ivar 4.45・while2 4.83・method_call 3.65 等。
+**問題**: eager TOPLEVEL_BINDING で Binding が toplevel frame 上に open env を張り
+`vm->open_env_cnt >= 1` が恒常化 → 全 method/block return が `if (open_env_cnt)
+korb_close_ret` で open-env list を walk (method_call の ~40%)。bench は hot loop を
+`def bench` ×1000 で呼ぶので大影響 (nested_loop 6.34・ackermann 5.69・while2 4.83 等)。
 
-**失敗した試み 1 — lazy 化** (revert 済): parser が `TOPLEVEL_BINDING` 参照を見た時だけ
-作成。bench は速くなるが **eval/const_get/defined? の動的アクセスで定数が見えず** 不正
-(TOPLEVEL_BINDING は常に存在すべき)。撤回。
+**失敗 1 — lazy 化** (revert): 参照検出時だけ作成。速いが eval/const_get/defined? が
+壊れる (定数が常に存在すべき)。撤回。
 
-**失敗した試み 2 — per-frame EP cell (設計 A)、途中まで**: return が global を読まず、
-各 frame が自分の EP セル (base[-1]) に open env を持つ設計。node_eget の mixed-chain・
-korb_make_proc/binding の base[-1]=E 化までは動いたが、**base[-1] を recv スロット再利用
-する前提が implicit-self 呼び出し (`#{speak}` 等) で破綻** — implicit-self は recv を
-base[-1] に積まず、そこは呼び出し元の生きた値なので `base[-1]=0` が破壊し SEGV。
-正しくは **全コールが引数を1セル上にずらして base[-1] を予約する呼び出し規約変更**が必須
-(parser の staging 全体に及ぶ)。これは未着手。eager (correct, but slow) に戻して保留。
+**解決 — per-frame EP cell (設計 A)**: open env を**各 frame の base[-1] (= 受け手スロット、
+self 読み出し後は消費可)** に置く。return は `korb_frame_escaped(base)` で自分の base[-1]
+だけ見る → **グローバル不読**。open_envs/open_env_cnt/register/close_envs を全廃 (env は
+base[-1] の slot 走査で GC-root)。
+- 全 call 形態が self/recv を base[-1] に積む (node_send は元々、node_call/kw/splat/blk/
+  blkproc は self を argv[0] として積むよう変更、super は restage、eval は fb=slots+1)。
+- node_eget/eset は mixed-chain (odd=live base / even=KorbEnv を level 毎に切替)。
+- korb_make_proc/binding が base[-1]=E (E->prev に元の外側リンク)。
+- toplevel/fiber slots は先頭スラック1セル (base[-1] OOB 回避、走査も -1 から)。
 
-教訓: 永続 frame 上の open env は return fast-path に課税する。直すには per-frame EP が要る
-が base[-1] の recv 再利用は不可 (implicit-self)。設計 A は規約変更ありきで再挑戦すること。
+結果 (aot+cached vs-YJIT): nested_loop **6.34→0.59**、while2 4.83→0.24、ackermann
+5.69→1.39、method_call 3.65→1.21、fib 1.08。korb_close_envs は method_call profile から
+消滅。**TOPLEVEL_BINDING は eager のまま (dynamic access 正常)**。corpus 89295/5、
+STRESS+PURGE clean (closure/binding/fiber/nested-eval)、AOT match。
+
+教訓: base[-1] の recv 再利用は implicit-self でも **self を recv として積めば**成立
+(全面規約変更は不要だった)。CRuby の "magic" 同様、base[-2] に型/フラグ/署名を載せる拡張も可。
 
 ## ベンチマーク環境
 
