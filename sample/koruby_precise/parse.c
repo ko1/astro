@@ -1072,19 +1072,20 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
     }
 
-    /* caller self cell (base[fs-1]); the argc staged args advance the body
-     * cursor, so offset back past them too.  node_call stages the args via
-     * argv@children (any fixed arity). */
+    /* Stage self as the receiver (argv[0]) — uniform with node_send's [recv,args]
+     * so the callee's base[-1] is always the receiver cell (consumable as the EP
+     * cell on return).  node_call keeps the global-fn (cc) path for top-level defs. */
     {
-        int32_t self_off = -1 - tc->chain - (int32_t)argc;
-        NODE **argv = (argc ? malloc(sizeof(NODE *) * argc) : NULL);
-        if (argc && !argv) abort();
+        uint32_t cnt = 1u + (uint32_t)argc;
+        NODE **argv = malloc(sizeof(NODE *) * cnt);
+        if (!argv) abort();
         int32_t saved = tc->chain;
-        tc->chain = saved + (int32_t)argc;
+        tc->chain = saved + (int32_t)cnt;
+        argv[0] = ALLOC_node_self(-1 - tc->chain);      /* self → base[-1] */
         for (size_t i = 0; i < argc; i++)
-            argv[i] = transduce(tc, args->arguments.nodes[i]);
+            argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
         tc->chain = saved;
-        return ALLOC_node_call(mid, line, self_off, argv, (uint32_t)argc);
+        return ALLOC_node_call(mid, line, argv, cnt);
     }
 }
 

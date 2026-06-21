@@ -973,29 +973,31 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, VALUE val@child
 // implicit-self call `mid(args...)` (any fixed arity).  argv@children stages the
 // args (no recv — self is slots[self_off]); replaces the call0..3 family.
 NODE_DEF
-node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
-    /* Inline the cached simple-ISEQ fast path right here so the specialized
+    /* self is staged as the receiver (argv[0]) → base[-1], uniform with node_send.
+     * Inline the cached simple-ISEQ fast path right here so the specialized
      * dispatcher (SD) avoids the cross-module call into korb_call_cached on the
      * hot recursive / implicit-self method-call path (fib/ackermann/method_call/
      * ivar/structacc...).  Mirrors korb_call_cached's two hot branches; anything
      * else (cache miss, CFUNC, attr, non-simple, main-global) falls through. */
-    const VALUE self = slots[self_off];
+    const uint32_t argc = argv_cnt - 1;
+    const VALUE self = slots[-(intptr_t)argv_cnt];       /* base[-1] (the staged self receiver) */
     if (LIKELY(KORB_OBJECT_P(self))) {
         const VALUE klass = VAL2OBJ(self)->klass;
         if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
             if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass)) {
                 struct korb_method *const m = ic->m;
                 if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
-                    return korb_invoke_simple(c, slots, m, argv_cnt, line, mid, self, ic->def_class);
+                    return korb_invoke_simple(c, slots, m, argc, line, mid, self, ic->def_class);
             }
         } else if (LIKELY(cc->serial == c->vm->method_serial && cc->m != NULL &&
                           cc->m->kind == KORB_METHOD_ISEQ && cc->m->is_simple)) {
-            return korb_invoke_simple(c, slots, cc->m, argv_cnt, line, mid, self, KORB_NIL);   /* top-level global (fib) */
+            return korb_invoke_simple(c, slots, cc->m, argc, line, mid, self, KORB_NIL);   /* top-level global (fib) */
         }
     }
-    return korb_call_cached(c, slots, mid, line, cc, ic, argv_cnt, self);
+    return korb_call_cached(c, slots, mid, line, cc, ic, argc, self);
 }
 
 // Implicit-self keyword call `f(pos..., k: v...)`.  @children stages the pos args
