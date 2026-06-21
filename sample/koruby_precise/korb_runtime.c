@@ -1563,11 +1563,11 @@ void korb_env_store(CTX *c, KorbEnv *e, uint32_t index, VALUE v) {
     ARO_STORE(c, vi, &vi->data[index], v);
 }
 
-/* The frame at `loc` owns an open env iff its EP cell loc[-1] is a clean even
- * KorbEnv with loc[-1]->loc == loc (set by korb_make_proc/binding).  Lets multiple
+/* The frame at `loc` owns an open env iff its EP cell loc[-2] is a clean even
+ * KorbEnv with loc[-2]->loc == loc (set by korb_make_proc/binding).  Lets multiple
  * procs over the same activation share one env → shared mutation.  No global list. */
 static KorbEnv *korb_open_env_find(VALUE *loc) {
-    const VALUE pv = loc[-1];
+    const VALUE pv = korb_ep_get(loc);
     if (pv != 0 && (pv & 1u) == 0) {
         KorbEnv *e = VAL2ENV(pv);
         if (!e->closed && e->loc == loc) return e;
@@ -1576,13 +1576,13 @@ static KorbEnv *korb_open_env_find(VALUE *loc) {
 }
 
 /* Cold tail of the frame-return close hook: the returning frame's EP cell
- * (frame_base[-1]) holds its own open env (clean even KorbEnv, loc==frame_base —
+ * (frame_base[-2]) holds its own open env (clean even KorbEnv, loc==frame_base —
  * see korb_frame_escaped).  Copy the live locals into a heap vals array so an
  * escaped closure over this activation survives the frame.  OUT-OF-LINE so the
  * (false) guard doesn't bloat the always-inlined invoke fast paths. */
 RESULT __attribute__((noinline)) korb_close_ret(CTX *c, VALUE *scratch, VALUE *frame_base, RESULT r) {
     scratch[0] = r.value;                              /* root return value across vals alloc */
-    scratch[1] = frame_base[-1];                       /* root the env (EP cell) across alloc */
+    scratch[1] = korb_ep_get(frame_base);                       /* root the env (EP cell) across alloc */
     const uint32_t n = VAL2ENV(scratch[1])->n;
     KorbArrayItems *vals = korb_alloc(c, scratch + 2, sizeof(KorbArrayItems) + (size_t)n * sizeof(VALUE), KORB_OBJ_VALUE_ARRAY);
     KorbEnv *e = VAL2ENV(scratch[1]);                  /* re-read after GC */
@@ -1624,7 +1624,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
     uint32_t nlive = 1;
     VALUE outer_env = 0;                                 /* existing KorbEnv chain to graft, or 0 */
     for (uint32_t k = 1; k < depth; k++) {
-        const VALUE pv = bases[k-1][-1];
+        const VALUE pv = korb_ep_get(bases[k-1]);
         if (pv & 1u) { bases[k] = (VALUE *)(uintptr_t)(pv & ~(uintptr_t)1u); nlive++; }
         else { outer_env = pv; break; }                 /* reached an already-materialized KorbEnv */
     }
@@ -1632,7 +1632,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
      * outer_env; slots[1] holds the current outer env (rooted across each alloc). */
     slots[1] = outer_env;
     for (int k = (int)nlive - 1; k >= 0; k--) {
-        const VALUE pv = bases[k][-1];                   /* original outer link (preserve into e->prev) */
+        const VALUE pv = korb_ep_get(bases[k]);                   /* original outer link (preserve into e->prev) */
         KorbEnv *existing = korb_open_env_find(bases[k]);
         if (existing) { slots[1] = (VALUE)(uintptr_t)existing; continue; }   /* share this frame's env */
         KorbEnv *e = korb_alloc(c, slots + 2, sizeof(KorbEnv), KORB_OBJ_ENV);
@@ -1644,7 +1644,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
          * link so a deeper sibling closure can still walk past this frame. */
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, slots[1] ? slots[1] : pv);
         slots[1] = (VALUE)(uintptr_t)e;
-        bases[k][-1] = slots[1];                         /* EP cell: this frame owns its env (clean even; GC roots via slots) */
+        korb_ep_set(bases[k], slots[1]);                         /* EP cell: this frame owns its env (clean even; GC roots via slots) */
     }
     KorbProc *p = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
     p->iseq = entry; p->is_lambda = (uint8_t)is_lambda;
@@ -1657,7 +1657,7 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
  * `self`, and the immortal `names` table.  GC-safe (env/self rooted in slots). */
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
     slots[0] = self_val;                                  /* root self across allocs */
-    const VALUE pv = frame_base[-1];                      /* original outer link (preserve into e->prev) */
+    const VALUE pv = korb_ep_get(frame_base);                      /* original outer link (preserve into e->prev) */
     KorbEnv *e = korb_open_env_find(frame_base);
     if (e == NULL) {
         e = korb_alloc(c, slots + 1, sizeof(KorbEnv), KORB_OBJ_ENV);
@@ -1665,7 +1665,7 @@ RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->vals, 0);
         ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->prev, pv);   /* keep the frame's outer link */
         slots[1] = (VALUE)(uintptr_t)e;
-        frame_base[-1] = slots[1];                        /* EP cell: frame owns its env (GC roots via slots) */
+        korb_ep_set(frame_base, slots[1]);                        /* EP cell: frame owns its env (GC roots via slots) */
     } else slots[1] = (VALUE)(uintptr_t)e;
     KorbBinding *b = korb_alloc(c, slots + 2, sizeof(KorbBinding), KORB_OBJ_BINDING);
     b->name_syms = name_syms; b->name_cnt = name_cnt;
@@ -2004,7 +2004,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     slots[0] = klass;                                    /* root class across allocs */
     if (block != NULL) {                                 /* block form → a (lambda) proc */
         /* a block-arg's def_env arrives in tagged prev form (base|1); korb_make_proc
-         * wants the raw frame base (it reads base[-1] for outer scopes).  The
+         * wants the raw frame base (it reads base[-2] for outer scopes).  The
          * captured open env is shared (korb_open_env_find) and promoted to heap when
          * the defining frame returns — so closures over a shared mutable local work. */
         VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
@@ -2232,7 +2232,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged -> GC skips); super reads owner, __method__ reads mid */
-    base[-1] = 0;                                        /* EP cell (was recv slot): no open env yet */
+    korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
     (void)def_class;
     if (block != NULL && m->uses_block) {
         base[locals_cnt - 5] = (VALUE)((uintptr_t)block | 1u);
@@ -2341,7 +2341,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);
-    base[-1] = 0;                                        /* EP cell (was recv slot): no open env yet */
+    korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
     /* fast path: all keywords supplied in declared order (the common call shape,
      * e.g. box(x:,y:,z:) on def box(x:,y:,z:)) — direct positional bind, no scan,
      * no missing/unknown checks (every param present, every arg consumed). */
@@ -2510,11 +2510,14 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return m->rfn(c, slots + 1, recv, args);
     }
-    /* restage [self, args] above the cursor so the callee's base[-1] is self
-     * (the EP cell); super's args sit at slots[-argc..-1], self is separate. */
-    for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
-    slots[0] = self;
-    return korb_invoke_method(c, slots + 1 + argc, m, argc, line, mid, self, found_def, block, def_env, captured_self);
+    /* restage [magic, EP, self, args] above the cursor so the callee frame has its
+     * KORB_FRAME_HDR meta cells zeroed (base[-3]=magic, base[-2]=EP) with self at
+     * base[-1]; super's args sit at slots[-argc..-1], self is separate. */
+    for (uint32_t j = 0; j < argc; j++) slots[3 + j] = slots[-(intptr_t)argc + j];
+    slots[0] = 0;                                 /* base[-3] (magic) */
+    slots[1] = 0;                                 /* base[-2] (EP)    */
+    slots[2] = self;                              /* base[-1]         */
+    return korb_invoke_method(c, slots + 3 + argc, m, argc, line, mid, self, found_def, block, def_env, captured_self);
 }
 
 /* a descends from (or equals) b */
@@ -3931,15 +3934,20 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const bool fwd = (def_env == KORB_BLK_FWD);
     const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
-    /* block frame: bf[0]=PREV (tagged-odd slots handle, or even KorbEnv* for an
-     * escaped Proc), bf[1..1+blocals)=block locals, self cell at bf[blocals]. */
-    VALUE *const bf = slots;
+    /* block frame (bottom header): locals base B = bf+1, with B[-2]=EP (PREV:
+     * tagged-odd slots handle, or even KorbEnv* for an escaped Proc) and
+     * B[-3]=magic.  bf is shifted +2 above the caller's cursor so the two meta
+     * cells land in fresh scratch (slots[0]=magic, slots[1]=EP) — no caller
+     * reservation needed.  Block locals at bf[1..1+blocals), self cell at bf[blocals]. */
+    VALUE *const bf = slots + 2;
     char cstack_probe;
     if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit)) {
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
     }
-    bf[0] = prev;
+    bf[-2] = 0;          /* B[-3] (magic)              */
+    bf[-1] = prev;       /* B[-2] (EP / PREV link)     */
+    bf[0]  = 0;          /* B[-1] (self in step 2; unused/zeroed for GC scan now) */
     /* keyword params: a trailing Hash is consumed as kwargs (like methods), so
      * the positional binding below sees only the positional args. */
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
@@ -4084,7 +4092,7 @@ korb_yield_outer(CTX *c, VALUE *slots, uint32_t argc, uint32_t line,
         return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
     VALUE *node = (VALUE *)(uintptr_t)(prev_handle & ~(uintptr_t)1u);
     for (uint32_t k = 1; k < depth; k++) {   /* walk like node_eget */
-        const VALUE h = node[-1];
+        const VALUE h = korb_ep_get(node);
         if (UNLIKELY((h & 1u) == 0))
             return korb_raise(c, slots, KORB_E_LOCALJUMP, line, "no block given (yield)");
         node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
@@ -4102,7 +4110,7 @@ korb_outer_frame_base(VALUE prev_handle, uint32_t depth)
     if ((prev_handle & 1u) == 0) return NULL;
     VALUE *node = (VALUE *)(uintptr_t)(prev_handle & ~(uintptr_t)1u);
     for (uint32_t k = 1; k < depth; k++) {
-        const VALUE h = node[-1];
+        const VALUE h = korb_ep_get(node);
         if ((h & 1u) == 0) return NULL;
         node = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
     }
@@ -4236,6 +4244,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     struct korb_vm *const vm = c->vm;
+    /* Internal C dispatch stages [recv, args] flush against the caller's cursor
+     * (no @framehdr gap).  A user-method callee built off these args needs its
+     * KORB_FRAME_HDR meta cells (EP at base[-2], magic at base[-3]) zeroed below
+     * the receiver, so relocate the [recv,args] block up to a fresh region with
+     * the gap.  recv lands at slots[2] (= new base[-1]); slots[0]/slots[1] become
+     * the magic/EP cells.  Cheap (argc small) and only on this slow dispatch path
+     * — the @framehdr fast path inlines korb_invoke_simple and never gets here. */
+    memmove(slots + 2, slots - (intptr_t)argc - 1, ((size_t)argc + 1) * sizeof(VALUE));
+    slots[0] = 0;                                       /* callee base[-3] (magic)   */
+    slots[1] = 0;                                       /* callee base[-2] (EP)      */
+    slots += (intptr_t)argc + 3;                        /* new cursor: recv at slots[-argc-1], gap below */
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
     VALUE self = *recv_slot;
 
@@ -4564,11 +4583,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const uint32_t mm_mid = korb_intern(vm, "method_missing", 14);
             VALUE mm_def = KORB_NIL;
             struct korb_method *const mm = korb_mcache_find(vm, start_cls, mm_mid, &mm_def);
-            if (mm) {                                          /* stage [self | :name | args...] */
-                slots[0] = self;
-                slots[1] = ID2SYM(mid);
-                for (uint32_t j = 0; j < argc; j++) slots[2 + j] = slots[-(intptr_t)argc + (intptr_t)j];
-                return korb_dispatch_method(c, slots + argc + 2, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self);
+            if (mm) {                                          /* stage [magic | EP | self | :name | args...] */
+                slots[0] = 0;                                  /* base[-3] (magic) */
+                slots[1] = 0;                                  /* base[-2] (EP)    */
+                slots[2] = self;                               /* base[-1] (self)  */
+                slots[3] = ID2SYM(mid);                        /* arg0 = missing method name */
+                for (uint32_t j = 0; j < argc; j++) slots[4 + j] = slots[-(intptr_t)argc + (intptr_t)j];
+                return korb_dispatch_method(c, slots + argc + 4, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self);
             }
         }
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
@@ -6158,8 +6179,8 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         const uint32_t L = koruby_toplevel_locals_cnt;
         const uint32_t ncnt = koruby_toplevel_local_cnt;
         const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
-        slots[0] = 0;                                   /* eval frame EP cell (fb[-1]) */
-        VALUE *const fb = slots + 1;                    /* eval frame base (fb[-1]=slots[0] is a real EP, not an arg) */
+        slots[0] = 0; slots[1] = 0; slots[2] = 0;       /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
+        VALUE *const fb = slots + 3;                    /* eval frame base (bottom header: fb[-2]=EP) */
         VALUE *const cur = fb + L;
         memset(fb, 0, (size_t)L * sizeof(VALUE));
         for (uint32_t i = 0; i < ncnt; i++) {           /* seed: copy binding values into the eval frame's locals */
@@ -6190,8 +6211,8 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
     const uint32_t locals = koruby_toplevel_locals_cnt;
-    slots[0] = 0;                                       /* eval frame EP cell (fb[-1]) */
-    VALUE *const fb = slots + 1;                        /* base (fb[-1]=slots[0] is a real EP, not an arg) */
+    slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
+    VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
@@ -6507,11 +6528,13 @@ korb_ctx_new(void)
         abort();
     }
 
-    /* Leading slack cell: every frame's EP is base[-1]; the toplevel frame sits at
-     * c->slots so its EP cell is c->slots[-1].  Reserve one VALUE before the logical
-     * base (AROH_VISIT_ROOTS scans from c->slots-1 to include it). */
-    c->slots = (VALUE *)base + 1;
-    c->slots[-1] = 0;                                  /* toplevel EP: no open env yet */
+    /* Leading slack cells: every frame's EP is base[-2] (self at base[-1]); the
+     * toplevel frame sits at c->slots so its EP cell is c->slots[-2].  Reserve two
+     * VALUEs before the logical
+     * base (AROH_VISIT_ROOTS scans from c->slots-2 to include them). */
+    c->slots = (VALUE *)base + 2;
+    c->slots[-1] = 0;                                  /* toplevel self cell (base[-1]; populated in step 2) */
+    korb_ep_set(c->slots, 0);                          /* toplevel EP (base[-2]): no open env yet */
     c->slots_top = c->slots;
     c->slots_limit = (VALUE *)(base + bytes);
     c->slots_high_water = c->slots;

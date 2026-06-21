@@ -748,8 +748,11 @@ struct CTX_struct {
         for (VALUE *_p = _aro_top; _p < (c)->slots_high_water; _p++)         \
             *_p = 0;                                                         \
     }                                                                        \
-    /* start a cell early: the toplevel frame's EP lives at c->slots[-1]. */   \
-    for (VALUE *_p = (c)->slots - 1; _p < _aro_top; _p++) {                  \
+    /* start two cells early: bottom-header frames keep EP at base[-2] and the    \
+     * receiver/self at base[-1]; the toplevel frame sits at c->slots so these    \
+     * are c->slots[-2]/c->slots[-1].  (Per-frame magic at base[-3] is zeroed on  \
+     * the reserve paths and, for non-toplevel frames, lies inside this range.) */ \
+    for (VALUE *_p = (c)->slots - 2; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
     /* constants (class values) are roots too */                            \
@@ -767,7 +770,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
     }                                                                        \
-    /* open closure envs now live in each frame's EP cell (base[-1]), scanned    \
+    /* open closure envs now live in each frame's EP cell (base[-2]), scanned    \
      * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
@@ -777,7 +780,7 @@ struct CTX_struct {
     /* main value-stack, suspended while a fiber runs (active stack scanned   \
      * above as c->slots..slots_top). */                                      \
     if ((c)->vm->running_fiber != NULL && (c)->vm->main_slots != NULL) {      \
-        for (VALUE *_p = (c)->vm->main_slots - 1; _p < (c)->vm->main_slots_top; _p++) \
+        for (VALUE *_p = (c)->vm->main_slots - 2; _p < (c)->vm->main_slots_top; _p++) \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                         \
     }                                                                        \
     /* every live fiber's transfer/captured_self roots + (suspended) value    \
@@ -787,7 +790,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
         if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
-            for (VALUE *_p = _fr->vslots - 1; _p < _fr->vslots_top; _p++)         \
+            for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \

@@ -379,6 +379,15 @@ extern size_t node_cnt;
  * dispatch (korb_send_impl/korb_call_impl) reserves them by shifting the frame. */
 #define KORB_FRAME_HDR 2
 
+/* Offset (from a frame's locals base) of the EP cell — the open-env / prev-link
+ * slot.  All EP reads/writes and the closure PREV-chain walk go through this so
+ * the layout is defined in one place.  (Step 1 of the bottom-header migration:
+ * EP moved from base[-1] to base[-2]; self still lives at the frame top until
+ * Step 2 relocates it into base[-1].) */
+#define KORB_EP_OFF (-2)
+static inline VALUE korb_ep_get(const VALUE *const base) { return base[KORB_EP_OFF]; }
+static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP_OFF] = v; }
+
 /* Cold helpers used by the inlined simple-call fast path below; defined in
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
  * the rare open-env-close / exception-backtrace paths). */
@@ -394,7 +403,7 @@ void   korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name);
  * KorbEnv whose loc is this frame) → its return must close it.  base[-1] is the
  * receiver cell (staged by the caller): consumable as the EP once self is read. */
 static inline bool korb_frame_escaped(const VALUE *base) {
-    const VALUE pv = base[-1];
+    const VALUE pv = korb_ep_get(base);
     return pv != 0 && (pv & 1u) == 0 && VAL2ENV(pv)->loc == base;
 }
 
@@ -417,7 +426,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     if (locals_cnt - 2 > argc) memset(base + argc, 0, (locals_cnt - 2 - argc) * sizeof(VALUE));
     base[locals_cnt - 1] = self;
     base[locals_cnt - 2] = (VALUE)((uintptr_t)m | 1u);   /* method entry (tagged); super/__method__ source */
-    base[-1] = 0;                                         /* EP cell (was the recv slot): no open env yet */
+    korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
     (void)def_class;
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);

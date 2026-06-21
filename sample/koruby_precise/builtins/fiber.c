@@ -42,8 +42,9 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap fiber vslots"); abort(); }
-    rep->vslots = (VALUE *)vs + 1;                     /* leading slack: frame EP at base[-1] (fiber toplevel → vslots[-1]) */
-    rep->vslots[-1] = 0;
+    rep->vslots = (VALUE *)vs + 2;                     /* leading slack: bottom-header EP at base[-2] (fiber toplevel → vslots[-2]) */
+    rep->vslots[-1] = 0;                               /* fiber toplevel self cell (base[-1]; step 2) */
+    rep->vslots[-2] = 0;                               /* fiber toplevel EP (base[-2]) */
     rep->vslots_top = rep->vslots;
     rep->vslots_limit = (VALUE *)vs + KORB_FIBER_VSLOTS_BYTES / sizeof(VALUE) - KORB_FIBER_VSLOTS_MARGIN;
     rep->vslots_hw = rep->vslots;

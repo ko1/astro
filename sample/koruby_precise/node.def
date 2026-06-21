@@ -1028,9 +1028,13 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
     VALUE self = slots[self_off];
     VALUE arr = slots[-1];                              /* the staged args array */
     uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = self;                                    /* self → base[-1] (EP cell) */
-    for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
-    return korb_call(c, slots + 1 + N, mid, line, cc, N, self);
+    /* reserve the callee's bottom-header meta cells (base[-3]=magic, base[-2]=EP)
+     * below self at base[-1]; korb_call's callee = slots+3+N - N = slots+3. */
+    slots[0] = 0;                                       /* base[-3] (magic) */
+    slots[1] = 0;                                       /* base[-2] (EP)    */
+    slots[2] = self;                                    /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[3 + i] = VAL2ARY(arr)->items->data[i];
+    return korb_call(c, slots + 3 + N, mid, line, cc, N, self);
 }
 
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
@@ -1492,7 +1496,7 @@ node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint3
     (void)c; (void)n;
     VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
     for (uint32_t k = 1; k < depth; k++)
-        h = (h & 1u) ? ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[-1] : VAL2ENV(h)->prev;
+        h = (h & 1u) ? korb_ep_get((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u)) : VAL2ENV(h)->prev;
     if (h & 1u) return RESULT_OK(((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index]);
     KorbEnv *e = VAL2ENV(h);
     return RESULT_OK((e->closed ? ((KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc)[index]);
@@ -1507,7 +1511,7 @@ node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint3
     (void)c; (void)n;
     VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
     for (uint32_t k = 1; k < depth; k++)
-        h = (h & 1u) ? ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[-1] : VAL2ENV(h)->prev;
+        h = (h & 1u) ? korb_ep_get((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u)) : VAL2ENV(h)->prev;
     if (h & 1u) { ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index] = val; return RESULT_OK(val); }
     KorbEnv *e = VAL2ENV(h);
     if (e->closed) korb_env_store(c, e, index, val);       /* heap vals → WB-aware store */

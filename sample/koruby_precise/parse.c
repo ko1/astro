@@ -278,7 +278,7 @@ bake_lset(struct kp_ctx *tc, uint32_t index, NODE *rval)
 static NODE *
 bake_eget(struct kp_ctx *tc, uint32_t depth, uint32_t index)
 {
-    NODE *n = ALLOC_node_eget(-1 - tc->chain, depth, index);
+    NODE *n = ALLOC_node_eget(-2 - tc->chain, depth, index);
     bake_add(tc, &n->u.node_eget.prev_off);
     return n;
 }
@@ -286,7 +286,7 @@ bake_eget(struct kp_ctx *tc, uint32_t depth, uint32_t index)
 static NODE *
 bake_eset(struct kp_ctx *tc, uint32_t depth, uint32_t index, NODE *rval)
 {
-    NODE *n = ALLOC_node_eset(-1 - tc->chain, depth, index, rval);
+    NODE *n = ALLOC_node_eset(-2 - tc->chain, depth, index, rval);
     bake_add(tc, &n->u.node_eset.prev_off);
     return n;
 }
@@ -2248,7 +2248,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (nargs == 0)      v = lit_nil();
         else if (nargs == 1) v = transduce(tc, rn->arguments->arguments.nodes[0]);
         else { v = build_array(tc, rn->arguments->arguments.nodes, nargs, (uint32_t)nargs); }
-        NODE *ro = ALLOC_node_return_outer(-1 - tc->chain, depth, v);
+        NODE *ro = ALLOC_node_return_outer(-2 - tc->chain, depth, v);
         bake_add(tc, &ro->u.node_return_outer.prev_off);
         return ro;
       }
@@ -2311,7 +2311,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* yield inside a block: trio_base = method frame_size - 5 (add-baked at
          * the method's pop); prev_off addresses this block frame's PREV cell. */
         if (yargc == 0) {
-            NODE *yo = ALLOC_node_yield_outer0(line, -1 - tc->chain, depth, -5);
+            NODE *yo = ALLOC_node_yield_outer0(line, -2 - tc->chain, depth, -5);
             bake_add(tc, &yo->u.node_yield_outer0.prev_off);     /* this-block fixup */
             add_bake_to(mf, &yo->u.node_yield_outer0.trio_base); /* += method frame_size */
             return yo;
@@ -2319,7 +2319,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (yargc == 1) {
             NODE *a0;
             WITH_CHAIN(tc, 1, (a0 = transduce(tc, yn->arguments->arguments.nodes[0])));
-            NODE *yo = ALLOC_node_yield_outer1(line, -1 - (tc->chain + 1), depth, -5, a0);
+            NODE *yo = ALLOC_node_yield_outer1(line, -2 - (tc->chain + 1), depth, -5, a0);
             bake_add(tc, &yo->u.node_yield_outer1.prev_off);
             add_bake_to(mf, &yo->u.node_yield_outer1.trio_base);
             return yo;
@@ -2330,7 +2330,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         tc->chain = saved + (int32_t)yargc;
         for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        NODE *yo = ALLOC_node_yield_outer_n(line, -1 - (tc->chain + (int32_t)yargc), depth, -5, argv, (uint32_t)yargc);
+        NODE *yo = ALLOC_node_yield_outer_n(line, -2 - (tc->chain + (int32_t)yargc), depth, -5, argv, (uint32_t)yargc);
         bake_add(tc, &yo->u.node_yield_outer_n.prev_off);
         add_bake_to(mf, &yo->u.node_yield_outer_n.trio_base);
         return yo;
