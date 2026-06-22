@@ -118,7 +118,12 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     int kind = 0;   /* 0 = ascii-8bit byte, 1 = us-ascii byte, 2 = utf-8 */
     if (VALUE_SLICE_LEN(a) >= 1) {
         slots[0] = VALUE_SLICE_GET(a, 0);
-        RESULT nr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+        RESULT nr;
+        if (KORB_STRING_P(slots[0])) {                /* encoding name given as a String ("utf-8") */
+            nr = RESULT_OK(slots[0]);
+        } else {                                       /* Encoding object → query its #name */
+            nr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+        }
         if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {
             const KorbString *nm = VAL2STR(nr.value);
             #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(nm->buf->data, lit, nm->len) == 0)
