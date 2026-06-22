@@ -2359,7 +2359,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             for (size_t i = 0; i < yargc; i++) argv[i] = transduce(tc, yn->arguments->arguments.nodes[i]);
             tc->chain = saved;
             const int32_t off = tc->chain + (int32_t)yargc;
-            return ALLOC_node_yield_n(line, -5 - off, -4 - off, -3 - off, argv, (uint32_t)yargc);
+            return ALLOC_node_yield_n(line, -4 - off, -3 - off, -2 - off, argv, (uint32_t)yargc);
         }
         /* yield inside a block: trio_base = method frame_size - 4 (add-baked at
          * the method's pop); prev_off addresses this block frame's PREV cell. */
