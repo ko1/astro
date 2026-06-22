@@ -739,8 +739,12 @@ static RESULT korb_hash_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block
         RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, np, k, v);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) {
-            slots[0] = k;
-            VALUE vv = VAL2HASH(VALUE_REF_GET(self))->items->data[2*i+1];
+            /* re-read BOTH key and value fresh from self: the block ran (and may
+             * have GC'd, moving the heap key/value) — the pre-yield `k`/`v` locals
+             * are stale.  (v was already re-read; k was not → STRESS+PURGE SEGV.) */
+            const KorbHash *const hh = VAL2HASH(VALUE_REF_GET(self));
+            slots[0] = hh->items->data[2*i];
+            VALUE vv = hh->items->data[2*i+1];
             CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), vv));
         }
     }
