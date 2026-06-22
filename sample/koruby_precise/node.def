@@ -220,8 +220,8 @@ node_massign_splat(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t npre, 
 NODE_DEF
 node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), n->u.node_plus.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged add: l=2x+1, rhs-1=2y → l+(rhs-1)=2(x+y)+1 is already the tagged
@@ -232,14 +232,14 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         if (LIKELY(!__builtin_add_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
 #ifdef KORB_HAVE_GMP
-        return korb_int_arith(c, slots, l, rhs, 0, line);
+        return korb_int_arith(c, slots, l, rhs, 0, n->u.node_plus.line);
 #else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented)");
+        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_plus.line, "Integer overflow (Bignum is not implemented)");
 #endif
     }
 #ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return korb_int_arith(c, slots, l, rhs, 0, line);
+        return korb_int_arith(c, slots, l, rhs, 0, n->u.node_plus.line);
 #endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float+Float inline (skip korb_num_arith dispatch) */
         return korb_flo(c, slots, korb_float_val(l) + korb_float_val(rhs));
@@ -247,14 +247,14 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         return korb_flo(c, slots, korb_float_val(l) + (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer+Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) + korb_float_val(rhs));
-    return korb_plus_slow(c, slots, lhs, rhs, line);
+    return korb_plus_slow(c, slots, lhs, rhs, n->u.node_plus.line);
 }
 
 NODE_DEF
 node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), n->u.node_minus.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged sub: l - (rhs-1) = (2x+1) - 2y = 2(x-y)+1, already tagged.
@@ -263,14 +263,14 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         if (LIKELY(!__builtin_sub_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
 #ifdef KORB_HAVE_GMP
-        return korb_int_arith(c, slots, l, rhs, 1, line);
+        return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
 #else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented)");
+        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_minus.line, "Integer overflow (Bignum is not implemented)");
 #endif
     }
 #ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return korb_int_arith(c, slots, l, rhs, 1, line);
+        return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
 #endif
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float-Float inline */
@@ -279,20 +279,20 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         return korb_flo(c, slots, korb_float_val(l) - (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer-Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) - korb_float_val(rhs));
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
-    if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
+    if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, n->u.node_minus.line);
     if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+        return korb_raise(c, slots, KORB_E_TYPE, n->u.node_minus.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+    return korb_raise(c, slots, KORB_E_NOMETHOD, n->u.node_minus.line, "undefined method '-' for %s", korb_a_type_name(l));
 }
 
 NODE_DEF
 node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), n->u.node_mul.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged mul: x*(rhs-1) = x*2y = 2xy, then |1 → 2xy+1 (tagged xy).  Only
@@ -301,14 +301,14 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (intptr_t)rhs - 1, &p)))
             return RESULT_OK((VALUE)(p | 1));
 #ifdef KORB_HAVE_GMP
-        return korb_int_arith(c, slots, l, rhs, 2, line);
+        return korb_int_arith(c, slots, l, rhs, 2, n->u.node_mul.line);
 #else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented)");
+        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_mul.line, "Integer overflow (Bignum is not implemented)");
 #endif
     }
 #ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return korb_int_arith(c, slots, l, rhs, 2, line);
+        return korb_int_arith(c, slots, l, rhs, 2, n->u.node_mul.line);
 #endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float*Float inline */
         return korb_flo(c, slots, korb_float_val(l) * korb_float_val(rhs));
@@ -316,33 +316,33 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_flo(c, slots, korb_float_val(l) * (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer*Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) * korb_float_val(rhs));
-    return korb_mul_slow(c, slots, lhs, rhs, line);
+    return korb_mul_slow(c, slots, lhs, rhs, n->u.node_mul.line);
 }
 
 // CRuby floor semantics for / and % (sign follows the divisor).
 NODE_DEF
 node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), n->u.node_div.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
-            return korb_raise(c, slots, KORB_E_ZERODIV, line, "divided by 0");
+            return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_div.line, "divided by 0");
         intptr_t q = a / b;
         if ((a % b != 0) && ((a ^ b) < 0)) q--;
         if (UNLIKELY(!FIXABLE(q)))
 #ifdef KORB_HAVE_GMP
-            return korb_int_arith(c, slots, l, rhs, 3, line);
+            return korb_int_arith(c, slots, l, rhs, 3, n->u.node_div.line);
 #else
-            return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented)");
+            return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_div.line, "Integer overflow (Bignum is not implemented)");
 #endif
         return RESULT_OK(LONG2FIX(q));
     }
 #ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return korb_int_arith(c, slots, l, rhs, 3, line);
+        return korb_int_arith(c, slots, l, rhs, 3, n->u.node_div.line);
 #endif
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 3);   /* before Float (a Complex/Float must not fall into korb_num_arith) */
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float/Float inline */
@@ -351,39 +351,39 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_flo(c, slots, korb_float_val(l) / (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer/Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) / korb_float_val(rhs));
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, line);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, n->u.node_div.line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 3);
     if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+        return korb_raise(c, slots, KORB_E_TYPE, n->u.node_div.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "/", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '/' for %s", korb_a_type_name(l));
+    return korb_raise(c, slots, KORB_E_NOMETHOD, n->u.node_div.line, "undefined method '/' for %s", korb_a_type_name(l));
 }
 
 NODE_DEF
 node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), n->u.node_mod.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
-            return korb_raise(c, slots, KORB_E_ZERODIV, line, "divided by 0");
+            return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
         intptr_t r = a % b;
         if (r != 0 && ((r ^ b) < 0)) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
 #ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
-        return korb_int_arith(c, slots, l, rhs, 4, line);
+        return korb_int_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
 #endif
     if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
     if ((FIXNUM_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)))   /* numeric l, float involved */
-        return korb_num_arith(c, slots, l, rhs, 4, line);
+        return korb_num_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
     if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+        return korb_raise(c, slots, KORB_E_TYPE, n->u.node_mod.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     slots[0] = l; slots[1] = rhs;                       /* Range#% / user-defined % via dispatch */
-    return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), line, 1);
+    return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), n->u.node_mod.line, 1);
 }
 
 // ---- bitwise / shift -------------------------------------------------------
@@ -393,40 +393,40 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
 NODE_DEF
 node_band(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
+    (void)line;
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) & FIX2LONG(rhs)));
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
-    return korb_send(c, slots + 1, c->vm->mid_band, line, 1);
+    return korb_send(c, slots + 1, c->vm->mid_band, n->u.node_band.line, 1);
 }
 
 NODE_DEF
 node_bor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
+    (void)line;
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) | FIX2LONG(rhs)));
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
-    return korb_send(c, slots + 1, c->vm->mid_bor, line, 1);
+    return korb_send(c, slots + 1, c->vm->mid_bor, n->u.node_bor.line, 1);
 }
 
 NODE_DEF
 node_bxor(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
+    (void)line;
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK(LONG2FIX(FIX2LONG(l) ^ FIX2LONG(rhs)));
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
-    return korb_send(c, slots + 1, c->vm->mid_bxor, line, 1);
+    return korb_send(c, slots + 1, c->vm->mid_bxor, n->u.node_bxor.line, 1);
 }
 
 NODE_DEF
 node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line, struct korb_inlcache *ic@ref)
 {
-    (void)n;
+    (void)line;   /* line read lazily from n on the cold (non-fixnum) path only */
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
         const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
@@ -437,13 +437,13 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached Array#<< / String#<< / bignum / user */
-    return korb_send_cached(c, slots + 1, c->vm->mid_shl, line, 1, ic);
+    return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic);
 }
 
 NODE_DEF
 node_shr(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
+    (void)line;
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
         const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
@@ -452,15 +452,15 @@ node_shr(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         /* sh < 0 (= left shift) may overflow → dispatch */
     }
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg */
-    return korb_send(c, slots + 1, c->vm->mid_shr, line, 1);
+    return korb_send(c, slots + 1, c->vm->mid_shr, n->u.node_shr.line, 1);
 }
 
 // Unary minus.  Single child → register form.
 NODE_DEF
 node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), line, 0); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0); }
     if (LIKELY(FIXNUM_P(v))) {
         intptr_t i = -FIX2LONG(v);
         if (LIKELY(FIXABLE(i)))
@@ -468,7 +468,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 #ifdef KORB_HAVE_GMP
         return korb_big_neg(c, slots, v);
 #else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, line, "Integer overflow (Bignum is not implemented)");
+        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_neg.line, "Integer overflow (Bignum is not implemented)");
 #endif
     }
 #ifdef KORB_HAVE_GMP
@@ -477,7 +477,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
     if (KORB_FLOAT_P(v)) return korb_flo(c, slots, -korb_float_val(v));
     if (KORB_STRING_P(v)) return RESULT_OK(v);   /* -@ on a String → self (frozen dup) */
     slots[0] = v;                                /* Rational/Complex/user-defined -@ via dispatch */
-    return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), line, 0);
+    return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0);
 }
 
 // ---- comparison ------------------------------------------------------------
@@ -485,53 +485,54 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
 NODE_DEF
 node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), line, 1); }
+    (void)line;   /* line read lazily from n only on the cold paths — keeps the
+                   * fixnum fast path free of the per-op `line` memory load. */
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), n->u.node_lt.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l < (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
         return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return korb_cmp_slow(c, slots, l, rhs, 0, line);
+    return korb_cmp_slow(c, slots, l, rhs, 0, n->u.node_lt.line);
 }
 
 NODE_DEF
 node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), n->u.node_le.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l <= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
         return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return korb_cmp_slow(c, slots, l, rhs, 1, line);
+    return korb_cmp_slow(c, slots, l, rhs, 1, n->u.node_le.line);
 }
 
 NODE_DEF
 node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), n->u.node_gt.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l > (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
         return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return korb_cmp_slow(c, slots, l, rhs, 2, line);
+    return korb_cmp_slow(c, slots, l, rhs, 2, n->u.node_gt.line);
 }
 
 NODE_DEF
 node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uint32_t line)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), line, 1); }
+    (void)line;
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), n->u.node_ge.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
         return RESULT_OK((intptr_t)l >= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
         return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
-    return korb_cmp_slow(c, slots, l, rhs, 3, line);
+    return korb_cmp_slow(c, slots, l, rhs, 3, n->u.node_ge.line);
 }
 
 // == / != : immediate identity / String content compare by default.  When a
