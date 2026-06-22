@@ -1706,3 +1706,21 @@ frame_size。all-or-nothing (中途半端だと 189-regression 型の silent off
   key 未対応)。key も self から再読込に統一。method/hash_* STRESS+PURGE 12452/0/0。
   daed240e でも再現した pre-existing バグ (bottom-header の回帰ではない)。
 - method/array_283 は STRESS 下の低速 timeout (no-stress は PASS、benign)。残置。
+
+### pre-existing bignum バグ (perf 作業中に発見、2026-06-22)
+- `0 - 4611686018427387904` (= fixnum 0 - bignum 2^62) が `+2^62` を返す (正: -2^62)。
+  committed HEAD 4fb1e3dc でも再現する pre-existing バグ (fixnum tagged 算術最適化
+  とは無関係)。korb_int_arith の fixnum-lhs - bignum-rhs 経路の符号処理疑い。
+  通常の bignum±/fixnum±bignum の多くは正常 (`-2^62 - 1` 等は OK)。要調査。
+
+### perf 解析メモ (2026-06-22, perf record/annotate @ 機械語レベル)
+- fib AOT: 単一 SD に完全 inline。支配項 = 再帰の間接 call `call *0x30(rax)`
+  (body->head.dispatcher 経由, ~7%) + callee-saved 6 push/pop + sub/add rsp (~12%)
+  + per-call の serial/kind/params/stack-limit×2 チェック。dispatch-bound。
+- nested_loop AOT: inner loop。最適化前は tagged decode(sar)/encode(lea) が支配。
+  fixnum tagged 算術化 (commit 055dbd14) で sar/lea 激減 → 支配項は slots の
+  memory load/store + per-op `test $0x1` tag guard に移行 (= locals-in-memory が壁)。
+- 残る大物 (いずれもアーキテクチャ級・高リスク): locals のレジスタ常駐化、
+  type-stable loop での guard hoisting、再帰の devirtualization。
+- 計測機が現在ノイジー (best-of-9 でも ~2× variance)。fine-grained per-bench 比較は
+  interleave+pin でも不安定。robust な win は nested_loop ~1.4× のみ確証。
