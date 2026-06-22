@@ -245,13 +245,15 @@ static RESULT korb_m_rat_num(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_rat_den(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->den); }
 static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; double n, d; korb_num_to_d(SELF_RAT->num, &n); korb_num_to_d(SELF_RAT->den, &d); return korb_float_new(c, slots, n / d); }
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-/* integer floor-div of rational num/den (mode: 0 floor, 1 ceil, 2 trunc, 3 round-half-away). */
+/* integer floor-div of rational num/den (mode: 0 floor, 1 ceil, 2 trunc,
+ * 3 round-half-away (:up), 4 round-half-even, 5 round-half-down (toward zero)). */
 static RESULT korb_rat_intdiv(CTX *c, VALUE *slots, VALUE num, VALUE den, int mode) {
     if (LIKELY(FIXNUM_P(num) && FIXNUM_P(den))) {
         const intptr_t n = FIX2LONG(num), d = FIX2LONG(den);   /* d > 0 (normalized) */
         intptr_t q = n / d, rem = n % d;
         if (mode == 0)      { if (rem != 0 && n < 0) q--; }
         else if (mode == 1) { if (rem != 0 && n > 0) q++; }
+        else if (mode == 5) { const intptr_t ar = rem < 0 ? -rem : rem; if (ar * 2 > d) q += (n < 0 ? -1 : 1); }   /* ties toward zero */
         else if (mode == 3) { const intptr_t ar = rem < 0 ? -rem : rem; if (ar * 2 >= d) q += (n < 0 ? -1 : 1); }
         else if (mode == 4) { const intptr_t ar = rem < 0 ? -rem : rem, t = ar * 2;   /* round half to even */
                               if (t > d) q += (n < 0 ? -1 : 1);
@@ -263,8 +265,9 @@ static RESULT korb_rat_intdiv(CTX *c, VALUE *slots, VALUE num, VALUE den, int mo
     if (mode == 0)      mpz_fdiv_qr(zq, zr, zn, zd);
     else if (mode == 1) mpz_cdiv_qr(zq, zr, zn, zd);
     else                mpz_tdiv_qr(zq, zr, zn, zd);
-    if (mode == 3) { mpz_t two_ar; mpz_init(two_ar); mpz_abs(two_ar, zr); mpz_mul_ui(two_ar, two_ar, 2);
-                     if (mpz_cmp(two_ar, zd) >= 0) { if (mpz_sgn(zn) < 0) mpz_sub_ui(zq, zq, 1); else mpz_add_ui(zq, zq, 1); }
+    if (mode == 3 || mode == 5) { mpz_t two_ar; mpz_init(two_ar); mpz_abs(two_ar, zr); mpz_mul_ui(two_ar, two_ar, 2);
+                     const int cmp = mpz_cmp(two_ar, zd);   /* :up rounds ties away (>=), :down keeps ties (>) */
+                     if (cmp > 0 || (mode == 3 && cmp == 0)) { if (mpz_sgn(zn) < 0) mpz_sub_ui(zq, zq, 1); else mpz_add_ui(zq, zq, 1); }
                      mpz_clear(two_ar); }
     else if (mode == 4) { mpz_t two_ar; mpz_init(two_ar); mpz_abs(two_ar, zr); mpz_mul_ui(two_ar, two_ar, 2);
                      const int cmp = mpz_cmp(two_ar, zd);   /* round half to even */
@@ -344,12 +347,15 @@ static RESULT korb_m_rat_marshal_dump(CTX *c, VALUE *slots, VALUE_REF self, VALU
 /* round([ndigits], half: :up|:even) — ndigits<=0 → Integer, ndigits>0 → Rational. */
 static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
-    int mode = 3;                                          /* 3 = half up (default), 4 = half even */
+    int mode = 3;                                          /* 3 = half up (default), 4 = half even, 5 = half down */
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {   /* trailing half: kwarg */
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
-        if (hx >= 0 && SYMBOL_P(h->items->data[2 * hx + 1]) &&
-            SYM2ID(h->items->data[2 * hx + 1]) == korb_intern(c->vm, "even", 4)) mode = 4;
+        if (hx >= 0 && SYMBOL_P(h->items->data[2 * hx + 1])) {
+            const uint32_t hv = SYM2ID(h->items->data[2 * hx + 1]);
+            if (hv == korb_intern(c->vm, "even", 4)) mode = 4;
+            else if (hv == korb_intern(c->vm, "down", 4)) mode = 5;
+        }
         n--;
     }
     intptr_t nd = 0;
