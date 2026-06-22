@@ -64,6 +64,30 @@ static const char *const KORUBY_PRELUDE =
 "class Random\n"                       /* stub: faithful MT19937 sequence is out of scope */
 "  def initialize(seed = nil); @seed = seed; end\n"
 "  def seed; @seed; end\n"
+"end\n"
+/* Minimal Encoding: enough for constant references and identity comparison so
+ * specs that mention Encoding::X in setup don't crash.  Per-string encoding
+ * tracking is out of scope (String#encoding returns UTF-8, the default). */
+"class Encoding\n"
+"  def initialize(name); @name = name; end\n"
+"  def name; @name; end\n"
+"  def to_s; @name; end\n"
+"  def inspect; \"#<Encoding:\" + @name + \">\"; end\n"
+"  def ==(o); o.is_a?(Encoding) && o.name == @name; end\n"
+"  def ascii_compatible?; @name != \"UTF-16\" && @name != \"UTF-32\"; end\n"
+"  def dummy?; false; end\n"
+"  UTF_8 = Encoding.new(\"UTF-8\")\n"
+"  US_ASCII = Encoding.new(\"US-ASCII\")\n"
+"  ASCII = US_ASCII\n"
+"  ASCII_8BIT = Encoding.new(\"ASCII-8BIT\")\n"
+"  BINARY = ASCII_8BIT\n"
+"  UTF_16 = Encoding.new(\"UTF-16\")\n"
+"  UTF_32 = Encoding.new(\"UTF-32\")\n"
+"  def self.default_external; UTF_8; end\n"
+"  def self.default_internal; nil; end\n"
+"end\n"
+"class String\n"
+"  def encoding; Encoding::UTF_8; end\n"
 "end\n";
 
 static void

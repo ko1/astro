@@ -5732,6 +5732,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "entries", korb_m_aseq_to_a, 0);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "size", korb_m_aseq_size, 0);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "first", korb_m_aseq_first, -1);
+    korb_def_cmethod(c, KORB_C_ARITHSEQ, "take", korb_m_aseq_first, 1);   /* take(n) = first n elements */
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "last", korb_m_aseq_last, -1);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "begin", korb_m_aseq_begin, 0);
     korb_def_cmethod(c, KORB_C_ARITHSEQ, "end", korb_m_aseq_end, 0);
@@ -6220,10 +6221,22 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)slots;
     uint32_t n = VALUE_SLICE_LEN(args);
     for (uint32_t i = 0; i < n; i++) {
-        korb_fprint_inspect(c, stdout, VALUE_SLICE_GET(args, i));
+        const VALUE v = VALUE_SLICE_GET(args, i);
+        /* user-class instance → honour a (possibly user-defined) #inspect via
+         * dispatch; the default Object#inspect yields the same "#<Class>" form as
+         * korb_fprint_inspect, so non-overriding objects are unaffected.  Builtins
+         * (Integer/String/Array/...) keep the fast C inspect. */
+        if (KORB_OBJECT_P(v) && VAL2OBJ(v)->klass != KORB_NIL) {
+            slots[0] = v;
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (LIKELY(KORB_STRING_P(r.value))) fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, stdout);
+            else korb_fprint_inspect(c, stdout, r.value);
+        } else {
+            korb_fprint_inspect(c, stdout, v);
+        }
         fputc('\n', stdout);
     }
     /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
