@@ -4910,7 +4910,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "integer?", korb_m_true_lit, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_s", korb_m_int_to_s, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "inspect", korb_m_int_to_s, -1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "chr", korb_m_int_chr, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "chr", korb_m_int_chr, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "**", korb_m_int_pow, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "pow", korb_m_int_pow, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "divmod", korb_m_int_divmod, 1);

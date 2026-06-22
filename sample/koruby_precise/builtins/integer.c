@@ -112,11 +112,38 @@ static RESULT korb_m_int_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_new(c, slots, buf, len);
 }
 static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; intptr_t n = SELF_INT;
-    if (n < 0 || n > 255) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
+    const intptr_t n = SELF_INT;
+    /* optional Encoding arg: US-ASCII (0..127 byte), ASCII-8BIT/BINARY (0..255
+     * byte), UTF-8 (codepoint → 1..4 UTF-8 bytes).  No arg → ASCII-8BIT byte. */
+    int kind = 0;   /* 0 = ascii-8bit byte, 1 = us-ascii byte, 2 = utf-8 */
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        RESULT nr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0, NULL, NULL, NULL);
+        if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {
+            const KorbString *nm = VAL2STR(nr.value);
+            #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(nm->buf->data, lit, nm->len) == 0)
+            if (ENC_IS("UTF-8")) kind = 2;
+            else if (ENC_IS("US-ASCII") || ENC_IS("ASCII")) kind = 1;
+            else if (ENC_IS("ASCII-8BIT") || ENC_IS("BINARY")) kind = 0;
+            else kind = 2;   /* other ascii-compatible → treat like UTF-8 for the codepoint */
+            #undef ENC_IS
+        }
+    }
+    if (kind == 2) {                                  /* UTF-8 encode the codepoint */
+        if (n < 0 || n > 0x10FFFF) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
+        char b[4]; int len;
+        const uint32_t cp = (uint32_t)n;
+        if (cp < 0x80)        { b[0] = (char)cp; len = 1; }
+        else if (cp < 0x800)  { b[0] = (char)(0xC0 | (cp >> 6)); b[1] = (char)(0x80 | (cp & 0x3F)); len = 2; }
+        else if (cp < 0x10000){ b[0] = (char)(0xE0 | (cp >> 12)); b[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[2] = (char)(0x80 | (cp & 0x3F)); len = 3; }
+        else                  { b[0] = (char)(0xF0 | (cp >> 18)); b[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); b[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[3] = (char)(0x80 | (cp & 0x3F)); len = 4; }
+        return korb_str_new(c, slots, b, (uint32_t)len);   /* UTF-8 string (not binary) */
+    }
+    const intptr_t hi = (kind == 1) ? 127 : 255;
+    if (n < 0 || n > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
     char ch = (char)n;
     RESULT r = korb_str_new(c, slots, &ch, 1);
-    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_BINARY;   /* n.chr is ASCII-8BIT */
+    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_BINARY;   /* byte string is ASCII-8BIT */
     return r;
 }
 
