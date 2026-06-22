@@ -5662,6 +5662,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "clone", korb_m_obj_dup, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "frozen?", korb_m_true_lit2, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "frozen?", korb_m_true_lit2, 0);   /* all Numeric instances are frozen (Bignum via Integer) */
+    korb_def_cmethod(c, KORB_C_COMPLEX,  "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_NIL,    "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_TRUE,   "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_FALSE,  "frozen?", korb_m_true_lit2, 0);
@@ -6610,8 +6612,19 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
 #endif
     if (KORB_FLOAT_P(a0)) {
         double d = korb_float_val(a0);
-        if (UNLIKELY(!isfinite(d) || !FIXABLE((intptr_t)d)))
+        if (UNLIKELY(!isfinite(d)))
             INT_FAIL(KORB_E_ARGUMENT, 0, "Integer(): value out of range");
+#ifdef KORB_HAVE_GMP
+        if (UNLIKELY(!FIXABLE((intptr_t)d) || fabs(d) >= 9.0e18)) {   /* large finite Float → Bignum (trunc) */
+            mpz_t z; mpz_init_set_d(z, d);                 /* mpz_set_d truncates toward zero */
+            RESULT r = korb_big_from_mpz(c, slots, z);
+            mpz_clear(z);
+            return r;
+        }
+#else
+        if (UNLIKELY(!FIXABLE((intptr_t)d)))
+            INT_FAIL(KORB_E_ARGUMENT, 0, "Integer(): value out of range");
+#endif
         return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */
     }
     if (KORB_STRING_P(a0)) {
