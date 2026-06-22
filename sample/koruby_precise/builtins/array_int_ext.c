@@ -1145,10 +1145,14 @@ static RESULT korb_m_hash_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(LONG2FIX(VAL2HASH(VALUE_REF_GET(self))->len));
 }
 static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    if (block == NULL) {                          /* symbol form: reduce(:+) / reduce(init, :+) — op on [k,v] pairs */
-        uint32_t na = VALUE_SLICE_LEN(a), op_mid;
-        if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+    uint32_t op_mid;
+    /* A trailing operator Symbol/String selects the symbol form, overriding any block. */
+    const uint32_t na0 = VALUE_SLICE_LEN(a);
+    const bool sym_form = na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
+    if (block == NULL && !sym_form)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+    if (sym_form) {                               /* reduce(:+) / reduce(init, :+) on [k,v] pairs [block ignored] */
+        uint32_t na = na0;
         bool have_acc = (na >= 2);
         if (have_acc) slots[0] = VALUE_SLICE_GET(a, 0);
         for (uint32_t i = 0; ; i++) {

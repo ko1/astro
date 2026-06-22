@@ -1336,10 +1336,15 @@ static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
     return false;
 }
 static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    if (block == NULL) {                                   /* symbol form: reduce(:+) / reduce(init, :+) */
-        uint32_t na = VALUE_SLICE_LEN(a), op_mid;
-        if (UNLIKELY(na < 1 || !korb_reduce_op(c, VALUE_SLICE_GET(a, na - 1), &op_mid)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+    uint32_t op_mid;
+    /* A trailing operator Symbol/String selects the symbol form and takes
+     * precedence over any block (CRuby ignores the block in that case). */
+    const uint32_t na0 = VALUE_SLICE_LEN(a);
+    const bool sym_form = na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
+    if (block == NULL && !sym_form)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
+    if (sym_form) {                                        /* reduce(:+) / reduce(init, :+) [block ignored] */
+        uint32_t na = na0;
         uint32_t i = 0;
         if (na >= 2) slots[0] = VALUE_SLICE_GET(a, 0);     /* explicit init */
         else { const KorbArray *ary = SELF_ARY; if (ary->len == 0) return RESULT_OK(KORB_NIL); slots[0] = ary->items->data[0]; i = 1; }

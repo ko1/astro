@@ -14,7 +14,7 @@ static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    return RESULT_OK(LONG2FIX((intptr_t)strlen(nm)));
+    return RESULT_OK(LONG2FIX(korb_utf8_count(nm, (uint32_t)strlen(nm))));   /* UTF-8 char count, like String#length */
 }
 
 /* ---- nil / true / false methods ------------------------------------------ */
