@@ -1247,6 +1247,7 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) { has_alnum = true; break; }
     }
     char carry_ch = 0;
+    uint32_t insert_pos = 0;     /* where a carry-out digit is inserted (just before the leftmost carried alnum) */
     if (!has_alnum) {
         for (int i = (int)n - 1; i >= 0; i--) {
             unsigned char ch = (unsigned char)buf[i];
@@ -1269,13 +1270,16 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 if ((cj>='0'&&cj<='9')||(cj>='a'&&cj<='z')||(cj>='A'&&cj<='Z')) break;
                 j--;
             }
-            if (j < 0) break;            /* carry out → keep carry_ch for prepend */
+            if (j < 0) { insert_pos = (uint32_t)i; break; }   /* carry out → insert before leftmost alnum */
             i = j; carry_ch = 0;
         }
     }
     RESULT r;
-    if (carry_ch) {
-        char *out = malloc(n + 1); out[0] = carry_ch; memcpy(out + 1, buf, n);
+    if (carry_ch) {                                 /* insert carry digit at insert_pos (0 for the byte path) */
+        char *out = malloc(n + 1);
+        memcpy(out, buf, insert_pos);
+        out[insert_pos] = carry_ch;
+        memcpy(out + insert_pos + 1, buf + insert_pos, n - insert_pos);
         r = korb_str_new(c, slots, out, n + 1); free(out);
     } else {
         r = korb_str_new(c, slots, buf, n);
