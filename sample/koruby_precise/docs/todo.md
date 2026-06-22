@@ -1754,3 +1754,15 @@ corpus は終始 89295/5 維持。生成器も改善 (warning/RNG/pointer-pack �
 - **exception ~40**: Errno/IO::*WaitReadable namespace, 定数の Module::Name 表示。
 - **basicobject ~10**: instance_eval(String)。
 - 既知: `send(:p, *a)` 系は修正済 / 別途 `send` 大splat の細部は要確認。
+
+### method-enumerator (deferred — 2026-06-22, regression のため revert)
+`arr.select`(no-block)→deferred Enumerator を試作したが corpus 回帰(89261/39)で revert。
+要点: mode-3 method-enum(source=recv, values=method sym, ops=args)+ each が
+recv.meth(&block) を re-dispatch、は動く(select/Hash/Range の with_index は一致)。
+だが with_index/with_object/to_a を prelude で each 経由実装すると **C の eager 版を
+override し eager enum を壊す**: (1) no-block with_index(`each.with_index(1).to_a`)が
+yield で no-block-error、(2) with-block の戻り値が eager は each→self で method 結果に
+ならない(select は mode-3 each が結果を返すので OK)。eager と mode-3 の戻り値
+セマンティクス統一 + 全 enum consumer(first/count/map/find...)の mode-3 対応が要る
+= Enumerator の本格再設計。multi-arg yield 修正(commit bd611c04)はこの作業中に発見した
+別の regression(Step2 由来)で、独立に commit 済。
