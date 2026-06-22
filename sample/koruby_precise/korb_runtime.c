@@ -6387,6 +6387,72 @@ bad:
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(nv));
 }
 
+bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);   /* defined below */
+
+/* Parse one numeric component of a Complex literal (s[lo..hi)) into an
+ * Integer / Float / Rational VALUE.  Empty or malformed → false. */
+static bool korb_cpx_component(CTX *c, VALUE *scratch, const char *s, uint32_t lo, uint32_t hi, VALUE *out) {
+    if (lo >= hi) return false;
+    bool has_dot = false, has_slash = false, has_e = false;
+    for (uint32_t k = lo; k < hi; k++) {
+        const char ch = s[k];
+        if (ch == '.') has_dot = true;
+        else if (ch == '/') has_slash = true;
+        else if ((ch == 'e' || ch == 'E') && k > lo) has_e = true;
+    }
+    if (has_slash) {                                          /* Rational "n/d" */
+        uint32_t sl = lo; while (sl < hi && s[sl] != '/') sl++;
+        VALUE nv, dv;
+        if (!korb_str_to_int(c, scratch, s + lo, sl - lo, 10, &nv)) return false;
+        scratch[0] = nv;                                      /* root num across den parse / rat alloc */
+        if (!korb_str_to_int(c, scratch + 1, s + sl + 1, hi - sl - 1, 10, &dv)) return false;
+        scratch[1] = dv;
+        RESULT r = korb_rat_new_v(c, scratch + 2, scratch[0], scratch[1]);
+        if (r.state != KORB_NORMAL) return false;
+        *out = r.value; return true;
+    }
+    if (has_dot || has_e) {                                   /* Float */
+        char buf[64]; if (hi - lo >= sizeof buf) return false;
+        memcpy(buf, s + lo, hi - lo); buf[hi - lo] = '\0';
+        char *ep; errno = 0; double d = strtod(buf, &ep);
+        if (ep != buf + (hi - lo)) return false;
+        RESULT r = korb_float_new(c, scratch, d);
+        if (r.state != KORB_NORMAL) return false;
+        *out = r.value; return true;
+    }
+    return korb_str_to_int(c, scratch, s + lo, hi - lo, 10, out);   /* Integer */
+}
+
+/* Parse a Complex literal string into slots[0] (real) and slots[1] (imag).
+ * Supports "a", "bi", "a+bi", "a-bi", "+bi", "-bi", "i", "-i" with Integer /
+ * Float / Rational components.  Returns false on any malformation. */
+static bool korb_parse_cpx(CTX *c, VALUE *slots, const char *s, uint32_t len) {
+    uint32_t lo = 0, hi = len;
+    while (lo < hi && isspace((unsigned char)s[lo])) lo++;
+    while (hi > lo && isspace((unsigned char)s[hi - 1])) hi--;
+    if (lo >= hi) return false;
+    const bool last_i = (s[hi - 1] == 'i' || s[hi - 1] == 'I');
+    const uint32_t end = last_i ? hi - 1 : hi;
+    int32_t split = -1;                                       /* last +/- that is not an exponent sign and not the leading sign */
+    for (uint32_t k = lo + 1; k < end; k++)
+        if ((s[k] == '+' || s[k] == '-') && !(s[k - 1] == 'e' || s[k - 1] == 'E')) split = (int32_t)k;
+    slots[0] = LONG2FIX(0); slots[1] = LONG2FIX(0);
+    if (!last_i) {                                            /* pure real: no internal sign allowed ("1+2" invalid) */
+        if (split >= 0) return false;
+        return korb_cpx_component(c, slots + 2, s, lo, end, &slots[0]);
+    }
+    uint32_t ilo, ihi;                                       /* imaginary substring range */
+    if (split >= 0) {                                        /* real = [lo,split), imag = [split,end) */
+        if (!korb_cpx_component(c, slots + 2, s, lo, (uint32_t)split, &slots[0])) return false;
+        ilo = (uint32_t)split; ihi = end;
+    } else { ilo = lo; ihi = end; }
+    if (ihi == ilo) { slots[1] = LONG2FIX(1); return true; }                       /* "i" */
+    if (ihi - ilo == 1 && (s[ilo] == '+' || s[ilo] == '-')) {                       /* "+i" / "-i" */
+        slots[1] = (s[ilo] == '-') ? LONG2FIX(-1) : LONG2FIX(1); return true;
+    }
+    return korb_cpx_component(c, slots + 2, s, ilo, ihi, &slots[1]);
+}
+
 static RESULT
 korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -6412,7 +6478,21 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         slots[3] = UNWRAP(korb_cpx_arith(c, slots + 3, slots[1], slots[2], 2));    /* b * i */
         return korb_cpx_arith(c, slots + 4, slots[0], slots[3], 0);                /* a + b*i */
     }
-    /* non-numeric arg (e.g. a String — complex-literal parsing unsupported) */
+    /* single String arg → parse a complex literal ("1+2i", "123", ...).  Copy to
+     * a stack buffer first: korb_parse_cpx allocates (the components), which may
+     * move the String and invalidate its data pointer mid-parse. */
+    if (n == 1 && KORB_STRING_P(re)) {
+        const KorbString *s = VAL2STR(re);
+        char buf[128];
+        if (s->len < sizeof buf) {
+            memcpy(buf, s->buf->data, s->len);
+            if (korb_parse_cpx(c, slots, buf, s->len))
+                return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+        }
+        if (!exc) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"", (int)s->len, s->buf->data);
+    }
+    /* non-numeric arg (Symbol, nil, multi-arg String, ...) */
     if (!exc) return RESULT_OK(KORB_NIL);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_type_name(re));
 }
@@ -6633,6 +6713,8 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
 #endif
         return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */
     }
+    if (KORB_RATIONAL_P(a0))                                /* Integer(Rational) → truncate toward zero */
+        return korb_rat_intdiv(c, slots, VAL2RAT(a0)->num, VAL2RAT(a0)->den, 2);
     if (KORB_STRING_P(a0)) {
         int base = 0;
         if (n >= 2) {
