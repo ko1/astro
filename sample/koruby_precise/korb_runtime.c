@@ -3635,6 +3635,13 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
     VALUE *const recv_slot = &slots[-(intptr_t)argc - 1];
     const VALUE self = *recv_slot;
     switch (m->kind) {
+      case KORB_METHOD_BUILTIN: {   /* global C function reached via send / method_missing / Kernel.x */
+        if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
+        RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+        if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid)); e->line = line; }
+        return r;
+      }
       case KORB_METHOD_ATTR_R:
         return RESULT_OK(korb_ivar_get(c, self, ID2SYM(m->attr_ivar)));
       case KORB_METHOD_ATTR_W: {
