@@ -224,9 +224,13 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "+", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        /* tagged add: l=2x+1, rhs-1=2y → l+(rhs-1)=2(x+y)+1 is already the tagged
+         * result, no FIX2LONG/LONG2FIX shifts.  64-bit signed overflow ⟺ x+y is
+         * not FIXABLE (the tag bit makes the tagged range == the fixnum range),
+         * so __builtin_add_overflow subsumes the explicit FIXABLE check. */
         intptr_t s;
-        if (LIKELY(!__builtin_add_overflow(FIX2LONG(l), FIX2LONG(rhs), &s) && FIXABLE(s)))
-            return RESULT_OK(LONG2FIX(s));
+        if (LIKELY(!__builtin_add_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
+            return RESULT_OK((VALUE)s);
 #ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 0, line);
 #else
@@ -253,9 +257,11 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "-", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        /* tagged sub: l - (rhs-1) = (2x+1) - 2y = 2(x-y)+1, already tagged.
+         * 64-bit signed overflow ⟺ x-y not FIXABLE (see node_plus). */
         intptr_t s;
-        if (LIKELY(!__builtin_sub_overflow(FIX2LONG(l), FIX2LONG(rhs), &s) && FIXABLE(s)))
-            return RESULT_OK(LONG2FIX(s));
+        if (LIKELY(!__builtin_sub_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
+            return RESULT_OK((VALUE)s);
 #ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 1, line);
 #else
@@ -289,9 +295,11 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "*", 1), line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        /* tagged mul: x*(rhs-1) = x*2y = 2xy, then |1 → 2xy+1 (tagged xy).  Only
+         * lhs needs decoding (one sar); 64-bit overflow of 2xy ⟺ xy not FIXABLE. */
         intptr_t p;
-        if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), FIX2LONG(rhs), &p) && FIXABLE(p)))
-            return RESULT_OK(LONG2FIX(p));
+        if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (intptr_t)rhs - 1, &p)))
+            return RESULT_OK((VALUE)(p | 1));
 #ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 2, line);
 #else
