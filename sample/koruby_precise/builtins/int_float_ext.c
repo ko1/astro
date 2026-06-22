@@ -109,25 +109,56 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 /* Hash#sort → array of [k,v] pairs sorted by key; fetch_values(*keys) */
-static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_hash_sort(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     RESULT ar = korb_m_hash_to_a(c, slots, self, a);     /* pairs array (rooted via return) */
     if (ar.state != KORB_NORMAL) return ar;
     VALUE_REF dst = SLOTS_PUSH(slots, ar.value);
-    KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));           /* in-place insertion sort by pair[0] */
-    KorbArrayItems *const dit = d->items;
-    const VALUE *data = dit->data;
-    for (uint32_t i = 1; i < d->len; i++) {
-        VALUE key = data[i]; uint32_t j = i;
+    const uint32_t len = VAL2ARY(VALUE_REF_GET(dst))->len;   /* insertion sort by pair (block comparator or <=>) */
+    for (uint32_t i = 1; i < len; i++) {
+        slots[0] = VAL2ARY(VALUE_REF_GET(dst))->items->data[i];   /* key pair, rooted across yields */
+        uint32_t j = i;
         while (j > 0) {
-            VALUE pa = VAL2ARY(data[j-1])->items->data[0], pb = VAL2ARY(key)->items->data[0];
-            int cmp = korb_cmp_full(c, pa, pb);
+            KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
+            const VALUE pa = d->items->data[j-1], pb = slots[0];
+            int cmp;
+            if (block != NULL) {                          /* compare whole pairs (CRuby yields the [k,v] arrays) */
+                RESULT cr = korb_cmp_block(c, slots + 1, pa, pb, block, def_env, cself, &cmp);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            } else {
+                cmp = korb_cmp_full(c, VAL2ARY(pa)->items->data[0], VAL2ARY(pb)->items->data[0]);
+            }
             if (cmp != 1) break;
-            ARO_STORE(c, dit, &data[j], data[j-1]); j--;
+            d = VAL2ARY(VALUE_REF_GET(dst));              /* re-fetch: a block yield may have moved the array */
+            ARO_STORE(c, d->items, &d->items->data[j], d->items->data[j-1]); j--;
         }
-        ARO_STORE(c, dit, &data[j], key);
+        KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
+        ARO_STORE(c, d->items, &d->items->data[j], slots[0]);
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+/* Hash#to_h [{ |k,v| [nk,nv] }] — without a block returns self; with a block
+ * builds a new Hash from the [new_key, new_value] pairs the block returns. */
+static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
+    VALUE_REF nh = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2*i]; slots[2] = h->items->data[2*i+1];
+        VALUE argv[2] = { slots[1], slots[2] };
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (UNLIKELY(!KORB_ARRAY_P(r.value) || VAL2ARY(r.value)->len != 2))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array of [key, value])", korb_type_name(r.value));
+        slots[3] = r.value;
+        slots[4] = VAL2ARY(slots[3])->items->data[0];     /* new key */
+        slots[5] = VAL2ARY(slots[3])->items->data[1];     /* new value */
+        CHECK(korb_hash_set(c, slots + 6, nh, VALUE_REF_AT(&slots[4]), slots[5]));
+    }
+    return RESULT_OK(VALUE_REF_GET(nh));
 }
 static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));

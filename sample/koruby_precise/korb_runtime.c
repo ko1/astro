@@ -5407,7 +5407,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "<=", korb_m_hash_le, 1);
     korb_def_cmethod(c, KORB_C_HASH, ">", korb_m_hash_gt, 1);
     korb_def_cmethod(c, KORB_C_HASH, ">=", korb_m_hash_ge, 1);
-    korb_def_cmethod(c, KORB_C_HASH, "to_h", korb_m_hash_self, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "to_h", korb_m_hash_to_h, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_hash", korb_m_hash_self, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_a", korb_m_hash_to_a, 0);
     korb_def_cmethod(c, KORB_C_HASH, "entries", korb_m_hash_to_a, 0);
@@ -5427,7 +5427,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "shift", korb_m_hash_shift, 0);
     korb_def_cmethod(c, KORB_C_HASH, "uniq", korb_m_hash_uniq, -1);
     korb_def_cmethod(c, KORB_C_HASH, "flatten", korb_m_hash_flatten, -1);
-    korb_def_cmethod(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
+    korb_def_cmethod_blk(c, KORB_C_HASH, "sort", korb_m_hash_sort, 0);
     korb_def_cmethod(c, KORB_C_HASH, "fetch_values", korb_m_hash_fetch_values, -1);
     korb_def_cmethod(c, KORB_C_HASH, "dig", korb_m_hash_dig, -1);
     korb_def_cmethod(c, KORB_C_HASH, "values_at", korb_m_hash_values_at, -1);
