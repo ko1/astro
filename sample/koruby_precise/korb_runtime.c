@@ -367,6 +367,39 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)nd; return korb_rat_intdiv(c, slots, slots[0], slots[1], mode);
 #endif
 }
+/* Rational ** exp: Integer exp → exact Rational; Float/Rational exp → Float. */
+static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    const VALUE e = VALUE_SLICE_GET(a, 0);
+    slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;     /* root */
+#ifdef KORB_HAVE_GMP
+    if (KORB_INTEGER_P(e)) {                                /* exact Rational */
+        mpz_t en; korb_to_mpz(e, en);
+        if (!mpz_fits_slong_p(en)) { mpz_clear(en); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "exponent too large"); }
+        long n = mpz_get_si(en); mpz_clear(en);
+        if (n == 0) return korb_rat_new_v(c, slots, LONG2FIX(1), LONG2FIX(1));
+        mpz_t zn, zd, rn, rd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd); mpz_init(rn); mpz_init(rd);
+        const unsigned long an = (unsigned long)(n < 0 ? -n : n);
+        mpz_pow_ui(rn, zn, an); mpz_pow_ui(rd, zd, an);
+        if (n < 0) { mpz_swap(rn, rd); if (mpz_sgn(rd) < 0) { mpz_neg(rn, rn); mpz_neg(rd, rd); } }
+        slots[2] = UNWRAP(korb_big_from_mpz(c, slots + 2, rn));
+        slots[3] = UNWRAP(korb_big_from_mpz(c, slots + 3, rd));
+        mpz_clear(zn); mpz_clear(zd); mpz_clear(rn); mpz_clear(rd);
+        return korb_rat_new_v(c, slots + 4, slots[2], slots[3]);
+    }
+    {   /* fractional / float exponent → Float (negative base + frac exp = NaN here; Complex out of scope) */
+        mpz_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
+        const double base = mpz_get_d(zn) / mpz_get_d(zd); mpz_clear(zn); mpz_clear(zd);
+        double ex;
+        if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
+        else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
+        return korb_flo(c, slots, pow(base, ex));
+    }
+#else
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Rational ** without GMP");
+#endif
+}
 static RESULT korb_m_rat_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;   /* root across arith */
     if (korb_int_cmp(slots[0], LONG2FIX(0)) >= 0) return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
@@ -5695,6 +5728,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "zero?", korb_m_rat_zero, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "integer?", korb_m_rat_integerp, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "div", korb_m_rat_divfloor, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "**", korb_m_rat_pow, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "pow", korb_m_rat_pow, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_r", korb_m_rat_self, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "rationalize", korb_m_rat_self, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "abs", korb_m_rat_abs, 0);
