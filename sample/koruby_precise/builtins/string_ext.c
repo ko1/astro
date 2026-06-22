@@ -6,6 +6,78 @@
  * Supports d/i/u, f/e/E/g/G, x/X/o, b, s, c, p, %% with C flags/width/precision,
  * `*` dynamic width/precision, `N$` positional refs, and `%<name>spec` / `%{name}`
  * named refs from a Hash arg (binary `b` honors width/0-flag manually). */
+/* Render an Integer (Fixnum or Bignum) in base 2/8/16 for sprintf %b/%o/%x.
+ * Negatives use CRuby's two's-complement ".." notation: the digits of
+ * base^(d+1) - |z| (d = digit count of |z|), prefixed with "..", which the
+ * leading fill digit (f/7/1) makes an unambiguous infinite sign extension. */
+static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
+                           bool left, bool zero, bool alt, bool plus, bool space,
+                           int width, bool has_prec, int prec) {
+    const bool neg = mpz_sgn(z) < 0;
+    /* An explicit + / space flag forces a *signed* representation (-|n|);
+     * otherwise a negative uses the two's-complement ".." notation. */
+    const bool signed_mode = neg && (plus || space);
+    const bool tc = neg && !signed_mode;
+    char *digits;
+    if (tc) {
+        mpz_t a; mpz_init(a); mpz_abs(a, z);
+        const size_t d = mpz_sizeinbase(a, base);
+        mpz_t p; mpz_init(p);
+        mpz_ui_pow_ui(p, (unsigned long)base, (unsigned long)(d + 1));
+        mpz_sub(p, p, a);
+        digits = mpz_get_str(NULL, base, p);          /* d+1 chars; leading run of fill digits */
+        mpz_clear(a); mpz_clear(p);
+        /* collapse the leading fill-digit run to a single one (CRuby keeps exactly
+         * one sign digit: -256 → "f00", not "ff00"). */
+        const char fd = base == 16 ? 'f' : base == 8 ? '7' : '1';
+        size_t skip = 0, dl = strlen(digits);
+        while (skip + 1 < dl && digits[skip] == fd && digits[skip + 1] == fd) skip++;
+        if (skip) memmove(digits, digits + skip, dl - skip + 1);
+    } else if (signed_mode) {
+        mpz_t a; mpz_init(a); mpz_abs(a, z);
+        digits = mpz_get_str(NULL, base, a);          /* magnitude only; sign added below */
+        mpz_clear(a);
+    } else {
+        digits = mpz_get_str(NULL, base, z);
+    }
+    size_t dlen = strlen(digits);
+    const char fill = base == 16 ? 'f' : base == 8 ? '7' : '1';
+    if (upper) for (size_t k = 0; k < dlen; k++) digits[k] = (char)toupper((unsigned char)digits[k]);
+    const char ufill = upper ? (char)toupper((unsigned char)fill) : fill;
+
+    /* precision = minimum digit count; CRuby counts the leading ".." within it. */
+    int min_digits = 0;
+    if (has_prec) min_digits = tc ? (prec > 2 ? prec - 2 : 0) : prec;
+    const int pad_digits = (int)dlen < min_digits ? min_digits - (int)dlen : 0;
+
+    char pre[2]; int pi = 0;                            /* explicit sign character */
+    if (signed_mode)      pre[pi++] = '-';
+    else if (!neg) { if (plus) pre[pi++] = '+'; else if (space) pre[pi++] = ' '; }
+    char altb[2]; int altn = 0;                         /* # alternate-form prefix (omitted for value 0) */
+    if (alt && mpz_sgn(z) != 0) {
+        if (base == 16)     { altb[0] = '0'; altb[1] = upper ? 'X' : 'x'; altn = 2; }
+        else if (base == 2) { altb[0] = '0'; altb[1] = upper ? 'B' : 'b'; altn = 2; }
+        else if (!tc)       { altb[0] = '0'; altn = 1; }   /* octal: leading 0 (omitted for ".." negatives) */
+    }
+    const int dots = tc ? 2 : 0;
+    const int content = pi + altn + dots + pad_digits + (int)dlen;
+    int spad = 0, zpad = 0;
+    if (width > content) {
+        if (left)                    spad = width - content;
+        else if (zero && !has_prec)  zpad = width - content;   /* pad with fill digits */
+        else                         spad = width - content;
+    }
+    if (!left) for (int k = 0; k < spad; k++) fputc(' ', ms);
+    for (int k = 0; k < pi; k++)   fputc(pre[k], ms);
+    for (int k = 0; k < altn; k++) fputc(altb[k], ms);
+    if (tc) { fputc('.', ms); fputc('.', ms); }
+    for (int k = 0; k < zpad; k++) fputc(tc ? ufill : '0', ms);
+    for (int k = 0; k < pad_digits; k++) fputc(tc ? ufill : '0', ms);
+    fwrite(digits, 1, dlen, ms);
+    if (left) for (int k = 0; k < spad; k++) fputc(' ', ms);
+    free(digits);
+}
+
 static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
     const char *fmt = fs->buf->data; uint32_t flen = fs->len;
@@ -72,6 +144,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         switch (conv) {
           case 'd': case 'i': case 'u': {
             intptr_t v;
+            if (KORB_BIGNUM_P(arg)) {                     /* Bignum: let GMP honour the flags/width via %Zd */
+                spec[si++] = 'Z'; spec[si++] = 'd'; spec[si] = '\0';
+                mpz_t z; korb_to_mpz(arg, z);
+                gmp_fprintf(ms, spec, z);
+                mpz_clear(z);
+                break;
+            }
             if (FIXNUM_P(arg)) v = FIX2LONG(arg);
             else if (KORB_FLOAT_P(arg)) v = (intptr_t)korb_float_val(arg);
             else if (KORB_STRING_P(arg)) {               /* %d coerces a String via Integer() */
@@ -86,39 +165,57 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': {
             double v; if (!korb_num_to_d(arg, &v)) { err = true; errmsg = "expected a number"; break; }
+            if (UNLIKELY(isinf(v) || isnan(v))) {
+                /* CRuby renders non-finite floats as "Inf"/"NaN" (fixed casing,
+                 * never C's inf/INF/nan), honouring sign + width but ignoring
+                 * precision and the 0-pad flag (width is space-padded). */
+                bool left = false, plus = false, space = false; int width = 0;
+                for (int k = 1; k < si; k++) {
+                    const char sc = spec[k];
+                    if (sc == '-') left = true;
+                    else if (sc == '+') plus = true;
+                    else if (sc == ' ') space = true;
+                    else if (sc == '.') break;                 /* precision: stop scanning width */
+                    else if (isdigit((unsigned char)sc)) { if (sc != '0' || width) width = width * 10 + (sc - '0'); }
+                }
+                char body[8]; int bi = 0;
+                if (isnan(v))            { /* NaN has no sign */ }
+                else if (v < 0)          body[bi++] = '-';
+                else if (plus)           body[bi++] = '+';
+                else if (space)          body[bi++] = ' ';
+                const char *word = isnan(v) ? "NaN" : "Inf";
+                body[bi++] = word[0]; body[bi++] = word[1]; body[bi++] = word[2];
+                const int pad = width > bi ? width - bi : 0;
+                if (left) { fwrite(body, 1, (size_t)bi, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
+                else      { for (int p = 0; p < pad; p++) fputc(' ', ms); fwrite(body, 1, (size_t)bi, ms); }
+                break;
+            }
             spec[si++] = conv; spec[si] = '\0';
             fprintf(ms, spec, v);
             break;
           }
-          case 'x': case 'X': case 'o': {
-            intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
-            spec[si++] = 'l'; spec[si++] = conv; spec[si] = '\0';
-            fprintf(ms, spec, (long)v);
-            break;
-          }
-          case 'b': case 'B': {
-            intptr_t v; if (FIXNUM_P(arg)) v = FIX2LONG(arg); else { err = true; errmsg = "expected Integer"; break; }
-            bool left = false, zero = false, alt = false, in_width = false, plus = false, space = false; int width = 0;  /* parse flags/width from spec */
+          case 'x': case 'X': case 'o': case 'b': case 'B': {
+            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) { err = true; errmsg = "expected Integer"; break; }
+            const int base = (conv == 'o') ? 8 : (conv == 'b' || conv == 'B') ? 2 : 16;
+            const bool upper = (conv == 'X' || conv == 'B');
+            bool left = false, zero = false, alt = false, plus = false, space = false, has_prec = false;
+            int width = 0, prec = 0; bool in_prec = false;   /* parse flags / width / precision from spec */
             for (int k = 1; k < si; k++) {
-                char sc = spec[k];
-                if (in_width && isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');   /* width digit (incl. 0) */
+                const char sc = spec[k];
+                if (sc == '.') { in_prec = true; has_prec = true; }
+                else if (isdigit((unsigned char)sc)) {
+                    if (in_prec) prec = prec * 10 + (sc - '0');
+                    else if (sc != '0' || width) width = width * 10 + (sc - '0');
+                    else zero = true;                                    /* leading 0 = pad flag */
+                }
                 else if (sc == '-') left = true;
-                else if (sc == '0') zero = true;                         /* leading 0 = pad flag */
-                else if (sc == '#') alt = true;                          /* 0b / 0B prefix */
-                else if (sc == '+') plus = true;                         /* explicit sign on non-negative */
-                else if (sc == ' ') space = true;                        /* space before non-negative */
-                else if (isdigit((unsigned char)sc)) { in_width = true; width = sc - '0'; }
-                else break;
+                else if (sc == '#') alt = true;
+                else if (sc == '+') plus = true;
+                else if (sc == ' ') space = true;
             }
-            char tmp[80]; uint32_t n = korb_fmt_int(v, 2, tmp);
-            const char *pfx = alt ? (conv == 'B' ? "0B" : "0b") : "";
-            const int pfxn = alt ? 2 : 0;
-            const char sign = v >= 0 ? (plus ? '+' : space ? ' ' : 0) : 0;   /* + wins over space (CRuby) */
-            const int signn = sign ? 1 : 0;
-            int pad = width > (int)n + pfxn + signn ? width - (int)n - pfxn - signn : 0;
-            if (left)      { if (sign) fputc(sign, ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
-            else if (zero) { if (sign) fputc(sign, ms); fputs(pfx, ms); for (int p = 0; p < pad; p++) fputc('0', ms); fwrite(tmp, 1, n, ms); }
-            else           { for (int p = 0; p < pad; p++) fputc(' ', ms); if (sign) fputc(sign, ms); fputs(pfx, ms); fwrite(tmp, 1, n, ms); }
+            mpz_t z; korb_to_mpz(arg, z);
+            korb_fmt_radix(ms, z, base, upper, left, zero, alt, plus, space, width, has_prec, prec);
+            mpz_clear(z);
             break;
           }
           case 's': {
