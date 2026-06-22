@@ -323,6 +323,24 @@ static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[0] = q.value;
     return korb_send_impl(c, slots + 1, korb_intern(c->vm, "floor", 5), 0, 0, NULL, NULL, NULL);
 }
+/* self % other == self - (self.div other) * other  (floored modulo).  Composed
+ * via dispatch; `other` is re-read from the scanned args between sends (GC-safe)
+ * and intermediate results are parked in slots before each send. */
+static RESULT korb_m_rat_mod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    /* floored modulo via the shared GMP/Rational divmod (op 1 = modulo); it parks
+     * operands so the allocs can't strand a moved VALUE. */
+    return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1);
+}
+/* marshal_dump → [numerator, denominator]. */
+static RESULT korb_m_rat_marshal_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;      /* root before alloc */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF arr = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(slots[2]);
+}
 /* round([ndigits], half: :up|:even) — ndigits<=0 → Integer, ndigits>0 → Rational. */
 static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
@@ -5728,6 +5746,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "zero?", korb_m_rat_zero, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "integer?", korb_m_rat_integerp, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "div", korb_m_rat_divfloor, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "%", korb_m_rat_mod, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "modulo", korb_m_rat_mod, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "marshal_dump", korb_m_rat_marshal_dump, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "**", korb_m_rat_pow, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "pow", korb_m_rat_pow, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_r", korb_m_rat_self, 0);
