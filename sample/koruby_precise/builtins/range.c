@@ -293,9 +293,13 @@ static RESULT korb_m_range_overlap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     intptr_t lo1, hi1, lo2, hi2;
     if (!korb_range_int_bounds(SELF_RANGE, &lo1, &hi1) || !korb_range_int_bounds(VAL2RANGE(o), &lo2, &hi2)) {
         const KorbRange *r1 = SELF_RANGE, *r2 = VAL2RANGE(o);     /* non-integer: compare endpoints */
-        int c1 = korb_cmp_values(r1->rbegin, r2->rend);          /* r1.begin vs r2.end */
-        int c2 = korb_cmp_values(r2->rbegin, r1->rend);          /* r2.begin vs r1.end */
-        int e1 = korb_cmp_values(r1->rbegin, r1->rend), e2 = korb_cmp_values(r2->rbegin, r2->rend);
+        /* A nil begin is -inf, a nil end is +inf: begin-vs-end with either side
+         * infinite is always "<" (the begin precedes the end), and a range with an
+         * infinite endpoint is never empty. */
+        int c1 = (r1->rbegin == KORB_NIL || r2->rend == KORB_NIL) ? -1 : korb_cmp_values(r1->rbegin, r2->rend);
+        int c2 = (r2->rbegin == KORB_NIL || r1->rend == KORB_NIL) ? -1 : korb_cmp_values(r2->rbegin, r1->rend);
+        int e1 = (r1->rbegin == KORB_NIL || r1->rend == KORB_NIL) ? -1 : korb_cmp_values(r1->rbegin, r1->rend);
+        int e2 = (r2->rbegin == KORB_NIL || r2->rend == KORB_NIL) ? -1 : korb_cmp_values(r2->rbegin, r2->rend);
         if (c1 == 2 || c2 == 2 || e1 == 2 || e2 == 2) return RESULT_OK(KORB_FALSE);   /* incomparable */
         bool a_ok = r2->exclude_end ? (c1 < 0) : (c1 <= 0);
         bool b_ok = r1->exclude_end ? (c2 < 0) : (c2 <= 0);
