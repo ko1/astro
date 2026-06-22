@@ -537,7 +537,7 @@ static RESULT korb_m_int_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
 static RESULT korb_m_num_conj_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
     if (KORB_COMPLEX_P(v)) { *re = VAL2CPX(v)->re; *im = VAL2CPX(v)->im; return true; }
-    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v)) { *re = v; *im = LONG2FIX(0); return true; }
+    if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v) || KORB_BIGNUM_P(v)) { *re = v; *im = LONG2FIX(0); return true; }
     return false;
 }
 /* Complex arithmetic (op 0+ 1- 2*); returns a Complex. Components combined via
@@ -5856,7 +5856,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "|", korb_m_set_union, 1);
     korb_def_cmethod(c, KORB_C_SET, "union", korb_m_set_union, 1);
     korb_def_cmethod(c, KORB_C_SET, "+", korb_m_set_union, 1);
-    korb_def_cmethod(c, KORB_C_SET, "merge", korb_m_set_merge, 1);
+    korb_def_cmethod(c, KORB_C_SET, "merge", korb_m_set_merge, -1);
+    korb_def_cmethod(c, KORB_C_SET, "join", korb_m_set_join, -1);
     korb_def_cmethod(c, KORB_C_SET, "&", korb_m_set_inter, 1);
     korb_def_cmethod(c, KORB_C_SET, "intersection", korb_m_set_inter, 1);
     korb_def_cmethod(c, KORB_C_SET, "-", korb_m_set_diff, 1);
@@ -5871,6 +5872,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "proper_subset?", korb_m_set_psubset, 1);
     korb_def_cmethod(c, KORB_C_SET, "proper_superset?", korb_m_set_psuperset, 1);
     korb_def_cmethod(c, KORB_C_SET, "==", korb_m_set_eq, 1);
+    korb_def_cmethod(c, KORB_C_SET, "<=>", korb_m_set_cmp, 1);
+    korb_def_cmethod(c, KORB_C_SET, "compare_by_identity", korb_m_set_cbi, 0);
+    korb_def_cmethod(c, KORB_C_SET, "compare_by_identity?", korb_m_set_cbi_p, 0);
     korb_def_cmethod(c, KORB_C_SET, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_inspect, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
@@ -6358,10 +6362,28 @@ static RESULT
 korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
+    bool exc = true;                                          /* trailing exception: kwarg */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+        if (kx >= 0) { exc = KORB_TRUTHY(h->items->data[2 * kx + 1]); n--; }
+    }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    VALUE re = VALUE_SLICE_GET(args, 0);
-    VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
-    return korb_cpx_new(c, slots, re, im);
+    const VALUE re = VALUE_SLICE_GET(args, 0);
+    const VALUE im = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(0);
+    /* Complex(a, b) == a + b*i.  Evaluating via full complex arithmetic (rather
+     * than picking components directly) reproduces CRuby's Float promotion of the
+     * cross terms, e.g. Complex(c(1.5,2), c(-5,6.3)) → (-4.8-3.0i) not (...-3i). */
+    VALUE ar, ai, br, bi;
+    if (korb_cpx_parts(re, &ar, &ai) && korb_cpx_parts(im, &br, &bi)) {
+        slots[0] = re; slots[1] = im;                                 /* root across allocs */
+        slots[2] = UNWRAP(korb_cpx_new(c, slots + 2, LONG2FIX(0), LONG2FIX(1)));   /* i */
+        slots[3] = UNWRAP(korb_cpx_arith(c, slots + 3, slots[1], slots[2], 2));    /* b * i */
+        return korb_cpx_arith(c, slots + 4, slots[0], slots[3], 0);                /* a + b*i */
+    }
+    /* non-numeric arg (e.g. a String — complex-literal parsing unsupported) */
+    if (!exc) return RESULT_OK(KORB_NIL);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_type_name(re));
 }
 
 static RESULT
@@ -6638,24 +6660,37 @@ korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+    uint32_t n = VALUE_SLICE_LEN(args);
+    bool exc = true;                                          /* trailing exception: kwarg */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+        if (kx >= 0) { exc = KORB_TRUTHY(h->items->data[2 * kx + 1]); n--; }
+    }
+#define FLT_FAIL(...) do { return exc ? korb_raise(c, slots, __VA_ARGS__) : RESULT_OK(KORB_NIL); } while (0)
+    if (UNLIKELY(n < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (KORB_FLOAT_P(a0)) return RESULT_OK(a0);
     if (FIXNUM_P(a0)) return korb_float_new(c, slots, (double)FIX2LONG(a0));
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(a0)) return korb_float_new(c, slots, korb_big_to_d(a0));
+#endif
+    if (KORB_RATIONAL_P(a0)) { double d; (void)korb_num_to_d(a0, &d); return korb_float_new(c, slots, d); }
     if (KORB_STRING_P(a0)) {
         const KorbString *s = VAL2STR(a0);
         char buf[64];
-        if (s->len >= sizeof(buf)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
+        if (s->len >= sizeof(buf)) FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
         memcpy(buf, s->buf->data, s->len); buf[s->len] = '\0';
         char *endp; errno = 0;
         double d = strtod(buf, &endp);
         while (*endp && isspace((unsigned char)*endp)) endp++;
         if (UNLIKELY(endp == buf || *endp != '\0'))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
+            FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
         return korb_float_new(c, slots, d);
     }
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(a0));
+    FLT_FAIL(KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(a0));
+#undef FLT_FAIL
 }
 
 /* __binread(path) — read a whole file as a binary String (the one file-I/O

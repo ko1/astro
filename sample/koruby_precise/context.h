@@ -279,6 +279,7 @@ typedef struct KorbBignum {
 typedef struct KorbSet {
     AroObjectHeader head;            /* KORB_OBJ_SET */
     VALUE ARO_GC_EDGE elems;         /* KorbArray of unique members */
+    uint8_t by_identity;             /* compare_by_identity: members compared by object identity */
 } KorbSet;
 
 typedef struct KorbRegexp {

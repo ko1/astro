@@ -5,6 +5,15 @@ static bool korb_arr_has(const KorbArray *ar, VALUE v) {
     for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eql(ar->items->data[i], v)) return true;
     return false;
 }
+/* Set membership honouring compare_by_identity: an identity set compares members
+ * by object identity (equal?), a normal set by eql? (korb_arr_has).  For immediate
+ * values (Symbol/Integer/nil/true/false) the two coincide. */
+static bool korb_set_member(const KorbSet *s, VALUE v) {
+    const KorbArray *ar = VAL2ARY(s->elems);
+    if (!s->by_identity) return korb_arr_has(ar, v);
+    for (uint32_t i = 0; i < ar->len; i++) if (ar->items->data[i] == v) return true;
+    return false;
+}
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems) {
     slots[0] = elems;
     KorbSet *s = korb_alloc(c, slots + 1, sizeof(KorbSet), KORB_OBJ_SET);
@@ -30,7 +39,14 @@ static RESULT korb_m_set_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_SET->elems)->len)); }
 static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_set_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_arr_has(VAL2ARY(SELF_SET->elems), VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_set_member(SELF_SET, VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE); }
+/* compare_by_identity — switch the set to identity comparison (returns self). */
+static RESULT korb_m_set_cbi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    VAL2SET(VALUE_REF_GET(self))->by_identity = 1;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_set_cbi_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_SET->by_identity ? KORB_TRUE : KORB_FALSE); }
 /* disjoint?(o): no shared elements.  intersect?(o): some shared element. */
 static RESULT korb_m_set_disjoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE oe = korb_set_elems_of(VALUE_SLICE_GET(a, 0));   /* Set/enumerable → elems array */
@@ -48,11 +64,11 @@ static RESULT korb_m_set_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_set_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE v = VALUE_SLICE_GET(a, 0);
-    if (!korb_arr_has(VAL2ARY(SELF_SET->elems), v)) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), v)); }
+    if (!korb_set_member(SELF_SET, v)) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), v)); }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_set_add_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (korb_arr_has(VAL2ARY(SELF_SET->elems), VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
+    if (korb_set_member(SELF_SET, VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
     return korb_m_set_add(c, slots, self, a);
 }
 static RESULT korb_m_set_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -108,14 +124,23 @@ static RESULT korb_m_set_inter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_set_diff(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_binop(c, slots, self, a, 2); }
 static RESULT korb_m_set_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_binop(c, slots, self, a, 3); }
 static RESULT korb_m_set_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
-    slots[0] = ov;
-    for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
-        VALUE e = VAL2ARY(slots[0])->items->data[i];
-        if (!korb_arr_has(VAL2ARY(SELF_SET->elems), e)) { slots[1] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), e)); }
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {       /* merge(*enums) — each Set or Array */
+        VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, k));
+        if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be enumerable");
+        slots[0] = ov;
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+            VALUE e = VAL2ARY(slots[0])->items->data[i];
+            if (!korb_set_member(SELF_SET, e)) { slots[1] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), e)); }
+        }
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Set#join(sep="") — delegate to the member Array's join. */
+static RESULT korb_m_set_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    slots[0] = SELF_SET->elems;                            /* receiver = member Array */
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);   /* forward args */
+    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "join", 4), 0, n, NULL, NULL, NULL);
 }
 static RESULT korb_set_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int rel) {
     VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
@@ -125,6 +150,19 @@ static RESULT korb_set_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     bool sup = true; for (uint32_t i = 0; i < ot->len; i++) if (!korb_arr_has(me, ot->items->data[i])) { sup = false; break; }
     bool t = rel == 0 ? sub : rel == 1 ? sup : rel == 2 ? (sub && me->len < ot->len) : (sup && me->len > ot->len);
     return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+}
+/* Set#<=> — 0 equal, -1 proper subset, 1 proper superset, nil otherwise / non-Set. */
+static RESULT korb_m_set_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots;
+    const VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (!KORB_SET_P(ov)) return RESULT_OK(KORB_NIL);
+    const KorbArray *me = VAL2ARY(SELF_SET->elems), *ot = VAL2ARY(VAL2SET(ov)->elems);
+    bool sub = true; for (uint32_t i = 0; i < me->len; i++) if (!korb_arr_has(ot, me->items->data[i])) { sub = false; break; }
+    bool sup = true; for (uint32_t i = 0; i < ot->len; i++) if (!korb_arr_has(me, ot->items->data[i])) { sup = false; break; }
+    if (sub && sup) return RESULT_OK(LONG2FIX(0));
+    if (sub) return RESULT_OK(LONG2FIX(-1));
+    if (sup) return RESULT_OK(LONG2FIX(1));
+    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_rel(c, slots, self, a, 0); }
 static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_rel(c, slots, self, a, 1); }
