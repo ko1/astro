@@ -109,7 +109,18 @@ static RESULT korb_m_flt_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a; char b[40]; uint32_t n = korb_float_to_s(SELF_FLT, b); return korb_str_new(c, slots, b, n);
 }
 static RESULT korb_m_flt_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double o; if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE arg = VALUE_SLICE_GET(a, 0);
+    if (KORB_COMPLEX_P(arg)) {                          /* self / (cr+ci·i) → Complex (Float components) */
+        const double s = SELF_FLT;
+        double cr, ci;
+        if (UNLIKELY(!korb_num_to_d(VAL2CPX(arg)->re, &cr) || !korb_num_to_d(VAL2CPX(arg)->im, &ci)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "Complex can't be coerced into Float");
+        const double den = cr * cr + ci * ci;            /* (s+0i)/(cr+ci·i); full formula keeps signed-zero parity with CRuby */
+        slots[0] = UNWRAP(korb_float_new(c, slots, (s * cr + 0.0 * ci) / den));
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, (0.0 * cr - s * ci) / den));
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    double o; if (UNLIKELY(!korb_num_to_d(arg, &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Float", korb_type_name(arg));
     return korb_float_new(c, slots, SELF_FLT / o);
 }
 static RESULT korb_m_flt_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
