@@ -4434,6 +4434,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+             mid == korb_intern(vm, "ruby2_keywords_hash?", 20)) {          /* koruby doesn't flag ruby2_keywords */
+        return RESULT_OK(KORB_FALSE);
+    }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+             mid == korb_intern(vm, "ruby2_keywords_hash", 19)) {           /* return the hash unchanged (no flag tracked) */
+        return RESULT_OK(argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL);
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
              VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_RANGE]) {   /* Range.new(begin, end, exclude_end=false) */
         if (UNLIKELY(argc < 2 || argc > 3))
@@ -5073,6 +5081,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "[]", korb_m_str_aref, -1);
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "upto", korb_m_str_upto, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "lines", korb_m_str_lines_b, -1);

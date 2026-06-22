@@ -1423,6 +1423,56 @@ static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* upto(other[, exclusive]) — yield self, self.succ, ... up to other (String
+ * range semantics: stop when current > other or its length exceeds other's). */
+static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (VALUE_SLICE_LEN(a) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                          VALUE_SLICE_LEN(a) >= 1 ? korb_type_name(VALUE_SLICE_GET(a, 0)) : "nil");
+    const bool excl = VALUE_SLICE_LEN(a) >= 2 && KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    slots[0] = VALUE_REF_GET(self);          /* cur (rooted) */
+    slots[1] = VALUE_SLICE_GET(a, 0);        /* end (rooted) */
+    if (block == NULL) slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* collect for the Enumerator */
+    /* single-byte begin AND end → iterate by byte value (CRuby fast path:
+     * "9".upto("A") = 9 : ; < = > ? @ A, NOT succ which would carry "9"→"10"). */
+    if (VAL2STR(slots[0])->len == 1 && VAL2STR(slots[1])->len == 1) {
+        const int b = (unsigned char)VAL2STR(slots[0])->buf->data[0];
+        const int e = (unsigned char)VAL2STR(slots[1])->buf->data[0];
+        for (int ch = b; ch <= e; ch++) {
+            if (excl && ch == e) break;
+            const char cc = (char)ch;
+            slots[3] = UNWRAP(korb_str_new(c, slots + 3, &cc, 1));
+            if (block) {
+                RESULT r = korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            } else {
+                CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[2]), slots[3]));
+            }
+        }
+        goto done;
+    }
+    for (int guard = 0; guard < 100000000; guard++) {
+        const uint32_t curlen = VAL2STR(slots[0])->len, endlen = VAL2STR(slots[1])->len;
+        if (curlen > endlen) break;                                        /* succ grew past end length */
+        const int cmp = korb_cmp_values(slots[0], slots[1]);
+        if (cmp > 0) break;
+        if (excl && cmp == 0) break;
+        if (block) {
+            RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        } else {
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+        }
+        if (cmp == 0) break;                                               /* inclusive end reached */
+        slots[0] = UNWRAP(korb_m_str_succ(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0)));
+    }
+done:
+    if (block == NULL) {
+        slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), "upto"));
+        return korb_enum_new(c, slots + 4, slots[2], slots[3]);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* bytes/chars/lines/codepoints WITH a block behave like each_* (yield, return
  * self); without a block they return the array. */
 static RESULT korb_m_str_bytes_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
