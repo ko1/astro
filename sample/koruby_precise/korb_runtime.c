@@ -6397,6 +6397,8 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
      * cross terms, e.g. Complex(c(1.5,2), c(-5,6.3)) → (-4.8-3.0i) not (...-3i). */
     VALUE ar, ai, br, bi;
     if (korb_cpx_parts(re, &ar, &ai) && korb_cpx_parts(im, &br, &bi)) {
+        if (!KORB_COMPLEX_P(re) && !KORB_COMPLEX_P(im))               /* both plain reals → store as-is (no Float promotion) */
+            return korb_cpx_new(c, slots, re, im);
         slots[0] = re; slots[1] = im;                                 /* root across allocs */
         slots[2] = UNWRAP(korb_cpx_new(c, slots + 2, LONG2FIX(0), LONG2FIX(1)));   /* i */
         slots[3] = UNWRAP(korb_cpx_arith(c, slots + 3, slots[1], slots[2], 2));    /* b * i */
