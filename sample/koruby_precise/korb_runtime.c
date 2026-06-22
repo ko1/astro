@@ -6239,21 +6239,77 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+#ifdef KORB_HAVE_GMP
+/* Integer/Bignum/Rational/Float/String → canonical mpq.  false = unconvertible. */
+static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
+    if (FIXNUM_P(v)) { mpq_set_si(out, (long)FIX2LONG(v), 1); return true; }
+    if (KORB_BIGNUM_P(v)) { mpz_t z; korb_to_mpz(v, z); mpq_set_z(out, z); mpz_clear(z); return true; }
+    if (KORB_RATIONAL_P(v)) { mpz_t zn, zd; korb_to_mpz(VAL2RAT(v)->num, zn); korb_to_mpz(VAL2RAT(v)->den, zd);
+                              mpq_set_num(out, zn); mpq_set_den(out, zd); mpz_clear(zn); mpz_clear(zd); mpq_canonicalize(out); return true; }
+    if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); if (!isfinite(d)) return false; mpq_set_d(out, d); return true; }
+    if (KORB_STRING_P(v)) {
+        const KorbString *s = VAL2STR(v); char buf[512];
+        if (s->len >= sizeof(buf)) return false;
+        uint32_t b = 0, e = s->len;
+        while (b < e && isspace((unsigned char)s->buf->data[b])) b++;
+        while (e > b && isspace((unsigned char)s->buf->data[e - 1])) e--;
+        uint32_t m = 0; for (uint32_t i = b; i < e; i++) buf[m++] = s->buf->data[i]; buf[m] = 0;
+        if (m == 0) return false;
+        char *dot = strchr(buf, '.'), *slash = strchr(buf, '/');
+        if (dot && !slash) {                                  /* decimal "X.Y" → (XY)/(10^|Y|) */
+            const uint32_t fraclen = (uint32_t)(m - (uint32_t)(dot + 1 - buf));
+            char numbuf[512]; uint32_t k = 0;
+            for (uint32_t i = 0; i < m; i++) if (buf[i] != '.') numbuf[k++] = buf[i];
+            numbuf[k] = 0;
+            mpz_t zn, zd; mpz_init(zd);
+            if (mpz_init_set_str(zn, numbuf, 10) != 0) { mpz_clear(zn); mpz_clear(zd); return false; }
+            mpz_ui_pow_ui(zd, 10, fraclen);
+            mpq_set_num(out, zn); mpq_set_den(out, zd); mpz_clear(zn); mpz_clear(zd);
+            mpq_canonicalize(out); return true;
+        }
+        if (mpq_set_str(out, buf, 10) != 0) return false;     /* "a/b" or plain integer */
+        if (mpq_sgn(out) == 0 && buf[0] != '0' && !(buf[0] == '-' && buf[1] == '0') && strchr(buf, '0') == NULL) return false;
+        mpq_canonicalize(out); return true;
+    }
+    return false;
+}
+#endif
 static RESULT
 korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
+    bool exc = true;                                          /* trailing exception: kwarg */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+        if (kx >= 0) { exc = KORB_TRUTHY(h->items->data[2 * kx + 1]); n--; }
+    }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE nv = VALUE_SLICE_GET(args, 0);
     if (KORB_RATIONAL_P(nv) && n < 2) return RESULT_OK(nv);
-    if (UNLIKELY(!KORB_INTEGER_P(nv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(nv));
-    VALUE den = LONG2FIX(1);
-    if (n >= 2) {
-        VALUE dv = VALUE_SLICE_GET(args, 1);
-        if (UNLIKELY(!KORB_INTEGER_P(dv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(dv));
-        den = dv;
+    /* fast path: both Integer (preserves Bignum, no GMP rounding) */
+    if (KORB_INTEGER_P(nv) && (n < 2 || KORB_INTEGER_P(VALUE_SLICE_GET(args, 1))))
+        return korb_rat_new_v(c, slots, nv, n >= 2 ? VALUE_SLICE_GET(args, 1) : LONG2FIX(1));
+#ifdef KORB_HAVE_GMP
+    {
+        mpq_t q0, q1; mpq_init(q0);
+        if (!korb_arg_to_mpq(nv, q0)) { mpq_clear(q0); goto bad; }
+        if (n >= 2) {
+            mpq_init(q1);
+            if (!korb_arg_to_mpq(VALUE_SLICE_GET(args, 1), q1)) { mpq_clear(q0); mpq_clear(q1); goto bad; }
+            if (mpq_sgn(q1) == 0) { mpq_clear(q0); mpq_clear(q1); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+            mpq_div(q0, q0, q1); mpq_clear(q1);
+        }
+        mpq_canonicalize(q0);
+        slots[0] = UNWRAP(korb_big_from_mpz(c, slots, mpq_numref(q0)));     /* num */
+        slots[1] = UNWRAP(korb_big_from_mpz(c, slots + 1, mpq_denref(q0))); /* den */
+        mpq_clear(q0);
+        return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
     }
-    return korb_rat_new_v(c, slots, nv, den);
+bad:
+#endif
+    if (!exc) return RESULT_OK(KORB_NIL);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(nv));
 }
 
 static RESULT
