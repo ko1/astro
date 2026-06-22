@@ -386,22 +386,90 @@ static RESULT korb_m_range_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* bsearch (find-minimum mode): smallest i in [lo,hi) where block(i) is truthy. */
+/* monotonic uint64 ordering of an IEEE double (so integer bisection of the bit
+ * pattern == value bisection): flip sign bit for positives, invert for negatives. */
+static uint64_t korb_d2u(double d) { uint64_t b; memcpy(&b, &d, 8); return (b & 0x8000000000000000ULL) ? ~b : (b | 0x8000000000000000ULL); }
+static double   korb_u2d(uint64_t u) { uint64_t b = (u & 0x8000000000000000ULL) ? (u & ~0x8000000000000000ULL) : ~u; double d; memcpy(&d, &b, 8); return d; }
+/* classify a bsearch block result: 0=exact hit, -1=go left (smaller), +1=go right
+ * (bigger), with *cand set when this index is a find-minimum candidate. */
+static int korb_bsearch_dir(VALUE v, bool *cand) {
+    *cand = false;
+    if (FIXNUM_P(v)) { intptr_t n = FIX2LONG(v); return n == 0 ? 0 : (n < 0 ? -1 : 1); }
+    if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); return d == 0 ? 0 : (d < 0 ? -1 : 1); }
+    if (KORB_TRUTHY(v)) { *cand = true; return -1; }   /* find-minimum: truthy → record + go left */
+    return 1;                                          /* false/nil → go right */
+}
 static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#bsearch without a block is not supported");
-    intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate");
-    bool found = false; intptr_t ans = 0;                 /* leftmost truthy index */
+    const KorbRange *rg = SELF_RANGE;
+    if (UNLIKELY(block == NULL)) {                        /* no block → Enumerator */
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
+        slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "bsearch"));
+        return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
+    const VALUE bv = rg->rbegin, ev = rg->rend;
+    const bool excl = rg->exclude_end != 0;
+    /* ---- Float range (begin or end is a Float; nil bound → ±Infinity) ---- */
+    if (KORB_FLOAT_P(bv) || KORB_FLOAT_P(ev)) {
+        double bd = (bv == KORB_NIL) ? -INFINITY : (KORB_FLOAT_P(bv) ? korb_float_val(bv) : (double)FIX2LONG(bv));
+        double ed = (ev == KORB_NIL) ?  INFINITY : (KORB_FLOAT_P(ev) ? korb_float_val(ev) : (double)FIX2LONG(ev));
+        uint64_t lo = korb_d2u(bd), hi = korb_d2u(ed);
+        if (!excl && hi != ~0ULL) hi++;                  /* inclusive end: search up to and incl ed */
+        bool found = false; double ans = 0;
+        while (lo < hi) {
+            uint64_t mid = lo + (hi - lo) / 2;
+            VALUE fv = UNWRAP(korb_float_new(c, slots, korb_u2d(mid)));
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &fv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            if (dir == 0) return korb_float_new(c, slots, korb_u2d(mid));
+            if (dir < 0) { hi = mid; if (cand) { found = true; ans = korb_u2d(mid); } }
+            else lo = mid + 1;
+        }
+        return found ? korb_float_new(c, slots, ans) : RESULT_OK(KORB_NIL);
+    }
+    /* ---- Integer range ---- */
+    if (!(FIXNUM_P(bv) || bv == KORB_NIL) || !(FIXNUM_P(ev) || ev == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(bv));
+    intptr_t lo, hi; bool have_lo = FIXNUM_P(bv), have_hi = FIXNUM_P(ev);
+    lo = have_lo ? FIX2LONG(bv) : 0;
+    if (have_hi) { hi = excl ? FIX2LONG(ev) : FIX2LONG(ev) + 1; }
+    else {
+        /* endless: exponentially probe upward until the predicate would go left. */
+        intptr_t diff = 1; hi = lo + 1;
+        for (;;) {
+            VALUE iv = LONG2FIX(have_lo ? lo + diff : diff);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            if (dir <= 0) { hi = (have_lo ? lo + diff : diff) + 1; break; }
+            if (diff > (INTPTR_MAX / 2)) { hi = INTPTR_MAX; break; }
+            diff *= 2;
+        }
+    }
+    if (!have_lo) {
+        /* beginless: exponentially probe downward for a lower bound. */
+        intptr_t diff = 1; lo = hi - 1;
+        for (;;) {
+            const intptr_t probe = hi - diff;
+            VALUE iv = LONG2FIX(probe);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            if (dir > 0) { lo = probe + 1; break; }       /* predicate goes right here → bound below is lo */
+            if (diff > (INTPTR_MAX / 2)) { lo = INTPTR_MIN; break; }
+            diff *= 2;
+        }
+    }
+    bool found = false; intptr_t ans = 0;
     while (lo < hi) {
         intptr_t mid = lo + (hi - lo) / 2;
         VALUE iv = LONG2FIX(mid);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (FIXNUM_P(r.value)) {                          /* find-any mode: 0=hit, <0 left, >0 right */
-            intptr_t v = FIX2LONG(r.value);
-            if (v == 0) return RESULT_OK(LONG2FIX(mid));
-            if (v < 0) hi = mid; else lo = mid + 1;
-        } else if (KORB_TRUTHY(r.value)) { found = true; ans = mid; hi = mid; }   /* find-minimum: go left */
+        bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+        if (dir == 0) return RESULT_OK(LONG2FIX(mid));
+        if (dir < 0) { hi = mid; if (cand) { found = true; ans = mid; } }
         else lo = mid + 1;
     }
     return RESULT_OK(found ? LONG2FIX(ans) : KORB_NIL);
