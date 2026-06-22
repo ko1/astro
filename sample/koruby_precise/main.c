@@ -109,7 +109,15 @@ static const char *const KORUBY_PRELUDE =
 /* Minimal Errno: just enough that Errno::X constant references resolve (as
  * SystemCallError subclasses); per-errno numbers/semantics are out of scope. */
 "class Exception\n"
-"  def detailed_message(**opts); m = message; \"#{m} (#{self.class})\"; end\n"
+"  def detailed_message(highlight: false, **)\n"
+"    m = message.to_s; cls = self.class; cn = cls.name\n"
+"    if m.empty?\n"
+"      text = cls.equal?(RuntimeError) ? 'unhandled exception' : (cn || cls.to_s)\n"
+"      return highlight ? \"\\e[1;4m#{text}\\e[m\" : text\n"
+"    end\n"
+"    return (highlight ? \"\\e[1m#{m}\\e[m\" : m) if cn.nil?\n"
+"    highlight ? \"\\e[1m#{m} (\\e[1;4m#{cn}\\e[m\\e[1m)\\e[m\" : \"#{m} (#{cn})\"\n"
+"  end\n"
 "  def full_message(**opts); \"#{message} (#{self.class})\"; end\n"
 "end\n"
 "class Object\n"
