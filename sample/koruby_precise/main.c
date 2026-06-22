@@ -105,6 +105,25 @@ static const char *const KORUBY_PRELUDE =
 "end\n"
 "class String\n"
 "  def encoding; Encoding::UTF_8; end\n"
+"end\n"
+/* Minimal Errno: just enough that Errno::X constant references resolve (as
+ * SystemCallError subclasses); per-errno numbers/semantics are out of scope. */
+"class Exception\n"
+"  def detailed_message(**opts); m = message; \"#{m} (#{self.class})\"; end\n"
+"  def full_message(**opts); \"#{message} (#{self.class})\"; end\n"
+"end\n"
+"class SystemCallError < StandardError; end\n"
+"module Errno\n"
+"  EPERM = Class.new(SystemCallError); ENOENT = Class.new(SystemCallError)\n"
+"  ESRCH = Class.new(SystemCallError); EINTR = Class.new(SystemCallError)\n"
+"  EIO = Class.new(SystemCallError); EBADF = Class.new(SystemCallError)\n"
+"  EAGAIN = Class.new(SystemCallError); ENOMEM = Class.new(SystemCallError)\n"
+"  EACCES = Class.new(SystemCallError); EEXIST = Class.new(SystemCallError)\n"
+"  ENOTDIR = Class.new(SystemCallError); EISDIR = Class.new(SystemCallError)\n"
+"  EINVAL = Class.new(SystemCallError); EPIPE = Class.new(SystemCallError)\n"
+"  ERANGE = Class.new(SystemCallError); ENOTSUP = Class.new(SystemCallError)\n"
+"  ECHILD = Class.new(SystemCallError); ESPIPE = Class.new(SystemCallError)\n"
+"  ECONNRESET = Class.new(SystemCallError); ETIMEDOUT = Class.new(SystemCallError)\n"
 "end\n";
 
 static void

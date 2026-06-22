@@ -5914,14 +5914,16 @@ static void korb_fprint_quoted(FILE *fp, const char *bytes, uint32_t len) { korb
 
 /* Can a symbol name appear bare as a hash label `name:`?  CRuby 3.4+: an
  * identifier optionally ending in ? or ! (not =, not empty, not operator). */
+/* identifier chars: ASCII letters/digits/_ plus any non-ASCII byte (>=0x80),
+ * so Unicode identifiers like :äöü print bare (no quoting), matching CRuby. */
+static inline bool korb_id_start(unsigned char ch) { return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch >= 0x80; }
+static inline bool korb_id_cont(unsigned char ch)  { return korb_id_start(ch) || (ch >= '0' && ch <= '9'); }
 static bool
 korb_sym_label_bare(const char *nm)
 {
-    if (!(*nm == '_' || (*nm >= 'a' && *nm <= 'z') || (*nm >= 'A' && *nm <= 'Z')))
-        return false;
+    if (!korb_id_start((unsigned char)*nm)) return false;
     const char *p = nm + 1;
-    while (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-           (*p >= '0' && *p <= '9')) p++;
+    while (korb_id_cont((unsigned char)*p)) p++;
     if (*p == '?' || *p == '!') p++;
     return *p == '\0';
 }
