@@ -1696,9 +1696,13 @@ frame_size。all-or-nothing (中途半端だと 189-regression 型の silent off
   release は reserve 経路が 0 で埋める (既に Step 1 で 0)。
 - 検証: corpus → STRESS+PURGE (closure/binding/fiber) → AOT → benchmark。
 
-### pre-existing flake (Step 1 とは無関係、commit daed240e でも再現)
-- `Hash#select { } / filter / reject{}(keep一致時)` = **korb_hash_filter** が
-  STRESS+PURGE 下で SEGV。worktree で daed240e でも 100% 再現を確認した
-  pre-existing GC バグ (korb_hash_set と block frame の相互作用の疑い)。
-  method/hash_042, hash_118 が該当。STRESS audit から除外 or 別途修正。
-- method/array_283 は STRESS 下の低速 timeout (no-stress は PASS、benign)。
+### Step 2 / magic (DONE)
+- Step 2 (self-copy 排除) commit 3d997570。magic セル内容 (debug-gated integrity
+  check) commit 0aca97ef。ASTRO_DEBUG=1 で corpus 89295/5 magic abort ゼロ検証済。
+
+### pre-existing flake (FIXED, commit d5f45637)
+- `Hash#select/filter` の STRESS+PURGE SEGV を修正。真因は korb_hash_filter が
+  要素 key を yield 前 local に読み yield(GC)後に stale 使用 (value は再読込済だが
+  key 未対応)。key も self から再読込に統一。method/hash_* STRESS+PURGE 12452/0/0。
+  daed240e でも再現した pre-existing バグ (bottom-header の回帰ではない)。
+- method/array_283 は STRESS 下の低速 timeout (no-stress は PASS、benign)。残置。
