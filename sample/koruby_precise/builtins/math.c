@@ -36,6 +36,7 @@ KORB_MATH1(sinh, sinh)   KORB_MATH1(cosh, cosh)   KORB_MATH1(tanh, tanh)
 KORB_MATH1(asinh, asinh) KORB_MATH1(acosh, acosh) KORB_MATH1(atanh, atanh)
 KORB_MATH1(exp, exp)     KORB_MATH1(log2, log2)   KORB_MATH1(log10, log10)
 KORB_MATH1(gamma, tgamma) KORB_MATH1(erf, erf)    KORB_MATH1(erfc, erfc)
+KORB_MATH1(expm1, expm1)  KORB_MATH1(log1p, log1p)
 KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot) KORB_MATH2(copysign, copysign)
 KORB_MATH2(pow, pow)
 
@@ -125,6 +126,7 @@ void korb_init_math(CTX *c, VALUE *slots) {
     MF("asinh", asinh, 1); MF("acosh", acosh, 1); MF("atanh", atanh, 1);
     MF("exp", exp, 1); MF("log2", log2, 1); MF("log10", log10, 1);
     MF("gamma", gamma, 1); MF("erf", erf, 1); MF("erfc", erfc, 1);
+    MF("expm1", expm1, 1); MF("log1p", log1p, 1);
     MF("atan2", atan2, 2); MF("hypot", hypot, 2); MF("copysign", copysign, 2); MF("pow", pow, 2);
     MF("log", log, -1); MF("ldexp", ldexp, 2); MF("frexp", frexp, 1); MF("lgamma", lgamma, 1);
 #undef MF

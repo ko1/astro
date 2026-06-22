@@ -6311,14 +6311,26 @@ static RESULT
 korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
+    /* trailing `exception:` keyword (default true) — when false, a conversion
+     * failure returns nil instead of raising (matching Kernel#Integer). */
+    bool exc = true;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+        if (kx >= 0) { exc = KORB_TRUTHY(h->items->data[2 * kx + 1]); n--; }
+    }
+#define INT_FAIL(...) do { return exc ? korb_raise(c, slots, __VA_ARGS__) : RESULT_OK(KORB_NIL); } while (0)
     if (UNLIKELY(n < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (FIXNUM_P(a0)) return RESULT_OK(a0);
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(a0)) return RESULT_OK(a0);
+#endif
     if (KORB_FLOAT_P(a0)) {
         double d = korb_float_val(a0);
         if (UNLIKELY(!isfinite(d) || !FIXABLE((intptr_t)d)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "Integer(): value out of range");
+            INT_FAIL(KORB_E_ARGUMENT, 0, "Integer(): value out of range");
         return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */
     }
     if (KORB_STRING_P(a0)) {
@@ -6331,12 +6343,13 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
         const KorbString *s = VAL2STR(a0);
         VALUE v;
         if (UNLIKELY(!korb_str_to_int(c, slots, s->buf->data, s->len, base, &v)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
+            INT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
         return RESULT_OK(v);
     }
     if (a0 == KORB_NIL)
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert nil into Integer");
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(a0));
+        INT_FAIL(KORB_E_TYPE, 0, "can't convert nil into Integer");
+    INT_FAIL(KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(a0));
+#undef INT_FAIL
 }
 
 /* Kernel#format / sprintf(fmt, *args) — delegate to String#% with the rest
