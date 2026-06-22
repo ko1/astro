@@ -843,7 +843,18 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return r;
     }
 #endif
-    return RESULT_OK(LONG2FIX(sign * n));
+    {
+        const intptr_t v = sign * n;
+#ifdef KORB_HAVE_GMP
+        if (UNLIKELY(!FIXABLE(v))) {   /* fixnum-overflow but int64-fit (e.g. 2^62) → Bignum */
+            mpz_t z2; mpz_init_set_si(z2, (long)v);
+            RESULT r = korb_big_from_mpz(c, slots, z2);
+            mpz_clear(z2);
+            return r;
+        }
+#endif
+        return RESULT_OK(LONG2FIX(v));
+    }
 }
 
 /* Lenient radix parse for String#hex / #oct: skip ws + sign, optional base

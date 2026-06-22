@@ -6522,7 +6522,17 @@ korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VAL
     (void)c; (void)slots;
 #endif
     acc *= sign;
-    *out = LONG2FIX(acc);   /* always FIXABLE: overflow promoted to Bignum above */
+#ifdef KORB_HAVE_GMP
+    if (UNLIKELY(!FIXABLE(acc))) {   /* fixnum-overflow but int64-fit (e.g. 2^62) → Bignum, not a wrapped Fixnum */
+        mpz_t z2; mpz_init_set_si(z2, (long)acc);
+        RESULT r = korb_big_from_mpz(c, slots, z2);
+        mpz_clear(z2);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return false;
+        *out = r.value;
+        return true;
+    }
+#endif
+    *out = LONG2FIX(acc);   /* in-range Fixnum (larger values promoted to Bignum above) */
     return true;
   bad:
 #ifdef KORB_HAVE_GMP
