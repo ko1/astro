@@ -93,7 +93,7 @@ koruby_precise: .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUI
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_HAVE_GMP \
-	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm -lgmp
+	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm -lgmp -lcrypt
 
 # Generated files: grouped target (single generator invocation).
 $(NODE_GENFILES) &: node.def koruby_gen.rb $(LIB)/astrogen.rb

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <math.h>
+#include <crypt.h>
 #include <ctype.h>
 #include <errno.h>
 #include <ucontext.h>
@@ -4360,6 +4361,27 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     else if (KORB_CLASS_P(self) && mid == vm->mid_yield && VAL2CLASS(self)->name_sym == vm->name_fiber) {
         return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
     }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module &&
+             VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6)) {     /* Kernel.Integer / .Float / .puts ... → the global function */
+        struct korb_method *gm = korb_method_lookup(vm, mid);
+        if (gm) {
+            VALUE *const base = slots - argc;
+            if (gm->kind == KORB_METHOD_BUILTIN) {                            /* global C builtin (Integer/Float/p/...) */
+                if (UNLIKELY(gm->params_cnt >= 0 && (uint32_t)gm->params_cnt != argc))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, gm->params_cnt);
+                RESULT r = gm->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
+                if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
+                return r;
+            }
+            if (gm->kind == KORB_METHOD_ISEQ)                                 /* global ISEQ (top-level def) */
+                return gm->is_simple ? korb_invoke_simple(c, slots, gm, argc, line, mid, self, KORB_NIL)
+                                     : korb_invoke_method(c, slots, gm, argc, line, mid, self, KORB_NIL, block, def_env, KORB_CSELF_VAL(captured_self));
+        }
+        VALUE dc = KORB_NIL;                                                  /* else a real Kernel module method */
+        struct korb_method *m2 = korb_mcache_find(vm, self, mid, &dc);
+        if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self);
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
              VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_SET]) {       /* Set[a, b, ...] */
         VALUE *const base = &slots[-(intptr_t)argc];
@@ -4431,6 +4453,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (korb_responds_to(c, arg, to_str)) {
             slots[0] = arg;
             return korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
+        }
+        return RESULT_OK(KORB_NIL);
+    }
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+             mid == korb_intern(vm, "try_convert", 11)) {                  /* Hash.try_convert(obj) → obj/to_hash/nil */
+        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        if (KORB_HASH_P(arg)) return RESULT_OK(arg);
+        const uint32_t to_hash = korb_intern(vm, "to_hash", 7);
+        if (korb_responds_to(c, arg, to_hash)) {
+            slots[0] = arg;
+            return korb_send_impl(c, slots + 1, to_hash, line, 0, NULL, NULL, NULL);
         }
         return RESULT_OK(KORB_NIL);
     }
@@ -5082,6 +5115,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "slice", korb_m_str_aref, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_char", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "upto", korb_m_str_upto, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "crypt", korb_m_str_crypt, 1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_grapheme_cluster", korb_m_str_each_char, 0);
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_line", korb_m_str_each_line, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "lines", korb_m_str_lines_b, -1);

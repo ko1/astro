@@ -1473,6 +1473,23 @@ done:
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* crypt(salt) — POSIX crypt(3) one-way hash (libc).  The golden oracle is the
+ * host CRuby, which uses the same libc crypt, so results match bit-for-bit. */
+static RESULT korb_m_str_crypt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                          VALUE_SLICE_LEN(a) >= 1 ? korb_type_name(VALUE_SLICE_GET(a, 0)) : "nil");
+    const KorbString *key = SELF_STR, *salt = VAL2STR(VALUE_SLICE_GET(a, 0));
+    if (salt->len < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
+    char kb[4096], sb[512];
+    if (key->len >= sizeof(kb) || salt->len >= sizeof(sb))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string too long for crypt");
+    memcpy(kb, key->buf->data, key->len); kb[key->len] = '\0';
+    memcpy(sb, salt->buf->data, salt->len); sb[salt->len] = '\0';
+    const char *r = crypt(kb, sb);
+    if (!r) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid salt");
+    return korb_str_new(c, slots, r, (uint32_t)strlen(r));
+}
 /* bytes/chars/lines/codepoints WITH a block behave like each_* (yield, return
  * self); without a block they return the array. */
 static RESULT korb_m_str_bytes_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
