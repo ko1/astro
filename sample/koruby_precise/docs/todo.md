@@ -1724,3 +1724,33 @@ frame_size。all-or-nothing (中途半端だと 189-regression 型の silent off
   type-stable loop での guard hoisting、再帰の devirtualization。
 - 計測機が現在ノイジー (best-of-9 でも ~2× variance)。fine-grained per-bench 比較は
   interleave+pin でも不安定。robust な win は nested_loop ~1.4× のみ確証。
+
+---
+## rubyspec 充足 sweep — 2026-06-22
+
+gen_from_rubyspec.rb で全 core を mine (5579 assertion/101 file, /tmp/spec_new) し
+crash 系(un-crash で大量復活) を ROI 順に修正。広域 sweep PASS **2344 → 2746 (+402)**、
+corpus は終始 89295/5 維持。生成器も改善 (warning/RNG/pointer-pack を mine 時に除外)。
+
+### このセッションで修正 (commit 群)
+- Float 整数定数 (DIG/MANT_DIG/...) + Range.new
+- Math.expm1/log1p、Kernel#Integer の exception:/Bignum
+- Rational round(ndigits,half:)/zero?/integer?/div、Rational(Float/String/2引数)
+- Encoding stub (定数群 + String#encoding) + p のユーザ inspect dispatch + ArithSeq#take
+- String#upto / #crypt(libc)、Hash.ruby2_keywords_hash?/try_convert
+- Integer#chr(encoding)、Kernel.X module-function、Range#bsearch(float/endless/no-block)
+- Exception#backtrace(_locations)/detailed_message/full_message、Errno stub、Module#const_source_location
+- Symbol#inspect 非ASCII識別子、Object#to_enum/enum_for
+- **send/method_missing→global builtin の SEGV 修正** (dispatch_method に BUILTIN case)
+
+### 残り (大物機能 or skip 方針、ROI 低)
+- **string ~978**: regex(captures/scan/split→astrorge), encoding 変換(SHIFT_JIS chr 等),
+  multibyte case, format/chomp の細部。大半が skip 方針 or 1-assertion tail。
+- **enumerator ~103**: `arr.select`(no block)→Enumerator や Lazy.grep_v など
+  method-enumerator/Lazy 意味論。koruby は eager Enumerator なので要再設計 (中〜大物)。
+- **range ~147**: Range サブクラス `.new`(side-table 方式が要), bsearch float の 1 ULP 境界。
+- **proc ~43**: block の param list `{|&b|}` (parser 拡張)。
+- **symbol/integer ~49 each**: Unicode case folding, SHIFT_JIS/EUC chr (encoding 実体)。
+- **exception ~40**: Errno/IO::*WaitReadable namespace, 定数の Module::Name 表示。
+- **basicobject ~10**: instance_eval(String)。
+- 既知: `send(:p, *a)` 系は修正済 / 別途 `send` 大splat の細部は要確認。
