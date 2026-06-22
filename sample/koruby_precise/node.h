@@ -388,6 +388,37 @@ extern size_t node_cnt;
 static inline VALUE korb_ep_get(const VALUE *const base) { return base[KORB_EP_OFF]; }
 static inline void  korb_ep_set(VALUE *const base, const VALUE v) { base[KORB_EP_OFF] = v; }
 
+/* Per-frame "magic" cell at base[-3] (CRuby-style frame integrity marker).  Holds
+ * a signature + frame-type tag; the low bit is set so the GC scan treats it as a
+ * non-pointer immediate and skips it.  Reserved+zeroed on every frame's setup
+ * path already; korb_frame_magic_set writes the marker and korb_frame_magic_check
+ * verifies it on return — catching base mismatch / stack corruption / EP underflow.
+ * Active under ASTRO_DEBUG (or -DKORB_FRAME_MAGIC); otherwise compiled out (no-op,
+ * the cell stays 0 as the reserve paths leave it). */
+#define KORB_MAGIC_OFF (-3)
+enum korb_frame_type {
+    KORB_FT_METHOD = 1, KORB_FT_BLOCK, KORB_FT_EVAL, KORB_FT_TOPLEVEL, KORB_FT_FIBER,
+};
+/* signature in the high bits, frame type in bits 1..7, bit 0 = 1 (GC-skip). */
+#define KORB_FMAGIC(ft) (((VALUE)0xF7A3C5E900ULL) | ((VALUE)(ft) << 1) | 1u)
+#if ASTRO_DEBUG || defined(KORB_FRAME_MAGIC)
+static inline void korb_frame_magic_set(VALUE *const base, const enum korb_frame_type ft) {
+    base[KORB_MAGIC_OFF] = KORB_FMAGIC(ft);
+}
+static inline void korb_frame_magic_check(const VALUE *const base, const enum korb_frame_type ft, const char *const where) {
+    const VALUE got = base[KORB_MAGIC_OFF], want = KORB_FMAGIC(ft);
+    if (UNLIKELY(got != want)) {
+        fprintf(stderr, "koruby_precise: FRAME MAGIC mismatch at %s: base=%p got=0x%llx want=0x%llx "
+                "(frame corruption / wrong base / EP underflow)\n",
+                where, (const void *)base, (unsigned long long)got, (unsigned long long)want);
+        abort();
+    }
+}
+#else
+static inline void korb_frame_magic_set(VALUE *const base, const enum korb_frame_type ft) { (void)base; (void)ft; }
+static inline void korb_frame_magic_check(const VALUE *const base, const enum korb_frame_type ft, const char *const where) { (void)base; (void)ft; (void)where; }
+#endif
+
 /* Cold helpers used by the inlined simple-call fast path below; defined in
  * korb_runtime.c (the SD / all.so reaches them as exported symbols, only on
  * the rare open-env-close / exception-backtrace paths). */
@@ -421,11 +452,12 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                  &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     /* zero only the genuine locals (body locals + synth temps) that the body
-     * may read/GC-scan; the top 2 cells (self, method-entry) are set just below,
-     * so zeroing them is wasted (a hot-path win for arg-only methods like fib). */
+     * may read/GC-scan; the top cell (method-entry) is set just below, so zeroing
+     * it is wasted (a hot-path win for arg-only methods like fib). */
     if (locals_cnt - 1 > argc) memset(base + argc, 0, (locals_cnt - 1 - argc) * sizeof(VALUE));
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged); super/__method__ source */
     korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
+    korb_frame_magic_set(base, KORB_FT_METHOD);           /* base[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
     /* self is already at base[-1] (the caller's staged receiver) — not copied to a
      * top cell.  Every korb_invoke_simple caller stages self there (bottom header). */
     (void)def_class; (void)self;
@@ -445,6 +477,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;
     }
+    korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke_simple");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
 }
