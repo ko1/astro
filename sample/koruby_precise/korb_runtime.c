@@ -5586,6 +5586,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_lit_nil, -1);   /* source location not tracked */
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
@@ -5608,6 +5609,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FALSE,  "frozen?", korb_m_true_lit2, 0);
 
     /* Exception */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace", korb_m_lit_nil, 0);          /* not tracked as an array (fresh = nil) */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "initialize", korb_m_exc_initialize, -1);
