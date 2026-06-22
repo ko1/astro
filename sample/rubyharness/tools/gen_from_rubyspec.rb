@@ -20,10 +20,21 @@ OUT   = ARGV[1] || 't/spec'
 CHUNK = (ARGV[2] || 80).to_i
 
 def addr?(s) = s =~ /0x[0-9a-f]{3,}/i || s =~ /#</
+require 'stringio'
 def certify(expr)
   o1 = o2 = nil
-  Timeout.timeout(1) { o1 = eval(expr).inspect; o2 = eval(expr).inspect } # rubocop:disable Security/Eval
-  return nil if o1.nil? || o1 != o2 || o1.length > 180 || addr?(o1)
+  warned = false
+  orig = $stderr
+  $stderr = StringIO.new                                  # capture warnings emitted during eval
+  begin
+    Timeout.timeout(1) { o1 = eval(expr).inspect; o2 = eval(expr).inspect } # rubocop:disable Security/Eval
+  ensure
+    warned = !$stderr.string.empty?                       # e.g. "given block not used"
+    $stderr = orig
+  end
+  # Drop: errored, nondeterministic across the two evals, too long, address-bearing,
+  # or warning-emitting (koruby is quiet → such a golden would false-diff on stderr).
+  return nil if o1.nil? || o1 != o2 || o1.length > 180 || addr?(o1) || warned
   expr
 rescue Exception # NameError (setup local), SyntaxError, anything → drop
   nil
@@ -38,7 +49,9 @@ PATTERNS = [
 # nondeterministic across runs (hash / object_id are seeded per process so they
 # pass the in-process certify but differ run-to-run).
 SKIP = /@|\$|\bmock\b|\bstub\b|\bScratchPad\b|\b[a-z_]\w*\s*=|->|\bself\b|\b__|
-        \bhash\b|\bobject_id\b|\bequal\?|\bnil\.should\b/x
+        \bhash\b|\bobject_id\b|\bequal\?|\bnil\.should\b|
+        \bshuffle\b|\bsample\b|\brand\b|\bsrand\b|             # RNG (differs run-to-run, across impls)
+        \.pack\(\s*["'][^"']*[Pp]|\bunpack1?\(\s*["'][^"']*[Pp]/x  # pointer pack or unpack (raw memory addresses)
 
 lines = Hash.new { |h, k| h[k] = [] }
 seen  = {}

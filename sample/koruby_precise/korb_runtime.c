@@ -4370,6 +4370,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
+    else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
+             VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_RANGE]) {   /* Range.new(begin, end, exclude_end=false) */
+        if (UNLIKELY(argc < 2 || argc > 3))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 2..3)", argc);
+        VALUE *const base = &slots[-(intptr_t)argc];
+        const uint32_t excl = (argc >= 3 && KORB_TRUTHY(base[2])) ? 1u : 0u;
+        return korb_range_new(c, slots, VALUE_REF_AT(&base[0]), base[1], excl);
+    }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->name_fiber)
@@ -4625,7 +4633,8 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
         (cname == vm->name_struct) || cname == vm->name_module ||
         cname == vm->class_name[KORB_C_CLASS]  ||   /* Class.new / Module.new → real class, not a generic object */
         cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
-        cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING]) {
+        cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING] ||
+        cname == vm->class_name[KORB_C_RANGE]) {   /* Range.new(begin,end[,excl]) → real Range, not a generic object */
         kind = 2;
     } else if (korb_class_exc_etype(vm, cls) >= 0) {   /* exception class → KorbException, not a generic object */
         kind = 2;

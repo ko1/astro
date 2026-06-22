@@ -108,6 +108,14 @@ void korb_init_math(CTX *c, VALUE *slots) {
     korb_const_define(c, korb_intern(vm, "MAX", 3),      korb_float_new(c, slots + 1, DBL_MAX).value);
     korb_const_define(c, korb_intern(vm, "MIN", 3),      korb_float_new(c, slots + 1, DBL_MIN).value);
     korb_const_define(c, korb_intern(vm, "EPSILON", 7),  korb_float_new(c, slots + 1, DBL_EPSILON).value);
+    /* integer-valued Float:: constants (IEEE-754 double properties). */
+    korb_const_define(c, korb_intern(vm, "DIG", 3),         LONG2FIX(DBL_DIG));
+    korb_const_define(c, korb_intern(vm, "MANT_DIG", 8),    LONG2FIX(DBL_MANT_DIG));
+    korb_const_define(c, korb_intern(vm, "MIN_EXP", 7),     LONG2FIX(DBL_MIN_EXP));
+    korb_const_define(c, korb_intern(vm, "MAX_EXP", 7),     LONG2FIX(DBL_MAX_EXP));
+    korb_const_define(c, korb_intern(vm, "MIN_10_EXP", 10), LONG2FIX(DBL_MIN_10_EXP));
+    korb_const_define(c, korb_intern(vm, "MAX_10_EXP", 10), LONG2FIX(DBL_MAX_10_EXP));
+    korb_const_define(c, korb_intern(vm, "RADIX", 5),       LONG2FIX(FLT_RADIX));
     /* slots[0] holds Math; re-read it each call — singleton alloc may move it. */
 #define MF(name, fn, ar) korb_def_modfunc(c, slots + 1, slots[0], name, korb_m_math_##fn, ar)
     MF("sqrt", sqrt, 1); MF("cbrt", cbrt, 1);
