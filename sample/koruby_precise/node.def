@@ -1172,6 +1172,12 @@ NODE_DEF
 node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@child)
 {
     (void)n;
+    KorbArray *const a = VAL2ARY(VALUE_REF_GET(ary));
+    if (LIKELY(a->len < a->capa)) {            /* literal arrays are pre-sized → room guaranteed: small LTO-inlinable store */
+        korb_ary_store_at(c, VALUE_REF_GET(ary), a->len, elem);
+        a->len++;
+        return RESULT_OK(VALUE_REF_GET(ary));
+    }
     return korb_ary_push_val(c, slots, ary, elem);
 }
 
