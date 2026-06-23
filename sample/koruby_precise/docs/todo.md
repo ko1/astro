@@ -3,6 +3,13 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (GC backend)
+
+- **`mark_compact_gen` backend が bignum で core dump** (2026-06-23 発見)。
+  `make GC=mark_compact_gen` で bench/bignum.rb を走らせると SIGSEGV/abort。
+  他 7 backend は正常。GMP bignum (mpz_t を持つ heap obj) と mark-compact の
+  移動/再配置の相互作用が疑わしい。詳細は [docs/gc_comparison.md](./gc_comparison.md)。
+
 ## Ruby 準拠 probe sweep (2026-06-20 session 4) — 修正済み
 
 probe + 実ハーネス array spec で発見・修正 (corpus 89295/5 維持・STRESS+AOT 検証):
