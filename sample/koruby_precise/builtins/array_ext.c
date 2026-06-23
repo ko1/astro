@@ -252,14 +252,15 @@ static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if ((uint32_t)n > len) n = len;
     return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
 }
-/* Array#sample([n][, random:]) — sample (no arg) returns one random element via
- * the MT19937 generator (CRuby-exact).  sample(n) returns the first n (CRuby's
- * exact n-element selection algorithm is not yet replicated). */
+/* Array#sample([n][, random:]) — CRuby-exact via the MT19937 generator.
+ * sample (no arg): one random element.  sample(n), n<=10: CRuby's rnds[] +
+ * sorted-insertion distinct-index algorithm (bit-exact).  n>10: copy + partial
+ * Fisher-Yates (random but not CRuby-bit-exact). */
 static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t argc = VALUE_SLICE_LEN(a);
     if (argc >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, argc - 1))) argc--;   /* random: kwargs */
     const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    if (argc == 0) {   /* one random element (CRuby-exact via the MT generator) */
+    if (argc == 0) {   /* one random element */
         if (len == 0) return RESULT_OK(KORB_NIL);
         KorbMT *const st = korb_rng_from_kwargs(c, a);
         return RESULT_OK(VAL2ARY(VALUE_REF_GET(self))->items->data[korb_mt_limited(st, len - 1)]);
@@ -267,8 +268,42 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t n;
     if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative sample number");
-    if ((uint32_t)n > len) n = len;
-    return korb_ary_subseq(c, slots, self, 0, (uint32_t)n);
+    if ((uint32_t)n > (intptr_t)len) n = len;
+    if (n == 0) return korb_ary_new(c, slots, 0);
+
+    if (n <= 10) {
+        /* CRuby ary_sample n<=10: draw all randoms FIRST (alloc would move the
+         * rng buffer), then build distinct indices, then materialize. */
+        KorbMT *const st = korb_rng_from_kwargs(c, a);
+        long rnds[10], idx[10], sorted[10];
+        for (intptr_t i = 0; i < n; i++) rnds[i] = (long)korb_mt_limited(st, (uint32_t)(len - i - 1));   /* RAND_UPTO(len-i) */
+        sorted[0] = idx[0] = rnds[0];
+        for (intptr_t i = 1; i < n; i++) {
+            long k = rnds[i], j;
+            for (j = 0; j < i; ++j) { if (k < sorted[j]) break; ++k; }
+            memmove(&sorted[j+1], &sorted[j], sizeof(sorted[0]) * (size_t)(i - j));
+            sorted[j] = idx[i] = k;
+        }
+        const RESULT rr = korb_ary_new(c, slots, (uint32_t)n);   /* may GC; self re-read below */
+        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+        slots[0] = rr.value;
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        const KorbArray *const src = VAL2ARY(VALUE_REF_GET(self));
+        for (intptr_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, src->items->data[idx[i]]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
+    /* n>10: copy then partial Fisher-Yates (random, not CRuby-bit-exact). */
+    const RESULT cp = korb_ary_subseq(c, slots, self, 0, len);
+    if (UNLIKELY(cp.state != KORB_NORMAL)) return cp;
+    slots[0] = cp.value;
+    KorbMT *const st = korb_rng_from_kwargs(c, a);
+    KorbArrayItems *const it = VAL2ARY(slots[0])->items;
+    for (intptr_t i = 0; i < n; i++) {
+        const uint32_t j = i + korb_mt_limited(st, (uint32_t)(len - i - 1));   /* [i, len-1] */
+        const VALUE t = it->data[i]; it->data[i] = it->data[j]; it->data[j] = t;
+    }
+    VAL2ARY(slots[0])->len = (uint32_t)n;
+    return RESULT_OK(slots[0]);
 }
 /* Array#shuffle([random:]) — CRuby-exact Fisher-Yates over a copy, driven by the
  * MT19937 generator (the `random:` kwarg's Random, else the default). */
