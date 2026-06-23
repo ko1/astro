@@ -187,6 +187,23 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         return korb_float_new(c, slots, pow(base, e));
     }
+    if (KORB_RATIONAL_P(ev)) {                         /* Integer ** Rational */
+        if (VAL2RAT(ev)->den == LONG2FIX(1)) {         /* integer-valued exponent → Rational result (CRuby) */
+            const RESULT ip = korb_int_pow(c, slots, selfv, VAL2RAT(ev)->num, 0);
+            if (UNLIKELY(ip.state != KORB_NORMAL)) return ip;
+            if (FIXNUM_P(ip.value)) return korb_rat_new(c, slots, FIX2LONG(ip.value), 1);   /* n → (n/1) */
+            return ip;                                 /* already Rational (neg exp) or Bignum */
+        }
+        double base; (void)korb_num_to_d(selfv, &base); /* fractional → Float (Complex if neg base) */
+        double e; (void)korb_num_to_d(ev, &e);
+        if (base < 0) {
+            double mag = pow(-base, e);
+            slots[0] = UNWRAP(korb_float_new(c, slots, mag * korb_cospi(e)));
+            slots[1] = UNWRAP(korb_float_new(c, slots + 1, mag * korb_sinpi(e)));
+            return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+        }
+        return korb_float_new(c, slots, pow(base, e));
+    }
     if (UNLIKELY(!KORB_INTEGER_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(ev));
 #ifdef KORB_HAVE_GMP
     if (VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(selfv) || !FIXNUM_P(ev))   /* plain pow (incl. overflow/bignum) */
