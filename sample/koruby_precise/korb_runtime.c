@@ -4873,6 +4873,12 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             const VALUE obj = UNWRAP(korb_obj_new(c, slots, recv));   /* may GC (bumps serial → next call re-resolves) */
             if (init) {
                 VALUE *const base = slots - argc;
+                if (LIKELY(init->is_simple)) {     /* fixed-arity initialize → streamlined invoke (skips kw/opt/rest handling) */
+                    base[-1] = obj;                /* stage obj as self at the frame's bottom header */
+                    const RESULT ir = korb_invoke_simple(c, slots, init, argc, line, vm->mid_initialize, obj, idef);
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
+                }
                 const RESULT ir = korb_invoke_method(c, slots, init, argc, line, vm->mid_initialize,
                                                      obj, idef, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
