@@ -1004,7 +1004,7 @@ korb_hash_new(CTX *c, VALUE *slots, uint32_t capa)
 /* Keys whose hash is unambiguous w.r.t. korb_value_eq (no cross-type ==): only
  * these go in the O(1) index.  Float (1==1.0) and heap objects are excluded. */
 static inline bool korb_key_indexable(VALUE v) {
-    return FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) ||
+    return FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || KORB_ARRAY_P(v) ||
            v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE;
 }
 static uint64_t korb_value_hash(VALUE v) {
@@ -1018,7 +1018,14 @@ static uint64_t korb_value_hash(VALUE v) {
     }
     if (v == KORB_NIL)  return 0x9e3779b97f4a7c15ULL;
     if (v == KORB_TRUE) return 0x100000001ULL;
-    return 0x200000002ULL;                              /* KORB_FALSE (only remaining indexable) */
+    if (v == KORB_FALSE) return 0x200000002ULL;
+    if (KORB_ARRAY_P(v)) {                              /* Array key: content hash (matches Array#== / #eql?) */
+        const KorbArray *const a = VAL2ARY(v);
+        uint64_t h = 0x345678ULL ^ ((uint64_t)a->len * 0x9e3779b97f4a7c15ULL);
+        for (uint32_t i = 0; i < a->len; i++) { h ^= korb_value_hash(a->items->data[i]); h *= 1099511628211ULL; }
+        return h;
+    }
+    return 0x200000002ULL;                              /* other heap objects: single bucket (rare; value_eq confirms) */
 }
 
 bool korb_value_eq(VALUE a, VALUE b);   /* defined below */
@@ -1032,7 +1039,18 @@ static inline bool korb_value_eq_fast(VALUE a, VALUE b)
 {
     if (a == b) return true;
     if (SYMBOL_P(a) || (FIXNUM_P(a) && FIXNUM_P(b))) return false;
-    return korb_value_eq(a, b);
+    if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {        /* Array hash-keys: inline element-wise eql? (this is the only caller — korb_hash_find — hash keys use eql? semantics; array keys are hot in optcarrot, so inline to skip the call) */
+        const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
+        if (x->len != y->len) return false;
+        for (uint32_t i = 0; i < x->len; i++) {
+            const VALUE xi = x->items->data[i], yi = y->items->data[i];
+            if (xi == yi) continue;                  /* identical element */
+            if (FIXNUM_P(xi) && FIXNUM_P(yi)) return false;
+            if (!korb_value_eql(xi, yi)) return false;  /* eql? (type-strict: 1.0 ≠ 1); recurses for nested arrays */
+        }
+        return true;
+    }
+    return korb_value_eql(a, b);   /* hash key compare = eql? (not ==): 1.0 and 1 are distinct keys */
 }
 
 /* eql? (numeric-type-strict equality) — defined below; Hash keys use it so 1
@@ -3179,6 +3197,13 @@ static bool korb_value_eql(VALUE a, VALUE b) {
     int ta = FIXNUM_P(a) ? 1 : KORB_FLOAT_P(a) ? 2 : KORB_RATIONAL_P(a) ? 3 : 0;
     int tb = FIXNUM_P(b) ? 1 : KORB_FLOAT_P(b) ? 2 : KORB_RATIONAL_P(b) ? 3 : 0;
     if ((ta || tb) && ta != tb) return false;        /* mixed numeric types → not eql? */
+    if (!ta && KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {  /* Array#eql?: element-wise eql? (type-strict, unlike ==) */
+        const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
+        if (x->len != y->len) return false;
+        for (uint32_t i = 0; i < x->len; i++)
+            if (!korb_value_eql(x->items->data[i], y->items->data[i])) return false;
+        return true;
+    }
     return korb_value_eq(a, b);
 }
 
