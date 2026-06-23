@@ -2082,7 +2082,16 @@ static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         int rc = fn(p->buf->data, p->len, s->buf->data + off, (size_t)((long)s->len - off), ci, &ms, &me);
         if (rc != 1) break;
         long abss = off + ms, abse = off + me;
-        slots[2] = UNWRAP(korb_str_new(c, slots + 2, VAL2STR(VALUE_REF_GET(self))->buf->data + abss, (uint32_t)(abse - abss)));
+        /* GC-safe substring copy: korb_str_new memcpy's from its raw `bytes` arg
+         * AFTER allocating, so a self->buf interior pointer passed in would be
+         * stale once the alloc's GC moves self (SEGV under STRESS/moving GC).
+         * Allocate first, root it, then re-read self->buf->data and copy. */
+        {
+            const uint32_t mlen = (uint32_t)(abse - abss);
+            KorbString *const ns = korb_str_alloc(c, slots + 2, mlen);   /* may move self */
+            slots[2] = (VALUE)ns;                                        /* root before the copy */
+            memcpy(ns->buf->data, VAL2STR(VALUE_REF_GET(self))->buf->data + abss, mlen);
+        }
         CHECK(korb_ary_push_val(c, slots + 3, res, slots[2]));
         off = (abse > abss) ? abse : abss + 1;           /* empty match → advance 1 */
     }
