@@ -575,6 +575,14 @@ static RESULT korb_m_int_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* up==true: self upto to (ascending); else downto (descending). */
 static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool up, const char *meth) {
     VALUE lv = VALUE_SLICE_GET(a, 0);
+    /* n.upto(Float::INFINITY) without a block → an endless ArithmeticSequence
+     * (begin=n, step=+1); zip/first/take pull it lazily by index without
+     * materializing.  (CRuby returns an Enumerator; an ArithSeq suffices here.) */
+    if (block == NULL && up && !FIXNUM_P(lv)) {
+        double d;
+        if (korb_num_to_d(lv, &d) && isinf(d) && d > 0)
+            return korb_arithseq_new(c, slots, VALUE_REF_GET(self), lv, LONG2FIX(1), 2, 0);
+    }
     if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
     intptr_t to = FIX2LONG(lv), from = FIX2LONG(VALUE_REF_GET(self));
     if (block == NULL) {                              /* → Enumerator of the sequence */

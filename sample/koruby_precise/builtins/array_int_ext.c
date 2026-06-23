@@ -1012,6 +1012,17 @@ static RESULT korb_m_hash_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static VALUE korb_zip_elem(VALUE arg, uint32_t i) {
     if (KORB_ARRAY_P(arg)) return i < VAL2ARY(arg)->len ? VAL2ARY(arg)->items->data[i] : KORB_NIL;
     if (KORB_RANGE_P(arg)) { intptr_t lo, hi; if (korb_range_int_bounds(VAL2RANGE(arg), &lo, &hi)) { intptr_t v = lo + (intptr_t)i; if (v < hi) return LONG2FIX(v); } }
+    if (KORB_ARITHSEQ_P(arg)) {   /* e.g. n.upto(∞): begin + i*step, lazily by index */
+        VALUE beginv, limv, stepv; bool excl;
+        korb_aseq_params(VAL2ASEQ(arg), &beginv, &limv, &stepv, &excl);
+        if (FIXNUM_P(beginv) && FIXNUM_P(stepv)) {
+            const intptr_t v = FIX2LONG(beginv) + (intptr_t)i * FIX2LONG(stepv);
+            if (limv == KORB_NIL) return LONG2FIX(v);                       /* endless */
+            double dl;
+            if (korb_num_to_d(limv, &dl) && isinf(dl) && dl > 0) return LONG2FIX(v);   /* +∞ limit */
+            if (FIXNUM_P(limv) && v < FIX2LONG(limv)) return LONG2FIX(v);   /* finite (exclusive-ish) */
+        }
+    }
     return KORB_NIL;
 }
 static RESULT korb_m_hash_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {

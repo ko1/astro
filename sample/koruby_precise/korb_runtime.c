@@ -5069,6 +5069,10 @@ korb_fmt_int(intptr_t n, int base, char *buf)
  * below but used by Float#coerce in builtins/float.c. */
 static RESULT korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args);
 
+/* fwd decls: ArithmeticSequence helpers are defined in arithseq.c (included after
+ * array*.c) but used by Integer#upto(∞) and zip's element pull. */
+static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);
+static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
