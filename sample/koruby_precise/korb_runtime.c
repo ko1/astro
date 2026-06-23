@@ -3122,8 +3122,12 @@ korb_value_eq(VALUE a, VALUE b)
     if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {         /* Array#==: same length, element-wise == */
         const KorbArray *x = VAL2ARY(a), *y = VAL2ARY(b);
         if (x->len != y->len) return false;
-        for (uint32_t i = 0; i < x->len; i++)
-            if (!korb_value_eq(x->items->data[i], y->items->data[i])) return false;
+        for (uint32_t i = 0; i < x->len; i++) {
+            const VALUE xi = x->items->data[i], yi = y->items->data[i];   /* inline the common element cases (skip the recursive call) */
+            if (xi == yi) continue;                                       /* identical: Fixnum / Symbol / same object */
+            if (FIXNUM_P(xi) && FIXNUM_P(yi)) return false;               /* two distinct Fixnums */
+            if (!korb_value_eq(xi, yi)) return false;                     /* heap / mixed: recurse */
+        }
         return true;
     }
     if (KORB_SET_P(a) && KORB_SET_P(b)) {             /* Set#==: same members (order-independent) */
