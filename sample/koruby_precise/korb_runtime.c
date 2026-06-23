@@ -1209,11 +1209,29 @@ korb_shape_transition(struct korb_vm *vm, uint32_t shape, uint32_t sym)
 
 /* korb_shape_index is now an inline in node.h (folds into the SDs). */
 
+/* Direct-mapped (shape_id, sym) → slot cache for the *out-of-line* ivar
+ * accessors (korb_ivar_get/set), which lack a per-node inline cache and would
+ * otherwise walk the shape parent chain O(depth) every call — hot for ivar
+ * multi-assign (node_massign_het) and attr writers on deep-ivar objects (e.g.
+ * optcarrot's 79-ivar PPU).  A (shape_id, sym) pair maps to a permanent slot
+ * (shapes are immutable), so entries never need invalidation. */
+#define KORB_SHIDX_BITS 12
+struct korb_shidx_ent { uint32_t shape, sym; int32_t slot; };
+static struct korb_shidx_ent korb_shidx_cache[1u << KORB_SHIDX_BITS];
+static inline int32_t korb_shape_index_cached(struct korb_vm *vm, uint32_t shape, uint32_t sym) {
+    const uint32_t h = (shape * 2654435761u ^ sym * 40503u) & ((1u << KORB_SHIDX_BITS) - 1u);
+    struct korb_shidx_ent *const e = &korb_shidx_cache[h];
+    if (LIKELY(e->shape == shape && e->sym == sym)) return e->slot;
+    const int32_t idx = korb_shape_index(vm, shape, sym);
+    if (idx >= 0) { e->shape = shape; e->sym = sym; e->slot = idx; }   /* cache hits only (idx<0 = absent ivar, rare) */
+    return idx;
+}
+
 VALUE
 korb_ivar_get(CTX *c, VALUE self, VALUE name_sym)
 {
     const KorbObject *o = VAL2OBJ(self);
-    int32_t idx = korb_shape_index(c->vm, o->shape_id, SYM2ID(name_sym));
+    int32_t idx = korb_shape_index_cached(c->vm, o->shape_id, SYM2ID(name_sym));
     if (idx < 0) return KORB_NIL;
     return o->ivars->data[idx];
 }
@@ -1229,7 +1247,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
 {
     const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
-    int32_t idx = korb_shape_index(c->vm, o->shape_id, sym);
+    int32_t idx = korb_shape_index_cached(c->vm, o->shape_id, sym);
     if (idx >= 0) {                                   /* existing ivar: in-place (no GC) */
         ARO_STORE(c, o->ivars, &o->ivars->data[idx], val);
         return RESULT_OK(val);
