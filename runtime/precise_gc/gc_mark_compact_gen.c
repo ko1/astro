@@ -633,6 +633,30 @@ major_fold_young(ASTroGC *gc, CTX *c)
     }
 
     tenured_top = to_top;
+
+    /* Re-home finalize-list entries that fold just promoted out of young, while
+     * gc_fwd still points to the tenured copy.  A promoted (live) entry is
+     * forwarded to its tenured address (the major finalize_walk below then
+     * forwards it again across the compaction slide); an un-promoted (dead) young
+     * entry is finalized now.  Without this the major walk would dereference a
+     * stale young address (cleared just below) and mis-finalize — e.g. run
+     * mpz_clear on reused memory and free an unrelated libc allocation. */
+    {
+        AroGcCommonState *const cs = &gc->common;
+        size_t w = 0;
+        for (size_t i = 0; i < cs->finalize_count; i++) {
+            void *const fp = cs->finalize_list[i];
+            if ((char *)fp >= young_active_base && (char *)fp < from_end_cur) {
+                AroObjectHeader *const fh = (AroObjectHeader *)fp;
+                if (fh->gc_fwd) cs->finalize_list[w++] = fh->gc_fwd;   /* promoted → tenured */
+                else            AROH_FINALIZE(fp);                      /* died in young */
+            } else {
+                cs->finalize_list[w++] = fp;                           /* tenured: handled by the major walk */
+            }
+        }
+        cs->finalize_count = w;
+    }
+
     young_top = young_active_base;
     /* Clear gc_fwd on stale young objs. */
     char *p = young_active_base;
