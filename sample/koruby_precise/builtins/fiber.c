@@ -72,8 +72,12 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     VALUE *const s_slots = c->slots; VALUE *const s_top = c->slots_top;
     VALUE *const s_limit = c->slots_limit; VALUE *const s_hw = c->slots_high_water;
     const char *const s_cstack = c->cstack_limit;
-    if (prev == NULL) { c->vm->main_slots = s_slots; c->vm->main_slots_top = s_top; }
-    else { prev->vslots_top = s_top; prev->vslots_hw = s_hw; }
+    /* While this resumer is suspended, the GC scans its stack up to the recorded
+     * top.  Use `slots` (the resume frame's true cursor), not the possibly-lagging
+     * c->slots_top (== s_top) — same fix as Fiber.yield.  s_top is still used to
+     * RESTORE c->slots_top after the fiber returns. */
+    if (prev == NULL) { c->vm->main_slots = s_slots; c->vm->main_slots_top = slots; }
+    else { prev->vslots_top = slots; prev->vslots_hw = s_hw; }
 
     ucontext_t here;
     rep->resume_uctx = &here;
@@ -121,7 +125,14 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "can't yield from root fiber");
     rep->transfer = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     rep->fstate = 2;                                   /* suspended */
-    rep->vslots_top = c->slots_top; rep->vslots_hw = c->slots_high_water;
+    /* Capture the TRUE live stack top, not c->slots_top: the latter is only
+     * republished by korb_alloc, so between the fiber's last allocation and this
+     * yield it can lag the real cursor (under-scan → live objects collected) or,
+     * after a deeper call returned, sit stale-high (over-scan dead slots).  `slots`
+     * is this yield frame's cursor — above all of the fiber's live data and below
+     * its (unscanned) scratch — the same role c->slots_top plays for the active
+     * stack at a korb_alloc-triggered GC. */
+    rep->vslots_top = slots; rep->vslots_hw = c->slots_high_water;
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;

@@ -121,6 +121,21 @@ static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, intptr_t sta
     if (UNLIKELY(start < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%ld", (long)(start - len + len), (long)len);
     if (dellen < 0) dellen = 0;
     bool splat = KORB_ARRAY_P(VALUE_REF_GET(valref));
+    /* fast path: same-length in-range replacement (a[i, n] = n-elem array, or a[i]=v).
+     * No length change → overwrite in place: O(n), no temp array, no full rebuild.
+     * Hot in optcarrot (`@bg_pixels[x, 8] = lut_entry` per tile). */
+    const intptr_t repl = splat ? (intptr_t)VAL2ARY(VALUE_REF_GET(valref))->len : 1;
+    if (start <= len && start + dellen <= len && repl == dellen &&
+        VALUE_REF_GET(self) != VALUE_REF_GET(valref)) {   /* in-place; aliasing → slow path */
+        if (splat) {
+            for (intptr_t j = 0; j < repl; j++)
+                korb_ary_store_at(c, VALUE_REF_GET(self), (uint32_t)(start + j),
+                                  VAL2ARY(VALUE_REF_GET(valref))->items->data[j]);
+        } else {
+            korb_ary_store_at(c, VALUE_REF_GET(self), (uint32_t)start, VALUE_REF_GET(valref));
+        }
+        return RESULT_OK(VALUE_REF_GET(valref));
+    }
     /* build the new sequence in a temp array (rooted), then copy back into self */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
     VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
