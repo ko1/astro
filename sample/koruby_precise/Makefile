@@ -138,6 +138,7 @@ bench-report: koruby_precise
 # frame count (default 180 ≈ a ~1s+ sustained run).  `optcarrot` = pure
 # tree-walker (--plain); `optcarrot-aot` = bake + --compiled-only (AOT FPS).
 FRAMES ?= 180
+GCROUNDS ?= 7
 optcarrot: koruby_precise
 	tools/optcarrot.sh $(FRAMES)
 optcarrot-aot: koruby_precise
@@ -154,4 +155,13 @@ optcarrot-report: koruby_precise
 	  tools/optcarrot_bench.sh $(FRAMES) $(BENCHRUNS); \
 	} | tee "$$f"; \
 	echo "saved: $$f"
-.PHONY: optcarrot optcarrot-aot optcarrot-report
+# GC backend comparison for optcarrot.  gc-compare = rigorous alternating
+# round-robin A/B (robust to fluctuating machine load), reports best+median fps
+# per backend.  But the load-independent answer is gc-stats: run optcarrot AOT
+# per backend with KORUBY_GC_STATS=1 — for optcarrot GC is only 1-4% of runtime
+# (3-17 collections / ~1MB per frame), so the collector algorithm barely matters
+# and generational backends are slightly worse (smaller nursery -> more minors).
+GC_BACKENDS ?= copy copy_gen immix immix_gen mark_gen
+gc-compare:
+	tools/gc_ab.sh $(FRAMES) $(GCROUNDS) $(GC_BACKENDS)
+.PHONY: optcarrot optcarrot-aot optcarrot-report gc-compare
