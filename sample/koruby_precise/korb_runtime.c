@@ -2177,6 +2177,10 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
     if (!vm->aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
         (mid == vm->mid_aref || mid == vm->mid_aset))
         vm->aref_redefined = true;
+    /* Array#<< redefinition deopts the node_shl Array fast path. */
+    if (!vm->arr_shl_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
+        mid == vm->mid_shl)
+        vm->arr_shl_redefined = true;
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;

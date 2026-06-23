@@ -693,6 +693,8 @@ struct korb_vm {
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
     bool aref_redefined;
+    /* set when Array#<< is redefined: node_shl's Array fast path then deopts. */
+    bool arr_shl_redefined;
 
     const char *script_name; /* for error messages */
 };
