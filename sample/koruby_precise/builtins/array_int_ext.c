@@ -490,7 +490,6 @@ static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
 static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; return RESULT_OK(VALUE_SLICE_GET(a, 0)); }   /* proc defaults unsupported; accept + ignore */
-static RESULT korb_m_hash_compare_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }   /* identity-keys approximated by value-eq */
 static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));

@@ -5509,8 +5509,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "compact!", korb_m_hash_compact_bang, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc", korb_m_hash_default_proc, 0);
     korb_def_cmethod(c, KORB_C_HASH, "default_proc=", korb_m_hash_default_proc_set, 1);
-    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity", korb_m_hash_compare_by_id, 0);
-    korb_def_cmethod(c, KORB_C_HASH, "compare_by_identity?", korb_m_lit_false, 0);
+    /* compare_by_identity / ? are registered above (korb_m_hash_cmp_by_id sets
+     * KORB_FL_CMP_BY_ID; the no-op duplicate here used to shadow it, leaving
+     * identity hashes comparing array keys by Array#== — 50M calls in optcarrot). */
     korb_def_cmethod(c, KORB_C_HASH, "drop", korb_m_hash_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each", korb_m_hash_each, 0);
     korb_def_cmethod_blk(c, KORB_C_HASH, "each_pair", korb_m_hash_each, 0);
