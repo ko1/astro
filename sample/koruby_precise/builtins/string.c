@@ -275,7 +275,7 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
     if (!found) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)(VALUE_SLICE_LEN(a)>=1 && FIXNUM_P(VALUE_SLICE_GET(a,0)) ? FIX2LONG(VALUE_SLICE_GET(a,0)) : 0));
     CHECK(korb_str_splice(c, slots, self, bs, be, VALUE_SLICE_REF(a, na - 1), true));
-    return RESULT_OK(repl);
+    return RESULT_OK(VALUE_SLICE_GET(a, na - 1));   /* re-read: splice's GC may have moved repl (the `a` slice is a rooted slot) */
 }
 static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t na = VALUE_SLICE_LEN(a);
