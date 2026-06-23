@@ -16,16 +16,19 @@ rows.each { |r| H[[r[:b], r[:gc]]] = r }
 
 def fmt(x, w, p = 2) = (x.nil? ? "—" : ("%.#{p}f" % x)).rjust(w)
 
-puts "# koruby_precise — GC backend 比較レポート (GC-heavy bench)"
+puts "# koruby_precise — GC backend 比較レポート (全 #{benches.size} bench × #{backends.size} backend)"
 puts
 puts "計測: `--plain` interp, round-robin best-of-3 (load 24–30/16core を相殺), "
-puts "`KORUBY_GC_STATS=1`。gc_count/allocMB は決定論的 (load 非依存)、min_elapsed/"
-puts "min_gc_seconds は3周の最小値。全 run を CRuby 出力と一致検証済。baseline=#{base}。"
+puts "`KORUBY_GC_STATS=1`。allocMB/gc_count は決定論的 (load 非依存)、実行時間/GC時間は"
+puts "3周の最小値[秒]。全 run を CRuby 出力と一致検証済。baseline=#{base}。"
+puts "**集約値 (geomean 等) は出さない — ベンチ母集団の選び方で操作できるため。生数字で判断する。**"
 puts
 # --- alloc / gc_count (deterministic), from baseline backend ---
-puts "## 1. 各 bench の GC 負荷 (決定論的: alloc と GC 回数)"
+puts "## 1. 各 bench の GC 負荷 (決定論的, load 非依存)"
 puts
-puts "| bench | allocMB | gc_count (#{base}) |"
+puts "allocMB = 総アロケーション量 [MB]、gc_count = GC (collection) 起動回数 (#{base} backend、他 backend もほぼ同じ)。"
+puts
+puts "| bench | allocMB (総アロケーション) | gc_count (GC回数) |"
 puts "|---|--:|--:|"
 benches.sort_by { |b| -(H[[b, base]]&.[](:gcc).to_i || 0) }.each do |b|
   r = H[[b, base]]
@@ -33,7 +36,9 @@ benches.sort_by { |b| -(H[[b, base]]&.[](:gcc).to_i || 0) }.each do |b|
 end
 puts
 # --- elapsed table + ratio vs base ---
-puts "## 2. min_elapsed (秒) と #{base} 比"
+puts "## 2. 実行時間 (wall-clock 全体, 秒) — best-of-3, 括弧内は #{base} 比"
+puts
+puts "各セル = プログラム全体の実行時間 [秒] (mutator + GC 込み)。`(x.xx×)` は #{base} backend との比 (1.00 未満が速い)。"
 puts
 puts "| bench | " + backends.map { |g| g.sub("mark_", "m_").sub("compact", "cmp") }.join(" | ") + " |"
 puts "|---|" + backends.map { "--:" }.join("|") + "|"
@@ -49,7 +54,9 @@ benches.each do |b|
 end
 puts
 # --- gc_seconds table ---
-puts "## 3. min_gc_seconds (GC に費やした時間、秒)"
+puts "## 3. GC 時間 (GC に費やした時間のみ, 秒) — best-of-3"
+puts
+puts "各セル = その run で GC (collection) に費やした時間 [秒] のみ。上の実行時間の内数。"
 puts
 puts "| bench | " + backends.map { |g| g.sub("mark_", "m_").sub("compact", "cmp") }.join(" | ") + " |"
 puts "|---|" + backends.map { "--:" }.join("|") + "|"
@@ -58,24 +65,8 @@ benches.each do |b|
   puts "| #{b} | " + cells.join(" | ") + " |"
 end
 puts
-# --- geomean of elapsed ratio vs base (only valid pairs where base valid) ---
-puts "## 4. 総合: #{base} 比 elapsed の geomean (GC-heavy bench 全体)"
-puts
-puts "| backend | geomean(elapsed/#{base}) | geomean(gc_seconds/#{base}) | valid benches |"
-puts "|---|--:|--:|--:|"
-backends.each do |g|
-  logs_el = []; logs_gs = []; n = 0
-  benches.each do |b|
-    rb = H[[b, base]]; rg = H[[b, g]]
-    next unless rb && rg && rb[:ok] && rg[:ok] && rb[:el] > 0 && rg[:el] > 0
-    logs_el << Math.log(rg[:el] / rb[:el]); n += 1
-    if rb[:gs] > 0 && rg[:gs] > 0 then logs_gs << Math.log(rg[:gs] / rb[:gs]) end
-  end
-  gm_el = logs_el.empty? ? nil : Math.exp(logs_el.sum / logs_el.size)
-  gm_gs = logs_gs.empty? ? nil : Math.exp(logs_gs.sum / logs_gs.size)
-  puts "| #{g} | #{gm_el ? ("%.3f×" % gm_el) : "—"} | #{gm_gs ? ("%.3f×" % gm_gs) : "—"} | #{n} |"
-end
-puts
+# NOTE: 集約値 (geomean 等) は出さない。ベンチ母集団の選び方で操作できるため
+# (ユーザ厳命)。per-benchmark の生数字のみ。
 # --- failures ---
 fails = rows.reject { |r| r[:ok] }
 unless fails.empty?
