@@ -11,8 +11,13 @@
   → mpz_clear が無関係な libc 割当を free → 次 GC で SEGV。fold_young で
   finalize_list の young エントリを前進させて修正 (runtime/precise_gc/
   gc_mark_compact_gen.c)。bignum.rb 一致・corpus 89295/5。
-- **STRESS+PURGE 下で string_* が稀に SEGV** (全 backend、default copy でも rc=139)。
-  PURGE の mprotect round-robin 由来の既存 flake。GC backend 非依存。要調査。
+- (修正済 2026-06-23) **STRESS+PURGE 下で string_* が SEGV** (default copy でも決定的、
+  当初 PURGE flake と誤推測したが実際は moving-GC stale-pointer の真バグ)。
+  String#scan (self->buf を korb_str_new に渡し alloc 跨ぎで stale) と
+  String#[]= (splice の grow GC 後に stale repl を return) を修正。
+  copy STRESS+PURGE corpus が CRASH 27→0。詳細 [[project_koruby_precise_stress_gc_fixes]]。
+- **array_283.rb が STRESS で TIMEOUT** (バグでない)。line 53 `[9..1].permutation{}` が
+  9!=362880 順列で GC-every-alloc と相性最悪なだけ。normal は 0.17s で CRuby 一致。
 
 ## Ruby 準拠 probe sweep (2026-06-20 session 4) — 修正済み
 
