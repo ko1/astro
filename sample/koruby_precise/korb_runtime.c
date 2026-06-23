@@ -7044,6 +7044,7 @@ korb_ctx_new(void)
     c->vm->mid_shl         = korb_intern(c->vm, "<<", 2);
     c->vm->mid_shr         = korb_intern(c->vm, ">>", 2);
     c->vm->mid_cmp         = korb_intern(c->vm, "<=>", 3);
+    c->vm->mid_eq          = korb_intern(c->vm, "==", 2);
 
     return c;
 }
