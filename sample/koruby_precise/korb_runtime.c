@@ -3092,6 +3092,7 @@ bool
 korb_value_eq(VALUE a, VALUE b)
 {
     if (a == b) return true;    /* fixnum / symbol / singletons / identity */
+    if (FIXNUM_P(a) && FIXNUM_P(b)) return false;   /* two Fixnums: equal iff identical (handled above) — skip korb_int_cmp (hot in Array#== of int arrays) */
     if (SYMBOL_P(a)) return false;   /* a Symbol is eql? only to the identical Symbol — skip the type cascade (hot in symbol-keyed Hash / kwargs scans) */
 #ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b) == 0;   /* Bignum/Fixnum */

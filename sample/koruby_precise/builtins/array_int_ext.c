@@ -158,6 +158,12 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         } else single_bit = true;                                          /* n[i] */
     }
 #ifdef KORB_HAVE_GMP
+    if (LIKELY(FIXNUM_P(selfv) && single_bit)) {              /* n[i] on a Fixnum — bit test, no GMP alloc */
+        const intptr_t n = FIX2LONG(selfv);
+        if (i < 0)   return RESULT_OK(LONG2FIX(0));           /* bits below 0 don't exist */
+        if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));   /* beyond Fixnum width = sign extension */
+        return RESULT_OK(LONG2FIX((n >> i) & 1));
+    }
     {
         mpz_t z, r; korb_to_mpz(selfv, z); mpz_init(r);
         if (i >= 0) mpz_fdiv_q_2exp(r, z, (mp_bitcnt_t)i);     /* self >> i (arith) */
