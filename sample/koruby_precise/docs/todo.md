@@ -19,14 +19,15 @@
 - **array_283.rb が STRESS で TIMEOUT** (バグでない)。line 53 `[9..1].permutation{}` が
   9!=362880 順列で GC-every-alloc と相性最悪なだけ。normal は 0.17s で CRuby 一致。
 
-## 残る committed corpus FAIL (89297/3, 2026-06-23 時点)
+## 残る committed corpus FAIL (89298/2, 2026-06-23 — 実質的に上限)
 
 - **pointer-pack** `["x"].pack("P"/"p").unpack(...)` ×2: 文字列バッファへの**生ポインタ**を
-  pack。moving GC で原理的に不可 (GC が動かすと dangling)。修正対象外。
-- **lazy/infinite Enumerator** `[1,2].zip(10.upto(Float::INFINITY))` ×1: 無限 Enumerator を
-  lazy に zip で bound。Enumerator 再設計案件。
-- (修正済 2026-06-23) seeded shuffle ×2 → CRuby 互換 MT19937/Random 実装で解決
-  ([[project_koruby_precise_mt19937]])。sample(n) の n-選択は未 CRuby 一致 (first-n)。
+  pack。**moving GC で原理的に不可** (GC が動かすと dangling; CRuby も unsafe 機能)。修正対象外。
+  → これ以外の fixable な committed FAIL は全て解決済み。
+- (修正済 2026-06-23) seeded shuffle ×2 → CRuby 互換 MT19937/Random ([[project_koruby_precise_mt19937]])。
+  sample(n) も CRuby-exact 化。
+- (修正済 2026-06-23) `[1,2].zip(10.upto(Float::INFINITY))` → upto(+∞) を endless
+  ArithmeticSequence 化、zip が korb_zip_elem で index lazy pull。
 
 ## Ruby 準拠 probe sweep (2026-06-20 session 4) — 修正済み
 
