@@ -3247,13 +3247,16 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         while (KORB_CLASS_P(cls)) { if (cls == pat) return true; cls = VAL2CLASS(cls)->superclass; }
         return false;
     }
-    if (KORB_REGEXP_P(pat)) {                             /* Regexp#=== : whole-match against a String */
-        if (!KORB_STRING_P(val)) return false;
+    if (KORB_REGEXP_P(pat)) {                             /* Regexp#=== : match against a String or Symbol (Symbol coerced to its name, CRuby) */
+        const char *sdata; uint32_t slen;
+        if (KORB_STRING_P(val)) { sdata = VAL2STR(val)->buf->data; slen = VAL2STR(val)->len; }
+        else if (SYMBOL_P(val)) { sdata = korb_sym_name(c->vm, SYM2ID(val)); slen = (uint32_t)strlen(sdata); }
+        else return false;
         const korb_re_fn_t fn = korb_re_load(c->vm);
         if (UNLIKELY(fn == NULL)) return false;
-        const KorbString *const p = VAL2STR(VAL2RE(pat)->source), *const s = VAL2STR(val);
+        const KorbString *const p = VAL2STR(VAL2RE(pat)->source);
         long ms = 0, me = 0;
-        return fn(p->buf->data, p->len, s->buf->data, s->len, VAL2RE(pat)->ci, &ms, &me) == 1;
+        return fn(p->buf->data, p->len, sdata, slen, VAL2RE(pat)->ci, &ms, &me) == 1;
     }
     return korb_value_eq(pat, val);
 }
