@@ -703,6 +703,15 @@ struct korb_vm {
     bool arr_shl_redefined;
     /* set when Hash#[] is redefined: node_aref's Hash fast path then deopts. */
     bool hash_aref_redefined;
+    /* set when Method#[] is redefined: node_aref's Method fast path then deopts.
+     * optcarrot's memory dispatch is `@fetch[addr][addr]` = Method#[] (= .call),
+     * megamorphic and ~7M/run; the fast path collapses the [] + meth_call double
+     * dispatch into a single recv.mid send. */
+    bool method_aref_redefined;
+    /* set when Integer#[] is redefined: node_aref's Integer bit-test fast path
+     * then deopts.  optcarrot does ~5M Fixnum n[bit] tests/run; the fast path
+     * computes (n>>i)&1 inline, skipping the send + dispatch + builtin. */
+    bool int_aref_redefined;
 
     const char *script_name; /* for error messages */
 };

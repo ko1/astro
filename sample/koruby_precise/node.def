@@ -1137,11 +1137,26 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         if (LIKELY((uintptr_t)i < a->len)) return RESULT_OK(a->items->data[i]);
         return RESULT_OK(KORB_NIL);
     }
+    if (FIXNUM_P(r) && FIXNUM_P(idx) && !c->vm->int_aref_redefined) {   /* int[bit] = (n>>i)&1 single-bit test, skip send+dispatch+builtin (optcarrot ~5M/run) */
+        const intptr_t n = FIX2LONG(r);
+        const intptr_t i = FIX2LONG(idx);
+        if (i < 0)   return RESULT_OK(LONG2FIX(0));            /* bits below 0 don't exist */
+        if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));/* beyond Fixnum width = sign extension */
+        return RESULT_OK(LONG2FIX((n >> i) & 1));
+    }
     if (LIKELY(KORB_HASH_P(r) && !c->vm->hash_aref_redefined)) {   /* hash[key] → inline lookup, skip the send + dispatch */
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
         if (hi >= 0) return RESULT_OK(h->items->data[2 * hi + 1]);
         if (LIKELY(h->default_proc == KORB_NIL)) return RESULT_OK(h->default_val);   /* miss → default (proc case falls to send) */
+    }
+    if (KORB_METHOD_P(r) && !c->vm->method_aref_redefined) {   /* meth[arg] = Method#[] = recv.mid(arg): collapse the [] + meth_call double dispatch (optcarrot @fetch[addr][addr], ~7M/run) */
+        const KorbMethod *const m = VAL2METH(r);
+        if (LIKELY(!m->unbound)) {
+            slots[0] = m->recv;   /* new receiver (rooted in scratch across the send) */
+            slots[1] = idx;       /* arg0 */
+            return korb_send(c, slots + 2, m->mid, line, 1);
+        }
     }
     slots[0] = idx;   /* recv already rooted at slots[-1]; stage only the index — deopt → [] send */
     return korb_send(c, slots + 1, c->vm->mid_aref, line, 1);

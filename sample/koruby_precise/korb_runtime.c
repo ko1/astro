@@ -2247,6 +2247,14 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
     if (!vm->hash_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_HASH) &&
         mid == vm->mid_aref)
         vm->hash_aref_redefined = true;
+    /* Method#[] redefinition deopts the node_aref Method fast path. */
+    if (!vm->method_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_METHOD) &&
+        mid == vm->mid_aref)
+        vm->method_aref_redefined = true;
+    /* Integer#[] redefinition deopts the node_aref Integer bit-test fast path. */
+    if (!vm->int_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
+        mid == vm->mid_aref)
+        vm->int_aref_redefined = true;
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
