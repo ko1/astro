@@ -61,10 +61,6 @@ static const char *const KORUBY_PRELUDE =
 "    acc.call([])\n"
 "  end\n"
 "end\n"
-"class Random\n"                       /* stub: faithful MT19937 sequence is out of scope */
-"  def initialize(seed = nil); @seed = seed; end\n"
-"  def seed; @seed; end\n"
-"end\n"
 /* Minimal Encoding: enough for constant references and identity comparison so
  * specs that mention Encoding::X in setup don't crash.  Per-string encoding
  * tracking is out of scope (String#encoding returns UTF-8, the default). */

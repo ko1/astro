@@ -547,6 +547,7 @@ enum korb_class {
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
     KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA, KORB_C_BINDING,
+    KORB_C_RANDOM,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -591,6 +592,10 @@ struct korb_bt_entry {       /* one unwind frame for the uncaught-exception repo
     uint32_t line;
     const char *name;        /* method name, or "<main>" */
 };
+
+/* CRuby-compatible MT19937 state (624-word vector + cursor); defined here so the
+ * vm can embed the Kernel#rand default generator.  Operations: builtins/random.c. */
+typedef struct KorbMT { uint32_t mt[624]; uint32_t mti; } KorbMT;
 
 struct korb_vm {
     /* symbol intern table: id -> name (libc strings, never freed) */
@@ -713,6 +718,13 @@ struct korb_vm {
      * computes (n>>i)&1 inline, skipping the send + dispatch + builtin. */
     bool int_aref_redefined;
 
+    /* Kernel#rand / srand default PRNG (CRuby-compatible MT19937; no GC edges so
+     * it lives inline in the vm).  Random instances keep their own state in a
+     * binary String ivar — see builtins/random.c. */
+    KorbMT default_rng;
+    bool   default_rng_seeded;
+    VALUE  default_rng_seed;   /* last srand seed (for srand's return), FIX 0 initially */
+
     const char *script_name; /* for error messages */
 };
 
@@ -783,6 +795,9 @@ struct CTX_struct {
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
     }                                                                        \
+    /* Kernel#srand's remembered last seed (may be a Bignum). */             \
+    if ((c)->vm->default_rng_seeded)                                         \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->default_rng_seed);    \
     /* global fn entries (immortal libc): forward each entry's owner edge. */ \
     for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->methods[_mi]->owner); \

@@ -2887,6 +2887,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
         { "MatchData", KORB_C_MATCHDATA }, { "Binding", KORB_C_BINDING },
+        { "Random", KORB_C_RANDOM },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -4958,8 +4959,12 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                     return RESULT_OK(base[-1]);    /* the (possibly moved) obj */
                 }
-                const RESULT ir = korb_invoke_method(c, slots, init, argc, line, vm->mid_initialize,
-                                                     obj, idef, NULL, NULL, KORB_NIL);
+                base[-1] = obj;                    /* stage obj as self at recv_slot (slots[-argc-1]) */
+                /* korb_dispatch_method handles CFUNC (e.g. Random#initialize) as well as
+                 * ISEQ; korb_invoke_method is ISEQ-only and would misread a CFUNC's
+                 * locals_cnt (SIGBUS). */
+                const RESULT ir = korb_dispatch_method(c, slots, init, vm->mid_initialize, line, argc,
+                                                       idef, NULL, NULL, NULL);
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                 return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
             }
@@ -5072,6 +5077,7 @@ static RESULT korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args);
 #include "builtins/enumerator.c"
 #include "builtins/set.c"
 #include "builtins/math.c"
+#include "builtins/random.c"
 #include "builtins/array.c"
 #include "builtins/hash.c"
 #include "builtins/array_enum.c"
@@ -5717,6 +5723,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
+    korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
+    korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
+    korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "<=>", korb_m_obj_cmp, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
@@ -7113,6 +7122,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "require_relative", korb_bi_require, -1);
     korb_builtin_define(c, "load", korb_bi_require, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
+    korb_builtin_define(c, "rand",  korb_bi_rand,  -1);
+    korb_builtin_define(c, "srand", korb_bi_srand, -1);
     korb_builtin_define(c, "__binread", korb_bi_binread, 1);
     korb_builtin_define(c, "__clock_gettime", korb_bi_clock_gettime, -1);
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
