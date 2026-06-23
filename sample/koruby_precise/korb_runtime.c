@@ -885,10 +885,17 @@ korb_ary_ensure(CTX *c, VALUE *slots, VALUE_REF aref, uint32_t need)
 RESULT
 korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem)
 {
-    VALUE_REF eref = SLOTS_PUSH(slots, elem);       /* root elem across the grow GC */
-    CHECK(korb_ary_ensure(c, slots, aref, 1));
     KorbArray *a = VAL2ARY(VALUE_REF_GET(aref));
-    KorbArrayItems *it = a->items;
+    if (LIKELY(a->len < a->capa)) {                 /* room available: no grow, no GC → store directly (skip the ensure call + elem rooting) */
+        KorbArrayItems *const it = a->items;
+        ARO_STORE(c, it, &it->data[a->len], elem);
+        a->len++;
+        return RESULT_OK((VALUE)(uintptr_t)a);
+    }
+    VALUE_REF eref = SLOTS_PUSH(slots, elem);       /* grow path: root elem across the alloc/GC */
+    CHECK(korb_ary_ensure(c, slots, aref, 1));
+    a = VAL2ARY(VALUE_REF_GET(aref));
+    KorbArrayItems *const it = a->items;
     ARO_STORE(c, it, &it->data[a->len], VALUE_REF_GET(eref));
     a->len++;
     return RESULT_OK(VALUE_REF_GET(aref));
