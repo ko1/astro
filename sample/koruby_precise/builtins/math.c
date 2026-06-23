@@ -34,24 +34,52 @@ KORB_MATH1(sin, sin)     KORB_MATH1(cos, cos)     KORB_MATH1(tan, tan)
 KORB_MATH1(asin, asin)   KORB_MATH1(acos, acos)   KORB_MATH1(atan, atan)
 KORB_MATH1(sinh, sinh)   KORB_MATH1(cosh, cosh)   KORB_MATH1(tanh, tanh)
 KORB_MATH1(asinh, asinh) KORB_MATH1(acosh, acosh) KORB_MATH1(atanh, atanh)
-KORB_MATH1(exp, exp)     KORB_MATH1(log2, log2)   KORB_MATH1(log10, log10)
+KORB_MATH1(exp, exp)
 KORB_MATH1(gamma, tgamma) KORB_MATH1(erf, erf)    KORB_MATH1(erfc, erfc)
 KORB_MATH1(expm1, expm1)  KORB_MATH1(log1p, log1p)
+
+/* Decompose v into mantissa `d` and binary exponent `e` so v == d * 2**e, with
+ * |d| in [0.5, 1) for a Bignum (via GMP, no double overflow) or the plain double
+ * (e = 0) otherwise.  This lets Math.log{,2,10} stay finite for Bignums that
+ * exceed the double range (e.g. Math.log2(2**10000) == 10000.0, not Infinity). */
+static bool korb_math_frexp_val(VALUE v, double *d, long *e) {
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(v)) { *d = mpz_get_d_2exp(e, VAL2BIG(v)->z); return true; }   /* v = d·2^e */
+#endif
+    double x;
+    if (!korb_num_to_d(v, &x)) return false;
+    *d = x; *e = 0;
+    return true;
+}
+static RESULT korb_m_math_log2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; double d; long e;
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    return korb_float_new(c, slots, log2(d) + (double)e);
+}
+static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; double d; long e;
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    return korb_float_new(c, slots, log10(d) + (double)e * 0.301029995663981195213738894724); /* + e·log10(2) */
+}
 KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot) KORB_MATH2(copysign, copysign)
 KORB_MATH2(pow, pow)
 
-/* Math.log(x) = ln; Math.log(x, base) = log_base(x). */
+/* Math.log(x) = ln; Math.log(x, base) = log_base(x).  Bignum-aware via frexp
+ * decomposition so ln stays finite past the double range. */
 static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; double x;
-    if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x)))
+    (void)self; double d; long e;
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
+    const double lnx = log(d) + (double)e * M_LN2;   /* ln(d·2^e) */
     if (VALUE_SLICE_LEN(a) >= 2) {
-        double b;
-        if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 1), &b)))
+        double db; long eb;
+        if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
-        return korb_float_new(c, slots, log(x) / log(b));
+        return korb_float_new(c, slots, lnx / (log(db) + (double)eb * M_LN2));
     }
-    return korb_float_new(c, slots, log(x));
+    return korb_float_new(c, slots, lnx);
 }
 /* Math.ldexp(frac, exp) = frac * 2**exp. */
 static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
