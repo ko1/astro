@@ -438,8 +438,15 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         }
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
-    if (LIKELY(KORB_ARRAY_P(l) && !c->vm->arr_shl_redefined))   /* a << x → push (skips the full send dispatch) */
-        return korb_ary_push_val(c, slots, lhs, rhs);
+    if (LIKELY(KORB_ARRAY_P(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push (skips the full send dispatch) */
+        KorbArray *const arr = VAL2ARY(l);
+        if (LIKELY(arr->len < arr->capa)) {                     /* room → inline store (LTO-inlinable, no grow/GC) */
+            korb_ary_store_at(c, l, arr->len, rhs);
+            arr->len++;
+            return RESULT_OK(l);
+        }
+        return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path */
+    }
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached String#<< / bignum / user */
     return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic);
 }
