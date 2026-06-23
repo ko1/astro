@@ -333,7 +333,7 @@ static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 1); }
 static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num == LONG2FIX(0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
-static int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below */
+int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
@@ -1058,7 +1058,7 @@ static inline bool korb_value_eq_fast(VALUE a, VALUE b)
 static bool korb_value_eql(VALUE a, VALUE b);
 
 /* index of key in the pair array, or -1 */
-static int32_t
+int32_t
 korb_hash_find(const KorbHash *h, VALUE key)
 {
     const VALUE *const d = h->items->data;
@@ -2243,6 +2243,10 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
     if (!vm->arr_shl_redefined && klass == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
         mid == vm->mid_shl)
         vm->arr_shl_redefined = true;
+    /* Hash#[] redefinition deopts the node_aref Hash fast path. */
+    if (!vm->hash_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_HASH) &&
+        mid == vm->mid_aref)
+        vm->hash_aref_redefined = true;
     if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;

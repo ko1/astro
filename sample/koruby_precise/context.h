@@ -701,6 +701,8 @@ struct korb_vm {
     bool aref_redefined;
     /* set when Array#<< is redefined: node_shl's Array fast path then deopts. */
     bool arr_shl_redefined;
+    /* set when Hash#[] is redefined: node_aref's Hash fast path then deopts. */
+    bool hash_aref_redefined;
 
     const char *script_name; /* for error messages */
 };

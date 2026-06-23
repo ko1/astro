@@ -1137,6 +1137,12 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         if (LIKELY((uintptr_t)i < a->len)) return RESULT_OK(a->items->data[i]);
         return RESULT_OK(KORB_NIL);
     }
+    if (LIKELY(KORB_HASH_P(r) && !c->vm->hash_aref_redefined)) {   /* hash[key] → inline lookup, skip the send + dispatch */
+        const KorbHash *const h = VAL2HASH(r);
+        const int32_t hi = korb_hash_find(h, idx);
+        if (hi >= 0) return RESULT_OK(h->items->data[2 * hi + 1]);
+        if (LIKELY(h->default_proc == KORB_NIL)) return RESULT_OK(h->default_val);   /* miss → default (proc case falls to send) */
+    }
     slots[0] = idx;   /* recv already rooted at slots[-1]; stage only the index — deopt → [] send */
     return korb_send(c, slots + 1, c->vm->mid_aref, line, 1);
 }
