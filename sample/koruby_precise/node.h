@@ -101,6 +101,8 @@ RESULT korb_str_new(CTX *c, VALUE *slots, const char *bytes, uint32_t len);
 RESULT korb_float_new(CTX *c, VALUE *slots, double d);
 /* Cold: unconditionally heap-box a double (out-of-flonum-range / ±0.0 sign). */
 RESULT korb_float_box(CTX *c, VALUE *slots, double d);
+/* Float-literal pool: a deduped, GC-rooted boxed Float for a non-flonum literal. */
+VALUE korb_flit_get(CTX *c, VALUE *slots, double d);
 /* Hot float result: inline the flonum encode; PLT-call only on the cold box
  * path so representable results never leave the SD. */
 static inline RESULT korb_flo(CTX *c, VALUE *slots, double d) {

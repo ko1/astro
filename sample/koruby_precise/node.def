@@ -60,7 +60,9 @@ NODE_DEF
 node_float(CTX *c, NODE *n, VALUE *slots, double v)
 {
     (void)n;
-    return korb_flo(c, slots, v);
+    const VALUE imm = korb_d2flo(v);                 /* flonum-representable → immediate (no alloc) */
+    if (LIKELY(imm)) return RESULT_OK(imm);
+    return RESULT_OK(korb_flit_get(c, slots, v));    /* non-flonum (2.0/-2.0/±0.0/huge) → pooled box, not re-boxed each eval */
 }
 
 // Rational literal `2r` / `1.5r` → a fresh Rational(num/den) per evaluation.

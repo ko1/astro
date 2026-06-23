@@ -611,6 +611,11 @@ struct korb_vm {
     uint32_t *const_names;
     VALUE    *const_vals;
     uint32_t  const_cnt, const_capa;
+    /* boxed Float-literal pool: non-flonum literals (2.0/-2.0/out-of-range) are
+     * boxed once and reused (deduped by bit value) instead of heap-boxed on every
+     * eval.  Root-scanned by AROH_VISIT_ROOTS so the boxes are GC-forwarded. */
+    VALUE    *flit_vals;
+    uint32_t  flit_cnt, flit_capa;
 
     /* per-instance class override table (subclass instances / extended objects /
      * singleton methods).  sklass_obj[i] is the heap object, sklass_cls[i] its
@@ -762,6 +767,10 @@ struct CTX_struct {
     /* constants (class values) are roots too */                            \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \
+    }                                                                        \
+    /* boxed Float-literal pool: forward each box so cached entries stay live */ \
+    for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
     }                                                                        \
     /* global fn entries (immortal libc): forward each entry's owner edge. */ \
     for (uint32_t _mi = 0; _mi < (c)->vm->method_cnt; _mi++) {               \

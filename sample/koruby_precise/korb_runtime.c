@@ -117,6 +117,25 @@ korb_float_box(CTX *c, VALUE *slots, double d)
     return RESULT_OK((VALUE)f);
 }
 
+/* Float-literal pool: return a boxed Float for `d`, reusing an existing box with
+ * the same bit pattern (so a non-flonum literal like 2.0 in a loop is boxed once,
+ * not on every eval).  The pool is root-scanned, so cached boxes survive GC. */
+VALUE korb_flit_get(CTX *c, VALUE *slots, double d) {
+    struct korb_vm *const vm = c->vm;
+    union { double d; uint64_t u; } key; key.d = d;
+    for (uint32_t i = 0; i < vm->flit_cnt; i++) {            /* dedup by exact bits (handles -0.0 / NaN) */
+        union { double d; uint64_t u; } e; e.d = VAL2FLT(vm->flit_vals[i])->val;
+        if (e.u == key.u) return vm->flit_vals[i];
+    }
+    const VALUE boxed = korb_float_box(c, slots, d).value;     /* may GC (aborts on OOM); pool/const roots already forwarded */
+    if (vm->flit_cnt == vm->flit_capa) {
+        vm->flit_capa = vm->flit_capa ? vm->flit_capa * 2 : 8;
+        vm->flit_vals = realloc(vm->flit_vals, sizeof(VALUE) * vm->flit_capa);
+    }
+    vm->flit_vals[vm->flit_cnt++] = boxed;
+    return boxed;
+}
+
 RESULT
 korb_float_new(CTX *c, VALUE *slots, double d)
 {
