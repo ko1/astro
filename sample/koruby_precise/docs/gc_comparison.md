@@ -208,7 +208,9 @@ allocMB = 総アロケーション量 [MB]、gc_count = GC (collection) 起動�
 
 ## 5. 失敗 (crash / checksum mismatch)
 
-- **bignum / mark_compact_gen**: checksum_ok=0 (core dump / timeout / mismatch)
+- **bignum / mark_compact_gen**: 測定時は core dump (checksum_ok=0)。
+  **→ 2026-06-23 修正済** (fold_young の finalize-list 昇格漏れ;
+  gc_mark_compact_gen.c)。現在は bignum.rb 一致・corpus 89295/5。
 
 
 ## 結論 (このマシン負荷で言えること / 言えないこと)
@@ -228,7 +230,8 @@ allocMB = 総アロケーション量 [MB]、gc_count = GC (collection) 起動�
 - 実行時間 (§2) で copy vs copy_gen vs immix の優劣 (差が ~1.4× 以内 = ノイズ床内)。
   「世代別が総時間 10% 速い」級は今の load では証明不能。静かなマシンでの再測が必要。
 
-**バグ (§4):** `mark_compact_gen` は bignum で core dump (GMP + mark-compact)。todo 記録済。
+**バグ (§5, 修正済):** `mark_compact_gen` は bignum で core dump していた
+(fold_young の finalize-list 昇格漏れ) → 2026-06-23 修正。
 
 **実務的結論:** default の `copy` を変える明確な根拠は (この測定では) ない。churn 系で
 mark-sweep 系を避けるべきなのは確実 (GC 時間が桁違い)。最重要なのは

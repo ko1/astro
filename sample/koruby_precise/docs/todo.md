@@ -5,10 +5,14 @@
 
 ## 既知バグ (GC backend)
 
-- **`mark_compact_gen` backend が bignum で core dump** (2026-06-23 発見)。
-  `make GC=mark_compact_gen` で bench/bignum.rb を走らせると SIGSEGV/abort。
-  他 7 backend は正常。GMP bignum (mpz_t を持つ heap obj) と mark-compact の
-  移動/再配置の相互作用が疑わしい。詳細は [docs/gc_comparison.md](./gc_comparison.md)。
+- (修正済 2026-06-23) **`mark_compact_gen` backend が bignum で core dump**。
+  真因は major fold_young が finalizable bignum を tenured 昇格時に finalize_list を
+  更新せず、major finalize_walk が stale young を読んで生きた bignum を誤 finalize
+  → mpz_clear が無関係な libc 割当を free → 次 GC で SEGV。fold_young で
+  finalize_list の young エントリを前進させて修正 (runtime/precise_gc/
+  gc_mark_compact_gen.c)。bignum.rb 一致・corpus 89295/5。
+- **STRESS+PURGE 下で string_* が稀に SEGV** (全 backend、default copy でも rc=139)。
+  PURGE の mprotect round-robin 由来の既存 flake。GC backend 非依存。要調査。
 
 ## Ruby 準拠 probe sweep (2026-06-20 session 4) — 修正済み
 
