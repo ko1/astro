@@ -31,6 +31,9 @@ static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_ary_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_range_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t lo, hi;
+    if (block == NULL && VALUE_SLICE_LEN(a) == 0 &&
+        (SELF_RANGE->rend == KORB_NIL || SELF_RANGE->rbegin == KORB_NIL))   /* (n..) / (..n): infinite → Float::INFINITY */
+        return korb_flo(c, slots, (double)INFINITY);
     if (block != NULL || !korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* block or non-int → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
         return korb_m_ary_count(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
