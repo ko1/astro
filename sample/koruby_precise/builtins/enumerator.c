@@ -177,6 +177,19 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    const uint8_t op = SELF_ENUM->op;
+    if (op != 0) {                                    /* select/reject enum: re-drive the op, collect kept values */
+        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+        for (uint32_t i = 0; ; i++) {
+            const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+            if (i >= v->len) break;
+            slots[0] = v->items->data[i];            /* slots advanced by SLOTS_PUSH; dst is below */
+            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value) == (op == 1)) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        }
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
@@ -299,10 +312,12 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (i >= v->len) break;
         slots[1] = v->items->data[i];
         if (block != NULL) {
+            const uint8_t op = SELF_ENUM->op;
             VALUE argv[2] = { slots[1], LONG2FIX(off + (intptr_t)i) };
             RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+            if (op == 0) CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));   /* map/each: collect block result */
+            else if (KORB_TRUTHY(r.value) == (op == 1)) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));   /* select/reject: keep value */
         } else {                                       /* build [value, idx] pair */
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));

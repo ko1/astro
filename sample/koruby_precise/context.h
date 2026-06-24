@@ -245,6 +245,7 @@ typedef struct KorbEnumerator {
     AroObjectHeader head;            /* KORB_OBJ_ENUMERATOR */
     uint32_t cursor;
     uint8_t  mode;                   /* 0 eager (values materialized), 1 lazy, 2 cycle */
+    uint8_t  op;                     /* eager reduce when finally given a block: 0 map/each, 1 select, 2 reject */
     VALUE ARO_GC_EDGE values;
     VALUE ARO_GC_EDGE desc;
     VALUE ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */

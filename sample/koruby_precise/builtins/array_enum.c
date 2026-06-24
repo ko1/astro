@@ -1038,10 +1038,14 @@ static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* select (keep==true) / reject (keep==false) */
 static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
-    /* No block → would need an Enumerator that remembers the filter op (so a later
-     * .with_index block filters, not maps); returning a plain elements-Enumerator
-     * gives a silent wrong answer for select.with_index{...}, so raise instead. */
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#%s without a block (Enumerator) is not supported", keep ? "select" : "reject");
+    /* No block → an Enumerator tagged with the filter op (e->op), so a later
+     * .each / .with_index block filters rather than maps. */
+    if (UNLIKELY(block == NULL)) {
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), keep ? "select" : "reject"));
+        RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        if (er.state == KORB_NORMAL) VAL2ENUM(er.value)->op = keep ? 1 : 2;
+        return er;
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
