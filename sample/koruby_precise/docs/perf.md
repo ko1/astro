@@ -3,6 +3,24 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-06-24: format/sprintf を vm-cached memstream で高速化 (成功)
+
+profile (`sprintfb` aot+cached) で時間の **~35% が `open_memstream` の per-call
+malloc + stdio バッファ zeroing** だった (`__memset_avx2` 17.6% + `_int_malloc`
+6.3% + `open_memstream` 12%)。`format()` ごとに新規 memstream を開く代わりに vm に
+1本キャッシュして rewind 再利用 (再入は `fmt_busy` で検出し自前 open_memstream に
+fallback)。commit aa50a61b。
+
+| bench | aot+cached 旧 [秒] | aot+cached 新 [秒] | YJIT [秒] |
+|---|--:|--:|--:|
+| sprintfb | 0.612 | **0.44** (best-of-9) | 0.49 |
+
+→ ~28% 短縮で **YJIT を上回った** (1.25× → 0.90×)。`__memset_avx2` は 17.6%→2.4%。
+`strfmt` は format 不使用 (string 補間) なので不変。corpus 89300/0/0、format 差分
+(フラグ/幅/精度/%x%o%b/%e%g/%c/%p/%名) + 再入 #to_s/#inspect すべて CRuby 一致、
+STRESS+PURGE clean、AOT 一致。残: `%x/%o/%b` が fixnum でも GMP 経由
+(`__gmpz_get_str` 3%) + 各 spec の `fprintf` 自体 (将来の小ネタ)。
+
 ## 2026-06-24: 静音マシンでの再計測 + 計測トラップ + cold-bake 最適化 (prelude→preload.so)
 
 久々に idle なマシン (load 0.4、fib --plain 変動 ~5%) で AOT vs YJIT を再計測。
