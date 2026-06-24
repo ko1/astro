@@ -688,10 +688,11 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         const pm_parameters_node_t *ps;
         if (PM_NODE_TYPE_P(blk_params, PM_BLOCK_PARAMETERS_NODE)) {
             const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)blk_params;
-            if (bp->locals.size) {
-                pop_frame(tc);
-                return kp_unsupported(tc, blk_params, "block-local variables (|x; y|)");
-            }
+            /* Block-local variables (`|x; y|`): prism already lists them in the
+             * block scope's local table (so they're in this frame's locals), and
+             * they are NOT bound from args — just fresh locals.  korb_block_yield
+             * nils every slot past params_cnt, so no extra work is needed; only
+             * the positional params below are bound. */
             ps = bp->parameters;
         } else if (PM_NODE_TYPE_P(blk_params, PM_PARAMETERS_NODE)) {   /* `->(x) {}` lambda params */
             ps = (const pm_parameters_node_t *)blk_params;
