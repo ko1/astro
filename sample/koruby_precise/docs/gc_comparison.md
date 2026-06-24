@@ -2,6 +2,57 @@
 
 2026-06-23。`make GC=<backend>` で切り替わる 8 種の precise GC を全ベンチで計測。
 
+---
+
+## 【2026-06-24 追記】静音マシン (load ~0.4) で AOT 再計測 — 信頼できる数値
+
+§下の 2026-06-23 計測は load 24〜30 で elapsed/fps がノイズ床 ±30〜40% に埋もれ、
+backend 間を分離できなかった (gc_count 等の決定論値だけが確実だった)。idle なマシンで
+**AOT (`--compiled-only`) を baked per (bench,backend) で best-of-3** 取り直した。全 run
+checksum 一致。raw: `bench-report/20260624-02*-gc-aot-mini.tsv`。再現:
+`tools/gc_aot_mini.sh "<backends>" "<benches>"`。**負荷が下がると 2026-06-23 で見えなかった
+世代別の利得がはっきり出た。**
+
+### optcarrot AOT fps/backend (best, 高いほど速い) — GC は optcarrot の律速でない
+| backend | fps |
+|---|--:|
+| **copy** (default) | **110.8** |
+| copy_gen | 107.7 |
+| mark_compact_gen | 103.5 |
+| mark_gen | 103.2 |
+| immix_gen | 102.8 |
+| immix | 102.6 |
+
+全 backend が ~8% 以内 (copy が最速)。optcarrot は alloc が少なく GC が実行時間の 1〜4%
+なので backend を変えても効かない、を**信頼できる fps で再確認**。
+
+### GC-designed bench AOT 実行時間 [秒] (baked, best-of-3) — backend で差が出る
+| bench | copy | copy_gen | immix | immix_gen | mark_gen | m_cmp_gen |
+|---|--:|--:|--:|--:|--:|--:|
+| gen_gc (retained+churn) | 0.313 | **0.247** | 0.292 | 0.255 | 0.363 | 0.300 |
+| gcchurn (young churn) | 0.179 | **0.169** | 0.190 | 0.175 | 0.284 | 0.219 |
+| ary | 0.193 | **0.171** | 0.310 | 0.287 | 0.300 | 0.171 |
+| gc_wb (write-barrier) | 0.080 | 0.080 | **0.073** | 0.083 | 0.113 | 0.091 |
+| gc_bigobj (大obj) | 0.185 | 0.204 | **0.179** | 0.195 | 0.267 | 0.209 |
+| binary_trees | 0.174 | 0.174 | **0.168** | 0.170 | 0.206 | 0.204 |
+| str | **0.431** | 0.444 | 0.470 | 0.463 | 0.615 | 0.505 |
+| strfmt | 0.640 | 0.637 | 0.669 | **0.637** | 0.980 | 0.752 |
+
+### 信頼できる結論 (静音マシン)
+- **copy_gen は retained+young churn で本当に勝つ**: gen_gc **0.79× (-21%)**、gcchurn -6%、
+  ary -11%。負荷時は見えなかった世代別の利得が idle で顕在化。
+- **immix は tree / write-barrier / 大obj で僅差トップ** (binary_trees / gc_wb / gc_bigobj)。
+- **copy_gen は大obj で負ける** (gc_bigobj +10%): 大きいオブジェクトが小 nursery を溢れさせる。
+- **mark-sweep 系 (mark_gen / mark_compact_gen) は churn で一貫して最遅** (gcchurn/str/strfmt で
+  1.3〜1.6×): 生存だけ触る copy/immix と違いヒープ全体を mark/sweep。
+- **default `copy` は全域で堅実** (optcarrot/str で最速、他でも最遅にならない、世代別の
+  write-barrier 負荷も大obj 劣化も無い)。**汎用 default は copy が最善**。世代別に切り替える
+  価値があるのは「retained 集合 + 若死に churn が支配的」なワークロード限定 (そこは copy_gen)。
+
+---
+
+### (以下 2026-06-23 の初回計測 — load 高でノイズ支配、決定論値=alloc/gc_count のみ信頼)
+
 ## 計測方法
 
 - ベンチ: `sample/rubyharness/bench/*.rb` 全 51 本 (GC stress 用に `gc_wb`=write-barrier、
