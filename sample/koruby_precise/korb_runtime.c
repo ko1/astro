@@ -410,7 +410,11 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)nd; return korb_rat_intdiv(c, slots, slots[0], slots[1], mode);
 #endif
 }
-/* Rational ** exp: Integer exp → exact Rational; Float/Rational exp → Float. */
+static double korb_cospi(double x);   /* fwd (builtins/int_float_ext.c) */
+static double korb_sinpi(double x);
+RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);   /* fwd (defined below) */
+/* Rational ** exp: Integer exp -> exact Rational; Float/Rational exp -> Float
+ * (negative base + fractional exp -> Complex, as for Integer and Float power). */
 static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const VALUE e = VALUE_SLICE_GET(a, 0);
@@ -437,6 +441,12 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
         else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
+        if (base < 0 && ex != floor(ex)) {                 /* negative base, fractional exp → Complex */
+            const double mag = pow(-base, ex);
+            slots[2] = UNWRAP(korb_float_new(c, slots + 2, mag * korb_cospi(ex)));
+            slots[3] = UNWRAP(korb_float_new(c, slots + 3, mag * korb_sinpi(ex)));
+            return korb_cpx_new(c, slots + 4, slots[2], slots[3]);
+        }
         return korb_flo(c, slots, pow(base, ex));
     }
 #else
