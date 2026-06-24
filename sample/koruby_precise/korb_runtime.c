@@ -5830,6 +5830,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "ancestors", korb_m_class_ancestors, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "instance_methods", korb_m_class_instance_methods, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "method_defined?", korb_m_class_method_defined, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "public_method_defined?", korb_m_class_method_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "include?", korb_m_class_include_q, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "<",  korb_m_class_lt, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "<=", korb_m_class_le, 1);

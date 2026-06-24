@@ -530,6 +530,16 @@ static RESULT korb_m_class_include_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(KORB_FALSE);
 }
+/* Module#method_defined?(sym|str[, inherit]) — true if an instance method by
+ * that name is defined on the class / its ancestors (koruby doesn't track
+ * visibility, so any defined method counts; public_method_defined? aliases it). */
+static RESULT korb_m_class_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(mid == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE cls = VALUE_REF_GET(self);
+    return RESULT_OK((KORB_CLASS_P(cls) && korb_class_find_method(cls, mid, NULL) != NULL) ? KORB_TRUE : KORB_FALSE);
+}
 /* Module#const_get(sym|str) — consts are a flat (global) table here, so the
  * receiver's namespace is ignored; rightmost name resolves. */
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

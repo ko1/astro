@@ -2537,6 +2537,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         }));
         return ALLOC_node_const_set(name, binop);
       }
+      case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {          /* `$x ||= v` (globals live in the const table) */
+        const pm_global_variable_or_write_node_t *gw = (const pm_global_variable_or_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, gw->name);
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
+        return ALLOC_node_or(ALLOC_node_const(name), ALLOC_node_const_set(name, val));
+      }
+      case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
+        const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, gw->name);
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
+        return ALLOC_node_and(ALLOC_node_const(name), ALLOC_node_const_set(name, val));
+      }
 
       case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
         const pm_constant_write_node_t *cw = (const pm_constant_write_node_t *)node;
