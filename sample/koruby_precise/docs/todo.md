@@ -1793,7 +1793,7 @@ yield で no-block-error、(2) with-block の戻り値が eager は each→self 
 = Enumerator の本格再設計。multi-arg yield 修正(commit bd611c04)はこの作業中に発見した
 別の regression(Step2 由来)で、独立に commit 済。
 
-## [bug] nested block + closure が中間レベル変数を捕捉すると depth-2 変数解決が壊れる (pre-existing)
+## [FIXED 2026-06-24 commit 5ecd6cd7] nested block + closure が中間レベル変数を捕捉すると depth-2 変数解決が壊れる
 
 repro:
 ```ruby
