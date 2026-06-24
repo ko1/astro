@@ -89,6 +89,16 @@ method の AST は**実行して初めて code_repo に集まる**ため、bake-
   `astro_cs_init` / `astro_cs_compile` / `astro_cs_build` / `astro_cs_load`
 - cache ヒットは structural hash (HORG) 一致で判定。runtime promotion との
   整合は `@canonical=` (v2_design.md §8.3)
+- **prelude は `preload_store/all.so` に分離** (cold-bake 高速化): Enumerable
+  prelude (`KORUBY_PRELUDE`) は全プログラムで同一で SD ~73個を占めるので、
+  毎回 `code_store` に焼くのは無駄。`ensure_preload()` が binary より新しい
+  `preload_store/all.so` を 1 回だけ bake (stale 時のみ・bake run でのみ) し、
+  `astro_cs_set_preload()` で毎回 dlopen。`bake_code_store` は prelude entry
+  (`[0, g_prelude_repo_count)`) を skip し**プログラム固有 SD のみ**焼く。
+  `astro_cs_load` の dlsym は `all.so` 空振り時に preload を見る。stale
+  (binary mtime より古い) preload は ABI 不一致回避のため load しない。
+  効果: `p 1+2` の cold が 73→1 SD、fib 0.9→0.23s (~5×)。preload handle は
+  framework 側 opt-in なので他サンプルは不変 ([[code_store_quirks]] 参照)。
 - `--pg-compile` は PG bake (PGSD、HOPT hash)
 - rubyharness の bench モード `aot+compile` / `aot+cached` / `pg+cached` が
   この 3 フラグを直接叩く — **このフラグ仕様が harness との契約**

@@ -60,6 +60,36 @@ EOF
 **暫定対処**: dlclose しない。マップは process 終了まで残す。`all.<N>.so`
 世代別ファイル方式とも整合する。
 
+## 活用 1: preload handle で「固定コード」を1回だけ焼く (`astro_cs_set_preload`)
+
+プログラム間で**不変な AST** (言語の prelude / 標準ライブラリを言語自身で書いた
+もの) は、毎回プログラムの `code_store` に焼くと cold-bake が無駄に膨らむ。実例:
+koruby_precise は Enumerable prelude を Ruby で持ち、`p 1+2` の cold `--aot-compile`
+でも prelude の **SD 73個** + 自分の 1個を焼いていた (時間のほぼ全部が prelude)。
+
+`astro_cs_set_preload(path)` は **2 つ目の .so を fallback handle として dlopen** する
+opt-in API。`astro_cs_load` の dlsym は `all.so` (= プログラムの code store) で空振り
+した時だけ preload を見る。embedder 側は:
+
+1. 固定 AST (prelude) を専用 store_dir に **1回だけ** bake → `preload_store/all.so`
+   (`astro_cs_init(preload_dir,…)` → `astro_cs_compile` 各 entry → `astro_cs_build`)。
+   再 bake は **stale 時のみ** (store version = binary mtime で `astro_cs_init` が
+   自動 clear)。
+2. 毎回 `astro_cs_set_preload("preload_store/all.so")` で dlopen。
+3. プログラムの bake では固定 AST entry を **skip** (preload が持つので)。
+
+注意点:
+- **stale な preload を load しない**。binary を rebuild すると SD の ABI
+  (node_eval.c のインライン本体) が変わるので、binary より古い preload.so は
+  load せず interp に fallback させる (mtime 比較)。version clear だけでは
+  「古い .so を dlopen 済み」を防げない。
+- preload handle は `set_preload` を呼んだ embedder だけで有効。呼ばないサンプルは
+  `preload_handle == NULL` で完全に従来挙動 (additive な変更)。
+- handle は dlclose しない (罠 3 と同じ。specialize 済みノードが指す)。
+
+koruby_precise の実装は `main.c` の `ensure_preload` / `bake_code_store`、
+仕様は `sample/koruby_precise/docs/v2_spec.md §3.4`。
+
 ## なぜ "自前ローダー" で解消するのか
 
 上記 3 件は全部 "共有ライブラリ" の枠にこだわるから起きる:
