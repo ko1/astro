@@ -183,6 +183,45 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const uint32_t reqc = variable ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
     return RESULT_OK(LONG2FIX(variable ? -((intptr_t)reqc + 1) : (intptr_t)reqc));
 }
+/* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
+ * never on the call/yield hot path).  A non-lambda proc reports a required
+ * positional as :opt (CRuby semantics); keyreq/rest/block keep their kind. */
+static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    /* Capture everything off the proc BEFORE the first alloc — korb_ary_new GCs
+     * and may move the KorbObject, so `p` must not be dereferenced afterwards.
+     * pi (node param_info) and the booleans are all stable values. */
+    const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
+    const struct korb_param_info *const pi = p->iseq ? (const struct korb_param_info *)p->iseq->u.node_entry.param_info : NULL;
+    const bool lam = p->is_lambda;
+    const bool symproc = (p->iseq == NULL);
+    static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block" };
+    const uint32_t n = pi ? pi->n : 0;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
+    VALUE_REF res = VALUE_REF_AT(&slots[0]);
+    if (!pi) {                                            /* symbol proc → [[:req], [:rest]]; no params → [] */
+        if (symproc) {
+            const char *const sp[] = { "req", "rest" };
+            for (int j = 0; j < 2; j++) {
+                slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+                CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_intern(c->vm, sp[j], (uint32_t)strlen(sp[j])))));
+                CHECK(korb_ary_push_val(c, slots + 2, res, slots[1]));
+            }
+        }
+        return RESULT_OK(VALUE_REF_GET(res));
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t kind = pi->e[i].kind;
+        const char *kn = (kind == 0 && !lam) ? "opt" : knames[kind];
+        const uint32_t nm = pi->e[i].name;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, nm ? 2 : 1));
+        VALUE_REF sub = VALUE_REF_AT(&slots[1]);
+        CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(korb_intern(c->vm, kn, (uint32_t)strlen(kn)))));
+        if (nm) CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(nm)));
+        CHECK(korb_ary_push_val(c, slots + 2, res, VALUE_REF_GET(sub)));
+    }
+    return RESULT_OK(VALUE_REF_GET(res));
+}
 static RESULT korb_m_meth_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(ID2SYM(VAL2METH(VALUE_REF_GET(self))->mid));
 }

@@ -661,6 +661,65 @@ alloc_binop(enum kp_binop op, NODE *lhs, NODE *rhs, uint32_t line)
 
 /* ---- calls -------------------------------------------------------------- */
 
+/* Build Proc#parameters metadata once at parse time (cold; never touched on the
+ * call/yield hot path).  Stored on node_entry.param_info.  Raw kinds (req kept
+ * as req); #parameters converts positional req→opt for non-lambda procs. */
+static void *
+build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
+{
+    if (!blk_params) return NULL;
+    if (PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
+        uint32_t n = ((const pm_numbered_parameters_node_t *)blk_params)->maximum;
+        struct korb_param_info *pi = malloc(sizeof(*pi) + n * sizeof(struct korb_param_entry));
+        if (!pi) abort();
+        pi->n = n;
+        for (uint32_t i = 0; i < n; i++) { char nm[8]; snprintf(nm, sizeof(nm), "_%u", i + 1);
+            pi->e[i].kind = 0; pi->e[i].name = korb_intern(tc->c->vm, nm, (uint32_t)strlen(nm)); }
+        return pi;
+    }
+    if (PM_NODE_TYPE_P(blk_params, PM_IT_PARAMETERS_NODE)) {
+        struct korb_param_info *pi = malloc(sizeof(*pi) + sizeof(struct korb_param_entry));
+        if (!pi) abort();
+        pi->n = 1; pi->e[0].kind = 0; pi->e[0].name = 0;   /* `it` is anonymous */
+        return pi;
+    }
+    const pm_parameters_node_t *ps = NULL;
+    if (PM_NODE_TYPE_P(blk_params, PM_BLOCK_PARAMETERS_NODE))
+        ps = ((const pm_block_parameters_node_t *)blk_params)->parameters;
+    else if (PM_NODE_TYPE_P(blk_params, PM_PARAMETERS_NODE))
+        ps = (const pm_parameters_node_t *)blk_params;
+    if (!ps) return NULL;
+    uint32_t n = (uint32_t)(ps->requireds.size + ps->optionals.size + (ps->rest ? 1 : 0) +
+                            ps->posts.size + ps->keywords.size + (ps->keyword_rest ? 1 : 0) + (ps->block ? 1 : 0));
+    if (n == 0) return NULL;
+    struct korb_param_info *pi = malloc(sizeof(*pi) + n * sizeof(struct korb_param_entry));
+    if (!pi) abort();
+    uint32_t k = 0;
+    #define PI_ADD(knd, cid) do { pi->e[k].kind = (knd); pi->e[k].name = (cid) ? kp_intern_cid(tc, (cid)) : 0; k++; } while (0)
+    for (uint32_t i = 0; i < ps->requireds.size; i++) {
+        const pm_node_t *p = ps->requireds.nodes[i];
+        PI_ADD(0, PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE) ? ((const pm_required_parameter_node_t *)p)->name : 0);
+    }
+    for (uint32_t i = 0; i < ps->optionals.size; i++)
+        PI_ADD(1, ((const pm_optional_parameter_node_t *)ps->optionals.nodes[i])->name);
+    if (ps->rest) PI_ADD(2, PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) ? ((const pm_rest_parameter_node_t *)ps->rest)->name : 0);
+    for (uint32_t i = 0; i < ps->posts.size; i++) {
+        const pm_node_t *p = ps->posts.nodes[i];
+        PI_ADD(0, PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE) ? ((const pm_required_parameter_node_t *)p)->name : 0);
+    }
+    for (uint32_t i = 0; i < ps->keywords.size; i++) {
+        const pm_node_t *p = ps->keywords.nodes[i];
+        if (PM_NODE_TYPE_P(p, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) PI_ADD(3, ((const pm_required_keyword_parameter_node_t *)p)->name);
+        else PI_ADD(4, ((const pm_optional_keyword_parameter_node_t *)p)->name);
+    }
+    if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE))
+        PI_ADD(5, ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name);
+    if (ps->block) PI_ADD(6, ((const pm_block_parameter_node_t *)ps->block)->name);
+    #undef PI_ADD
+    pi->n = k;
+    return pi;
+}
+
 /* Parse a block literal into a node_entry (its own scope; registered as an
  * AOT entry like a method body).  docs/v2_blocks_design.md. */
 static NODE *
@@ -891,7 +950,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         }
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info);
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params));
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -918,7 +977,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -1471,7 +1530,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     return ALLOC_node_class(name_sym, entry, super_node);
 }
@@ -1548,7 +1607,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
     code_repo_add("module", entry, true);
     return ALLOC_node_module(name_sym, entry);
 }

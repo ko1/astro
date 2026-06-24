@@ -52,6 +52,13 @@ struct korb_callcache {
     struct korb_method *m;
 };
 
+/* Block/lambda parameter introspection (Proc#parameters) — built once at parse
+ * time and hung off node_entry.param_info; read ONLY by the cold #parameters
+ * method, so it adds nothing to the call/yield hot path.  kind: 0 req, 1 opt,
+ * 2 rest, 3 keyreq, 4 key, 5 keyrest, 6 block.  name=0 → anonymous. */
+struct korb_param_entry { uint8_t kind; uint32_t name; };
+struct korb_param_info  { uint32_t n; struct korb_param_entry e[]; };
+
 /* Inline ivar slot-cache — embedded in @ivar nodes via @ref.  Monomorphic:
  * caches the last hit slot; validated by `ivars[2*slot] == name_sym` so it is
  * GC-safe (no class pointer) and self-correcting across object layouts. */
