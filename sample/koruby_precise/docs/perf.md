@@ -16,14 +16,68 @@
 wipe+bake、aot+cached が warm run を計測)。単体 sanity: `--aot-compile X && --compiled-only X`
 (nested_loop=0.08s=0.5× YJIT)。生 baseline は bench-report/20260624-013411-perf-baseline.txt。
 
-**実 gap map (aot+cached warm, 秒, 比は koruby/YJIT、<1 が koruby 勝ち)**:
-- koruby AOT が **勝つ** 例: while 0.09× / aryidx 0.20× / exception 0.20× / bitops 0.23× /
-  closures 0.23× (他多数)。
-- koruby AOT が **負ける** worst: ackermann 1.91× / nbody 1.54× / tak 1.47× / ivar 1.36× /
-  fib 1.33× / structacc 1.29× / method_call 1.17×。
-- optcarrot AOT: **~80-87 fps** (負荷時の ~40-46 はマシン負荷で半減していた)。
+**実測テーブル (全 bench, best-of-3, 秒)**: 列 = CRuby+YJIT 実時間 [秒] / koruby AOT
+(aot+cached warm) 実時間 [秒] / 比 (AOT÷YJIT、**<1.0 が koruby 勝ち**)。ratio 降順。
+optcarrot AOT は別計測で **~80-110 fps** (負荷時の ~40-46 はマシン負荷で半減していた)。
 
-**profile (worst: ackermann / nbody)**: 時間はほぼ method の SD 自身 (ackermann は ack の
+| bench | YJIT [秒] | koruby AOT [秒] | AOT/YJIT |
+|---|--:|--:|--:|
+| ackermann | 0.170 | 0.324 | 1.91× |
+| nbody | 0.233 | 0.359 | 1.54× |
+| tak | 0.217 | 0.319 | 1.47× |
+| ivar | 0.200 | 0.271 | 1.35× |
+| fib | 0.116 | 0.154 | 1.33× |
+| structacc | 0.144 | 0.185 | 1.28× |
+| sprintfb | 0.499 | 0.606 | 1.21× |
+| method_call | 0.242 | 0.282 | 1.17× |
+| binary_trees | 0.153 | 0.179 | 1.17× |
+| send | 0.234 | 0.254 | 1.09× |
+| mathfn | 0.230 | 0.244 | 1.06× |
+| strfmt | 0.612 | 0.641 | 1.05× |
+| gcd | 0.263 | 0.270 | 1.03× |
+| mandelbrot | 0.378 | 0.361 | 0.96× |
+| gen_gc | 0.341 | 0.325 | 0.95× |
+| floatcalc | 0.260 | 0.247 | 0.95× |
+| object | 0.257 | 0.217 | 0.84× |
+| hash | 0.534 | 0.447 | 0.84× |
+| array_access | 0.325 | 0.272 | 0.84× |
+| collatz | 0.341 | 0.278 | 0.82× |
+| cmpsort | 0.276 | 0.218 | 0.79× |
+| casewhen | 0.173 | 0.132 | 0.76× |
+| bignum | 0.145 | 0.105 | 0.72× |
+| str | 0.629 | 0.447 | 0.71× |
+| poly | 0.216 | 0.151 | 0.70× |
+| kwargs | 0.204 | 0.140 | 0.69× |
+| strcmp | 0.140 | 0.091 | 0.65× |
+| fannkuch | 0.266 | 0.168 | 0.63× |
+| nested_loop | 0.139 | 0.086 | 0.62× |
+| strops | 0.389 | 0.232 | 0.60× |
+| nesteddata | 0.139 | 0.080 | 0.58× |
+| ary | 0.362 | 0.203 | 0.56× |
+| methodchain | 0.676 | 0.365 | 0.54× |
+| iterators | 0.952 | 0.509 | 0.53× |
+| sieve | 0.242 | 0.115 | 0.48× |
+| gcchurn | 0.412 | 0.182 | 0.44× |
+| mapreduce | 0.789 | 0.313 | 0.40× |
+| hashiter | 0.362 | 0.144 | 0.40× |
+| block | 0.460 | 0.186 | 0.40× |
+| gc_bigobj | 0.492 | 0.193 | 0.39× |
+| sort | 0.357 | 0.137 | 0.38× |
+| rangeeach | 0.284 | 0.105 | 0.37× |
+| strscan | 0.557 | 0.202 | 0.36× |
+| gc_wb | 0.261 | 0.086 | 0.33× |
+| intdiv | 0.208 | 0.062 | 0.30× |
+| while2 | 0.096 | 0.026 | 0.27× |
+| closures | 0.723 | 0.169 | 0.23× |
+| bitops | 0.396 | 0.090 | 0.23× |
+| exception | 0.261 | 0.053 | 0.20× |
+| aryidx | 0.056 | 0.011 | 0.20× |
+| while | 0.791 | 0.070 | 0.09× |
+
+(raw: `bench-report/20260624-013411-perf-baseline.txt`。interp 列は別途 cruby+yjit,interp,
+aot+compile,aot+cached の 4-mode 再計測で追加予定。)
+
+**所感 (サブ) — profile (worst: ackermann / nbody)**: 時間はほぼ method の SD 自身 (ackermann は ack の
 SD に 90% self、nbody は各 method SD に分散、boxing helper は hot に出ない=flonum 効いてる)。
 call fast-path (korb_call_cached の top-level 分岐 → korb_invoke_simple 直接) と
 korb_invoke_simple は既に lean (arg-only method は memset 無し、最小 frame setup)。
