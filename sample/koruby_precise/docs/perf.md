@@ -3,6 +3,34 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-06-24: 静音マシンでの再計測 + 計測トラップ (新規最適化なし / 現状把握)
+
+久々に idle なマシン (load 0.4、fib --plain 変動 ~5%) で AOT vs YJIT を再計測。
+**結論: koruby AOT は YJIT と競合水準。新規の低リスク最適化は無く、残差は architectural floor。**
+
+**⚠️ 計測トラップ (これで一度ニセの "6× 遅い" gap map を出した)**:
+`make bench BENCHMODES=...,aot+cached` を **`aot+compile` 無しで**回すと AOT でなく
+**interp** を測る。`aot+cached` の prep は `code_store/all.so` が無い時だけ bake するため、
+2本目以降は 1本目の stale store を再利用 → interp fallback。
+**必ず `BENCHMODES=cruby+yjit,aot+compile,aot+cached`** (aot+compile が各 bench を
+wipe+bake、aot+cached が warm run を計測)。単体 sanity: `--aot-compile X && --compiled-only X`
+(nested_loop=0.08s=0.5× YJIT)。生 baseline は bench-report/20260624-013411-perf-baseline.txt。
+
+**実 gap map (aot+cached warm, 秒, 比は koruby/YJIT、<1 が koruby 勝ち)**:
+- koruby AOT が **勝つ** 例: while 0.09× / aryidx 0.20× / exception 0.20× / bitops 0.23× /
+  closures 0.23× (他多数)。
+- koruby AOT が **負ける** worst: ackermann 1.91× / nbody 1.54× / tak 1.47× / ivar 1.36× /
+  fib 1.33× / structacc 1.29× / method_call 1.17×。
+- optcarrot AOT: **~80-87 fps** (負荷時の ~40-46 はマシン負荷で半減していた)。
+
+**profile (worst: ackermann / nbody)**: 時間はほぼ method の SD 自身 (ackermann は ack の
+SD に 90% self、nbody は各 method SD に分散、boxing helper は hot に出ない=flonum 効いてる)。
+call fast-path (korb_call_cached の top-level 分岐 → korb_invoke_simple 直接) と
+korb_invoke_simple は既に lean (arg-only method は memset 無し、最小 frame setup)。
+**残差 = tree-walk node dispatch + flonum tag/untag vs YJIT の native register call / XMM
+= documented cross-call devirtualization floor** (過去 session で low-ROI/high-risk と評価、
+revert 歴あり)。今回も新規最適化は見送り。
+
 ## 2026-06-21: per-frame EP cell (設計 A) — TOPLEVEL_BINDING の return 課税を解消 (解決済)
 
 **問題**: eager TOPLEVEL_BINDING で Binding が toplevel frame 上に open env を張り
