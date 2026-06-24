@@ -32,6 +32,23 @@ static RESULT korb_m_false_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* ---- universal (Object) methods ------------------------------------------ */
 
 static RESULT korb_m_obj_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+/* Default BasicObject#method_missing(name, *args) — raises NoMethodError.  Lets a
+ * user method_missing call `super` for the unhandled case (CRuby semantics). */
+static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE name = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    const char *nm = SYMBOL_P(name) ? korb_sym_name(c->vm, SYM2ID(name))
+                   : (KORB_STRING_P(name) ? VAL2STR(name)->buf->data : "(unknown)");
+    const VALUE recv = VALUE_REF_GET(self);
+    char buf[160]; const char *tn = korb_a_type_name(recv);
+    if (KORB_OBJECT_P(recv) && KORB_OBJ_TYPE(recv) == KORB_OBJ_OBJECT) {   /* user instance → real class name */
+        const VALUE k = VAL2OBJ(recv)->klass;
+        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym) {
+            snprintf(buf, sizeof(buf), "an instance of %s", korb_sym_name(c->vm, VAL2CLASS(k)->name_sym));
+            tn = buf;
+        }
+    }
+    return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
+}
 static RESULT korb_m_nil_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
 static RESULT korb_m_obj_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_obj_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eql(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }  /* type-strict: 1.eql?(1.0) => false */
