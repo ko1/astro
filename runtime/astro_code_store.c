@@ -192,9 +192,33 @@ static struct astro_cs_state {
     char store_dir[ASTRO_CS_DIR_MAX];
     char src_dir[ASTRO_CS_DIR_MAX];   // where node.h, node_eval.c live
     void *all_handle;                 // dlopen handle for current all.so
+    void *preload_handle;             // optional fallback .so (fixed prelude SDs);
+                                      // searched when all.so lacks a symbol
     unsigned int reload_gen;          // pathname generation counter — see
                                       // astro_cs_reload for the rationale.
 } astro_cs;
+
+// Resolve an SD_/PGSD_ symbol against the primary all.so, falling back to the
+// optional preload handle.  Either may be absent.
+static node_dispatcher_func_t
+astro_cs_dlsym(const char *sym)
+{
+    node_dispatcher_func_t func = NULL;
+    if (astro_cs.all_handle)
+        func = (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym);
+    if (!func && astro_cs.preload_handle)
+        func = (node_dispatcher_func_t)dlsym(astro_cs.preload_handle, sym);
+    return func;
+}
+
+void
+astro_cs_set_preload(const char *path)
+{
+    // Mirror the all_handle policy: never dlclose (already-specialized nodes may
+    // hold pointers into the image).  set_preload runs once at startup before any
+    // dispatch swap, so simply (re)opening is safe.
+    astro_cs.preload_handle = path ? dlopen(path, RTLD_LAZY) : NULL;
+}
 
 // ---------------------------------------------------------------------------
 // Hopt index: (Horg, file, line) → Hopt
@@ -393,7 +417,7 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 bool
 astro_cs_load(NODE *n, const char *file)
 {
-    if (!astro_cs.all_handle) return false;
+    if (!astro_cs.all_handle && !astro_cs.preload_handle) return false;
 
     // Try PGC first: find a Hopt from the index, dlsym PGSD_<Hopt>.
     if (file) {
@@ -411,8 +435,7 @@ astro_cs_load(NODE *n, const char *file)
             char sym_name[128];
             snprintf(sym_name, sizeof(sym_name), "PGSD_%lx",
                      (unsigned long)hopt);
-            node_dispatcher_func_t func =
-                (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
+            node_dispatcher_func_t func = astro_cs_dlsym(sym_name);
             if (func) {
                 // Name + hash_opt reflect the Hopt that actually loaded.
                 char *name = malloc(strlen(sym_name) + 1);
@@ -431,8 +454,7 @@ astro_cs_load(NODE *n, const char *file)
     node_hash_t h = hash_node(n);
     char sym_name[128];
     snprintf(sym_name, sizeof(sym_name), "SD_%lx", (unsigned long)h);
-    node_dispatcher_func_t func =
-        (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
+    node_dispatcher_func_t func = astro_cs_dlsym(sym_name);
     if (func) {
         n->head.dispatcher_name = alloc_dispatcher_name(n);
         n->head.dispatcher = func;

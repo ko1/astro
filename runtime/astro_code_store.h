@@ -38,6 +38,15 @@ void astro_cs_build(const char *extra_cflags);
 // Reload all.so (dlclose + dlopen). Use after build to apply immediately.
 void astro_cs_reload(void);
 
+// Register a secondary "preload" shared object whose SD_<hash> symbols are
+// searched as a fallback when the primary all.so does not provide them.  This
+// lets an embedder host a fixed prelude's specialized dispatchers in their own
+// .so so they need not be re-baked into every program's code store.  Opt-in:
+// samples that never call this are entirely unaffected.  `path` NULL clears the
+// handle; a dlopen failure simply leaves no preload handle (the SDs are then
+// not found, exactly as before).
+void astro_cs_set_preload(const char *path);
+
 // Print disassembly of the specialized dispatcher for node (via objdump).
 // Does nothing if the node is not specialized.
 void astro_cs_disasm(NODE *n);

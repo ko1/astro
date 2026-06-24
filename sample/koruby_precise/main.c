@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "node.h"
 #include "astro_code_store.h"
@@ -184,19 +185,26 @@ read_file_all(const char *path, size_t *len_out)
     return buf;
 }
 
-/* AOT bake: the program AST + every method body (each is its own entry —
- * call sites dispatch through body->head.dispatcher at runtime). */
-static void
-bake_code_store(NODE *ast)
-{
-    astro_cs_compile(ast, NULL);
-    for (uint32_t i = 0; i < code_repo_count(); i++) {
-        if (code_repo_skip_specialize_at(i)) continue;
-        astro_cs_compile(code_repo_body_at(i), NULL);
-    }
+/* Number of code-repo entries that belong to the Enumerable prelude (recorded
+ * right after the prelude is parsed, before the user program registers any
+ * methods).  Entries [0, g_prelude_repo_count) are prelude bodies; they are
+ * baked once into preload_store/all.so (see ensure_preload) instead of into
+ * every program's code store. */
+static uint32_t g_prelude_repo_count;
 
-    char extra_cflags[2048];
-    snprintf(extra_cflags, sizeof(extra_cflags),
+/* The prelude's specialized dispatchers live here — a fixed .so, identical for
+ * every program, dlopen'd as the code store's preload handle.  Absolute path so
+ * it resolves regardless of CWD and survives the harness's `rm -rf code_store`
+ * (it is a sibling directory, not the program's code_store). */
+#define KORUBY_PRELOAD_DIR  KORUBY_SRC_DIR "/preload_store"
+#define KORUBY_PRELOAD_SO   KORUBY_SRC_DIR "/preload_store/all.so"
+
+/* SD compile flags — identical for the prelude bake and the program bake so the
+ * two .so's are ABI-compatible. */
+static void
+koruby_extra_cflags(char *buf, size_t n)
+{
+    snprintf(buf, n,
              "--param=early-inlining-insns=100"
              " -fcf-protection=none"
              " -I" KORUBY_SRC_DIR
@@ -206,6 +214,77 @@ bake_code_store(NODE *ast)
              " -DKORB_HAVE_GMP"   /* match the main build: SDs must keep the bignum-promote arithmetic paths, not the no-GMP overflow stubs */
 #endif
              " -DBARUBY_GC=%d", BARUBY_GC);   /* framework backend-select macro */
+}
+
+/* mtime of this binary, used both as the staleness reference and as the code
+ * store "version" (a rebuilt interpreter changes the SD ABI + the prelude). */
+static uint64_t
+exe_mtime(void)
+{
+    struct stat se;
+    return stat("/proc/self/exe", &se) == 0 ? (uint64_t)se.st_mtime : 0;
+}
+
+/* preload_store/all.so is stale if missing or older than this binary. */
+static bool
+preload_stale(void)
+{
+    struct stat sso;
+    if (stat(KORUBY_PRELOAD_SO, &sso) != 0) return true;
+    uint64_t exe = exe_mtime();
+    return exe != 0 && exe > (uint64_t)sso.st_mtime;
+}
+
+/* Bake the fixed prelude's SDs once into preload_store/all.so, then register it
+ * as the code store's preload handle.  The prelude is identical across all
+ * programs, so this keeps ~70 prelude SDs out of every program's bake (the cold
+ * `--aot-compile` cost was almost entirely the prelude — `p 1+2` baked 73
+ * prelude SDs vs 1 of its own).  Rebuild only happens during an explicit bake
+ * run (`--aot-compile`/PG); a plain cached run just loads the existing .so. */
+static void
+ensure_preload(void)
+{
+    if (g_prelude_repo_count == 0) return;
+
+    bool stale = preload_stale();
+    if (stale && (OPTION.aot_compile || OPTION.pg_compile)) {
+        /* Bake into the preload store (its own store_dir), then switch the code
+         * store back to the program's "code_store" in INIT() below.  Passing the
+         * binary mtime as the store version makes astro_cs_init clear a stale
+         * preload store, so changed prelude/ABI is actually rebuilt (the
+         * file-exists skip in astro_cs_compile would otherwise keep stale SDs). */
+        astro_cs_init(KORUBY_PRELOAD_DIR, KORUBY_SRC_DIR, exe_mtime());
+        for (uint32_t i = 0; i < g_prelude_repo_count; i++) {
+            if (code_repo_skip_specialize_at(i)) continue;
+            astro_cs_compile(code_repo_body_at(i), NULL);
+        }
+        char cflags[2048];
+        koruby_extra_cflags(cflags, sizeof(cflags));
+        setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
+        astro_cs_build(cflags);
+        stale = false;   /* freshly built */
+    }
+    /* Only load a preload.so we trust: a stale one (older than this binary) may
+     * have a mismatched SD ABI, so leave it unloaded — the prelude then runs on
+     * the interpreter (or is reported as a compile-miss under --compiled-only),
+     * never on stale specialized code. */
+    if (!stale) astro_cs_set_preload(KORUBY_PRELOAD_SO);
+}
+
+/* AOT bake: the program AST + every *user* method body (each is its own entry —
+ * call sites dispatch through body->head.dispatcher at runtime).  Prelude bodies
+ * [0, g_prelude_repo_count) are skipped — they live in preload.so. */
+static void
+bake_code_store(NODE *ast)
+{
+    astro_cs_compile(ast, NULL);
+    for (uint32_t i = g_prelude_repo_count; i < code_repo_count(); i++) {
+        if (code_repo_skip_specialize_at(i)) continue;
+        astro_cs_compile(code_repo_body_at(i), NULL);
+    }
+
+    char extra_cflags[2048];
+    koruby_extra_cflags(extra_cflags, sizeof(extra_cflags));
     setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
     astro_cs_build(extra_cflags);
     astro_cs_reload();
@@ -351,6 +430,9 @@ main(int argc, char *argv[])
     NODE *prelude_ast = OPTION.dump_ast ? NULL
                       : koruby_parse_source(c, KORUBY_PRELUDE, strlen(KORUBY_PRELUDE), "<prelude>");
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
+    /* Prelude method bodies registered so far form [0, g_prelude_repo_count);
+     * they are baked into preload.so, not the program's code store. */
+    g_prelude_repo_count = code_repo_count();
 
     NODE *ast = koruby_parse_source(c, src, src_len, src_name);
 
@@ -366,6 +448,7 @@ main(int argc, char *argv[])
     }
 
     if (!OPTION.plain) {
+        ensure_preload();                        /* bake (if stale) + dlopen preload.so */
         INIT();                                  /* dlopen code_store/all.so if present */
         unsigned int swaps = swap_in_cached_sds(ast);
         if (OPTION.verbose) {

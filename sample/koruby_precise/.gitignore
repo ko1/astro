@@ -3,6 +3,7 @@
 /prism
 /koruby_precise
 /code_store/
+/preload_store/
 /node_eval.c
 /node_dispatch.c
 /node_dump.c
