@@ -22,9 +22,12 @@ wipe+bake、aot+cached が warm run を計測)。単体 sanity: `--aot-compile X
 - **interp** = koruby tree-walker (--plain) / **aot+compile** = koruby AOT cold (SD bake 込み +1回)
   / **aot+cached** = koruby AOT warm (bake 償却後の実行のみ)
 
-`aot+compile` が軒並み ~1s 以上なのは **SD を cc でコンパイルする bake 時間** (初回起動コスト;
-短い bench ほど bake が支配。nbody 3.34s は AST が大きく bake が長い)。YJIT は runtime JIT で
-別 bake 段が無いので cold でも速い。**定常実行速度の比較は aot+cached 列**。
+`aot+compile` は **毎 bench `rm -rf code_store` してから空 store を `--aot-compile` で
+フルコンパイル** (run_bench.rb の WIPE→compile、CCACHE_DISABLE=1 で ccache も無効) =
+完全な cold/from-scratch bake 時間込み。軒並み ~1s 超なのは **SD を cc でコンパイルする
+bake コスト** (短い bench ほど bake が支配; nbody 3.34s は AST 大で SD 数が多い)。YJIT は
+runtime JIT で別 bake 段が無いので cold でも速い。`aot+cached` は逆に **store が既存なら
+bake せず** 実行だけ計測 (warm)。**定常実行速度の比較は aot+cached 列**。
 
 | bench | cruby | cruby+yjit | interp | aot+compile | aot+cached |
 |---|--:|--:|--:|--:|--:|
