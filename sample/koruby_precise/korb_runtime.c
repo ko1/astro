@@ -4160,13 +4160,67 @@ static const struct korb_kw_info *korb_entry_kw_info(NODE *entry) { return (cons
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
+static __attribute__((no_stack_protector)) RESULT
+korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                      const VALUE *argv, uint32_t argc, VALUE *captured_self);
+
+/* Block invocation fast path: the overwhelmingly common block has only scalar
+ * required params (no kw / destructure / rest / opt).  Binding it inline here —
+ * a small function with a small frame — avoids korb_block_yield_full's ~150-byte
+ * worst-case frame (sized for the rest-array / opt-default / kw-scan locals) on
+ * every `each`/`map`/`times` yield.  Anything non-simple (or a CPROC / non-entry
+ * block) delegates verbatim to the full path; the frame layout, dispatch, and
+ * escape handling are identical to it. */
+__attribute__((no_stack_protector)) RESULT
+korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
+{
+    if (UNLIKELY(block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
+                 korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
+                 korb_entry_destructure_n(block) || korb_entry_rest_slot(block) >= 0 ||
+                 korb_entry_opt_defaults(block)))
+        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self);
+
+    const bool fwd = (def_env == KORB_BLK_FWD);
+    const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
+    const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
+    VALUE *const bf = slots + 2;                             /* block frame base (bottom header) */
+    char cstack_probe;
+    if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
+                 &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    bf[-2] = 0;          /* B[-3] magic (zeroed for GC scan)   */
+    bf[-1] = prev;       /* B[-2] EP / PREV link               */
+    bf[0]  = 0;          /* B[-1] block lexical self (set below) */
+    korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);
+    const uint32_t np = korb_entry_params_cnt(block);
+    if (LIKELY(!(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind */
+        uint32_t i = 0;
+        for (; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+        if (blocals > np) for (; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else {                                                          /* auto-splat one Array */
+        const KorbArray *ar = VAL2ARY(argv[0]);
+        uint32_t i = 0;
+        for (; i < np; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
+        if (blocals > np) for (; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    }
+    bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* lexical self → B[-1] */
+
+    RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
+    if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
+    korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");
+    if (UNLIKELY(korb_frame_escaped(bf + 1)))
+        r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
+    return r;
+}
+
 /* Core block invocation: lay out the block frame at cursor `slots` and
  * dispatch the entry.  Args come from `argv` (argv[i] copied into block
  * params; extra dropped, missing → nil — CRuby semantics).  argv may alias the
  * cursor region (node_yield passes &slots[-argc]); copies happen before any
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
-__attribute__((no_stack_protector)) RESULT
-korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+static __attribute__((no_stack_protector)) RESULT
+korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
     /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
