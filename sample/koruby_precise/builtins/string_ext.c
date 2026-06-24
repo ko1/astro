@@ -85,8 +85,23 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE *args; uint32_t argn;
     if (KORB_ARRAY_P(single)) { args = VAL2ARY(single)->items->data; argn = VAL2ARY(single)->len; }
     else { args = &single; argn = VALUE_SLICE_LEN(a); }
-    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
-    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    /* Reuse the vm's cached memstream (rewind) instead of mallocing+zeroing a
+     * fresh stdio buffer per call.  A re-entrant format (via a user #to_s /
+     * #inspect inside %s/%p) takes its own open_memstream. */
+    struct korb_vm *const vm = c->vm;
+    char *buf = NULL; size_t sz = 0; FILE *ms; const bool shared = !vm->fmt_busy;
+    if (shared) {
+        if (!vm->fmt_stream) {
+            vm->fmt_stream = open_memstream(&vm->fmt_buf, &vm->fmt_sz);
+            if (!vm->fmt_stream) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+        }
+        vm->fmt_busy = true;
+        ms = vm->fmt_stream;
+        rewind(ms);                                      /* reuse buffer from offset 0 */
+    } else {
+        ms = open_memstream(&buf, &sz);
+        if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
@@ -244,10 +259,24 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         if (err) break;
     }
-    fclose(ms);
-    if (err) { free(buf); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error"); }
-    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
-    free(buf);
+    /* Finalize: for the shared stream, flush + take the byte count from ftell
+     * (current write position) and read from the cached buffer without closing;
+     * for a nested stream, close to populate buf/sz. */
+    const char *out; size_t outlen;
+    if (shared) {
+        fflush(ms);
+        long pos = ftell(ms);
+        out = vm->fmt_buf; outlen = pos > 0 ? (size_t)pos : 0;
+    } else {
+        fclose(ms);
+        out = buf; outlen = sz;
+    }
+    if (err) {
+        if (shared) vm->fmt_busy = false; else free(buf);
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error");
+    }
+    RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
+    if (shared) vm->fmt_busy = false; else free(buf);
     return r;
 }
 

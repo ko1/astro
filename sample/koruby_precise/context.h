@@ -736,6 +736,17 @@ struct korb_vm {
     uint32_t   pack_ptr_count;
     uint32_t   pack_ptr_cap;
 
+    /* Reusable open_memstream for String#% / format / sprintf.  Opening a fresh
+     * memstream per call mallocs + zeroes a stdio buffer every time (~35% of a
+     * format-heavy loop).  Cache one stream and rewind it instead.  `fmt_busy`
+     * guards against re-entry (a nested format via a user #to_s/#inspect) — the
+     * nested call falls back to its own open_memstream.  Not a GC edge (libc
+     * buffer, no VALUEs); freed only at process exit. */
+    FILE   *fmt_stream;
+    char   *fmt_buf;
+    size_t  fmt_sz;
+    bool    fmt_busy;
+
     const char *script_name; /* for error messages */
 };
 
