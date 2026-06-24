@@ -1542,8 +1542,26 @@ node_eget(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint3
 {
     (void)c; (void)n;
     VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
-    for (uint32_t k = 1; k < depth; k++)
-        h = (h & 1u) ? korb_ep_get((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u)) : VAL2ENV(h)->prev;
+    /* A frame that created a closure has its OWN open env stored in its EP cell
+     * (korb_make_proc, so a sibling closure finds it via korb_open_env_find);
+     * loc==base marks it.  That env represents the SAME level as the base (level
+     * 0 at the start, level k mid-walk), so step to its parent to keep `depth`
+     * aligned with the live/odd case.  Must be applied at EVERY EP read (the
+     * start cell + each korb_ep_get) — an intermediate promoted frame is the
+     * nested-closure bug.  A proc.call EP (parent's env, loc!=base) is used
+     * as-is; the materialized env chain (->prev) is already unambiguous. */
+    {
+        VALUE *const sb = slots + prev_off + 2;           /* this frame's base (EP cell is base[-2]) */
+        if (!(h & 1u)) { const KorbEnv *const e0 = VAL2ENV(h); if (!e0->closed && e0->loc == sb) h = e0->prev; }
+    }
+    for (uint32_t k = 1; k < depth; k++) {
+        if (h & 1u) {
+            VALUE *const b = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+            VALUE pv = korb_ep_get(b);
+            if (!(pv & 1u)) { const KorbEnv *const e1 = VAL2ENV(pv); if (!e1->closed && e1->loc == b) pv = e1->prev; }
+            h = pv;
+        } else h = VAL2ENV(h)->prev;
+    }
     if (h & 1u) return RESULT_OK(((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index]);
     KorbEnv *e = VAL2ENV(h);
     return RESULT_OK((e->closed ? ((KorbArrayItems *)(uintptr_t)e->vals)->data : e->loc)[index]);
@@ -1557,8 +1575,20 @@ node_eset(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, uint3
 {
     (void)c; (void)n;
     VALUE h = slots[prev_off];                            /* PREV link: odd=live base, even=KorbEnv (mixed walk) */
-    for (uint32_t k = 1; k < depth; k++)
-        h = (h & 1u) ? korb_ep_get((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u)) : VAL2ENV(h)->prev;
+    /* See node_eget: normalize a self-promoted frame's own open env (loc==base)
+     * to its parent at every EP read (start cell + each korb_ep_get). */
+    {
+        VALUE *const sb = slots + prev_off + 2;
+        if (!(h & 1u)) { const KorbEnv *const e0 = VAL2ENV(h); if (!e0->closed && e0->loc == sb) h = e0->prev; }
+    }
+    for (uint32_t k = 1; k < depth; k++) {
+        if (h & 1u) {
+            VALUE *const b = (VALUE *)(uintptr_t)(h & ~(uintptr_t)1u);
+            VALUE pv = korb_ep_get(b);
+            if (!(pv & 1u)) { const KorbEnv *const e1 = VAL2ENV(pv); if (!e1->closed && e1->loc == b) pv = e1->prev; }
+            h = pv;
+        } else h = VAL2ENV(h)->prev;
+    }
     if (h & 1u) { ((VALUE *)(uintptr_t)(h & ~(uintptr_t)1u))[index] = val; return RESULT_OK(val); }
     KorbEnv *e = VAL2ENV(h);
     if (e->closed) korb_env_store(c, e, index, val);       /* heap vals → WB-aware store */
