@@ -4157,12 +4157,19 @@ static int32_t  korb_entry_rest_slot(NODE *entry) { return entry->u.node_entry.r
 static struct Node **korb_entry_opt_defaults(NODE *entry) { return (struct Node **)entry->u.node_entry.opt_defaults; }
 static uint32_t korb_entry_req_cnt(NODE *entry) { return entry->u.node_entry.req_cnt; }
 static const struct korb_kw_info *korb_entry_kw_info(NODE *entry) { return (const struct korb_kw_info *)entry->u.node_entry.kw_info; }
+static int32_t korb_entry_blk_param_slot(NODE *entry) { return entry->u.node_entry.blk_param_slot; }   /* -1 = no `&blk` param */
 static const uint8_t *korb_entry_destructure_spec(NODE *entry) { return (const uint8_t *)entry->u.node_entry.destructure_spec; }
 NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 
+/* bp_blk (NULL = none) is a block FORWARDED to this block via `|&b|` — proc.call
+ * passes the block given at its call site so the body's &b local binds to it as a
+ * Proc.  Only the (non-hot) full path takes it; the simple wrapper passes NULL,
+ * and a |&b| block yielded without a forwarded block just gets &b = nil from the
+ * normal locals zeroing, so the hot path is untouched. */
 static __attribute__((no_stack_protector)) RESULT
 korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                      const VALUE *argv, uint32_t argc, VALUE *captured_self);
+                      const VALUE *argv, uint32_t argc, VALUE *captured_self,
+                      NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self);
 
 /* Block invocation fast path: the overwhelmingly common block has only scalar
  * required params (no kw / destructure / rest / opt).  Binding it inline here —
@@ -4179,7 +4186,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
                  korb_entry_destructure_n(block) || korb_entry_rest_slot(block) >= 0 ||
                  korb_entry_opt_defaults(block)))
-        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self);
+        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL);
 
     const bool fwd = (def_env == KORB_BLK_FWD);
     const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
@@ -4221,7 +4228,8 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
  * GC, so raw VALUEs in argv are safe.  A stack-overflow check returns RAISE. */
 static __attribute__((no_stack_protector)) RESULT
 korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
-                 const VALUE *argv, uint32_t argc, VALUE *captured_self)
+                 const VALUE *argv, uint32_t argc, VALUE *captured_self,
+                 NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self)
 {
     /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
      * placeholder, not a node_entry — running it raises NotImplementedError instead
@@ -4356,6 +4364,15 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(c->vm, kw->entries[j].mid));
             }
         }
+    }
+    /* `|&b|`: materialize a forwarded block into its local as a Proc (rare; only
+     * proc.call passes bp_blk).  Done after positional binding, before dispatch —
+     * korb_make_proc may GC but bf locals are rooted and the new Proc lands in a
+     * rooted slot.  No forwarded block → &b stays nil (from the locals zeroing). */
+    if (UNLIKELY(bp_blk != NULL)) {
+        const int32_t bps = korb_entry_blk_param_slot(block);
+        if (bps >= 0)
+            bf[1 + bps] = UNWRAP(korb_make_proc(c, bf + 1 + blocals, bp_blk, bp_denv, *bp_self, 0));
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* block's lexical self → B[-1] (bottom header; re-read fresh) */
 
@@ -5767,11 +5784,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "to_proc", korb_m_meth_to_proc, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
-    korb_def_cmethod(c, KORB_C_PROC, "call", korb_m_proc_call, -1);
-    korb_def_cmethod(c, KORB_C_PROC, "[]", korb_m_proc_call, -1);
-    korb_def_cmethod(c, KORB_C_PROC, "()", korb_m_proc_call, -1);
-    korb_def_cmethod(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
-    korb_def_cmethod(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_PROC, "call", korb_m_proc_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_PROC, "[]", korb_m_proc_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_PROC, "()", korb_m_proc_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_PROC, "yield", korb_m_proc_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, 0);

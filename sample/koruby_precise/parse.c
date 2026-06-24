@@ -735,6 +735,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     struct Node **opt_defaults = NULL;  /* default exprs for optional params */
     uint32_t req_cnt = 0;           /* leading required positional count */
     struct korb_kw_info *kw_info = NULL;  /* keyword params (a:, b: 10, **kw) */
+    int32_t blk_param_slot = -1;    /* local index of a `&blk` param, or -1 — see korb_block_yield_full */
     if (blk_params && PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
         /* `{ _1 * _2 }` — prism puts `_1`.._N in locals[0..N-1]; the body's
          * `_N` reads resolve as ordinary locals.  N = maximum referenced. */
@@ -760,9 +761,14 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             return kp_unsupported(tc, blk_params, "unsupported block parameters");
         }
         if (ps) {
-            if (ps->block) {
-                pop_frame(tc);
-                return kp_unsupported(tc, (const pm_node_t *)ps, "block &block parameter");
+            if (ps->block) {                            /* `|&blk|`: bind the forwarded block as a Proc into its local */
+                const pm_node_t *const bpn = (const pm_node_t *)ps->block;
+                if (!((const pm_block_parameter_node_t *)bpn)->name) {
+                    pop_frame(tc);
+                    return kp_unsupported(tc, bpn, "anonymous/forwarding block parameter (&)");
+                }
+                blk_param_slot = (int32_t)lvar_index(tc, bpn,
+                    ((const pm_block_parameter_node_t *)bpn)->name);
             }
             if (ps->keywords.size || ps->keyword_rest) {   /* keyword params (built after positional) */
                 kw_info = malloc(sizeof(*kw_info));
@@ -950,7 +956,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         }
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
-    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params));
+    NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot);
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -977,7 +983,7 @@ kp_symbol_block(struct kp_ctx *tc, uint32_t sym_id)
     WITH_CHAIN(tc, KP_SEND0_SC, (recv = bake_lget(tc, 0)));     /* x (local 0), staged as send recv */
     NODE *body = kp_send0(sym_id, 0, recv);
     uint32_t frame_size = pop_frame(tc);
-    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
+    NODE *entry = ALLOC_node_entry(body, 1, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("symblock", entry, true);
     return entry;
 }
@@ -1530,7 +1536,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = kp_unsupported(tc, cn->body, "class body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     return ALLOC_node_class(name_sym, entry, super_node);
 }
@@ -1607,7 +1613,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = kp_unsupported(tc, mn->body, "module body with rescue/ensure");
     uint32_t frame_size = pop_frame(tc);
 
-    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL);
+    NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("module", entry, true);
     return ALLOC_node_module(name_sym, entry);
 }

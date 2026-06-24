@@ -139,7 +139,7 @@ static RESULT korb_m_meth_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 /* Proc#call / [] / .() / === — invoke the captured block body.  Stage A: env is
  * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
-static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     uint32_t argc = VALUE_SLICE_LEN(a);
     if (p->iseq == NULL) {                               /* no body: symbol proc / method proc */
@@ -157,6 +157,13 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    /* If this proc has a `|&b|` param and the call site passed a (real) block,
+     * forward it so &b binds to it — via the full path (the hot wrapper is
+     * untouched; a no-block call leaves &b nil). */
+    if (block != NULL && block != KORB_BLK_CPROC && block->head.kind == &kind_node_entry &&
+        korb_entry_blk_param_slot(entry) >= 0)
+        return korb_block_yield_full(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv,
+                                     &slots[1], argc, &slots[0], block, def_env, cself);
     return korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
 }
 /* Symbol#to_proc — a Proc that sends the symbol to its first argument. */
