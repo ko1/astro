@@ -3,6 +3,28 @@
 本書は **どんな最適化を試したか** と **その結果** を一覧する。
 成功例だけでなく **見送ったもの** も同じ重みで記録する (再評価のために)。
 
+## 2026-06-24: block-yield に simple-block fast path (成功・block 系 ~17-23%)
+
+profile (`structacc` aot+cached) で **`korb_block_yield` が 43% self**。全 param-binding
+ケース (destructure/rest/opt/kw) を1関数で処理する monolith なので、`|p|` のような
+scalar block でも ~150B の worst-case フレーム prologue/epilogue + locals 初期化の libc
+`memset` 呼びを毎 yield 払っていた。`korb_block_yield` を薄い wrapper に分割: scalar
+required param のみ (kw/destructure/rest/opt 無し) の圧倒的多数を小フレームで inline 処理し、
+それ以外は `korb_block_yield_full` (バイト等価リネーム) に委譲。commit b599e0f6。
+
+| bench | aot+cached 旧 [秒] | aot+cached 新 [秒] | YJIT [秒] |
+|---|--:|--:|--:|
+| structacc | 0.192 | **0.16** | 0.141 |
+| iterators | 0.518 | **0.42** | 0.946 |
+| mapreduce | 0.324 | **0.27** | 0.803 |
+| rangeeach | 0.104 | **0.08** | 0.271 |
+| block | 0.191 | **0.15** | 0.468 |
+
+各列 = 総実行時間 [秒] (best-of-9, 小さいほど速い)。~17-23% 短縮。corpus 89300/0/0、
+block 全 param 形 + closure escape を CRuby 一致、STRESS+PURGE clean、AOT 一致。
+**作業中に pre-existing バグ発見** (nested block が中間レベル変数を closure 捕捉すると
+depth-2 変数解決が壊れる; HEAD でも再現・corpus 未検出) → docs/todo.md に記録。
+
 ## 2026-06-24: format/sprintf を vm-cached memstream で高速化 (成功)
 
 profile (`sprintfb` aot+cached) で時間の **~35% が `open_memstream` の per-call

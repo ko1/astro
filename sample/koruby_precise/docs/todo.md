@@ -1792,3 +1792,18 @@ yield で no-block-error、(2) with-block の戻り値が eager は each→self 
 セマンティクス統一 + 全 enum consumer(first/count/map/find...)の mode-3 対応が要る
 = Enumerator の本格再設計。multi-arg yield 修正(commit bd611c04)はこの作業中に発見した
 別の regression(Step2 由来)で、独立に commit 済。
+
+## [bug] nested block + closure が中間レベル変数を捕捉すると depth-2 変数解決が壊れる (pre-existing)
+
+repro:
+```ruby
+acc = []
+2.times { |i| [10,20].each { |x| acc << lambda { x*i } } }
+p acc.map { |p| p.call }   # CRuby: [0,0,10,20] / koruby: acc が Integer 化して TypeError
+```
+内側 each ブロックが中間(times)の `i` を closure(lambda)に捕捉すると、その each
+ブロックからの depth-2 変数 `acc`(toplevel) 参照が中間/内側の slot を読む(Integer 化)。
+1-level capture や lambda 無しの 2-level は正常。block-yield fast path とは無関係
+(HEAD でも再現、`korb_block_yield` の simple fast path 導入時に発見)。node_eget の
+mixed-chain walk が、closure-escape で中間 env が heap 昇格した際に depth を誤る疑い。
+corpus 未検出 = この patターンが corpus に無いだけ。要 [[project_koruby_precise_toplevel_binding_perf]] の env chain 見直し。
