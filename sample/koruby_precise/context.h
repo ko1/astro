@@ -725,6 +725,17 @@ struct korb_vm {
     bool   default_rng_seeded;
     VALUE  default_rng_seed;   /* last srand seed (for srand's return), FIX 0 initially */
 
+    /* String#pack("P"/"p") side table.  CRuby packs a raw pointer to the
+     * string's bytes; under our moving collector a real pointer would dangle,
+     * so pack copies the bytes here (malloc'd, never VALUEs → needs no GC root
+     * scanning) and embeds a 1-based index in the packed 8 bytes (0 = nil).
+     * unpack("P"/"p") recovers the bytes by that index.  Bounded leak, mirrors
+     * CRuby pinning the pointed memory; freed only at process exit. */
+    char     **pack_ptr_bufs;
+    uint32_t  *pack_ptr_lens;
+    uint32_t   pack_ptr_count;
+    uint32_t   pack_ptr_cap;
+
     const char *script_name; /* for error messages */
 };
 

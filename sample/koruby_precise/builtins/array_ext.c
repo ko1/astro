@@ -2,12 +2,45 @@
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- more Array methods -------------------------------------------------- */
 
+/* String#pack("P"/"p") side table (see context.h korb_vm).  A real pointer to
+ * the string bytes would dangle under the moving GC, so we copy the bytes into
+ * a malloc'd slot and embed its 1-based index in the packed 8 bytes; unpack
+ * recovers them.  The store holds raw byte copies (no VALUEs) so it needs no GC
+ * root scanning and is unaffected by object motion.  Returns a 1-based index
+ * (0 is reserved for nil / "no string"). */
+static uint32_t korb_pack_ptr_register(CTX *const c, const char *const data, const uint32_t len) {
+    struct korb_vm *const vm = c->vm;
+    if (vm->pack_ptr_count == vm->pack_ptr_cap) {
+        const uint32_t ncap = vm->pack_ptr_cap ? vm->pack_ptr_cap * 2 : 8;
+        vm->pack_ptr_bufs = (char **)realloc(vm->pack_ptr_bufs, (size_t)ncap * sizeof(char *));
+        vm->pack_ptr_lens = (uint32_t *)realloc(vm->pack_ptr_lens, (size_t)ncap * sizeof(uint32_t));
+        if (!vm->pack_ptr_bufs || !vm->pack_ptr_lens) { fprintf(stderr, "koruby_precise: pack(P) OOM\n"); abort(); }
+        vm->pack_ptr_cap = ncap;
+    }
+    char *const copy = (char *)malloc(len ? len : 1);
+    if (!copy) { fprintf(stderr, "koruby_precise: pack(P) OOM\n"); abort(); }
+    memcpy(copy, data, len);
+    const uint32_t idx = vm->pack_ptr_count++;
+    vm->pack_ptr_bufs[idx] = copy;
+    vm->pack_ptr_lens[idx] = len;
+    return idx + 1;
+}
+
+/* Recover the bytes registered by korb_pack_ptr_register; NULL if idx1 is 0 or
+ * out of range.  The returned pointer is malloc'd and stable across GC. */
+static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1, uint32_t *const lenp) {
+    const struct korb_vm *const vm = c->vm;
+    if (idx1 == 0 || idx1 > vm->pack_ptr_count) return NULL;
+    *lenp = vm->pack_ptr_lens[idx1 - 1];
+    return vm->pack_ptr_bufs[idx1 - 1];
+}
+
 /* Array#pack — template engine over a manually-managed byte buffer (so X can
  * truncate).  Supports C/c, x, X, a/A/Z (strings), B/b (bits), H/h (hex),
- * M (quoted-printable), m (base64), u (uuencode), w (BER), P/p (pointer stub:
- * 8 zero bytes — real addresses are meaningless under a moving GC).  No alloc
- * happens between fetching elements and emitting bytes, so the bare array
- * pointer stays valid for the whole loop. */
+ * M (quoted-printable), m (base64), u (uuencode), w (BER), P/p (pointer: a
+ * 1-based index into the side table above, recoverable by unpack; 0 for nil).
+ * No GC alloc happens between fetching elements and emitting bytes, so the bare
+ * array pointer stays valid for the whole loop. */
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE tv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(tv)))
@@ -64,10 +97,12 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             tmp[n++] = (uint8_t)(v & 0x7f); v >>= 7;
             while (v) { tmp[n++] = (uint8_t)((v & 0x7f) | 0x80); v >>= 7; }
             while (n) PK_PUT(tmp[--n]);                   /* big-endian, high bit on all but last */
-        } else if (d == 'P' || d == 'p') {                /* pointer stub: 8 zero bytes */
+        } else if (d == 'P' || d == 'p') {                /* pointer: 1-based side-table index (0 = nil) */
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
-            ai++;
-            for (int k = 0; k < 8; k++) PK_PUT(0);
+            VALUE e = ary->items->data[ai++];
+            uint64_t idx = 0;
+            if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); idx = korb_pack_ptr_register(c, es->buf->data, es->len); }
+            for (int k = 0; k < 8; k++) PK_PUT((idx >> (8 * k)) & 0xff);
         } else if (d == 'a' || d == 'A' || d == 'Z' || d == 'B' || d == 'b' || d == 'H' || d == 'h' || d == 'M' || d == 'm' || d == 'u') {
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
             VALUE e = ary->items->data[ai++];
@@ -228,7 +263,22 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 si += (uint32_t)len;
                 CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)cp)));
             }
-        } else {                                          /* P/p and anything else → nil */
+        } else if (d == 'P' || d == 'p') {                /* pointer: recover bytes via side table */
+            uint64_t idx = 0;
+            for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); if (si < s->len) idx |= (uint64_t)(unsigned char)s->buf->data[si] << (8 * k); si++; }
+            uint32_t plen = 0;
+            const char *const pd = korb_pack_ptr_lookup(c, idx, &plen);   /* malloc'd, stable across GC */
+            if (!pd) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); }
+            else {
+                /* 'P' takes cnt bytes (the count is a length; '*' → all); 'p' is
+                 * a NUL-terminated pointer → the whole string. */
+                const uint32_t take = (d == 'p' || star) ? plen : ((uint32_t)cnt < plen ? (uint32_t)cnt : plen);
+                KorbString *r = korb_str_alloc(c, slots + 3, take);       /* may move slots */
+                memcpy(r->buf->data, pd, take);
+                slots[3] = (VALUE)r;
+                CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            }
+        } else {                                          /* anything else → nil */
             const long reps = star ? 0 : cnt;
             for (long r = 0; r < reps; r++) CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL));
         }
