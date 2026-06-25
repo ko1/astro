@@ -78,7 +78,7 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
-    if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self))))
+    if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
     CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));
     return RESULT_OK(VALUE_SLICE_GET(a, 1));
@@ -88,7 +88,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
     (void)slots;
-    if (!KORB_OBJECT_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
+    if (!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
 }
 /* Object#instance_variables → [:@a, :@b, ...] in definition order. */

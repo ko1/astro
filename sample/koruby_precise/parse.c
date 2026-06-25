@@ -38,6 +38,7 @@ struct kp_frame {
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
+    int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
     int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
     uint32_t add_cnt, add_capa;
@@ -161,6 +162,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_mid = 0;
     f->method_params = 0;
     f->fwd_slot = -1;
+    f->anon_rest_slot = -1;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
     f->add_cnt = f->add_capa = 0;
@@ -1123,6 +1125,21 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 uint32_t pslot = alloc_synth_local(tc);
                 NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+                bool has_splat = false;
+                for (size_t i = 0; i < argc; i++)
+                    if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+                if (has_splat) {
+                    /* `f(*arr, &proc)` (implicit self) — build the args Array; one
+                     * staged child = the array, self via self_off, proc via proc_off. */
+                    int32_t self_off = -1 - tc->chain - 1;
+                    int32_t proc_off = (int32_t)pslot - tc->chain - 1;
+                    NODE *arr;
+                    WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                    NODE *_cs = ALLOC_node_call_splat_blkproc(mid, line, self_off, proc_off, arr);
+                    bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
+                    bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
+                    return ALLOC_node_seq(pset, _cs);
+                }
                 uint32_t cnt = 1u + (uint32_t)argc;     /* self receiver + args */
                 NODE **argv = malloc(sizeof(NODE *) * cnt);
                 if (!argv) abort();
@@ -1139,6 +1156,23 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
+        /* `f(*arr) { ... }` — build the args Array and dispatch dynamically with
+         * the block threaded (one staged child = the args array). */
+        {
+            bool has_splat = false;
+            for (size_t i = 0; i < argc; i++)
+                if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+            if (has_splat) {
+                int32_t self_off = -1 - tc->chain - 1;   /* one staged child: the args array */
+                int32_t def_env_off = -tc->chain - 1;    /* caller frame base (tagged |1 at eval) */
+                NODE *arr;
+                WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                NODE *_cs = ALLOC_node_call_splat_blk(mid, line, self_off, entry, def_env_off, arr);
+                bake_add(tc, &_cs->u.node_call_splat_blk.self_off);
+                bake_add(tc, &_cs->u.node_call_splat_blk.def_env_off);
+                return _cs;
+            }
+        }
         return transduce_call_with_block(tc, cn, mid, line, args, argc, entry);
     }
 
@@ -1274,6 +1308,20 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 uint32_t pslot = alloc_synth_local(tc);
                 NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+                bool has_splat = false;
+                for (size_t i = 0; i < argc; i++)
+                    if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+                if (has_splat) {
+                    /* `recv.m(*arr, &proc)` — build the args Array; node_send_splat_blkproc
+                     * coerces the proc and forwards it (2 staged children: recv + array). */
+                    int32_t proc_off = (int32_t)pslot - tc->chain - 2;
+                    NODE *recv, *arr;
+                    WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                                       arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                    NODE *_cs = ALLOC_node_send_splat_blkproc(mid, line, proc_off, recv, arr);
+                    bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
+                    return ALLOC_node_seq(pset, _cs);
+                }
                 uint32_t sc = 1u + (uint32_t)argc;
                 NODE **argv = malloc(sizeof(NODE *) * sc);
                 if (!argv) abort();
@@ -1290,6 +1338,24 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         }
         NODE *entry = kp_block_entry(tc, cn->block);
         if (!entry) return kp_unsupported(tc, (const pm_node_t *)cn, "&block argument (only literal block or &:sym)");
+        /* `recv.m(*arr) { ... }` — build the args Array and dispatch dynamically
+         * with the block threaded (two staged children: recv + the args array). */
+        {
+            bool has_splat = false;
+            for (size_t i = 0; i < argc; i++)
+                if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+            if (has_splat) {
+                int32_t self_off = -tc->chain - 3;       /* caller self (base[-1]), 2 staged children */
+                int32_t def_env_off = -tc->chain - 2;    /* caller frame base (tagged |1 at eval) */
+                NODE *recv, *arr;
+                WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                                   arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                NODE *_cs = ALLOC_node_send_splat_blk(mid, line, self_off, entry, def_env_off, recv, arr);
+                bake_add(tc, &_cs->u.node_send_splat_blk.self_off);
+                bake_add(tc, &_cs->u.node_send_splat_blk.def_env_off);
+                return _cs;
+            }
+        }
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
          * = recv(1) + argc.  bake_add fixes up by the caller's frame_size.
          * node_send_blk stages [recv, args...] via argv@children (any arity). */
@@ -1367,9 +1433,13 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         if (ps->posts.size && !ps->rest) {     /* posts only appear after a rest in Ruby */
             return kp_unsupported(tc, (const pm_node_t *)dn, "post parameters without rest");
         }
-        if (ps->rest && !(PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
-                          ((const pm_rest_parameter_node_t *)ps->rest)->name))
-            return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding rest parameter");
+        if (ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE))
+            return kp_unsupported(tc, (const pm_node_t *)dn, "forwarding rest parameter");
+        /* anonymous `*` rest collects surplus args into a synth local (the body
+         * can't name it).  With posts the post-slot layout assumes a named rest,
+         * so reject that rarer combo. */
+        if (ps->rest && ((const pm_rest_parameter_node_t *)ps->rest)->name == 0 && ps->posts.size)
+            return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous rest parameter with post parameters");
         req_cnt = (uint32_t)ps->requireds.size;
         opt_cnt = (uint32_t)ps->optionals.size;
         params_cnt = req_cnt + opt_cnt;   /* positional fixed slots; rest/keywords follow */
@@ -1415,7 +1485,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     int32_t rest_slot = -1;
     if (ps && ps->rest) {
         pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        rest_slot = (int32_t)lvar_index(tc, ps->rest, rn);
+        rest_slot = rn ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
+                       : (int32_t)alloc_synth_local(tc);          /* anonymous `*` → synth slot (bare `*` forwards it) */
+        if (!rn) tc->frame->anon_rest_slot = rest_slot;
     }
     /* `def m(...)` — prism gives no locals, so collect ALL positional args into a
      * synth rest local; `inner(...)` in the body splats it (args-only forward;
@@ -1628,7 +1700,15 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     const pm_node_t *last = elems[n - 1];
     bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
     const pm_node_t *expr = splat ? (const pm_node_t *)((const pm_splat_node_t *)last)->expression : last;
-    if (splat && expr == NULL) return build_array(tc, elems, n - 1, capa);   /* bare `*` → nothing */
+    if (splat && expr == NULL) {                        /* bare `*` — anonymous rest forward */
+        const int32_t ars = tc->frame->anon_rest_slot;
+        if (ars < 0) return build_array(tc, elems, n - 1, capa);   /* no anon rest in scope → nothing */
+        NODE *acc0, *elem0;
+        uint32_t sc0 = kind_node_ary_push.slot_count;
+        WITH_CHAIN(tc, sc0, (acc0  = build_array(tc, elems, n - 1, capa),
+                             elem0 = bake_lget(tc, (uint32_t)ars)));   /* splat the collected rest array */
+        return ALLOC_node_ary_concat(acc0, elem0);
+    }
     NODE *acc, *elem;
     uint32_t sc = kind_node_ary_push.slot_count;        /* concat shares the push layout */
     WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
@@ -2422,6 +2502,22 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }  /* yield outside a method: legacy path (raises at runtime) */
         mf->uses_block = true;                   /* the method reserves the block trio */
 
+        /* `yield(*arr)` / `yield a, *b` — build the args Array and spread it at
+         * the block call (one staged child = the array). */
+        bool y_splat = false;
+        for (size_t i = 0; i < yargc; i++)
+            if (PM_NODE_TYPE_P(yn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { y_splat = true; break; }
+        if (y_splat) {
+            NODE *arr;
+            WITH_CHAIN(tc, 1, (arr = build_array(tc, yn->arguments->arguments.nodes, yargc, (uint32_t)yargc)));
+            if (depth == 0)
+                return ALLOC_node_yield_splat(line, -4 - (tc->chain + 1), -3 - (tc->chain + 1), -2 - (tc->chain + 1), arr);
+            NODE *yo = ALLOC_node_yield_outer_splat(line, -2 - (tc->chain + 1), depth, -4, arr);
+            bake_add(tc, &yo->u.node_yield_outer_splat.prev_off);
+            add_bake_to(mf, &yo->u.node_yield_outer_splat.trio_base);
+            return yo;
+        }
+
         if (depth == 0) {                        /* yield at method top-level: read this frame's trio */
             if (yargc == 0)
                 return ALLOC_node_yield0(line, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
@@ -2490,20 +2586,23 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_call(tc, (const pm_call_node_t *)node);
       case PM_DEF_NODE:
         return transduce_def_recv(tc, (const pm_def_node_t *)node, NULL);
-      case PM_SINGLETON_CLASS_NODE: {     /* `class << recv; def m; …; end` → singleton defs on recv */
+      case PM_SINGLETON_CLASS_NODE: {     /* `class << recv; body; end` — run body with self = recv's singleton class */
         const pm_singleton_class_node_t *sc = (const pm_singleton_class_node_t *)node;
-        if (!sc->body || !PM_NODE_TYPE_P(sc->body, PM_STATEMENTS_NODE))
-            return lit_nil();
-        const pm_statements_node_t *st = (const pm_statements_node_t *)sc->body;
-        NODE *acc = NULL;
-        for (uint32_t i = 0; i < st->body.size; i++) {
-            const pm_node_t *s = st->body.nodes[i];
-            if (!PM_NODE_TYPE_P(s, PM_DEF_NODE))
-                return kp_unsupported(tc, s, "class << self body (only method defs)");
-            NODE *d = transduce_def_recv(tc, (const pm_def_node_t *)s, sc->expression);
-            acc = acc ? ALLOC_node_seq(acc, d) : d;
-        }
-        return acc ? acc : lit_nil();
+        /* recv expression evaluated in the ENCLOSING scope → node_sclass's staged child */
+        NODE *recv_node;
+        WITH_CHAIN(tc, 1, (recv_node = transduce(tc, sc->expression)));
+        push_frame(tc, &sc->locals);
+        NODE *body;
+        if (sc->body == NULL)
+            body = lit_nil();
+        else if (PM_NODE_TYPE_P(sc->body, PM_STATEMENTS_NODE))
+            body = transduce_statements(tc, (const pm_statements_node_t *)sc->body);
+        else
+            body = kp_unsupported(tc, sc->body, "singleton class body with rescue/ensure");
+        uint32_t frame_size = pop_frame(tc);
+        NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
+        code_repo_add("sclass", entry, true);       /* its own AOT entry */
+        return ALLOC_node_sclass(entry, recv_node);
       }
       case PM_CLASS_NODE:
         return transduce_class(tc, (const pm_class_node_t *)node);
@@ -2590,6 +2689,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t line = kp_line(tc, node);
         const pm_arguments_node_t *args = sn->arguments;
         size_t argc = args ? args->arguments.size : 0;
+        /* `super(*arr)` / `super(a, *b)` — build the args Array, spread at dispatch
+         * (one staged child = the array; self_off/dc_off like the 1-arg case). */
+        {
+            bool has_splat = false;
+            for (size_t i = 0; i < argc; i++)
+                if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+            if (has_splat) {
+                int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1;
+                NODE *arr;
+                WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                NODE *_s = ALLOC_node_super_splat(m_mid, line, soff, dco, arr);
+                bake_add(tc, &_s->u.node_super_splat.self_off);
+                return _s;
+            }
+        }
         if (argc > 3) return kp_unsupported(tc, node, "super with more than 3 arguments");
         int32_t soff = -1 - tc->chain - (int32_t)argc, dco = -1 - tc->chain - (int32_t)argc;
         NODE *a[3];

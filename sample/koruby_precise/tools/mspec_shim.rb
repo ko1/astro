@@ -624,6 +624,9 @@ end
 def ruby_bug(_id, _v); yield if block_given?; end
 def platform_is(*_opts, &blk); end
 def platform_is_not(*_opts, &blk); blk.call if blk; end
+# Byte-order guards: the host (x86_64) is little-endian.
+def little_endian(&blk); blk.call if blk; end
+def big_endian(&blk); end
 # `not_supported_on(:ruby)` skips on ruby; skip everywhere else.  Treat
 # as "always run" since koruby isn't ruby — be slightly permissive.
 def not_supported_on(*_args, &blk); blk.call if blk; end

@@ -1807,3 +1807,31 @@ p acc.map { |p| p.call }   # CRuby: [0,0,10,20] / koruby: acc が Integer 化し
 (HEAD でも再現、`korb_block_yield` の simple fast path 導入時に発見)。node_eget の
 mixed-chain walk が、closure-escape で中間 env が heap 昇格した際に depth を誤る疑い。
 corpus 未検出 = この patターンが corpus に無いだけ。要 [[project_koruby_precise_toplevel_binding_perf]] の env chain 見直し。
+
+## [FIXED 2026-06-25] forwarded block (KORB_BLK_FWD) が `&blk` param に届くと crash
+
+forwarded proc を `&blk` 引数で受ける method の中で、その `&blk` をさらに別 method に渡すと
+`node_blkparam` → `korb_make_proc` が def_env=KORB_BLK_FWD(0x2) を deref して SIGSEGV だった
+(mspec_shim の `def context(...&blk); describe(name,&blk); end` 経由で多発)。
+fix: node_blkparam で denv が KORB_BLK_FWD のとき CPROC と同様 `&blk = slots[cself_off]`
+(転送 proc 自体) を bind。rubyspec pass +102 (8477→8579)、comparable/enumerable 等の crash 解消。
+
+## [FIXED 2026-06-25] 自己参照構造の hash / <=> / eql? / singleton / FWD-block 系 crash 一掃
+
+rubyspec の unblock 後に到達していた既存 SIGSEGV を多数修正 (make test 89300 維持):
+- `korb_deep_hash` (Object#hash) 無限再帰 → depth cap (KORB_DEEP_HASH_MAX=96)。
+- `korb_cmp_full` (Array#<=>) / `korb_value_eql` (Array#eql?/uniq) 自己参照無限再帰 →
+  先頭に identity short-circuit (`a==b` で 0/true; <=> は float 除外で NaN<=>NaN=nil 維持)。fastpath は同一要素比較が速くなる方向。
+- `class << nil/immediate` が `korb_obj_singleton` で nil deref → nil/true/false は class 返却、
+  Integer/Float/Symbol は TypeError (CRuby 一致)。
+- forwarded Symbol#to_proc (CPROC) を builtin iterator に渡すと `korb_entry_params_cnt(CPROC)` が
+  deref → CPROC は arity 1 を返すよう一点 guard。
+- builtin が block 無しで yield → `korb_block_yield(block==NULL)` deref → LocalJumpError (UNLIKELY guard)。
+- `Hash.new { capturing block }` が make_proc の env walk で odd-tagged def_env を deref →
+  korb_make_proc 冒頭で `|1` tag を strip (全 caller idempotent)。
+crash 数 19→4。
+- 自己参照 container の inspect/to_s 再帰 (array/hash/set) → 深さ cap (KORB_PRINT_DEPTH_MAX=48) で `[...]`/`{...}`/`Set[...]` marker。CTX 可変状態は使わず内部 _d helper に depth thread (public wrapper は depth0)。
+- Proc/Fiber の subclass `.new` が generic object を作って rep/proc 未初期化で crash (proc/new, fiber/new) → builtin-subclass `.new` path に KORB_C_PROC/KORB_C_FIBER を追加 (korb_make_proc/korb_fiber_new で payload 構築 + klass override)。new_kind 分類にも base 追加。
+- Proc subclass / Proc.new(&p) の追加修正: Proc/Fiber subclass instance は ivar を持てない → korb_ivar_get/set を KORB_OBJECT_P 先頭判定に並べ替え + 非object/非class は nil/no-op (fastpath 正)。`Proc.new(&proc/&method)` は forwarded proc (def_env==KORB_BLK_FWD) をそのまま返す + korb_make_proc に CPROC entry guard。
+- lazy enumerator の with_index / each が SELF_ENUM->values(nil) を deref して crash → mode!=0 で korb_lazy_drive materialize (finite で正、infinite は別 redesign)。finite lazy each/with_index が動くように。
+残 crash 2 + timeout 1: proc/curry([[project_koruby_precise_curry_bug]] env_size/nested-lambda の深いバグ、node_eget depth2 + FWD def_env)、enumerator/new(timeout/hang)。lazy 系の infinite は redesign 待ち(crash→clean error/timeout に降格済)。crash 19→2。

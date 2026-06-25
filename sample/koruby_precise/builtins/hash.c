@@ -5,7 +5,12 @@
  * korb_value_hash, which only the Hash open-addressing index uses and covers
  * indexable immediates only).  Immediates/String reuse it; Array/Hash combine
  * element hashes; Float/Bignum hash by value; everything else by identity. */
-static uint64_t korb_deep_hash(VALUE v) {
+/* depth-capped to survive self-referential structures (`a=[]; a<<a; a.hash`):
+ * past KORB_DEEP_HASH_MAX, fold in a constant instead of recursing.  A cycle
+ * recurses the same path each call, so the result stays deterministic and two
+ * structurally-equal recursive containers still hash alike. */
+#define KORB_DEEP_HASH_MAX 96u
+static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
     if (FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE)
         return korb_value_hash(v);
     if (KORB_FLOAT_P(v)) {
@@ -14,17 +19,18 @@ static uint64_t korb_deep_hash(VALUE v) {
         x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29;
         return x;
     }
+    if (depth >= KORB_DEEP_HASH_MAX) return 0xC0FFEEULL;   /* recursion guard */
     if (KORB_ARRAY_P(v)) {
         const KorbArray *a = VAL2ARY(v);
         uint64_t h = 0x345678ULL + a->len;
-        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash(a->items->data[i]);
+        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash_d(a->items->data[i], depth + 1);
         return h;
     }
     if (KORB_HASH_P(v)) {                              /* order-independent (xor) */
         const KorbHash *hh = VAL2HASH(v);
         uint64_t h = 0x9e3779b9ULL + hh->len;
         for (uint32_t i = 0; i < hh->len; i++)
-            h ^= korb_deep_hash(hh->items->data[2*i]) * 31u + korb_deep_hash(hh->items->data[2*i+1]);
+            h ^= korb_deep_hash_d(hh->items->data[2*i], depth + 1) * 31u + korb_deep_hash_d(hh->items->data[2*i+1], depth + 1);
         return h;
     }
 #ifdef KORB_HAVE_GMP
@@ -39,6 +45,7 @@ static uint64_t korb_deep_hash(VALUE v) {
 #endif
     return (uint64_t)(uintptr_t)v;                     /* identity (user objects etc.) */
 }
+static uint64_t korb_deep_hash(VALUE v) { return korb_deep_hash_d(v, 0); }
 static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     return RESULT_OK(LONG2FIX((intptr_t)(korb_deep_hash(VALUE_REF_GET(self)) >> 2)));   /* >>2 keeps it FIXABLE */

@@ -255,6 +255,11 @@ static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                   : korb_class_obj_of(c, sv);
     while (KORB_CLASS_P(cls)) {
         if (cls == target) return RESULT_OK(KORB_TRUE);
+        VALUE pre = VAL2CLASS(cls)->prepended;           /* prepended modules count */
+        if (pre != KORB_NIL) {
+            const KorbArray *pa = VAL2ARY(pre);
+            for (uint32_t j = 0; j < pa->len; j++) if (pa->items->data[j] == target) return RESULT_OK(KORB_TRUE);
+        }
         VALUE inc = VAL2CLASS(cls)->included;            /* included/extended modules count */
         if (inc != KORB_NIL) {
             const KorbArray *ia = VAL2ARY(inc);
@@ -295,6 +300,13 @@ static RESULT korb_m_obj_instance_of(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * be a heap object.  Returns the singleton (rooted via the table). */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
     struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) {
+        /* nil/true/false: the singleton "is" their class (NilClass/TrueClass/FalseClass);
+         * other immediates (Integer/Float/Symbol) can't have one (CRuby raises). */
+        if (obj == KORB_NIL || obj == KORB_TRUE || obj == KORB_FALSE)
+            return RESULT_OK(korb_class_obj_of(c, obj));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
+    }
     if (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS) {
         VALUE ov = korb_klass_override_get(vm, obj);
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) return RESULT_OK(ov);   /* reuse */
@@ -406,6 +418,12 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));        /* result (rooted) */
     slots[1] = VALUE_REF_GET(self);                          /* current class (rooted) */
     while (KORB_CLASS_P(slots[1])) {
+        VALUE pre = VAL2CLASS(slots[1])->prepended;   /* prepended modules precede the class */
+        if (pre != KORB_NIL) {
+            slots[2] = pre;
+            for (uint32_t j = VAL2ARY(slots[2])->len; j-- > 0; )
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[0]), VAL2ARY(slots[2])->items->data[j]));
+        }
         if (!VAL2CLASS(slots[1])->is_singleton)
             CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
         VALUE inc = VAL2CLASS(slots[1])->included;
@@ -445,6 +463,11 @@ static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
     VALUE cls = sub;
     while (KORB_CLASS_P(cls)) {
         if (cls == sup) return true;
+        VALUE pre = VAL2CLASS(cls)->prepended;
+        if (pre != KORB_NIL) {
+            const KorbArray *pa = VAL2ARY(pre);
+            for (uint32_t j = 0; j < pa->len; j++) if (pa->items->data[j] == sup) return true;
+        }
         VALUE inc = VAL2CLASS(cls)->included;
         if (inc != KORB_NIL) {
             const KorbArray *ia = VAL2ARY(inc);
@@ -537,6 +560,62 @@ static RESULT korb_m_class_include_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         cls = VAL2CLASS(cls)->superclass;
     }
     return RESULT_OK(KORB_FALSE);
+}
+/* Module#include(mod...) / Module#prepend(mod...) — explicit-receiver form (the
+ * bare class-body `include`/`prepend` is special-cased in korb_call_impl). */
+static RESULT korb_m_class_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_do_include(c, slots, VALUE_REF_GET(self), a);
+}
+static RESULT korb_m_class_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_do_prepend(c, slots, VALUE_REF_GET(self), a);
+}
+/* Module#const_set(name, value) — koruby's const table is flat (global), so this
+ * defines/overwrites the named constant. Returns the value. */
+static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(id == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE val = VALUE_SLICE_GET(a, 1);
+    korb_const_define(c, id, val);              /* libc realloc only → no GC move of val */
+    return RESULT_OK(val);
+}
+/* Module#remove_method(sym...) — drop the named method(s) from THIS class (a
+ * sentinel mid retires the slot; lookup then falls through to ancestors). Raises
+ * NameError if a name isn't defined on the class itself. */
+static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    KorbClass *const k = VAL2CLASS(cls);
+    for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
+        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));
+        if (UNLIKELY(mid == UINT32_MAX))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
+        bool found = false;
+        for (uint32_t i = 0; i < k->method_cnt; i++)
+            if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; break; }
+        if (!found)
+            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), korb_type_name(cls));
+    }
+    c->vm->method_serial++;                     /* method table changed → flush caches */
+    return RESULT_OK(cls);
+}
+/* Module#undef_method(sym...) — prevent the named method(s) from this class.
+ * Approximated as remove-if-present (no inherited-block marker); a name absent
+ * from this class is tolerated so it doesn't re-block the file. */
+static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    KorbClass *const k = VAL2CLASS(cls);
+    for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
+        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));
+        if (UNLIKELY(mid == UINT32_MAX))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
+        for (uint32_t i = 0; i < k->method_cnt; i++)
+            if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; break; }
+    }
+    c->vm->method_serial++;
+    return RESULT_OK(cls);
 }
 /* Module#method_defined?(sym|str[, inherit]) — true if an instance method by
  * that name is defined on the class / its ancestors (koruby doesn't track

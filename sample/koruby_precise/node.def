@@ -866,6 +866,16 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, VALUE_R
     return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0);
 }
 
+// `class << recv ... end` — run the body with self = recv's singleton class.
+// recv is staged as the child (evaluated in the enclosing scope); the body is a
+// per-process node_entry pointer (not bakeable) → @noinline.
+NODE_DEF @noinline
+node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
+{
+    (void)n; (void)body_dispatcher;
+    return korb_sclass_body(c, slots, body, VALUE_REF_GET(recv));
+}
+
 // `module Name ... end` — like node_class but creates a module (no superclass,
 // not instantiable; mixed into classes via `include`).
 NODE_DEF @noinline
@@ -919,6 +929,21 @@ node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t 
 {
     (void)n; (void)a0; (void)a1; (void)a2;
     return korb_super(c, slots, mid, line, 3, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
+}
+
+// `super(*arr)` — explicit super with splat args.  `args` is the built args
+// Array; spread it above the cursor and dispatch with a runtime argc.  Stages
+// one child (the array), so self_off/dc_off match node_super1's.
+NODE_DEF
+node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr  = slots[-1];                         /* the staged args array */
+    const VALUE dc   = slots[dc_off];
+    const VALUE self = slots[self_off];
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL);
 }
 
 // constant read (`Foo`) — classes only for now.  Inline cache: the const table
@@ -1057,6 +1082,53 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
     return korb_call(c, slots + 3 + N, mid, line, cc, N, self);
 }
 
+// ---- call-site splat WITH a literal/&:sym block: f(*arr) { ... } -----------
+//
+// Like node_call_splat, but threads a block (a node_entry).  `args` is the
+// pre-built arguments Array; spread it above the callee's bottom-header cells
+// and dispatch via korb_call_blk.  self_off reads the caller self (= callee
+// self for an implicit call = the block's captured lexical self); def_env_off
+// (tagged |1u) addresses the caller frame base where the block's free vars live.
+// @noinline: the block operand is a per-process NODE pointer (not bakeable), so
+// this stays interpreter-dispatched; the block body (node_entry) keeps its own
+// AOT entry.
+NODE_DEF @noinline
+node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF args@child)
+{
+    (void)n; (void)args; (void)block_dispatcher;
+    const VALUE self = slots[self_off];
+    const VALUE arr = slots[-1];                          /* the staged args array */
+    const uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = 0;                                         /* base[-3] (magic) */
+    slots[1] = 0;                                         /* base[-2] (EP)    */
+    slots[2] = self;                                      /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[3 + i] = VAL2ARY(arr)->items->data[i];
+    return korb_call_blk(c, slots + 3 + N, mid, line, cc, N, self, block,
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
+}
+
+// `f(*arr, &proc)` (implicit self) — splat call forwarding a runtime Proc.
+// Like node_call_blkproc but positionals come from the built Array.
+NODE_DEF @noinline
+node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t proc_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    const VALUE pv = slots[proc_off];
+    const VALUE self = slots[self_off];
+    const VALUE arr = slots[-1];
+    const uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = 0;                                         /* base[-3] (magic) */
+    slots[1] = 0;                                         /* base[-2] (EP)    */
+    slots[2] = self;                                      /* base[-1] (self)  */
+    for (uint32_t i = 0; i < N; i++) slots[3 + i] = VAL2ARY(arr)->items->data[i];
+    if (pv == KORB_NIL) return korb_call(c, slots + 3 + N, mid, line, cc, N, self);   /* &nil → no block */
+    NODE *iseq = VAL2PROC(pv)->iseq;
+    if (iseq == NULL) iseq = KORB_BLK_CPROC;
+    return korb_call_blk(c, slots + 3 + N, mid, line, cc, N, self, iseq, KORB_BLK_FWD, &slots[proc_off]);
+}
+
 // ---- receiver method dispatch (x.foo) — built-in methods on core types -----
 //
 // recv is staged first, then args: [recv | a0 | a1 ...] at slots[-(argc+1)..-1].
@@ -1120,6 +1192,47 @@ node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALU
     slots[0] = rv;
     for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
     return korb_send(c, slots + N + 1, mid, line, N);
+}
+
+// receiver call with splat AND a literal/&:sym block: recv.m(*arr) { ... }.
+// Like node_send_splat, but threads a block (node_entry) via korb_send_blk.
+// self_off reads the caller self (block's captured lexical self); def_env_off
+// (tagged |1u) is the caller frame base.  @noinline for the same reason as
+// node_call_splat_blk (per-process block NODE pointer).
+NODE_DEF @noinline
+node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF args@child)
+{
+    (void)n; (void)recv; (void)args; (void)block_dispatcher;
+    const VALUE rv = slots[-2];
+    const VALUE arr = slots[-1];
+    const uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
+    return korb_send_blk(c, slots + N + 1, mid, line, N, block,
+                         (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off]);
+}
+
+// `recv.m(*arr, &proc)` — receiver call with splat AND a forwarded runtime Proc.
+// Like node_send_blkproc but the positional args come from the built Array.
+// proc_off is a rooted caller-frame slot holding the &-expression; coerce it to
+// a Proc, then dispatch with KORB_BLK_FWD (korb_block_yield re-reads proc->env
+// per yield, so a moved escaped env is never stale).
+NODE_DEF @noinline
+node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, VALUE_REF recv@child, VALUE_REF args@child)
+{
+    (void)n; (void)recv; (void)args;
+    RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    const VALUE pv = slots[proc_off];
+    const VALUE rv = slots[-2];
+    const VALUE arr = slots[-1];
+    const uint32_t N = VAL2ARY(arr)->len;
+    slots[0] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[1 + i] = VAL2ARY(arr)->items->data[i];
+    if (pv == KORB_NIL) return korb_send(c, slots + N + 1, mid, line, N);   /* &nil → no block */
+    NODE *iseq = VAL2PROC(pv)->iseq;
+    if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
+    return korb_send_blk(c, slots + N + 1, mid, line, N, iseq, KORB_BLK_FWD, &slots[proc_off]);
 }
 
 // `recv[idx]` — type-fast-path for Array + fixnum index (the hot case); any
@@ -1341,6 +1454,10 @@ node_blkparam(CTX *c, NODE *n, VALUE *slots, int32_t dst_off, int32_t biseq_off,
         return RESULT_OK(slots[cself_off]);
     }
     VALUE *denv = (VALUE *)(uintptr_t)((uintptr_t)slots[def_env_off] & ~(uintptr_t)1u);
+    if (denv == KORB_BLK_FWD) {                          /* &b of a forwarded runtime Proc: hand back the proc itself */
+        slots[dst_off] = slots[cself_off];               /* cself holds the forwarded Proc */
+        return RESULT_OK(slots[cself_off]);
+    }
     VALUE cself = slots[cself_off];
     RESULT pr = korb_make_proc(c, slots, iseq, denv, cself, 0);
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
@@ -1422,6 +1539,21 @@ node_yield_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, in
     return korb_yield(c, slots, argv_cnt, line, slots[biseq_off], slots[def_env_off], &slots[cself_off]);
 }
 
+// `yield(*arr)` / `yield a, *b` at method top-level: `args` is the built args
+// Array; spread it above the cursor and yield with a runtime argc.  Stages one
+// child (the array), so the trio offsets match node_yield1's.
+NODE_DEF
+node_yield_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr = slots[-1];                          /* the staged args array */
+    const VALUE biseq = slots[biseq_off];
+    const VALUE denv  = slots[def_env_off];
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_yield(c, slots + N, N, line, biseq, denv, &slots[cself_off]);
+}
+
 // yield from INSIDE a block: `prev_off` reads this block frame's PREV handle;
 // korb_yield_outer walks `depth` env links to the enclosing method frame and
 // reads its block trio at node[trio_base..trio_base+2] (trio_base = method
@@ -1447,6 +1579,19 @@ node_yield_outer_n(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_of
 {
     (void)n;
     return korb_yield_outer(c, slots, argv_cnt, line, slots[prev_off], depth, trio_base);
+}
+
+// `yield(*arr)` from inside a block: spread the built args Array, then yield to
+// the enclosing method's block (one staged child, like node_yield_outer1).
+NODE_DEF
+node_yield_outer_splat(CTX *c, NODE *n, VALUE *slots, uint32_t line, int32_t prev_off, uint32_t depth, int32_t trio_base, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr = slots[-1];
+    const VALUE prev = slots[prev_off];
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_yield_outer(c, slots + N, N, line, prev, depth, trio_base);
 }
 
 // block_given? — reads the frame-top biseq cell (odd-tagged when a block was
@@ -1484,6 +1629,7 @@ node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, st
 {
     (void)n;
     VALUE self = slots[self_off];
+    if (KORB_CLASS_P(self)) return RESULT_OK(korb_ivar_get(c, self, ID2SYM(name)));   /* class object's own @ivars */
     if (!KORB_OBJECT_P(self)) return RESULT_OK(KORB_NIL);   /* @x on non-object self → nil */
     const KorbObject *const o = VAL2OBJ(self);
     /* shape inline cache: a hit guarantees the slot is valid for this layout. */
@@ -1498,6 +1644,8 @@ NODE_DEF
 node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VALUE val@child, struct korb_ivcache *ic@ref)
 {
     (void)n;
+    if (KORB_CLASS_P(slots[self_off]))                /* class object's own @ivars → side hash */
+        return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
     if (UNLIKELY(!KORB_OBJECT_P(slots[self_off])))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "instance variable set on a non-object self");
     KorbObject *const o = VAL2OBJ(slots[self_off]);
