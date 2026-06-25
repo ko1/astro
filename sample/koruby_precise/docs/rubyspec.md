@@ -88,3 +88,9 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - **block body の rescue/ensure** (`foo { ... rescue ... }` / `{ begin..ensure..end }`): def body と同様 PM_BEGIN_NODE を transduce するだけ (kp_unsupported を撤廃)。汎用機能で example レベルにも波及。
 - **定数パス代入** `A::B = value` (PM_CONSTANT_PATH_WRITE_NODE): flat const table の rightmost name へ。namespaced 名 [[cont.6]] の対。
 - 全て CRuby 一致 / make test 89392 / STRESS / AOT green。corpus に block_rescue.rb + nesting_namespace.rb 追記。
+
+## 2026-06-25 (cont.10) class method 継承 (metaclass hierarchy)
+- これまで `def self.foo` を持つ Parent を継承した Child で `Child.foo` が呼べなかった (singleton class の super が Class で metaclass 階層が無かった)。
+- 修正2点: (1) korb_obj_singleton で class の singleton の super = parent class の singleton (lazy+memoized recursion)。(2) korb_dispatch_class で own singleton 無しの class は最寄り ancestor の singleton を dispatch class に。
+- `Child.class_method` (継承)、2段継承、own+inherited mix、`class << self; alias_method :x, :inherited_cm` 全て CRuby 一致。unboundmethod fixture 等の alias_method class_method(13) を解消。汎用機能。
+- make test 89399 / STRESS+PURGE / AOT green。corpus に class_method_inherit.rb 追加。

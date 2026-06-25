@@ -3027,6 +3027,15 @@ korb_dispatch_class(CTX *c, VALUE self)
         const VALUE ov = korb_klass_override_get(vm, self);   /* raw: singleton kept */
         if (ov != KORB_NIL) return ov;
     }
+    if (KORB_CLASS_P(self)) {
+        /* a class with no own singleton: dispatch through the nearest ancestor's
+         * singleton so inherited class methods (def self.x in a parent) are found. */
+        for (VALUE k = VAL2CLASS(self)->superclass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+            if (((const AroObjectHeader *)(uintptr_t)k)->flags & KORB_FL_HAS_KLASS) {
+                const VALUE ov = korb_klass_override_get(vm, k);
+                if (KORB_CLASS_P(ov)) return ov;
+            }
+    }
     if (KORB_EXC_P(self)) {
         if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass → its MRO */
         const uint32_t et = VAL2EXC(self)->etype;

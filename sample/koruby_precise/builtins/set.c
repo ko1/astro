@@ -312,8 +312,22 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) return RESULT_OK(ov);   /* reuse */
     }
     slots[0] = obj;                                                              /* root self across class alloc */
-    VALUE cur = (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS)
-                  ? korb_klass_override_get(vm, obj) : korb_class_obj_of(c, obj);
+    VALUE cur;
+    if (KORB_CLASS_P(obj) && !VAL2CLASS(obj)->is_singleton) {
+        /* metaclass hierarchy: a class's singleton inherits from its PARENT class's
+         * singleton (built lazily + memoized), so subclasses inherit class methods. */
+        const VALUE parent = VAL2CLASS(obj)->superclass;
+        if (KORB_CLASS_P(parent)) {
+            cur = UNWRAP(korb_obj_singleton(c, slots + 2, parent));              /* parent metaclass (recursion; GC may move obj) */
+            obj = slots[0];                                                      /* re-read */
+        } else {
+            cur = korb_class_obj_of(c, slots[0]);                               /* top of the chain → Class */
+        }
+    } else if (((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_KLASS) {
+        cur = korb_klass_override_get(vm, obj);
+    } else {
+        cur = korb_class_obj_of(c, slots[0]);
+    }
     slots[1] = cur;
     VALUE sing = UNWRAP(korb_class_new(c, slots + 2, 0, slots[1]));               /* anonymous, super=cur */
     VAL2CLASS(sing)->is_singleton = 1;
