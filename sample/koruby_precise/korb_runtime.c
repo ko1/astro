@@ -6078,6 +6078,16 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
+    /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
+    korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "protected", korb_m_visibility_noop, -1);
+    /* `refine(Klass) { ... }` (refinements) — koruby has no refinement scoping;
+     * treat as a no-op returning a fresh module so the call site doesn't raise. */
+    korb_def_cmethod(c, KORB_C_CLASS,  "refine", korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "refine", korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "using",  korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_CLASS,  "using",  korb_m_lit_nil, -1);
     /* constant/method visibility — koruby tracks no visibility, so these are
      * no-ops returning their argument (matches `private`/`public`). */
     korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_visibility_noop, -1);
@@ -6085,6 +6095,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_lit_nil, -1);   /* source location not tracked */
+    /* autoload(:Const, "path") — koruby can't lazily load files, so it's a no-op
+     * (the const stays undefined); autoload?(:Const) → nil.  Registered on both
+     * Object (top-level / instance) and Class (class body / Module.autoload). */
+    korb_def_cmethod(c, KORB_C_CLASS,  "autoload",  korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_CLASS,  "autoload?", korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "autoload",  korb_m_lit_nil, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "autoload?", korb_m_lit_nil, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);

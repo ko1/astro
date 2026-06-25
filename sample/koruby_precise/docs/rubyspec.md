@@ -78,3 +78,8 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - shim の `fixture()` helper (File.expand_path/join/dirname 依存) + File パス spec を unblock。file/basename pass=69 等。
 - **GC 罠**: dirname/basename/extname が source heap string への ptr を korb_str_new に渡し、STRESS で alloc 中に source が move して stale read → SEGV。local C buffer に memcpy してから str_new で修正 (join/expand_path は元々 local buffer 構築で安全)。STRESS の存在意義そのもの。
 - 累計 (session): pass 7551→**11010 (+3459)** / pass-rate 49%→61.7%。corpus に file_path.rb 追加。
+
+## 2026-06-25 (cont.8) no-op stub で whole-file-fail を unblock
+- top blocker の `autoload`(64) / top-level `public`/`private`(6) / `refine`・`using`(6) を no-op stub で unblock (≈76 file)。
+- autoload は koruby が file を lazy load できないので no-op (autoload? は nil 返す = CRuby の path と divergent。const は未定義のまま)。refine/using は refinement scoping 無しの no-op。これらは CRuby と挙動が違うので corpus には足さない (diff 不一致になるため)。
+- make test 89386 green。次は IO(60)/Thread(41) stdlib。
