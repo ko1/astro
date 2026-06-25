@@ -4941,7 +4941,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     if (UNLIKELY(m == NULL)) {
         /* `main` (klass-less): top-level defs live in the global function table,
          * which CRuby exposes as private Object methods reachable via send. */
-        if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) {
+        /* Kernel builtins (raise/puts/p/format/loop/...) and top-level defs are
+         * private Object methods in CRuby, so an implicit-self call reaches them
+         * from ANY object (not just the toplevel main).  Try the global table
+         * before method_missing. */
+        {
             struct korb_method *const gm = korb_method_lookup(vm, mid);
             if (gm) return korb_dispatch_method(c, slots, gm, mid, line, argc, KORB_NIL, block, def_env, captured_self);
         }
