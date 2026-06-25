@@ -12,6 +12,24 @@ TRL  = File.read("#{HERE}/tools/mspec_trailer.rb")
 dir  = ARGV[0] || "#{ENV['HOME']}/ruby/src/master/spec/ruby/core"
 jobs = (ARGV[1] || 16).to_i
 files = Dir.glob("#{dir}/**/*_spec.rb").sort
+
+# Resolve require_relative fixtures/shared files (koruby has no working require),
+# concatenating them before the spec so helper classes/shared blocks are defined.
+# spec_helper / mspec / fixtures that pull in mspec are skipped (the shim covers them).
+def resolve_requires(path, seen)
+  return "" if seen.include?(path) || !File.file?(path)
+  seen << path
+  src = File.read(path)
+  out = +""
+  src.scan(/^\s*require_relative\s+['"]([^'"]+)['"]/) do |rel,|
+    next if rel =~ /spec_helper|\bmspec\b/
+    dep = File.expand_path(rel, File.dirname(path)) + ".rb"
+    out << resolve_requires(dep, seen)
+  end
+  out << src << "\n"
+  out
+end
+
 tot = Hash.new(0); per_file = {}
 q = Queue.new; files.each { |f| q << f }
 mutex = Mutex.new
@@ -20,7 +38,7 @@ workers = Array.new([jobs, files.size].min) do |w|
     tmp = "#{ENV['TMPDIR'] || '/tmp'}/rsr_#{Process.pid}_#{w}.rb"
     loop do
       f = (q.pop(true) rescue break)
-      File.write(tmp, SHIM + "\n" + File.read(f) + "\n" + TRL)
+      File.write(tmp, SHIM + "\n" + resolve_requires(f, []) + "\n" + TRL)
       out, _e, st = Open3.capture3('timeout', '-k', '2', '25', BIN, tmp)
       code = st.exited? ? st.exitstatus : (128 + (st.termsig || 0))
       m = out.lines.reverse.find { |l| l =~ /\Apass=(\d+) fail=(\d+) err=(\d+) skip=(\d+)/ }
