@@ -316,6 +316,14 @@ static RESULT korb_m_obj_singleton_class(CTX *c, VALUE *slots, VALUE_REF self, V
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
     return korb_obj_singleton(c, slots, sv);
 }
+/* Object#define_singleton_method(name, &block|proc) — define_method on self's
+ * singleton class. */
+static RESULT korb_m_obj_define_singleton_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    RESULT sc = korb_m_obj_singleton_class(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
+    slots[0] = sc.value;                                  /* root the singleton class across define_method */
+    return korb_m_define_method(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+}
 /* (singleton class)#attached_object — reverse the obj→singleton table. */
 static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; struct korb_vm *const vm = c->vm; VALUE cls = VALUE_REF_GET(self);
