@@ -1787,6 +1787,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_NIL_NODE:   return ALLOC_node_lit(KORB_NIL);
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
+      case PM_SOURCE_FILE_NODE: return ALLOC_node_str(tc->fname, (uint32_t)strlen(tc->fname));   /* __FILE__ */
+      case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)kp_line(tc, node)));    /* __LINE__ */
 
       /* ---- self / instance variables (self cell at base[fs-1], -1-chain) ---- */
       case PM_SELF_NODE:
