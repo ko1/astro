@@ -19,9 +19,9 @@ files = Dir.glob("#{dir}/**/*_spec.rb").sort
 def resolve_requires(path, seen)
   return "" if seen.include?(path) || !File.file?(path)
   seen << path
-  src = File.read(path)
-  out = +""
-  src.scan(/^\s*require_relative\s+['"]([^'"]+)['"]/) do |rel,|
+  src = File.binread(path).force_encoding('UTF-8')   # fixtures may hold non-UTF-8 bytes; scan ASCII directives safely
+  out = +"".b.force_encoding('UTF-8')
+  src.scrub.scan(/^\s*require_relative\s+['"]([^'"]+)['"]/) do |rel,|
     next if rel =~ /spec_helper|\bmspec\b/
     dep = File.expand_path(rel, File.dirname(path)) + ".rb"
     out << resolve_requires(dep, seen)
