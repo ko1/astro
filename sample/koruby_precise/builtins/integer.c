@@ -421,6 +421,10 @@ static RESULT korb_m_num_angle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_num_real_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
 static RESULT korb_m_lit_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 static RESULT korb_m_lit_nil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
+/* `caller` / `caller_locations`: koruby keeps no walkable file:line call stack, so
+ * return an empty Array (as at top level) — unblocks call sites; the backtrace
+ * CONTENT specs still fail.  Real backtraces need per-frame line tracking. */
+static RESULT korb_m_empty_ary(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_ary_new(c, slots, 0); }
 /* to_c on a real: Complex(self, 0). */
 static RESULT korb_m_num_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_cpx_new(c, slots, VALUE_REF_GET(self), LONG2FIX(0)); }
 /* polar of a real: [magnitude, angle]. magnitude=abs(self) (same class), angle per korb_m_num_angle. */

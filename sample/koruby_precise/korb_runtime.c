@@ -6114,6 +6114,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS,  "autoload?", korb_m_lit_nil, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "autoload",  korb_m_lit_nil, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "autoload?", korb_m_lit_nil, -1);
+    /* caller / caller_locations: no walkable call stack → empty Array (stub). */
+    korb_def_cmethod(c, KORB_C_OBJECT, "caller",           korb_m_empty_ary, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "caller_locations", korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
