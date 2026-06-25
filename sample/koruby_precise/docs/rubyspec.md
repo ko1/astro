@@ -71,3 +71,10 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - **Module.nesting**: kp_frame に class_name_sym 追加、transduce_class/module で set。`Module.nesting` を parse-time 特殊化し enclosing class/module の const 名を innermost-first で bake、runtime (node_nesting) で flat const table から live class object を解決して配列化。flat const なので表示名は `Bar`(vs CRuby `Foo::Bar`) だが配列構造・object は正しい。
 - **namespaced class/module 名** (`class A::B` / `module A::B`): parse 拒否を撤廃。flat const table なので namespace path を無視し rightmost name (cn->name) を global 定義。
 - module/fixtures/classes.rb (≈63 module spec が require) の nesting/namespaced ブロッカーを突破 (次は File stdlib)。make test 89360 / STRESS green。corpus に nesting_namespace.rb 追加。
+
+## 2026-06-25 (cont.7) stdlib 着手: File パス系メソッド
+- pass 10855→**11010 (+155)** / file-clean 456→**470** / pass-rate 60.9%→**61.7%**。
+- builtins/file.c 新規: File class + class method (expand_path / join / dirname / basename / extname)。純粋な文字列操作 (実 I/O なし)。Math module の登録パターンを踏襲 (korb_init_file)。
+- shim の `fixture()` helper (File.expand_path/join/dirname 依存) + File パス spec を unblock。file/basename pass=69 等。
+- **GC 罠**: dirname/basename/extname が source heap string への ptr を korb_str_new に渡し、STRESS で alloc 中に source が move して stale read → SEGV。local C buffer に memcpy してから str_new で修正 (join/expand_path は元々 local buffer 構築で安全)。STRESS の存在意義そのもの。
+- 累計 (session): pass 7551→**11010 (+3459)** / pass-rate 49%→61.7%。corpus に file_path.rb 追加。

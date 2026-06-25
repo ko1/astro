@@ -5375,6 +5375,7 @@ static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv,
 #include "builtins/enumerator.c"
 #include "builtins/set.c"
 #include "builtins/math.c"
+#include "builtins/file.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
 #include "builtins/hash.c"
@@ -7490,6 +7491,7 @@ korb_ctx_new(void)
     korb_init_builtin_classes(c, c->slots);
     korb_init_exception_classes(c, c->slots);
     korb_init_math(c, c->slots);
+    korb_init_file(c, c->slots);
     korb_register_core_methods(c);
 
     /* resolve dispatch-hot method names once (see struct korb_vm). */
