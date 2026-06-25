@@ -1278,6 +1278,15 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
     return EVAL_ARG(c, body);
 }
 
+// `alias new old` — copy the method `old` to `new` on the enclosing class
+// (self at base[self_off]).  Bare names are interned to ids at parse time.
+NODE_DEF
+node_alias(CTX *c, NODE *n, VALUE *slots, uint32_t new_sym, uint32_t old_sym, int32_t self_off)
+{
+    (void)n;
+    return korb_do_alias(c, slots, slots[self_off], new_sym, old_sym);
+}
+
 // Call with a literal block.  `def_env_off` is parse-baked: &slots[def_env_off]
 // is the CALLER's frame base = where the block's captured outer vars live.
 // @noinline: the block operand is a per-process NODE pointer (not bakeable),

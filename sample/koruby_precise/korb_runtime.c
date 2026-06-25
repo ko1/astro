@@ -2193,6 +2193,30 @@ static bool korb_class_has_ancestor(VALUE klass, VALUE anc) {
     }
     return false;
 }
+/* Copy the method `oldm` (found on klass / its ancestors / the global table) into
+ * a new slot `newm` on klass.  Shared by Module#alias_method and `alias`. */
+RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t oldm) {
+    if (UNLIKELY(!KORB_CLASS_P(klass)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
+    const struct korb_method *src = korb_class_find_method(klass, oldm, NULL);
+    if (src == NULL) src = korb_method_lookup(c->vm, oldm);
+    if (UNLIKELY(src == NULL))
+        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for class '%s'",
+                          korb_sym_name(c->vm, oldm), korb_type_name(klass));
+    struct korb_method *dst = korb_class_method_slot(VAL2CLASS(klass), newm);   /* libc alloc, no GC */
+    const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
+    *dst = tmp; dst->mid = newm; dst->owner = klass;
+    c->vm->method_serial++;
+    return RESULT_OK(ID2SYM(newm));
+}
+/* Module#alias_method(new, old) → new name symbol. */
+static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t newm = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    const uint32_t oldm = korb_bind_argsym(c, VALUE_SLICE_GET(a, 1));
+    if (UNLIKELY(newm == UINT32_MAX || oldm == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "argument must be a symbol or string");
+    return korb_do_alias(c, slots, VALUE_REF_GET(self), newm, oldm);
+}
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
@@ -5830,6 +5854,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "alias_method", korb_m_class_alias_method, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);

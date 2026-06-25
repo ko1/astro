@@ -1784,6 +1784,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t id = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len);
         return ALLOC_node_lit(ID2SYM(id));
       }
+      case PM_ALIAS_METHOD_NODE: {   /* alias new old — copy a method on the enclosing class */
+        const pm_alias_method_node_t *al = (const pm_alias_method_node_t *)node;
+        uint32_t nm = UINT32_MAX, om = UINT32_MAX;
+        if (PM_NODE_TYPE_P(al->new_name, PM_SYMBOL_NODE)) { const pm_symbol_node_t *s = (const pm_symbol_node_t *)al->new_name; nm = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped)); }
+        if (PM_NODE_TYPE_P(al->old_name, PM_SYMBOL_NODE)) { const pm_symbol_node_t *s = (const pm_symbol_node_t *)al->old_name; om = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped)); }
+        if (nm == UINT32_MAX || om == UINT32_MAX) return kp_unsupported(tc, node, "alias with a dynamic-symbol name");
+        NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain);   /* self (the class) at base[-1] */
+        bake_add(tc, &na->u.node_alias.self_off);
+        return na;
+      }
       case PM_NIL_NODE:   return ALLOC_node_lit(KORB_NIL);
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);

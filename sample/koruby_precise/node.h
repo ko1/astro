@@ -157,6 +157,9 @@ RESULT korb_hash_merge_val(CTX *c, VALUE *slots, VALUE_REF href, VALUE src);
 /* Range (korb_runtime.c) — begin staged (rooted), end by value */
 RESULT korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude_end);
 
+/* alias new old (and Module#alias_method) — copy a method under a new name. */
+RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t oldm);
+
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
 VALUE  korb_ivar_get(CTX *c, VALUE self, VALUE name_sym);
