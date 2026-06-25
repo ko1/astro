@@ -438,8 +438,7 @@ astro_cs_load(NODE *n, const char *file)
             node_dispatcher_func_t func = astro_cs_dlsym(sym_name);
             if (func) {
                 // Name + hash_opt reflect the Hopt that actually loaded.
-                char *name = malloc(strlen(sym_name) + 1);
-                strcpy(name, sym_name);
+                char *name = strdup(sym_name);
                 n->head.dispatcher_name = name;
                 n->head.hash_opt = hopt;
                 n->head.flags.has_hash_opt = true;
