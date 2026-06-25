@@ -94,3 +94,8 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - 修正2点: (1) korb_obj_singleton で class の singleton の super = parent class の singleton (lazy+memoized recursion)。(2) korb_dispatch_class で own singleton 無しの class は最寄り ancestor の singleton を dispatch class に。
 - `Child.class_method` (継承)、2段継承、own+inherited mix、`class << self; alias_method :x, :inherited_cm` 全て CRuby 一致。unboundmethod fixture 等の alias_method class_method(13) を解消。汎用機能。
 - make test 89399 / STRESS+PURGE / AOT green。corpus に class_method_inherit.rb 追加。
+
+## 2026-06-25 (cont.11) 最後の実 crash 撲滅 + Time class
+- **実 SEGV を 0 に**: proc/curry の crash は env_size bug ではなく `instance_exec(&forwarded_proc)` が FWD captured_self を新 receiver で上書きして VAL2PROC(receiver)->env を読んでいたバグ。同系で `define_method(:x, &forwarded_proc)` も修正 (FWD なら cself の proc をそのまま使う)。crash 19→**0** (残 enumerator/new は timeout のみ)。
+- **Time class** (builtins/time.c): double epoch backing。Time.now/at/utc/gm/local/mktime/new、year/mon/day/hour/min/sec/wday/yday/usec、to_i/to_f、+ - <=> ==、Comparable、strftime、to_s、utc?/getutc/getlocal。tz は localtime/gmtime、leap sec 無視。corpus に time_basic.rb (deterministic UTC)。
+- make test 89406 / STRESS+PURGE / AOT green。
