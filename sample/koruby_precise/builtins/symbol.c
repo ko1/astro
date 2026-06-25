@@ -331,9 +331,17 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
     else if (KORB_STRING_P(nv)) mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
     const VALUE cls = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL))
+    if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL)) {
+        /* koruby keeps Kernel's instance methods (respond_to?/freeze/class/...) on
+         * Object; `Kernel.instance_method(:x)` must still find them there. */
+        if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym == korb_intern(c->vm, "Kernel", 6)) {
+            const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+            if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)
+                return korb_unbound_new(c, slots, cls, mid);   /* owned by Kernel (module): binds anywhere */
+        }
         return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for class '%s'",
                           korb_sym_name(c->vm, mid), korb_type_name(cls));
+    }
     return korb_unbound_new(c, slots, cls, mid);
 }
 /* Method#unbind → UnboundMethod owned by the receiver's class. */

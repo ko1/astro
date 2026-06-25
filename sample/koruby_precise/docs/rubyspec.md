@@ -56,3 +56,13 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - 残 crash 7 (深部/既知): proc/curry(既知) / lazy enumerator 再設計待ち (with_index,to_enum) / fiber machinery / proc/new 未初期化 block cell / set/to_s 自己参照 print (seen-set 要) / enumerator/new timeout。
 - 累計 (session 全体): pass 7551→**8689 (+1138)** / file-clean 395→435 / whole-file-fail 562→436。
 - 見送り (fastpath/risk 配慮): private/protected 可視性追跡 (送信側 IC fast path に check が要りホットパス劣化のため)。undef_method は inherited-block marker 無しの近似のまま。
+
+## 2026-06-25 (cont.5) kernel fixture gauntlet 突破 → pass +2121
+- pass 8707→**10828 (+2121)** / file-clean 436→**455** / whole-file-fail 433→**359** / pass-rate 56.7%→**61.0%**。
+- kernel/fixtures/classes.rb (88 kernel spec が require) が連鎖的に複数機能で whole-file-fail していたのを突破:
+  1. `Kernel.instance_method(:x)` — koruby は Kernel の instance method を Object に置くので、Kernel lookup を Object へ fall-through (owned by Kernel module)。
+  2. `define_method(sym, UnboundMethod)` — module-owned method は subclass check skip + body を Object から解決 (BasicObject subclass にも bind 可)。
+  3. `undef foo, :bar` keyword (PM_UNDEF_NODE) — node_undef で self の method を retire。
+  4. **required-after-optional `def m(a=1, b)`** (post-without-rest) — parse 拒否撤廃 + korb_invoke_method の post binding を no-rest 対応 (post_base = rest? rest+1 : params_cnt、arity max = params_cnt+post_cnt)。これは汎用機能で多数 spec に波及し +2121 の主因。
+- 全て CRuby 一致 / make test 89348 / STRESS+PURGE / corpus に params_undef.rb 追加。
+- 累計 (session): pass 7551→**10828 (+3277)** / file-clean 395→455 / whole-file-fail 562→359 / pass-rate 49%→61%。

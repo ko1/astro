@@ -1430,9 +1430,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding block parameter (&)");
             blk_param_name = ps->block->name;
         }
-        if (ps->posts.size && !ps->rest) {     /* posts only appear after a rest in Ruby */
-            return kp_unsupported(tc, (const pm_node_t *)dn, "post parameters without rest");
-        }
+        /* posts without a rest = required params after optionals, e.g. `def m(a=1, b)`:
+         * supported — they bind from the tail, optionals fill the middle. */
         if (ps->rest && !PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE))
             return kp_unsupported(tc, (const pm_node_t *)dn, "forwarding rest parameter");
         /* anonymous `*` rest collects surplus args into a synth local (the body
@@ -1500,12 +1499,15 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     /* post params (after *rest): plain requireds occupying the slots right after
      * the rest slot, bound from the tail of the positional args. */
     uint32_t post_cnt = ps ? (uint32_t)ps->posts.size : 0;
+    /* posts follow the rest slot when there is one, else they follow the
+     * optionals (locals[params_cnt..]) — required-after-optional. */
+    const uint32_t post_base = (rest_slot >= 0) ? (uint32_t)rest_slot + 1 : params_cnt;
     for (uint32_t i = 0; i < post_cnt; i++) {
         const pm_node_t *p = ps->posts.nodes[i];
         if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-        if (lvar_index(tc, p, cid) != (uint32_t)rest_slot + 1 + i)
-            kp_failf(tc, p, "koruby_precise: post '%s' is not locals[%u]", kp_cid_cstr(tc, cid), (uint32_t)rest_slot + 1 + i);
+        if (lvar_index(tc, p, cid) != post_base + i)
+            kp_failf(tc, p, "koruby_precise: post '%s' is not locals[%u]", kp_cid_cstr(tc, cid), post_base + i);
     }
 
     /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
@@ -1873,6 +1875,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *na = ALLOC_node_alias(nm, om, -1 - tc->chain);   /* self (the class) at base[-1] */
         bake_add(tc, &na->u.node_alias.self_off);
         return na;
+      }
+      case PM_UNDEF_NODE: {          /* undef foo, bar — retire methods on the enclosing class */
+        const pm_undef_node_t *un = (const pm_undef_node_t *)node;
+        const uint32_t cnt = (uint32_t)un->names.size;
+        uint32_t *mids = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));   /* immortal (baked into the node) */
+        if (!mids) abort();
+        for (uint32_t i = 0; i < cnt; i++) {
+            const pm_node_t *nm = un->names.nodes[i];
+            if (!PM_NODE_TYPE_P(nm, PM_SYMBOL_NODE)) { free(mids); return kp_unsupported(tc, node, "undef with a dynamic-symbol name"); }
+            const pm_symbol_node_t *s = (const pm_symbol_node_t *)nm;
+            mids[i] = korb_intern(tc->c->vm, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
+        }
+        NODE *nu = ALLOC_node_undef((const char *)(const void *)mids, cnt, -1 - tc->chain);   /* self (the class) at base[-1] */
+        bake_add(tc, &nu->u.node_undef.self_off);
+        return nu;
       }
       case PM_NIL_NODE:   return ALLOC_node_lit(KORB_NIL);
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);

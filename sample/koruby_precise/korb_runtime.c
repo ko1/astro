@@ -2285,11 +2285,18 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         /* Method / UnboundMethod form: copy the resolved definition under `mid`. */
         const KorbMethod *const mo = VAL2METH(VALUE_SLICE_GET(a, 1));
         const VALUE owner = mo->unbound ? mo->recv : korb_dispatch_class(c, mo->recv);
+        const bool owner_mod = KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_module;
         const struct korb_method *src = KORB_CLASS_P(owner) ? korb_class_find_method(owner, mo->mid, NULL) : NULL;
         if (src == NULL) src = korb_method_lookup(c->vm, mo->mid);
+        if (src == NULL && owner_mod) {                  /* Kernel's methods live on Object in koruby */
+            const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+            if (KORB_CLASS_P(objc)) src = korb_class_find_method(objc, mo->mid, NULL);
+        }
         if (UNLIKELY(src == NULL))
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s'", korb_sym_name(c->vm, mo->mid));
-        if (UNLIKELY(KORB_CLASS_P(owner) && !korb_class_has_ancestor(slots[0], owner)))   /* defining class must be ≤ the method's owner */
+        /* a module-owned method (e.g. a Kernel UnboundMethod) binds to any class;
+         * only a class owner requires the defining class to be a descendant. */
+        if (UNLIKELY(KORB_CLASS_P(owner) && !owner_mod && !korb_class_has_ancestor(slots[0], owner)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", korb_type_name(owner));
         struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
         *dst = *src;                                     /* copy the definition */
@@ -2478,15 +2485,16 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     VALUE kwhash = KORB_NIL;
     if (kw && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
-    if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > (uint32_t)m->params_cnt))) {
+    const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
+    if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
         if (m->rest_slot >= 0)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                               "wrong number of arguments (given %u, expected %u+)", pos_argc, min_pos);
-        if (m->req_cnt == (uint32_t)m->params_cnt)
+        if (min_pos == max_pos)
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                              "wrong number of arguments (given %u, expected %d)", pos_argc, m->params_cnt);
+                              "wrong number of arguments (given %u, expected %u)", pos_argc, max_pos);
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
-                          "wrong number of arguments (given %u, expected %u..%d)", pos_argc, m->req_cnt, m->params_cnt);
+                          "wrong number of arguments (given %u, expected %u..%u)", pos_argc, min_pos, max_pos);
     }
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
@@ -2524,10 +2532,16 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         for (uint32_t i = 0; i < npost; i++) postbuf[i] = base[avail + i];   /* capture posts (no alloc until written) */
         if (kw && kwhash != KORB_NIL) kwhash = base[pos_argc];   /* re-read GC-updated kwhash (rest allocs moved it) */
         for (uint32_t i = (uint32_t)m->params_cnt; i < pos_argc; i++) base[i] = 0;   /* clear surplus + post-source slots */
+    } else if (npost > 0) {
+        /* no rest: posts are the last npost args (required-after-optional). No alloc
+         * here, so capture directly; the front (req+opt) keeps base[0..avail). */
+        for (uint32_t i = 0; i < npost; i++) postbuf[i] = base[avail + i];
     }
     if (locals_cnt > pos_argc) memset(base + pos_argc, 0, (locals_cnt - pos_argc) * sizeof(VALUE));
     if (have_rest) base[m->rest_slot] = rest_arr;        /* after memset (rest_slot may be >= pos_argc when no surplus) */
-    for (uint32_t i = 0; i < npost; i++) base[m->rest_slot + 1 + i] = postbuf[i];   /* post slots follow rest */
+    /* posts follow the rest slot, or the optionals (locals[params_cnt..]) when no rest. */
+    const int32_t post_base = (m->rest_slot >= 0) ? m->rest_slot + 1 : m->params_cnt;
+    for (uint32_t i = 0; i < npost; i++) base[post_base + i] = postbuf[i];
     base[-1] = self;                                     /* self at base[-1] (bottom header); needed for Klass.new where base[-1]=class != obj */
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged -> GC skips); super reads owner, __method__ reads mid */
     korb_ep_set(base, 0);                                        /* EP cell (base[-2]): no open env yet */
