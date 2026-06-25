@@ -3336,7 +3336,6 @@ korb_cmp_values(VALUE a, VALUE b)
 static int
 korb_cmp_full(CTX *c, VALUE a, VALUE b)
 {
-    if (a == b && !KORB_FLOAT_P(a)) return 0;        /* reflexive (also breaks self-referential Array#<=>); NaN<=>NaN stays nil */
     if (SYMBOL_P(a) && SYMBOL_P(b)) {
         int r = strcmp(korb_sym_name(c->vm, SYM2ID(a)), korb_sym_name(c->vm, SYM2ID(b)));
         return (r > 0) - (r < 0);
@@ -3345,7 +3344,9 @@ korb_cmp_full(CTX *c, VALUE a, VALUE b)
         const KorbArray *x = VAL2ARY(a), *y = VAL2ARY(b);
         uint32_t m = x->len < y->len ? x->len : y->len;
         for (uint32_t i = 0; i < m; i++) {
-            int r = korb_cmp_full(c, x->items->data[i], y->items->data[i]);
+            const VALUE xi = x->items->data[i], yi = y->items->data[i];
+            if (xi == yi && !KORB_FLOAT_P(xi)) continue;   /* identical element → equal here (also breaks self-referential Array#<=>); NaN re-checks below */
+            int r = korb_cmp_full(c, xi, yi);
             if (r != 0) return r;
         }
         return (x->len > y->len) - (x->len < y->len);
@@ -3416,15 +3417,16 @@ korb_value_eq(VALUE a, VALUE b)
 /* eql? semantics (Array#uniq/&/|/-, Set, hash membership): like ==, but numerics
  * are type-strict — 1 is NOT eql? 1.0 / (1/1).  Non-numeric → identical to ==. */
 static bool korb_value_eql(VALUE a, VALUE b) {
-    if (a == b) return true;                         /* identity (also breaks self-referential Array#eql?/uniq) */
     int ta = FIXNUM_P(a) ? 1 : KORB_FLOAT_P(a) ? 2 : KORB_RATIONAL_P(a) ? 3 : 0;
     int tb = FIXNUM_P(b) ? 1 : KORB_FLOAT_P(b) ? 2 : KORB_RATIONAL_P(b) ? 3 : 0;
     if ((ta || tb) && ta != tb) return false;        /* mixed numeric types → not eql? */
     if (!ta && KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {  /* Array#eql?: element-wise eql? (type-strict, unlike ==) */
         const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
-        for (uint32_t i = 0; i < x->len; i++)
-            if (!korb_value_eql(x->items->data[i], y->items->data[i])) return false;
+        for (uint32_t i = 0; i < x->len; i++) {
+            const VALUE xi = x->items->data[i], yi = y->items->data[i];
+            if (xi != yi && !korb_value_eql(xi, yi)) return false;   /* identity skip breaks self-referential eql?/uniq */
+        }
         return true;
     }
     return korb_value_eq(a, b);
@@ -4380,12 +4382,10 @@ __attribute__((no_stack_protector)) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
 {
-    if (UNLIKELY(block == NULL))                         /* builtin yielded with no block passed */
-        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
-    if (UNLIKELY(block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
+    if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
                  korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
                  korb_entry_destructure_n(block) || korb_entry_rest_slot(block) >= 0 ||
-                 korb_entry_opt_defaults(block)))
+                 korb_entry_opt_defaults(block)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL);
 
     const bool fwd = (def_env == KORB_BLK_FWD);
@@ -4400,7 +4400,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     bf[-1] = prev;       /* B[-2] EP / PREV link               */
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
     korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);
-    const uint32_t np = korb_entry_params_cnt(block);
+    const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
     if (LIKELY(!(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind */
         uint32_t i = 0;
         for (; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
@@ -4431,6 +4431,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self,
                  NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self)
 {
+    if (UNLIKELY(block == NULL))                         /* builtin / yield with no block passed (folded here from the fast path) */
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     /* A block whose params we couldn't compile (e.g. `|&b|`) is a node_unsupported
      * placeholder, not a node_entry — running it raises NotImplementedError instead
      * of dereferencing node_entry fields off the wrong union member (→ SEGV). */
