@@ -942,7 +942,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         body = transduce_statements(tc, (const pm_statements_node_t *)blk_body);
     }
     else {
-        body = kp_unsupported(tc, blk_body, "block body with rescue/ensure");
+        /* block-body rescue/ensure — an (implicit) begin node, handled by the
+         * PM_BEGIN_NODE transducer (node_begin), same as a def body. */
+        body = transduce(tc, blk_body);
     }
 
     /* B3 capture metadata: how many enclosing scopes this block reaches, and
@@ -2709,6 +2711,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
+        return ALLOC_node_const_set(name, val);
+      }
+      case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name */
+        const pm_constant_path_write_node_t *cpw = (const pm_constant_path_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, cpw->target->name);
+        NODE *val;
+        uint32_t sc = kind_node_const_set.slot_count;
+        WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
         return ALLOC_node_const_set(name, val);
       }
 

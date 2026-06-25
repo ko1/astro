@@ -83,3 +83,8 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - top blocker の `autoload`(64) / top-level `public`/`private`(6) / `refine`・`using`(6) を no-op stub で unblock (≈76 file)。
 - autoload は koruby が file を lazy load できないので no-op (autoload? は nil 返す = CRuby の path と divergent。const は未定義のまま)。refine/using は refinement scoping 無しの no-op。これらは CRuby と挙動が違うので corpus には足さない (diff 不一致になるため)。
 - make test 89386 green。次は IO(60)/Thread(41) stdlib。
+
+## 2026-06-25 (cont.9) block body rescue/ensure + 定数パス代入
+- **block body の rescue/ensure** (`foo { ... rescue ... }` / `{ begin..ensure..end }`): def body と同様 PM_BEGIN_NODE を transduce するだけ (kp_unsupported を撤廃)。汎用機能で example レベルにも波及。
+- **定数パス代入** `A::B = value` (PM_CONSTANT_PATH_WRITE_NODE): flat const table の rightmost name へ。namespaced 名 [[cont.6]] の対。
+- 全て CRuby 一致 / make test 89392 / STRESS / AOT green。corpus に block_rescue.rb + nesting_namespace.rb 追記。

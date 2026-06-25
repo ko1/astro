@@ -25,3 +25,11 @@ class Outer1::Klass1
   def km; "km"; end
 end
 p Outer1::Klass1.new.km
+
+# constant path write (A::B = value) — flat const table
+module NN_Conf; end
+NN_Conf::Version = "1.0"
+p NN_Conf::Version
+class NN_Box; end
+NN_Box::SIZE = 42
+p NN_Box::SIZE
