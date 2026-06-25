@@ -1835,3 +1835,10 @@ crash 数 19→4。
 - Proc subclass / Proc.new(&p) の追加修正: Proc/Fiber subclass instance は ivar を持てない → korb_ivar_get/set を KORB_OBJECT_P 先頭判定に並べ替え + 非object/非class は nil/no-op (fastpath 正)。`Proc.new(&proc/&method)` は forwarded proc (def_env==KORB_BLK_FWD) をそのまま返す + korb_make_proc に CPROC entry guard。
 - lazy enumerator の with_index / each が SELF_ENUM->values(nil) を deref して crash → mode!=0 で korb_lazy_drive materialize (finite で正、infinite は別 redesign)。finite lazy each/with_index が動くように。
 残 crash 2 + timeout 1: proc/curry([[project_koruby_precise_curry_bug]] env_size/nested-lambda の深いバグ、node_eget depth2 + FWD def_env)、enumerator/new(timeout/hang)。lazy 系の infinite は redesign 待ち(crash→clean error/timeout に降格済)。crash 19→2。
+
+## [FIXED 2026-06-25] proc/curry の SEGV = 実は instance_exec(&forwarded_proc) のバグ
+curry_spec の crash は env_size parser bug ではなく、`instance_exec(arg, &curried_proc)` が
+forwarded Proc (def_env==KORB_BLK_FWD) の captured_self を新 receiver で上書きし、
+korb_block_yield の FWD path が `VAL2PROC(receiver)->env` (= 非Proc を Proc 扱い) を読んで
+SEGV していた。instance_exec/instance_eval で FWD の場合 proc の env を抽出して通常 def_env
+として渡し、self だけ rebind するよう修正。残る実 crash = 0 (enumerator/new は timeout)。

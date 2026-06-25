@@ -702,7 +702,6 @@ static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * receiver; the block's lexical env (def_env) is preserved so closures still work.
  * Method definitions inside (singleton def) are NOT redirected to the receiver. */
 static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)cself;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     const uint32_t argc = VALUE_SLICE_LEN(a);
     if (block == KORB_BLK_CPROC) {                       /* forwarded Symbol/Method#to_proc: fixed binding, self-rebind is moot */
@@ -711,6 +710,10 @@ static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     slots[0] = VALUE_REF_GET(self);                      /* new self = receiver (rooted self cell) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
+        slots[1 + argc] = VAL2PROC(*cself)->env;          /* proc's captured env (used as def_env below, not FWD) */
+        return korb_block_yield(c, slots + 2 + argc, block, (VALUE *)(uintptr_t)slots[1 + argc], &slots[1], argc, &slots[0]);
+    }
     return korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
 }
 /* instance_eval { |obj| ... } — like instance_exec but with the receiver as the
@@ -726,6 +729,10 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
         return korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
     slots[1] = slots[0];                                 /* arg0 = receiver */
+    if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
+        slots[2] = VAL2PROC(*cself)->env;
+        return korb_block_yield(c, slots + 3, block, (VALUE *)(uintptr_t)slots[2], &slots[1], 1, &slots[0]);
+    }
     return korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
 }
 
