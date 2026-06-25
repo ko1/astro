@@ -66,3 +66,8 @@ worst/whole-file 詳細は WORST=1 で再生成。
   4. **required-after-optional `def m(a=1, b)`** (post-without-rest) — parse 拒否撤廃 + korb_invoke_method の post binding を no-rest 対応 (post_base = rest? rest+1 : params_cnt、arity max = params_cnt+post_cnt)。これは汎用機能で多数 spec に波及し +2121 の主因。
 - 全て CRuby 一致 / make test 89348 / STRESS+PURGE / corpus に params_undef.rb 追加。
 - 累計 (session): pass 7551→**10828 (+3277)** / file-clean 395→455 / whole-file-fail 562→359 / pass-rate 49%→61%。
+
+## 2026-06-25 (cont.6) Module.nesting + namespaced class/module 名
+- **Module.nesting**: kp_frame に class_name_sym 追加、transduce_class/module で set。`Module.nesting` を parse-time 特殊化し enclosing class/module の const 名を innermost-first で bake、runtime (node_nesting) で flat const table から live class object を解決して配列化。flat const なので表示名は `Bar`(vs CRuby `Foo::Bar`) だが配列構造・object は正しい。
+- **namespaced class/module 名** (`class A::B` / `module A::B`): parse 拒否を撤廃。flat const table なので namespace path を無視し rightmost name (cn->name) を global 定義。
+- module/fixtures/classes.rb (≈63 module spec が require) の nesting/namespaced ブロッカーを突破 (次は File stdlib)。make test 89360 / STRESS green。corpus に nesting_namespace.rb 追加。

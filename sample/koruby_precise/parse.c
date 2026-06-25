@@ -36,6 +36,7 @@ struct kp_frame {
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
+    uint32_t class_name_sym;  /* enclosing class/module body's const name (0 = not a class body) — for Module.nesting */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
@@ -163,6 +164,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_params = 0;
     f->fwd_slot = -1;
     f->anon_rest_slot = -1;
+    f->class_name_sym = 0;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
     f->add_cnt = f->add_capa = 0;
@@ -1260,6 +1262,21 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     uint32_t line = kp_line(tc, (const pm_node_t *)cn);
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
 
+    /* `Module.nesting` — the lexically-enclosing class/module bodies, innermost
+     * first.  Resolved at parse time from the frame chain (the names) and at
+     * runtime to the live class objects (koruby's flat const table). */
+    if (argc == 0 && cn->block == NULL && strcmp(name, "nesting") == 0 &&
+        PM_NODE_TYPE_P(cn->receiver, PM_CONSTANT_READ_NODE) &&
+        strcmp(kp_cid_cstr(tc, ((const pm_constant_read_node_t *)cn->receiver)->name), "Module") == 0) {
+        uint32_t syms[64]; uint32_t n = 0;
+        for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev)
+            if (f->class_name_sym != 0) syms[n++] = f->class_name_sym;
+        uint32_t *baked = malloc(sizeof(uint32_t) * (n ? n : 1));   /* immortal (baked into the node) */
+        if (!baked) abort();
+        for (uint32_t i = 0; i < n; i++) baked[i] = syms[i];
+        return ALLOC_node_nesting((const char *)(const void *)baked, n);
+    }
+
     /* operator calls → dedicated binop / unary nodes */
     enum kp_binop op = kp_binop_kind(name);
     if (op != KP_BINOP_NONE && argc == 1) {
@@ -1590,8 +1607,11 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
 static NODE *
 transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 {
-    if (!PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_READ_NODE))
-        return kp_unsupported(tc, (const pm_node_t *)cn, "namespaced class name");
+    /* `class A::B` — koruby's const table is flat, so the namespace path is
+     * ignored and the rightmost name (cn->name) is defined globally. */
+    if (!PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_READ_NODE) &&
+        !PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE))
+        return kp_unsupported(tc, (const pm_node_t *)cn, "dynamic class name");
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
 
     /* superclass expression (evaluated in the ENCLOSING scope) → node_class's
@@ -1601,6 +1621,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
                                                    : ALLOC_node_lit(KORB_NIL)));
 
     push_frame(tc, &cn->locals);
+    tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
     NODE *body;
     if (cn->body == NULL)
         body = lit_nil();
@@ -1674,10 +1695,12 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
 static NODE *
 transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 {
-    if (!PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_READ_NODE))
-        return kp_unsupported(tc, (const pm_node_t *)mn, "namespaced module name");
+    if (!PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_READ_NODE) &&
+        !PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE))
+        return kp_unsupported(tc, (const pm_node_t *)mn, "dynamic module name");
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
     push_frame(tc, &mn->locals);
+    tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
     NODE *body;
     if (mn->body == NULL)
         body = lit_nil();

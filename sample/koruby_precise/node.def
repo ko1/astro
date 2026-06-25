@@ -1420,6 +1420,23 @@ node_undef(CTX *c, NODE *n, VALUE *slots, const char *mids, uint32_t cnt, int32_
     return RESULT_OK(KORB_NIL);
 }
 
+// `Module.nesting` — build the lexical nesting array from parse-baked const
+// names (innermost first), resolving each to its live class object.  Names that
+// don't resolve to a class (anonymous / not yet defined) are skipped.
+NODE_DEF
+node_nesting(CTX *c, NODE *n, VALUE *slots, const char *name_syms, uint32_t name_cnt)
+{
+    (void)n;
+    const uint32_t *const ids = (const uint32_t *)(const void *)name_syms;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, name_cnt));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < name_cnt; i++) {
+        const VALUE cls = korb_const_get(c->vm, ids[i]);
+        if (KORB_CLASS_P(cls)) CHECK(korb_ary_push_val(c, slots + 1, arr, cls));
+    }
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
 // Call with a literal block.  `def_env_off` is parse-baked: &slots[def_env_off]
 // is the CALLER's frame base = where the block's captured outer vars live.
 // @noinline: the block operand is a per-process NODE pointer (not bakeable),
