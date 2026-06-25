@@ -2272,7 +2272,9 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     else if (KORB_STRING_P(nv))  mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
     slots[0] = klass;                                    /* root class across allocs */
-    if (block != NULL) {                                 /* block form → a (lambda) proc */
+    if (block != NULL && def_env == KORB_BLK_FWD) {      /* `define_method(:x, &proc)` — block is a forwarded Proc: use it as-is */
+        slots[1] = KORB_CSELF_VAL(cself);
+    } else if (block != NULL) {                          /* block form → a (lambda) proc */
         /* a block-arg's def_env arrives in tagged prev form (base|1); korb_make_proc
          * wants the raw frame base (it reads base[-2] for outer scopes).  The
          * captured open env is shared (korb_open_env_find) and promoted to heap when
