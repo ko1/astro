@@ -119,6 +119,7 @@ static RESULT korb_arg_to_index(CTX *c, VALUE *slots, VALUE o, intptr_t *out) {
     slots[0] = o;
     RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    o = slots[0];                                 /* re-read: to_int dispatch may have moved o */
     if (UNLIKELY(!KORB_INTEGER_P(r.value))) {
         const char *on = korb_coerce_name(c, o);
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)",
