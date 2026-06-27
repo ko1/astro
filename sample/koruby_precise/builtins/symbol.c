@@ -286,6 +286,32 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
     return RESULT_OK(LONG2FIX(km ? korb_method_arity(km) : -1));
 }
+/* Method#== / UnboundMethod#==: same kind (bound vs unbound), same receiver/owner,
+ * and the SAME underlying definition — so aliases (to_int↔to_i) compare equal. */
+static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE ov = VALUE_SLICE_GET(a, 0);
+    if (!KORB_METHOD_P(ov)) return RESULT_OK(KORB_FALSE);
+    const KorbMethod *const m1 = VAL2METH(VALUE_REF_GET(self));
+    const KorbMethod *const m2 = VAL2METH(ov);
+    if (m1->unbound != m2->unbound || m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
+    if (m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
+    const struct korb_method *const e1 = korb_meth_resolve(c, m1);
+    const struct korb_method *const e2 = korb_meth_resolve(c, m2);
+    if (e1 == NULL || e2 == NULL) return RESULT_OK(e1 == e2 ? KORB_TRUE : KORB_FALSE);
+    if (e1->kind != e2->kind) return RESULT_OK(KORB_FALSE);
+    bool same;
+    switch (e1->kind) {
+      case KORB_METHOD_ISEQ:    same = e1->body == e2->body; break;
+      case KORB_METHOD_CFUNC:   same = e1->rfn == e2->rfn && e1->rbfn == e2->rbfn; break;
+      case KORB_METHOD_BUILTIN: same = e1->bfn == e2->bfn; break;
+      case KORB_METHOD_ATTR_R:
+      case KORB_METHOD_ATTR_W:  same = e1->attr_ivar == e2->attr_ivar; break;
+      case KORB_METHOD_DM:      same = e1->dm_proc == e2->dm_proc; break;
+      default:                  same = false;
+    }
+    return RESULT_OK(same ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
