@@ -1842,3 +1842,20 @@ forwarded Proc (def_env==KORB_BLK_FWD) の captured_self を新 receiver で上�
 korb_block_yield の FWD path が `VAL2PROC(receiver)->env` (= 非Proc を Proc 扱い) を読んで
 SEGV していた。instance_exec/instance_eval で FWD の場合 proc の env を抽出して通常 def_env
 として渡し、self だけ rebind するよう修正。残る実 crash = 0 (enumerator/new は timeout)。
+
+## rubyspec 充足 — 2026-06-27 セッションの発見 (未完)
+高 pass率カテゴリから穴埋め中。済: Method/UnboundMethod#== alias 同一視 (commit 0c18f26b、
+float/string/array/kernel/integer 横断 +26 pass)、Numeric/String 比較の非可比較 →
+ArgumentError (commit a160f362、float lt/gt/lte/gte)。
+
+残タスク (確認済みの実バグ/gap):
+- **$\! (last exception global) が未設定**: `begin;raise;rescue; p $\!; end` で $\! が nil。
+  globals は const table 経由 (node_const)。node_rescue で const "$\!" を set すれば読めるが、
+  **rescue body 跨ぎの save/restore が precise GC で厄介** (C-local の outer 値が body の GC で
+  stale 化、in-frame slot は body が clobber)。GC-safe には vm の errinfo save-stack か
+  専用 scanned field が要る。要設計。
+- **Integer#<< >> が #to_int coercion しない**: `1 << obj_with_to_int` が TypeError。
+  korb_to_index に to_int fallback が無い。korb_coerce_to_int ヘルパ追加で対応可 (CTX 要、
+  to_int dispatch は GC するので self は ref 経由再読込)。他の int-coercing op にも流用可。
+- **bignum shift のエラーメッセージ誤り**: m が Bignum のとき "Integer into Integer" と出る。
+- float/integer の divmod/fdiv/divide/modulo の err: 多くは coerce / 特殊値 (Inf/NaN) 絡み。
