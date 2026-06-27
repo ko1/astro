@@ -7548,6 +7548,21 @@ korb_ctx_new(void)
     korb_init_math(c, c->slots);
     korb_init_file(c, c->slots);
     korb_init_time(c, c->slots);
+    /* RUBY_* version constants (specs/guards reference these).  Values track the
+     * CRuby the differential tests run against so version guards behave the same. */
+    {
+        static const char *const rc[][2] = {
+            {"RUBY_VERSION", "4.0.2"}, {"RUBY_ENGINE", "ruby"},
+            {"RUBY_PLATFORM", "x86_64-linux"}, {"RUBY_ENGINE_VERSION", "4.0.2"},
+            {"RUBY_DESCRIPTION", "ruby 4.0.2 (koruby/ASTro) [x86_64-linux]"},
+            {"RUBY_COPYRIGHT", "ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto"},
+        };
+        for (size_t i = 0; i < sizeof(rc) / sizeof(rc[0]); i++) {
+            const VALUE s = korb_str_new(c, c->slots, rc[i][1], (uint32_t)strlen(rc[i][1])).value;
+            korb_const_define(c, korb_intern(c->vm, rc[i][0], (uint32_t)strlen(rc[i][0])), s);
+        }
+        korb_const_define(c, korb_intern(c->vm, "RUBY_PATCHLEVEL", 15), LONG2FIX(0));
+    }
     korb_register_core_methods(c);
 
     /* resolve dispatch-hot method names once (see struct korb_vm). */
