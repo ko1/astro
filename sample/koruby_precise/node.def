@@ -274,20 +274,13 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
 #endif
-    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float-Float inline */
         return korb_flo(c, slots, korb_float_val(l) - korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float-Integer inline */
         return korb_flo(c, slots, korb_float_val(l) - (double)FIX2LONG(rhs));
     if (FIXNUM_P(l) && KORB_FLOAT_P(rhs))                    /* Integer-Float inline */
         return korb_flo(c, slots, (double)FIX2LONG(l) - korb_float_val(rhs));
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
-    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
-    if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, n->u.node_minus.line);
-    if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, n->u.node_minus.line, "%s can't be coerced into Integer", korb_type_name(rhs));
-    { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, n->u.node_minus.line, "undefined method '-' for %s", korb_a_type_name(l));
+    return korb_minus_slow(c, slots, lhs, rhs, n->u.node_minus.line);   /* complex/rat/array/user/raise out-of-line → small SD */
 }
 
 NODE_DEF

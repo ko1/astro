@@ -3720,6 +3720,25 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
                       "undefined method '+' for %s", korb_a_type_name(l));
 }
 
+/* `-` cold ladder, kept out-of-line so node_minus's SD stays small (mirrors
+ * korb_plus_slow).  Reached only for non-(fixnum/float) operands. */
+RESULT
+korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
+{
+    VALUE l = VALUE_REF_GET(lhs);
+#ifdef KORB_HAVE_GMP
+    if (KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs)) return korb_int_arith(c, slots, l, rhs, 1, line);   /* fixnum overflow / bignum */
+#endif
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);   /* mixed Float (e.g. Float-Rational) */
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
+    if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
+    if (FIXNUM_P(l))
+        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+    { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
+    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+}
+
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 
 RESULT
