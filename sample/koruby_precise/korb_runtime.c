@@ -3654,8 +3654,8 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
             return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
         }
     }
-    if (FIXNUM_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
-        char rdesc[64];
+    if (KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
+        char rdesc[64];                                  /* numeric/String/Symbol vs incomparable → ArgumentError */
         korb_cmperr_operand(r, rdesc, sizeof(rdesc));
         return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                           "comparison of %s with %s failed", korb_type_name(l), rdesc);
