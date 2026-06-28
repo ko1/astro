@@ -133,23 +133,52 @@ static KorbMT *korb_rng_from_kwargs(CTX *const c, VALUE_SLICE a) {
 /* core rand: st is the generator, args is [] | [n] | [range].  Returns a Float
  * in [0,1) for no arg / 0 / Float, an Integer in [0,n) for positive Integer n,
  * or a value within a Range. */
+/* draw an integer in [0, n) for n >= 1 (n may exceed 2^32). */
+static intptr_t korb_rand_below(KorbMT *st, uintptr_t n) {
+    if (n <= 0xFFFFFFFFu) return (intptr_t)korb_mt_limited(st, (uint32_t)(n - 1));
+    uint64_t lim = (uint64_t)n - 1, mask = lim;
+    mask |= mask>>1; mask |= mask>>2; mask |= mask>>4; mask |= mask>>8; mask |= mask>>16; mask |= mask>>32;
+    uint64_t v; do { v = ((uint64_t)korb_mt_next(st) | ((uint64_t)korb_mt_next(st) << 32)) & mask; } while (v > lim);
+    return (intptr_t)v;
+}
 static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)
         return korb_float_new(c, slots, korb_mt_real(st));
-    const VALUE arg = VALUE_SLICE_GET(a, 0);
+    VALUE arg = VALUE_SLICE_GET(a, 0);
+    if (KORB_RANGE_P(arg)) {                          /* rand(a..b) / rand(a...b) */
+        const KorbRange *const r = VAL2RANGE(arg);
+        const VALUE lo = r->rbegin, hi = r->rend;
+        const bool excl = r->exclude_end;
+        if (FIXNUM_P(lo) && FIXNUM_P(hi)) {           /* integer range → Integer */
+            const intptr_t lv = FIX2LONG(lo), hv = FIX2LONG(hi);
+            const intptr_t span = hv - lv + (excl ? 0 : 1);
+            if (span <= 0) return RESULT_OK(KORB_NIL);
+            return RESULT_OK(LONG2FIX(lv + korb_rand_below(st, (uintptr_t)span)));
+        }
+        double dlo, dhi;                              /* otherwise a Float in [lo, hi) */
+        if (korb_num_to_d(lo, &dlo) && korb_num_to_d(hi, &dhi)) {
+            if (dhi < dlo || (dhi == dlo && excl)) return RESULT_OK(KORB_NIL);
+            return korb_float_new(c, slots, dlo + korb_mt_real(st) * (dhi - dlo));
+        }
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad value for range");
+    }
+    if (!FIXNUM_P(arg) && !KORB_FLOAT_P(arg) && KORB_OBJECT_P(arg) &&    /* coerce via #to_int */
+        korb_responds_to(c, arg, korb_intern(c->vm, "to_int", 6))) {
+        slots[0] = arg;
+        RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        arg = ir.value;
+    }
     if (FIXNUM_P(arg)) {
         intptr_t n = FIX2LONG(arg);
         if (n == 0) return korb_float_new(c, slots, korb_mt_real(st));
-        if (n < 0)  return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument - %ld", (long)n);
-        if ((uintptr_t)n <= 0xFFFFFFFFu) return RESULT_OK(LONG2FIX((intptr_t)korb_mt_limited(st, (uint32_t)(n - 1))));
-        /* n > 2^32: draw two words */
-        uint64_t lim = (uint64_t)n - 1, mask = lim; mask|=mask>>1;mask|=mask>>2;mask|=mask>>4;mask|=mask>>8;mask|=mask>>16;mask|=mask>>32;
-        uint64_t v; do { v = ((uint64_t)korb_mt_next(st) | ((uint64_t)korb_mt_next(st) << 32)) & mask; } while (v > lim);
-        return RESULT_OK(LONG2FIX((intptr_t)v));
+        if (n < 0)  n = -n;                           /* the sign is ignored */
+        return RESULT_OK(LONG2FIX(korb_rand_below(st, (uintptr_t)n)));
     }
     double f;
     if (korb_num_to_d(arg, &f)) {
-        if (f <= 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument");
+        if (f < 0) f = -f;                            /* the sign is ignored */
+        if (f == 0) return korb_float_new(c, slots, korb_mt_real(st));
         return korb_float_new(c, slots, korb_mt_real(st) * f);
     }
     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid argument");
