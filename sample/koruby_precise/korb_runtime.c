@@ -3299,6 +3299,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "RangeError",          KORB_E_RANGE,      "StandardError" },
         { "IndexError",          KORB_E_INDEX,      "StandardError" },
         { "KeyError",            KORB_E_KEY,        "IndexError" },
+        { "StopIteration",       KORB_E_STOP_ITERATION, "IndexError" },
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },

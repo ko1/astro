@@ -363,14 +363,14 @@ static RESULT korb_m_enum_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a;
     KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
-    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
     return RESULT_OK(v->items->data[e->cursor++]);
 }
 static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
-    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
     return RESULT_OK(v->items->data[e->cursor]);
 }
 static RESULT korb_m_enum_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -383,7 +383,7 @@ static RESULT korb_m_enum_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_enum_values_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool advance) {
     KorbEnumerator *const e = SELF_ENUM;
     const KorbArray *const v = VAL2ARY(e->values);
-    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
     slots[0] = v->items->data[e->cursor];             /* the single stored value (park before alloc) */
     if (advance) e->cursor++;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
