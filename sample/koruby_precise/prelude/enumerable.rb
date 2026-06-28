@@ -8,8 +8,8 @@ module Enumerable
   def find_all; r = []; each { |x| r << x if yield(x) }; r; end
   def reject; r = []; each { |x| r << x unless yield(x) }; r; end
   def flat_map; r = []; each { |x| v = yield(x); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end
-  def find; each { |x| return x if yield(x) }; nil; end
-  def detect; each { |x| return x if yield(x) }; nil; end
+  def find(ifnone = nil); each { |x| return x if yield(x) }; ifnone ? ifnone.call : nil; end
+  def detect(ifnone = nil); each { |x| return x if yield(x) }; ifnone ? ifnone.call : nil; end
   def to_a; r = []; each { |x| r << x }; r; end
   def to_h; h = {}; if block_given?; each { |x| kv = yield(x); h[kv[0]] = kv[1] }; else; each { |x| h[x[0]] = x[1] }; end; h; end
   def entries; r = []; each { |x| r << x }; r; end
