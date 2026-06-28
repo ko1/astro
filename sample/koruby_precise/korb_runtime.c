@@ -6983,8 +6983,14 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
 bad:
 #endif
+    if (n == 1 && KORB_OBJECT_P(nv) && korb_responds_to(c, nv, korb_intern(c->vm, "to_r", 4))) {
+        slots[0] = nv;
+        RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+        if (KORB_RATIONAL_P(rr.value) || KORB_INTEGER_P(rr.value)) return RESULT_OK(rr.value);
+    }
     if (!exc) return RESULT_OK(KORB_NIL);
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(nv));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(VALUE_SLICE_GET(args, 0)));
 }
 
 bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);   /* defined below */
