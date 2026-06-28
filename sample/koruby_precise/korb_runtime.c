@@ -1565,11 +1565,22 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
     for (uint32_t k = 0; k < nk; k++) {
         const VALUE key = VAL2ARY(slots[1])->items->data[k];
         const KorbArray *const mem = VAL2ARY(slots[0]);        /* re-read post-GC */
+        /* resolve key → member symbol: Symbol matches directly, String by name,
+         * Integer by position. */
+        VALUE msym = KORB_NIL;
+        if (SYMBOL_P(key)) msym = key;
+        else if (KORB_STRING_P(key)) msym = ID2SYM(korb_intern(c->vm, VAL2STR(key)->buf->data, VAL2STR(key)->len));
+        else if (FIXNUM_P(key)) {
+            const intptr_t idx = FIX2LONG(key);
+            if (idx < 0 || (uint32_t)idx >= mem->len) break;
+            msym = mem->items->data[idx];
+        }
+        else break;
         bool found = false;
-        for (uint32_t m = 0; m < mem->len; m++) if (mem->items->data[m] == key) { found = true; break; }
+        for (uint32_t m = 0; m < mem->len; m++) if (mem->items->data[m] == msym) { found = true; break; }
         if (!found) break;
-        slots[3] = key;
-        slots[4] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, key));
+        slots[3] = key;                                        /* hash uses the original key */
+        slots[4] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
         CHECK(korb_hash_set(c, slots + 5, dst, VALUE_REF_AT(&slots[3]), slots[4]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
