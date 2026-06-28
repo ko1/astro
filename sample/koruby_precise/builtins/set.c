@@ -862,6 +862,32 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                          : korb_etype_name(e->etype);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
+/* Exception#inspect → "#<ClassName: message>" (or "#<ClassName>" if #to_s is
+ * empty).  Uses the dispatched (overridable) #to_s for the message. */
+static RESULT korb_m_exc_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE sv = VALUE_REF_GET(self);
+    const KorbException *const e = VAL2EXC(sv);
+    const char *const cn = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
+                               ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
+                               : korb_etype_name(e->etype);
+    char cnbuf[160];
+    snprintf(cnbuf, sizeof cnbuf, "%s", cn);                  /* copy before the to_s dispatch (may GC) */
+    slots[0] = sv;
+    RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+    slots[0] = KORB_STRING_P(tr.value) ? tr.value : KORB_NIL; /* park the message string */
+    const KorbString *const ms = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;
+    const size_t mlen = ms ? ms->len : 0;
+    const size_t need = strlen(cnbuf) + mlen + 8;
+    char *const buf = malloc(need);
+    if (!buf) abort();
+    int n = (mlen == 0) ? snprintf(buf, need, "%s", cnbuf)      /* empty message → bare class name */
+                        : snprintf(buf, need, "#<%s: %.*s>", cnbuf, (int)mlen, ms->buf->data);
+    RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)n);
+    free(buf);
+    return r;
+}
 /* Exception#initialize([msg]) — stores msg (the super target for a user
  * exception's `def initialize(msg); super; end`). */
 static RESULT korb_m_exc_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

@@ -6208,6 +6208,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "inspect", korb_m_exc_inspect, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "initialize", korb_m_exc_initialize, -1);
 
     /* Float */
