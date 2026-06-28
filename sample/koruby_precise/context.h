@@ -127,6 +127,7 @@ enum korb_state {
     KORB_NEXT   = 3,    /* `next` in a block — caught at the yield boundary */
     KORB_BREAK  = 4,    /* `break` — caught at the nearest loop / block-call boundary */
     KORB_RETRY  = 5,    /* `retry` in a rescue — re-runs the begin body (caught by node_begin) */
+    KORB_THROW  = 6,    /* `throw tag, val` — unwinds (past rescue) to the matching `catch`; tag in c->throw_tag */
 };
 
 typedef struct {
@@ -784,6 +785,9 @@ struct CTX_struct {
      * restore-on-exit fall out of push/pop. */
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
+    VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
+    VALUE    *catch_tags;    /* stack of tags of the active `catch` blocks (GC-visited) */
+    uint32_t  catch_n, catch_cap;
     struct korb_vm *vm;
 };
 
@@ -832,6 +836,11 @@ struct CTX_struct {
     /* `$!` stack: exceptions currently being handled (per-CTX root) */       \
     for (uint32_t _xi = 0; _xi < (c)->errinfo_n; _xi++) {                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->errinfo[_xi]);            \
+    }                                                                        \
+    if ((c)->throw_tag != KORB_NIL)                                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->throw_tag);              \
+    for (uint32_t _ti = 0; _ti < (c)->catch_n; _ti++) {                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->catch_tags[_ti]);         \
     }                                                                        \
     /* Kernel#srand's remembered last seed (may be a Bignum). */             \
     if ((c)->vm->default_rng_seeded)                                         \

@@ -3237,6 +3237,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "FrozenError",         KORB_E_FROZEN,     "RuntimeError" },
         { "TypeError",           KORB_E_TYPE,       "StandardError" },
         { "ArgumentError",       KORB_E_ARGUMENT,   "StandardError" },
+        { "UncaughtThrowError",  KORB_E_UNCAUGHT_THROW, "ArgumentError" },
         { "ZeroDivisionError",   KORB_E_ZERODIV,    "StandardError" },
         { "LocalJumpError",      KORB_E_LOCALJUMP,  "StandardError" },
         { "RangeError",          KORB_E_RANGE,      "StandardError" },
@@ -6209,6 +6210,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_exec", korb_m_obj_instance_exec, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_eval", korb_m_obj_instance_eval, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "loop", korb_m_loop, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "catch", korb_m_catch, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "throw", korb_m_throw, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);

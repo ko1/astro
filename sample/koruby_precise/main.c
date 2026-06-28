@@ -507,6 +507,10 @@ main(int argc, char *argv[])
             korb_report_uncaught(c, r.value);
             return 1;
         }
+        if (r.state == KORB_THROW) {
+            fprintf(stderr, "uncaught throw\n");
+            return 1;
+        }
 
         if (getenv("KORUBY_GC_STATS")) {
             double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;

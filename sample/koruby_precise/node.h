@@ -346,6 +346,7 @@ enum korb_etype {
     KORB_E_INDEX,
     KORB_E_KEY,
     KORB_E_FROZEN,
+    KORB_E_UNCAUGHT_THROW,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

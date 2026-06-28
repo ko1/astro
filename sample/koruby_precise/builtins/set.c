@@ -425,6 +425,44 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
 static RESULT korb_m_public(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_set_visibility(c, slots, self, a, 0); }
+/* Kernel#throw(tag[, value]) — unwind (past rescue) to the matching catch.  With
+ * no enclosing catch for the tag, raises a (rescuable) UncaughtThrowError. */
+static RESULT korb_m_throw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) == 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    const VALUE tag = VALUE_SLICE_GET(a, 0);
+    bool active = false;
+    for (uint32_t i = c->catch_n; i-- > 0; ) if (c->catch_tags[i] == tag) { active = true; break; }
+    if (!active)
+        return korb_raise(c, slots, KORB_E_UNCAUGHT_THROW, 0, "uncaught throw %s", korb_type_name(tag));
+    c->throw_tag = tag;
+    const VALUE val = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    return (RESULT){ val, KORB_THROW };
+}
+/* Kernel#catch([tag]) { |tag| ... } — a throw with the matching (identity) tag
+ * returns its value here.  With no tag a fresh Object is used as the tag. */
+static RESULT korb_m_catch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)self;
+    if (UNLIKELY(block == NULL))
+        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+    if (VALUE_SLICE_LEN(a) >= 1) slots[0] = VALUE_SLICE_GET(a, 0);
+    else slots[0] = UNWRAP(korb_obj_new(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT)));
+    if (UNLIKELY(c->catch_n == c->catch_cap)) {        /* push our tag (active-catch stack) */
+        const uint32_t nc = c->catch_cap ? c->catch_cap * 2 : 8;
+        c->catch_tags = realloc(c->catch_tags, sizeof(VALUE) * nc);
+        if (!c->catch_tags) { fprintf(stderr, "koruby_precise: oom (catch)\n"); abort(); }
+        c->catch_cap = nc;
+    }
+    c->catch_tags[c->catch_n++] = slots[0];
+    RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+    c->catch_n--;                                      /* pop on every exit path */
+    if (r.state == KORB_THROW && c->throw_tag == slots[0]) {   /* our tag → caught (value in r.value) */
+        c->throw_tag = KORB_NIL;
+        r.state = KORB_NORMAL;
+    }
+    return r;
+}
 /* runtime attr_reader/writer/accessor (the dynamic `attr_reader id` form that
  * the parser can't desugar at parse time; self is the class). */
 static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {
