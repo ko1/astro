@@ -713,11 +713,29 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)slots;
     VALUE name = VALUE_SLICE_GET(a, 0);
+    struct korb_vm *const vm = c->vm;
     uint32_t id;
     if (SYMBOL_P(name)) id = SYM2ID(name);
-    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, s->buf->data, s->len); }
+    else if (KORB_STRING_P(name)) {
+        const KorbString *const s = VAL2STR(name);
+        const char *p = s->buf->data; uint32_t len = s->len;
+        /* scoped name "A::B::C" / leading "::Top": flat model resolves the final
+         * segment (and requires every intermediate segment to also be defined). */
+        if (len >= 2 && p[0] == ':' && p[1] == ':') { p += 2; len -= 2; }
+        uint32_t seg = 0;
+        for (uint32_t i = 0; i <= len; i++) {
+            if (i == len || (i + 1 < len && p[i] == ':' && p[i + 1] == ':')) {
+                if (i == seg) return RESULT_OK(KORB_FALSE);   /* empty segment */
+                const uint32_t sid = korb_intern(vm, p + seg, i - seg);
+                bool found = false;
+                for (uint32_t k = 0; k < vm->const_cnt; k++) if (vm->const_names[k] == sid) { found = true; break; }
+                if (!found) return RESULT_OK(KORB_FALSE);
+                i++; seg = i + 1;                             /* skip the second ':' */
+            }
+        }
+        return RESULT_OK(KORB_TRUE);
+    }
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
-    struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == id) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(KORB_FALSE);
