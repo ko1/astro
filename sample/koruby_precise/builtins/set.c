@@ -690,6 +690,25 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
     return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
 }
+/* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
+static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE name = VALUE_SLICE_GET(a, 0);
+    uint32_t id;
+    if (SYMBOL_P(name)) id = SYM2ID(name);
+    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, s->buf->data, s->len); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    struct korb_vm *const vm = c->vm;
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == id) {
+            const VALUE old = vm->const_vals[i];
+            vm->const_names[i] = 0;            /* tombstone (interned ids are >0) */
+            vm->const_vals[i] = KORB_NIL;
+            vm->method_serial++;              /* invalidate const caches */
+            return RESULT_OK(old);
+        }
+    return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
+}
 /* Module#const_defined?(sym|str) — flat table membership. */
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)slots;
