@@ -564,21 +564,35 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX((intptr_t)cp));
 }
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
+    /* the position arg (2-arg form) is validated BEFORE the pattern: an out-of-
+     * range stop returns nil even for a non-String pattern (CRuby order). */
+    bool have_stop = false; int32_t stopb = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {
+        intptr_t stop;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
+        uint32_t ncp = korb_utf8_count(s0->buf->data, s0->len);
+        if (stop < 0) stop += ncp;
+        if (stop < 0) return RESULT_OK(KORB_NIL);
+        stopb = (int32_t)korb_str_char_to_byte(s0, stop);   /* byte offset survives a later GC move */
+        have_stop = true;
+    }
+    if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (!korb_responds_to(c, sv, to_str))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: %s given", korb_type_name(sv));
+        slots[0] = sv;
+        RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(!KORB_STRING_P(cr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: %s given", korb_type_name(slots[0]));
+        sv = cr.value;
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
     int32_t hi = (int32_t)(s->len - n->len);          /* last byte where a match can begin */
-    if (VALUE_SLICE_LEN(a) >= 2) {                    /* rindex(substr, stop): last match at/before stop */
-        intptr_t stop;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
-        uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
-        if (stop < 0) stop += ncp;
-        if (stop < 0) return RESULT_OK(KORB_NIL);
-        int32_t stopb = (int32_t)korb_str_char_to_byte(s, stop);
-        if (stopb < hi) hi = stopb;
-    }
+    if (have_stop && stopb < hi) hi = stopb;
     for (int32_t i = hi; i >= 0; i--)
         if (memcmp(s->buf->data + i, n->buf->data, n->len) == 0)
             return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, (uint32_t)i)));
