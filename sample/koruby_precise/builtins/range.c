@@ -99,6 +99,7 @@ static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take,
 }
 static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
+    if (UNLIKELY(r->rbegin == KORB_NIL)) return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the minimum of beginless range");
     intptr_t lo, hi;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* min(n) → first n ascending */
         intptr_t n;
@@ -117,6 +118,12 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
+    if (UNLIKELY(r->rend == KORB_NIL)) return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the maximum of endless range");
+    if (UNLIKELY(r->rbegin == KORB_NIL && (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL))) {   /* beginless: max is the end */
+        if (!r->exclude_end) return RESULT_OK(r->rend);
+        if (FIXNUM_P(r->rend)) return RESULT_OK(LONG2FIX(FIX2LONG(r->rend) - 1));
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-integer range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
