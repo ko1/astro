@@ -173,4 +173,25 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "dirname",     korb_m_file_dirname,     -1);
     korb_class_def_cfn(c, slots[1], "basename",    korb_m_file_basename,    -1);
     korb_class_def_cfn(c, slots[1], "extname",     korb_m_file_extname,     1);
+    /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
+     * koruby's const table is flat, so these resolve from File / File::Constants
+     * / bare alike. */
+    slots[1] = (korb_class_new(c, slots + 1, korb_intern(vm, "Constants", 9), KORB_NIL)).value;
+    korb_const_define(c, korb_intern(vm, "Constants", 9), slots[1]);
+    static const struct { const char *n; long v; } fc[] = {
+        {"RDONLY",0},{"WRONLY",1},{"RDWR",2},{"APPEND",1024},{"CREAT",64},{"EXCL",128},
+        {"NOCTTY",256},{"TRUNC",512},{"NONBLOCK",2048},{"SYNC",1052672},{"DSYNC",4096},
+        {"RSYNC",1052672},{"DIRECT",16384},{"NOFOLLOW",131072},{"BINARY",0},
+        {"SHARE_DELETE",0},{"TMPFILE",4259840},{"NOATIME",262144},
+        {"FNM_NOESCAPE",1},{"FNM_PATHNAME",2},{"FNM_DOTMATCH",4},{"FNM_CASEFOLD",8},
+        {"FNM_EXTGLOB",16},{"FNM_SYSCASE",0},{"FNM_SHORTNAME",0},
+        {"LOCK_SH",1},{"LOCK_EX",2},{"LOCK_UN",8},{"LOCK_NB",4},
+        {"SEEK_SET",0},{"SEEK_CUR",1},{"SEEK_END",2},
+    };
+    for (size_t i = 0; i < sizeof(fc) / sizeof(fc[0]); i++)
+        korb_const_define(c, korb_intern(vm, fc[i].n, (uint32_t)strlen(fc[i].n)), LONG2FIX(fc[i].v));
+    korb_const_define(c, korb_intern(vm, "SEPARATOR", 9),      korb_str_new(c, slots + 2, "/", 1).value);
+    korb_const_define(c, korb_intern(vm, "Separator", 9),      korb_str_new(c, slots + 2, "/", 1).value);
+    korb_const_define(c, korb_intern(vm, "PATH_SEPARATOR", 14), korb_str_new(c, slots + 2, ":", 1).value);
+    korb_const_define(c, korb_intern(vm, "ALT_SEPARATOR", 13),  KORB_NIL);   /* nil on POSIX */
 }
