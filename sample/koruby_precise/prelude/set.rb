@@ -1,0 +1,38 @@
+# Set#divide — partition into subsets.  1-arg block groups by its return value;
+# 2-arg block forms connected components (a,b related iff func(a,b) && func(b,a)).
+class Set
+  def divide(&func)
+    if func.arity == 2
+      els = to_a
+      parent = {}
+      els.each { |e| parent[e] = e }
+      root = lambda do |x|
+        r = x
+        r = parent[r] while parent[r] != r
+        r
+      end
+      els.each do |a|
+        els.each do |b|
+          if !a.equal?(b) && func.call(a, b) && func.call(b, a)
+            parent[root.call(a)] = root.call(b)
+          end
+        end
+      end
+      comps = {}
+      els.each do |e|
+        k = root.call(e)
+        comps[k] = [] unless comps.key?(k)
+        comps[k] << e
+      end
+      self.class.new(comps.values.map { |g| self.class.new(g) })
+    else
+      groups = {}
+      each do |e|
+        k = func.call(e)
+        groups[k] = [] unless groups.key?(k)
+        groups[k] << e
+      end
+      self.class.new(groups.values.map { |g| self.class.new(g) })
+    end
+  end
+end
