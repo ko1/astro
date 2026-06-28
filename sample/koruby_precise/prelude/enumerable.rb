@@ -26,10 +26,11 @@ module Enumerable
   def max_by; r = nil; rk = nil; f = true; each { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif k > rk; r = x; rk = k; end }; r; end
   def sort; to_a.sort; end
   def sort_by; a = []; each { |x| a << x }; a.sort_by { |x| yield(x) }; end
-  def all?; bg = block_given?; each { |x| return false unless (bg ? yield(x) : x) }; true; end
-  def any?; bg = block_given?; each { |x| return true if (bg ? yield(x) : x) }; false; end
-  def none?; bg = block_given?; each { |x| return false if (bg ? yield(x) : x) }; true; end
-  def one?; n = 0; bg = block_given?; each { |x| n += 1 if (bg ? yield(x) : x) }; n == 1; end
+  # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
+  def all?(*a); if a.size > 0; pt = a[0]; each { |x| return false unless pt === x }; elsif block_given?; each { |x| return false unless yield(x) }; else; each { |x| return false unless x }; end; true; end
+  def any?(*a); if a.size > 0; pt = a[0]; each { |x| return true if pt === x }; elsif block_given?; each { |x| return true if yield(x) }; else; each { |x| return true if x }; end; false; end
+  def none?(*a); if a.size > 0; pt = a[0]; each { |x| return false if pt === x }; elsif block_given?; each { |x| return false if yield(x) }; else; each { |x| return false if x }; end; true; end
+  def one?(*a); n = 0; if a.size > 0; pt = a[0]; each { |x| n += 1 if pt === x }; elsif block_given?; each { |x| n += 1 if yield(x) }; else; each { |x| n += 1 if x }; end; n == 1; end
   def cycle(n = nil); a = to_a; return nil if a.empty?; if n.nil?; loop { a.each { |x| yield x } }; else; n.times { a.each { |x| yield x } }; end; nil; end
   def each_with_object(o); each { |x| yield x, o }; o; end
   def each_with_index; i = 0; each { |x| yield x, i; i += 1 }; self; end
