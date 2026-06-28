@@ -1629,6 +1629,12 @@ static RESULT korb_m_struct_class_members(CTX *c, VALUE *slots, VALUE_REF self, 
     for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[0])->items->data[i]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* StructClass#keyword_init? — true / false (explicit) / nil (unspecified). */
+static RESULT korb_m_struct_keyword_init_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const uint8_t ki = VAL2CLASS(VALUE_REF_GET(self))->struct_kwinit;
+    return RESULT_OK(ki == 1 ? KORB_TRUE : (ki == 2 ? KORB_FALSE : KORB_NIL));
+}
 static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE mems = STRUCT_MEMBERS(self);
     const KorbArray *mem = VAL2ARY(mems);
@@ -1709,14 +1715,14 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     struct korb_vm *const vm = c->vm;
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
-    bool kwinit = false;
+    uint8_t kwinit = 0;   /* 0 = unspecified (→ keyword_init? nil), 1 = true, 2 = explicit false */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             int32_t ki = korb_hash_find(VAL2HASH(sym), ID2SYM(korb_intern(vm, "keyword_init", 12)));
-            if (ki >= 0 && KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1])) kwinit = true;
+            if (ki >= 0) kwinit = KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1]) ? 1 : 2;
             continue;
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
@@ -1747,12 +1753,13 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
-    VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit ? 1 : 0;
+    VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit;
     /* class-level `Rec.members`: install on the class's singleton (name already
      * interned above → no GC in def_cfn). */
     slots[2] = VALUE_REF_GET(cls);                            /* root class across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
+    korb_class_def_cfn(c, slots[3], "keyword_init?", korb_m_struct_keyword_init_p, 0);
     korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
@@ -5196,7 +5203,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const bool kwinit = is_data
                 ? (argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
                    korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc])))
-                : (VAL2CLASS(*recv_slot)->struct_kwinit && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]));
+                : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]));
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (i >= mem->len) break;
