@@ -1529,6 +1529,28 @@ static RESULT korb_m_struct_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Struct/Data#to_h — with a block, each [k,v] pair is transformed via the block's
+ * returned 2-element [k,v]. */
+static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_m_struct_to_h(c, slots, self, a);
+    slots[0] = STRUCT_MEMBERS(self);                          /* members (rooted) */
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    slots[1] = UNWRAP(korb_hash_new(c, slots + 2, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE k = VAL2ARY(slots[0])->items->data[i];
+        slots[2] = k;                                         /* block arg 0: key */
+        slots[3] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, k));   /* arg 1: value */
+        RESULT yr = korb_block_yield(c, slots + 4, block, def_env, &slots[2], 2, cself);
+        if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+        if (UNLIKELY(!KORB_ARRAY_P(yr.value) || VAL2ARY(yr.value)->len != 2))
+            return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(yr.value));
+        slots[4] = VAL2ARY(yr.value)->items->data[0];         /* new key */
+        slots[5] = VAL2ARY(yr.value)->items->data[1];         /* new value */
+        CHECK(korb_hash_set(c, slots + 6, dst, VALUE_REF_AT(&slots[4]), slots[5]));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* nil → full hash; an Array of keys → just those members (stops at the first
  * non-member, so a partial pattern-match fails as in CRuby). */
 static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1681,7 +1703,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h, 0);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]", korb_m_struct_aref, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
@@ -1797,7 +1819,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     VAL2CLASS(VALUE_REF_GET(cls))->is_data = 1;
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h, 0);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, -1);   /* arg (keys|nil) ignored → full hash */
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
