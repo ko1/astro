@@ -7458,7 +7458,11 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
     }
-    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "unhandled exception");
+    {   /* bare `raise` → re-raise the current exception ($!), else fresh RuntimeError */
+        const VALUE cur = korb_const_get(c->vm, korb_intern(c->vm, "$!", 2));
+        if (KORB_EXC_P(cur)) return RESULT_RAISE_(cur);
+    }
+    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* bare raise, no $! → RuntimeError "" */
 }
 
 /* ---------------------------------------------------------------------------
