@@ -7101,8 +7101,14 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"", (int)s->len, s->buf->data);
     }
     /* non-numeric arg (Symbol, nil, multi-arg String, ...) */
+    if (n == 1 && KORB_OBJECT_P(re) && korb_responds_to(c, re, korb_intern(c->vm, "to_c", 4))) {
+        slots[0] = re;
+        RESULT cr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_c", 4), 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (KORB_COMPLEX_P(cr.value)) return RESULT_OK(cr.value);
+    }
     if (!exc) return RESULT_OK(KORB_NIL);
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_type_name(re));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_type_name(VALUE_SLICE_GET(args, 0)));
 }
 
 static RESULT
