@@ -1859,3 +1859,15 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   to_int dispatch は GC するので self は ref 経由再読込)。他の int-coercing op にも流用可。
 - **bignum shift のエラーメッセージ誤り**: m が Bignum のとき "Integer into Integer" と出る。
 - float/integer の divmod/fdiv/divide/modulo の err: 多くは coerce / 特殊値 (Inf/NaN) 絡み。
+
+## 2026-06-28 spec 網羅
+- **最大の山を崩した**: `.should.raise(X)` 形式が rubyspec 846/1811 file で使われており、
+  koruby の public `raise` のせいで全部 err だった。Kernel#fail 追加 + shim の
+  MSpecExpectation#raise 実装で解消。pass 11354→12042 (+688)、pass率 61.3→64.3%。
+  (commit 6bdd227a)
+- **既知の STRESS 遅延**: method/array_283.rb は STRESS+PURGE で 600s でも完走しない
+  (通常モードは即 PASS=MATCH)。大配列 + 毎alloc GC + PURGE mprotect で病的に遅いだけで
+  soundness バグではない。`make test STRESS=1` は常にこの 1 file で timeout 1 を出す。
+  STRESS 監査時は除外候補(baruby の test_p1 flake 相当)。
+- `make test STRESS=1` の env を BARUBY_GC_* に修正済(commit af223556)。それまで
+  標準コマンドは黙って stress していなかった。
