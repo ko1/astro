@@ -4068,6 +4068,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         if (UNLIKELY(argc != 1))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line,
                               "wrong number of arguments (given %u, expected 1)", argc);
+        KORB_CHECK_FROZEN(c, slots, *recv_slot);
         const VALUE v = slots[-(intptr_t)argc];
         CHECK(korb_ivar_set(c, slots, VALUE_REF_AT(recv_slot), ID2SYM(m->attr_ivar), v));
         return RESULT_OK(slots[-(intptr_t)argc]);
@@ -4247,6 +4248,10 @@ korb_invoke_self(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
       case KORB_METHOD_ATTR_W:
         if (UNLIKELY(argc != 1)) {
             *out = korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 1)", argc);
+            return true;
+        }
+        if (UNLIKELY(AROH_IS_GC_OBJECT(self) && (((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_FROZEN))) {
+            *out = korb_raise(c, slots, KORB_E_FROZEN, line, "can't modify frozen %s", korb_type_name(self));
             return true;
         }
         slots[0] = self;

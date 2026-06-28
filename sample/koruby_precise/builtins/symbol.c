@@ -100,6 +100,7 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));
     return RESULT_OK(VALUE_SLICE_GET(a, 1));
 }
