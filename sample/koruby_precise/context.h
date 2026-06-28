@@ -564,7 +564,8 @@ typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
                                      VALUE *captured_self);
 
 struct korb_method {
-    uint32_t mid;            /* interned name */
+    uint32_t mid;            /* interned name (current; changes on alias) */
+    uint32_t orig_mid;       /* name at original definition; survives alias (for #original_name) */
     uint8_t  kind;           /* enum korb_method_kind */
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
     uint8_t  is_simple;      /* ISEQ: fixed positional arity, no rest/opt/post/kw/block —

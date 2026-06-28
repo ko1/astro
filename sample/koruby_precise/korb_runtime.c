@@ -2222,7 +2222,7 @@ korb_class_method_slot(KorbClass *const k, uint32_t mid)
         }
         m = calloc(1, sizeof(struct korb_method));
         if (!m) { fprintf(stderr, "koruby_precise: oom (method entry)\n"); abort(); }
-        m->mid = mid;
+        m->mid = mid; m->orig_mid = mid;
         k->methods[k->method_cnt++] = m;
     }
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
@@ -3853,7 +3853,7 @@ korb_method_slot(CTX *c, uint32_t mid)
     }
     struct korb_method *m = calloc(1, sizeof(struct korb_method));   /* immortal entry */
     if (!m) { fprintf(stderr, "koruby_precise: out of memory (method entry)\n"); abort(); }
-    m->mid = mid;
+    m->mid = mid; m->orig_mid = mid;
     vm->methods[vm->method_cnt++] = m;
     return m;
 }
@@ -6066,7 +6066,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
-    korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_name, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_original_name, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "arity", korb_m_meth_arity, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "owner", korb_m_meth_owner, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "==", korb_m_meth_eq, 1);

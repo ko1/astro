@@ -309,6 +309,13 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
     return RESULT_OK(LONG2FIX(km ? korb_method_arity(km) : -1));
 }
+/* #original_name: the name at original definition, surviving aliases. */
+static RESULT korb_m_meth_original_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;(void)a;
+    const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    const struct korb_method *const km = korb_meth_resolve(c, m);
+    return RESULT_OK(ID2SYM(km && km->orig_mid ? km->orig_mid : m->mid));
+}
 /* Method#== / UnboundMethod#==: same kind (bound vs unbound), same receiver/owner,
  * and the SAME underlying definition — so aliases (to_int↔to_i) compare equal. */
 static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
