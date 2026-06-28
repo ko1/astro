@@ -939,8 +939,11 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "loop without a block (Enumerator) is not supported");
     for (;;) {
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
+        if (r.state == KORB_NORMAL) continue;
         if (r.state == KORB_BREAK) return RESULT_OK(r.value);   /* break [v] → loop value */
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION)
+            return RESULT_OK(KORB_NIL);                         /* StopIteration ends the loop */
+        return r;
     }
 }
 /* Object#tap — yield self, return self. */
