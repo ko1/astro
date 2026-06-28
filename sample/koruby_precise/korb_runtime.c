@@ -4852,6 +4852,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 !korb_responds_to(c, self, rmid) && korb_method_lookup(vm, rmid) != NULL)
                 return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                                   "private method '%s' called for main", korb_sym_name(vm, rmid));
+            if (mid == vm->mid_public_send) {              /* public_send refuses private/protected methods */
+                const VALUE dcls = korb_dispatch_class(c, self);
+                VALUE mdef = KORB_NIL;
+                const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, rmid, &mdef) : NULL;
+                if (me != NULL && me->visibility != 0)
+                    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
+                                      me->visibility == 1 ? "private" : "protected", korb_sym_name(vm, rmid), korb_a_type_name(self));
+            }
             slots[-(intptr_t)argc] = self;                 /* recv → arg0 slot; args shift down by one */
             return korb_send_impl(c, slots, rmid, line, argc - 1, block, def_env, captured_self);
         }
