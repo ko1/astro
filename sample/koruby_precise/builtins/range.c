@@ -73,6 +73,20 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE x = VALUE_SLICE_GET(a, 0);
     if (KORB_RANGE_P(x) || KORB_ARRAY_P(x) || KORB_HASH_P(x)) return RESULT_OK(KORB_FALSE);
+    const KorbRange *const r = VAL2RANGE(VALUE_REF_GET(self));
+    if (KORB_STRING_P(x) && KORB_STRING_P(r->rbegin) && KORB_STRING_P(r->rend)) {
+        /* String ranges use succ-membership, not just cover: a value is included
+         * only if it's reachable by #succ from begin — equivalently (CRuby's
+         * optimization) it is covered AND its char-length is within [begin, end]. */
+        RESULT cov = korb_m_range_cover(c, slots, self, a);
+        if (cov.state != KORB_NORMAL || cov.value != KORB_TRUE) return cov;
+        const KorbRange *const r2 = VAL2RANGE(VALUE_REF_GET(self));
+        const KorbString *const xs = VAL2STR(VALUE_SLICE_GET(a, 0));
+        const uint32_t xl = korb_utf8_count(xs->buf->data, xs->len);
+        const uint32_t bl = korb_utf8_count(VAL2STR(r2->rbegin)->buf->data, VAL2STR(r2->rbegin)->len);
+        const uint32_t el = korb_utf8_count(VAL2STR(r2->rend)->buf->data, VAL2STR(r2->rend)->len);
+        return RESULT_OK((xl >= bl && xl <= el) ? KORB_TRUE : KORB_FALSE);
+    }
     return korb_m_range_cover(c, slots, self, a);
 }
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
