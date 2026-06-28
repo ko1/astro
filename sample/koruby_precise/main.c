@@ -18,146 +18,15 @@
 
 struct koruby_option OPTION;
 
-/* Enumerable mixin, defined in Ruby in terms of the includer's `each` (which now
- * works thanks to yield-in-block).  Run as a prelude before the user program so
- * `include Enumerable` + a user `each` yields map/select/etc.  Methods use only
- * single-/no-arg yield and non-local return (both supported); `block_given?` is
- * read at method top-level into a local so the nested each-block can capture it.
- * Line numbers stay independent of the user script (separate parse). */
-static const char *const KORUBY_PRELUDE =
-"module Enumerable\n"
-"  def map; r = []; each { |x| r << yield(x) }; r; end\n"
-"  def collect; r = []; each { |x| r << yield(x) }; r; end\n"
-"  def select; r = []; each { |x| r << x if yield(x) }; r; end\n"
-"  def filter; r = []; each { |x| r << x if yield(x) }; r; end\n"
-"  def find_all; r = []; each { |x| r << x if yield(x) }; r; end\n"
-"  def reject; r = []; each { |x| r << x unless yield(x) }; r; end\n"
-"  def flat_map; r = []; each { |x| v = yield(x); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end\n"
-"  def find; each { |x| return x if yield(x) }; nil; end\n"
-"  def detect; each { |x| return x if yield(x) }; nil; end\n"
-"  def to_a; r = []; each { |x| r << x }; r; end\n"
-"  def to_h; h = {}; if block_given?; each { |x| kv = yield(x); h[kv[0]] = kv[1] }; else; each { |x| h[x[0]] = x[1] }; end; h; end\n"
-"  def entries; r = []; each { |x| r << x }; r; end\n"
-"  def count; n = 0; each { |x| n += 1 }; n; end\n"
-"  def include?(v); each { |x| return true if x == v }; false; end\n"
-"  def member?(v); each { |x| return true if x == v }; false; end\n"
-"  def first(n = nil); if n.nil?; each { |x| return x }; nil; else; r = []; c = 0; each { |x| if c < n; r << x; c += 1; end }; r; end; end\n"
-"  def reduce(a, b = nil); if b.nil?; acc = nil; f = true; each { |x| if f; acc = x; f = false; else; acc = acc.send(a, x); end }; acc; else; acc = a; each { |x| acc = acc.send(b, x) }; acc; end; end\n"
-"  def inject(a, b = nil); if b.nil?; acc = nil; f = true; each { |x| if f; acc = x; f = false; else; acc = acc.send(a, x); end }; acc; else; acc = a; each { |x| acc = acc.send(b, x) }; acc; end; end\n"
-"  def sum(init = 0); s = init; if block_given?; each { |x| s = s + yield(x) }; else; each { |x| s = s + x }; end; s; end\n"
-"  def min; r = nil; f = true; each { |x| if f; r = x; f = false; elsif x < r; r = x; end }; r; end\n"
-"  def max; r = nil; f = true; each { |x| if f; r = x; f = false; elsif x > r; r = x; end }; r; end\n"
-"  def min_by; r = nil; rk = nil; f = true; each { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif k < rk; r = x; rk = k; end }; r; end\n"
-"  def max_by; r = nil; rk = nil; f = true; each { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif k > rk; r = x; rk = k; end }; r; end\n"
-"  def sort; to_a.sort; end\n"
-"  def sort_by; a = []; each { |x| a << x }; a.sort_by { |x| yield(x) }; end\n"
-"  def all?; bg = block_given?; each { |x| return false unless (bg ? yield(x) : x) }; true; end\n"
-"  def any?; bg = block_given?; each { |x| return true if (bg ? yield(x) : x) }; false; end\n"
-"  def none?; bg = block_given?; each { |x| return false if (bg ? yield(x) : x) }; true; end\n"
-"  def one?; n = 0; bg = block_given?; each { |x| n += 1 if (bg ? yield(x) : x) }; n == 1; end\n"
-"  def cycle(n = nil); a = to_a; return nil if a.empty?; if n.nil?; loop { a.each { |x| yield x } }; else; n.times { a.each { |x| yield x } }; end; nil; end\n"
-"  def each_with_object(o); each { |x| yield x, o }; o; end\n"
-"  def each_with_index; i = 0; each { |x| yield x, i; i += 1 }; self; end\n"
-"  def partition; a = []; b = []; each { |x| if yield(x); a << x; else; b << x; end }; [a, b]; end\n"
-"  def group_by; h = {}; each { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end\n"
-"  def tally; h = {}; each { |x| h[x] = (h[x] || 0) + 1 }; h; end\n"
-"  def chunk_while; r = []; cur = nil; f = true; prev = nil; each { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end\n"
-"  def take(n); r = []; each { |x| break if r.size >= n; r << x }; r; end\n"
-"  def drop(n); r = []; i = 0; each { |x| r << x if i >= n; i += 1 }; r; end\n"
-"  def take_while; r = []; each { |x| break unless yield(x); r << x }; r; end\n"
-"  def drop_while; r = []; dropping = true; each { |x| dropping = false if dropping && !yield(x); r << x unless dropping }; r; end\n"
-"  def minmax; [min, max]; end\n"
-"  def find_index(v = nil); i = 0; bg = block_given?; each { |x| return i if (bg ? yield(x) : (x == v)); i += 1 }; nil; end\n"
-"  def each_slice(n); r = []; s = []; each { |x| s << x; if s.size == n; r << s; s = []; end }; r << s unless s.empty?; if block_given?; r.each { |sl| yield sl }; nil; else; r; end; end\n"
-"end\n"
-"class Proc\n"
-"  def curry(n = (arity < 0 ? -arity - 1 : arity))\n"
-"    acc = nil\n"
-"    acc = ->(got) { got.length >= n ? call(*got) : ->(*more) { acc.call(got + more) } }\n"
-"    acc.call([])\n"
-"  end\n"
-"end\n"
-/* Minimal Encoding: enough for constant references and identity comparison so
- * specs that mention Encoding::X in setup don't crash.  Per-string encoding
- * tracking is out of scope (String#encoding returns UTF-8, the default). */
-"class Encoding\n"
-"  def initialize(name); @name = name; end\n"
-"  def name; @name; end\n"
-"  def to_s; @name; end\n"
-"  def inspect; \"#<Encoding:\" + @name + \">\"; end\n"
-"  def ==(o); o.is_a?(Encoding) && o.name == @name; end\n"
-"  def ascii_compatible?; @name != \"UTF-16\" && @name != \"UTF-32\"; end\n"
-"  def dummy?; false; end\n"
-"  UTF_8 = Encoding.new(\"UTF-8\")\n"
-"  US_ASCII = Encoding.new(\"US-ASCII\")\n"
-"  ASCII = US_ASCII\n"
-"  ASCII_8BIT = Encoding.new(\"ASCII-8BIT\")\n"
-"  BINARY = ASCII_8BIT\n"
-"  UTF_16 = Encoding.new(\"UTF-16\")\n"
-"  UTF_32 = Encoding.new(\"UTF-32\")\n"
-"  UTF_16LE = Encoding.new(\"UTF-16LE\")\n"
-"  UTF_32LE = Encoding.new(\"UTF-32LE\")\n"
-"  UTF_7 = Encoding.new(\"UTF-7\")\n"
-"  CESU_8 = Encoding.new(\"CESU-8\")\n"
-"  SHIFT_JIS = Encoding.new(\"Shift_JIS\")\n"
-"  EUC_JP = Encoding.new(\"EUC-JP\")\n"
-"  ISO_2022_JP = Encoding.new(\"ISO-2022-JP\")\n"
-"  CP50221 = Encoding.new(\"CP50221\")\n"
-"  ISO_8859_1 = Encoding.new(\"ISO-8859-1\")\n"
-"  Windows_1252 = Encoding.new(\"Windows-1252\")\n"
-"  def self.default_external; UTF_8; end\n"
-"  def self.default_internal; nil; end\n"
-"end\n"
-"class Encoding\n"
-"  class Converter; end\n"
-"  class CompatibilityError < StandardError; end\n"
-"  class UndefinedConversionError < StandardError; end\n"
-"  class InvalidByteSequenceError < StandardError; end\n"
-"  class ConverterNotFoundError < StandardError; end\n"
-"end\n"
-"class String\n"
-"  def encoding; Encoding::UTF_8; end\n"
-"end\n"
-/* Minimal Errno: just enough that Errno::X constant references resolve (as
- * SystemCallError subclasses); per-errno numbers/semantics are out of scope. */
-"class Exception\n"
-"  def detailed_message(highlight: false, **)\n"
-"    m = message.to_s; cls = self.class; cn = cls.name\n"
-"    if m.empty?\n"
-"      text = cls.equal?(RuntimeError) ? 'unhandled exception' : (cn || cls.to_s)\n"
-"      return highlight ? \"\\e[1;4m#{text}\\e[m\" : text\n"
-"    end\n"
-"    return (highlight ? \"\\e[1m#{m}\\e[m\" : m) if cn.nil?\n"
-"    highlight ? \"\\e[1m#{m} (\\e[1;4m#{cn}\\e[m\\e[1m)\\e[m\" : \"#{m} (#{cn})\"\n"
-"  end\n"
-"  def full_message(**opts); \"#{message} (#{self.class})\"; end\n"
-"end\n"
-"module Warning\n"
-"  def self.[](category); false; end\n"
-"  def self.[]=(category, flag); flag; end\n"
-"  def self.warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end\n"
-"end\n"
-"class Object\n"
-"  def to_enum(meth = :each)\n"
-"    a = []; send(meth) { |*vs| a << (vs.size == 1 ? vs[0] : vs) }; a.each\n"
-"  end\n"
-"  def enum_for(meth = :each)\n"
-"    a = []; send(meth) { |*vs| a << (vs.size == 1 ? vs[0] : vs) }; a.each\n"
-"  end\n"
-"end\n"
-"class SystemCallError < StandardError; end\n"
-"module Errno\n"
-"  EPERM = Class.new(SystemCallError); ENOENT = Class.new(SystemCallError)\n"
-"  ESRCH = Class.new(SystemCallError); EINTR = Class.new(SystemCallError)\n"
-"  EIO = Class.new(SystemCallError); EBADF = Class.new(SystemCallError)\n"
-"  EAGAIN = Class.new(SystemCallError); ENOMEM = Class.new(SystemCallError)\n"
-"  EACCES = Class.new(SystemCallError); EEXIST = Class.new(SystemCallError)\n"
-"  ENOTDIR = Class.new(SystemCallError); EISDIR = Class.new(SystemCallError)\n"
-"  EINVAL = Class.new(SystemCallError); EPIPE = Class.new(SystemCallError)\n"
-"  ERANGE = Class.new(SystemCallError); ENOTSUP = Class.new(SystemCallError)\n"
-"  ECHILD = Class.new(SystemCallError); ESPIPE = Class.new(SystemCallError)\n"
-"  ECONNRESET = Class.new(SystemCallError); ETIMEDOUT = Class.new(SystemCallError)\n"
-"end\n";
+/* The prelude (Enumerable mixin, Proc#curry, minimal Encoding/Exception/Errno,
+ * Object#to_enum, ...) lives as ordinary Ruby under prelude/.  The files are
+ * read + concatenated in this order at startup and run before the user program;
+ * their method-body SDs are baked once into preload_store/all.so (ensure_preload),
+ * not into every program's code store. */
+#define KORUBY_PRELUDE_DIR  KORUBY_SRC_DIR "/prelude"
+static const char *const KORUBY_PRELUDE_FILES[] = {
+    "enumerable.rb", "proc.rb", "encoding.rb", "exception.rb",
+};
 
 static void
 usage(FILE *fp)
@@ -200,6 +69,45 @@ read_file_all(const char *path, size_t *len_out)
     return buf;
 }
 
+#define KORUBY_PRELUDE_NFILES (sizeof(KORUBY_PRELUDE_FILES) / sizeof(KORUBY_PRELUDE_FILES[0]))
+
+/* Read + concatenate the prelude files (in KORUBY_PRELUDE_FILES order) into one
+ * malloc'd, NUL-terminated source buffer. */
+static char *
+load_prelude_source(size_t *len_out)
+{
+    char *buf = NULL; size_t total = 0;
+    for (size_t i = 0; i < KORUBY_PRELUDE_NFILES; i++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", KORUBY_PRELUDE_DIR, KORUBY_PRELUDE_FILES[i]);
+        size_t flen; char *const fsrc = read_file_all(path, &flen);
+        buf = realloc(buf, total + flen + 2);
+        if (!buf) abort();
+        memcpy(buf + total, fsrc, flen); total += flen;
+        buf[total++] = '\n';                          /* keep each file's last line terminated */
+        free(fsrc);
+    }
+    if (!buf) { buf = malloc(1); total = 0; }
+    buf[total] = '\0';
+    *len_out = total;
+    return buf;
+}
+
+/* Newest mtime among the prelude files — folded into the preload-store version so
+ * editing a prelude .rb invalidates the baked SDs. */
+static uint64_t
+prelude_mtime(void)
+{
+    uint64_t newest = 0;
+    for (size_t i = 0; i < KORUBY_PRELUDE_NFILES; i++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", KORUBY_PRELUDE_DIR, KORUBY_PRELUDE_FILES[i]);
+        struct stat st;
+        if (stat(path, &st) == 0 && (uint64_t)st.st_mtime > newest) newest = (uint64_t)st.st_mtime;
+    }
+    return newest;
+}
+
 /* Number of code-repo entries that belong to the Enumerable prelude (recorded
  * right after the prelude is parsed, before the user program registers any
  * methods).  Entries [0, g_prelude_repo_count) are prelude bodies; they are
@@ -240,14 +148,23 @@ exe_mtime(void)
     return stat("/proc/self/exe", &se) == 0 ? (uint64_t)se.st_mtime : 0;
 }
 
-/* preload_store/all.so is stale if missing or older than this binary. */
+/* Code-store version for the preload bake: newest of the binary and the prelude
+ * sources, so a rebuilt interpreter OR an edited prelude .rb rebuilds the SDs. */
+static uint64_t
+preload_version(void)
+{
+    uint64_t v = exe_mtime(), p = prelude_mtime();
+    return p > v ? p : v;
+}
+
+/* preload_store/all.so is stale if missing or older than the preload version. */
 static bool
 preload_stale(void)
 {
     struct stat sso;
     if (stat(KORUBY_PRELOAD_SO, &sso) != 0) return true;
-    uint64_t exe = exe_mtime();
-    return exe != 0 && exe > (uint64_t)sso.st_mtime;
+    uint64_t v = preload_version();
+    return v != 0 && v > (uint64_t)sso.st_mtime;
 }
 
 /* Bake the fixed prelude's SDs once into preload_store/all.so, then register it
@@ -268,7 +185,7 @@ ensure_preload(void)
          * binary mtime as the store version makes astro_cs_init clear a stale
          * preload store, so changed prelude/ABI is actually rebuilt (the
          * file-exists skip in astro_cs_compile would otherwise keep stale SDs). */
-        astro_cs_init(KORUBY_PRELOAD_DIR, KORUBY_SRC_DIR, exe_mtime());
+        astro_cs_init(KORUBY_PRELOAD_DIR, KORUBY_SRC_DIR, preload_version());
         for (uint32_t i = 0; i < g_prelude_repo_count; i++) {
             if (code_repo_skip_specialize_at(i)) continue;
             astro_cs_compile(code_repo_body_at(i), NULL);
@@ -442,8 +359,10 @@ main(int argc, char *argv[])
      * code repo so AOT bakes/swaps them too); run it after the AOT swap below.
      * Captured here because koruby_toplevel_locals_cnt is overwritten by the
      * user-program parse. */
+    size_t prelude_len = 0;
+    char *prelude_src = OPTION.dump_ast ? NULL : load_prelude_source(&prelude_len);
     NODE *prelude_ast = OPTION.dump_ast ? NULL
-                      : koruby_parse_source(c, KORUBY_PRELUDE, strlen(KORUBY_PRELUDE), "<prelude>");
+                      : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>");
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
     /* Prelude method bodies registered so far form [0, g_prelude_repo_count);
      * they are baked into preload.so, not the program's code store. */
