@@ -750,6 +750,24 @@ class MSpecMock
   def to_s; e = @recv[:to_s]; e ? e.__return_value : super; end
   def hash; e = @recv[:hash]; e ? e.__return_value : super; end
   def ==(o); e = @recv[:==]; e ? e.__return_value : super; end
+  # Built-in / operator methods that the runtime resolves before method_missing;
+  # override so a stubbed value wins (mirrors to_s/hash/== above).
+  def <=>(o); e = @recv[:<=>]; e ? e.__return_value : super; end
+  def inspect; e = @recv[:inspect]; e ? e.__return_value : "#<mock(#{@name})>"; end
+  def to_str; e = @recv[:to_str]; e ? e.__return_value : super; end
+  def to_int; e = @recv[:to_int]; e ? e.__return_value : super; end
+  def to_ary; e = @recv[:to_ary]; e ? e.__return_value : super; end
+  def to_a; e = @recv[:to_a]; e ? e.__return_value : super; end
+  def to_proc; e = @recv[:to_proc]; e ? e.__return_value : super; end
+  def to_hash; e = @recv[:to_hash]; e ? e.__return_value : super; end
+  def to_io; e = @recv[:to_io]; e ? e.__return_value : super; end
+  def coerce(o); e = @recv[:coerce]; e ? e.__return_value : super; end
+  def each(*a); e = @recv[:each]; e ? e.__return_value : super; end
+  def eql?(o); e = @recv[:eql?]; e ? e.__return_value : super; end
+  def <(o); e = @recv[:<]; e ? e.__return_value : super; end
+  def >(o); e = @recv[:>]; e ? e.__return_value : super; end
+  def <=(o); e = @recv[:<=]; e ? e.__return_value : super; end
+  def >=(o); e = @recv[:>=]; e ? e.__return_value : super; end
 end
 
 class MSpecMockExpectation
