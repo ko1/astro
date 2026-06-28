@@ -1214,9 +1214,13 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* String#[] — int index, (int,len), Range, or substring match.  Indices are
  * codepoints; results are fresh strings (or nil). */
 static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE i0 = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(i0) && !KORB_RANGE_P(i0)) {     /* coerce a non-String/Range index via #to_int (before reading self) */
+        RESULT cr = korb_coerce_to_int(c, slots, &i0);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    }
     const KorbString *s = SELF_STR;
     uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
-    VALUE i0 = VALUE_SLICE_GET(a, 0);
 
     if (KORB_STRING_P(i0)) {                       /* s[substr] → copy of substr if present */
         const KorbString *sub = VAL2STR(i0);
