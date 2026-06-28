@@ -1594,6 +1594,7 @@ static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(KORB_TRUE);
 }
+static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
@@ -1640,6 +1641,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     slots[2] = VALUE_REF_GET(cls);                            /* root class across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
+    korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
@@ -1713,6 +1715,14 @@ static RESULT korb_m_data_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 /* Data.define(*members [, &block]) → an anonymous immutable value class. */
+/* class-level `[]` constructor: Klass[a, b, ...] == Klass.new(a, b, ...).  Shared
+ * by Struct and Data value classes; forwards positional + trailing-kwargs args. */
+static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    slots[0] = VALUE_REF_GET(self);                       /* receiver */
+    for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    return korb_send(c, slots + 1 + argc, korb_intern(c->vm, "new", 3), 0, argc);
+}
 static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)cself;
     struct korb_vm *const vm = c->vm;
@@ -1745,6 +1755,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[2] = VALUE_REF_GET(cls);                            /* root across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
+    korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* D[...] == D.new(...) */
     if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
