@@ -692,6 +692,17 @@ static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
 static RESULT korb_m_cpx_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
+/* Complex#fdiv(n) → Complex(re.fdiv(n), im.fdiv(n)) with Float components. */
+static RESULT korb_m_cpx_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    double n, re, im;
+    if (!korb_num_to_d(VALUE_SLICE_GET(a, 0), &n))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#fdiv with non-real components");
+    slots[0] = UNWRAP(korb_float_new(c, slots, re / n));
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, im / n));
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
 
 bool
 korb_num_to_d(VALUE v, double *out)
@@ -6343,6 +6354,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "conjugate", korb_m_cpx_conj, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "conj", korb_m_cpx_conj, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "abs", korb_m_cpx_abs, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "fdiv", korb_m_cpx_fdiv, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "magnitude", korb_m_cpx_abs, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_c", korb_m_cpx_self, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "+", korb_m_cpx_add, 1);
