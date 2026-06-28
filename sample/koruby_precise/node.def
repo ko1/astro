@@ -855,6 +855,16 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint
     if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
     korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info);
+    /* fire the BasicObject#singleton_method_added(name) hook — only when the
+     * object actually defines it (no default → no per-def cost otherwise; and
+     * since the method is added first, defining the hook fires it for itself). */
+    obj = VALUE_REF_GET(recv);
+    const uint32_t smad = korb_intern(c->vm, "singleton_method_added", 22);
+    if (UNLIKELY(korb_responds_to(c, obj, smad))) {
+        slots[0] = obj; slots[1] = ID2SYM(mid);          /* recv, arg */
+        RESULT hr = korb_send(c, slots + 2, smad, 0, 1);
+        if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+    }
     return RESULT_OK(ID2SYM(mid));
 }
 
