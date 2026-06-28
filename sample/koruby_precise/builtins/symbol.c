@@ -266,6 +266,19 @@ static const struct korb_method *korb_meth_resolve(CTX *c, const KorbMethod *m) 
 }
 /* CRuby Method#arity: required positional count, negated as -(req+1) when an
  * optional / rest param makes the count variable.  Variadic builtins → -1. */
+/* keyword params → has-required-kw / has-optional-kw / has-**kwrest. */
+static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest) {
+    *req = *opt = *kwrest = false;
+    if (kwp == NULL) return;
+    const struct korb_kw_info *const ki = (const struct korb_kw_info *)kwp;
+    *kwrest = ki->kwrest_slot >= 0;
+    for (uint32_t i = 0; i < ki->count; i++) {
+        if (ki->entries[i].deflt == NULL) *req = true; else *opt = true;
+    }
+}
+/* CRuby arity: required keyword(s) add +1 (total) to the required count and keep
+ * it positive; only-optional-kw or **kwrest (with no required kw) make it
+ * variadic, like optional positionals / *rest. */
 static intptr_t korb_method_arity(const struct korb_method *km) {
     switch (km->kind) {
       case KORB_METHOD_ATTR_R: return 0;
@@ -276,13 +289,17 @@ static intptr_t korb_method_arity(const struct korb_method *km) {
         const KorbProc *p = VAL2PROC(km->dm_proc);
         if (p->iseq == NULL) return -2;
         const NODE *e = p->iseq;
-        const bool var = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
-        const uint32_t req = var ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
+        bool kreq, kopt, kwrest; korb_kw_arity_flags(e->u.node_entry.kw_info, &kreq, &kopt, &kwrest);
+        const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+        const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
+        const bool var = varpos || kwrest || (kopt && !kreq);
         return var ? -((intptr_t)req + 1) : (intptr_t)req;
       }
       default: {                                               /* ISEQ */
-        const bool var = (km->opt_defaults != NULL) || (km->rest_slot >= 0);
-        const uint32_t req = km->req_cnt + km->post_cnt;
+        bool kreq, kopt, kwrest; korb_kw_arity_flags(km->kw_info, &kreq, &kopt, &kwrest);
+        const bool varpos = (km->opt_defaults != NULL) || (km->rest_slot >= 0);
+        const uint32_t req = km->req_cnt + km->post_cnt + (kreq ? 1u : 0u);
+        const bool var = varpos || kwrest || (kopt && !kreq);
         return var ? -((intptr_t)req + 1) : (intptr_t)req;
       }
     }
