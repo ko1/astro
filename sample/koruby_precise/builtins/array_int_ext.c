@@ -525,8 +525,28 @@ static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */
     return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
 }
-static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_NIL); }
-static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self; return RESULT_OK(VALUE_SLICE_GET(a, 0)); }   /* proc defaults unsupported; accept + ignore */
+static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a; return RESULT_OK(VAL2HASH(VALUE_REF_GET(self))->default_proc);
+}
+static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    VALUE p = VALUE_SLICE_GET(a, 0);
+    if (p != KORB_NIL && !KORB_PROC_P(p)) {                   /* coerce via #to_proc, else TypeError */
+        const uint32_t to_proc = korb_intern(c->vm, "to_proc", 7);
+        if (!korb_responds_to(c, p, to_proc))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Proc", korb_type_name(p));
+        slots[0] = p;
+        RESULT pr = korb_send_impl(c, slots + 1, to_proc, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+        if (UNLIKELY(!KORB_PROC_P(pr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Proc", korb_type_name(slots[0]));
+        p = pr.value;
+    }
+    KorbHash *const h = VAL2HASH(VALUE_REF_GET(self));        /* re-read after the dispatch */
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_proc, p);
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_val, KORB_NIL);   /* setting a proc clears the static default */
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));   /* a setter call evaluates to its argument */
+}
 static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
