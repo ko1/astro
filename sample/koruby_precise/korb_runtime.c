@@ -6519,6 +6519,15 @@ korb_sym_inspect_bare(const char *nm)
             if (*q == '\0') return true;
         }
     }
+    if (nm[0] == '$' && nm[1] != '\0') {                  /* special global-variable symbols print bare */
+        const char *p = nm + 1;
+        if (*p >= '0' && *p <= '9') {                     /* $0, $1, $23 — program name / match groups */
+            while (*p >= '0' && *p <= '9') p++;
+            if (*p == '\0') return true;
+        }
+        if (p[0] == '-' && p[1] != '\0' && p[2] == '\0') return true;   /* $-w, $-I — one-char flag */
+        if (p[0] != '\0' && p[1] == '\0' && strchr("!@&`'+~=/\\,;.<>*$?:\"", p[0])) return true;   /* $! $~ $+ $: ... */
+    }
     if (nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z')) {
         const char *p = nm + 1;                      /* identifier with trailing '=' (setter) */
         while (*p == '_' || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) p++;
