@@ -558,7 +558,14 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
         slots[0] = l; slots[1] = rhs;
         return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
     }
-    return RESULT_OK(korb_value_eq(l, rhs) ? KORB_TRUE : KORB_FALSE);
+    if (korb_value_eq(l, rhs)) return RESULT_OK(KORB_TRUE);
+    /* Numeric#== is reflexive for a non-numeric other: `5 == obj` → `obj == 5`. */
+    if (KORB_OBJECT_P(rhs) &&
+        (FIXNUM_P(l) || KORB_FLOAT_P(l) || KORB_BIGNUM_P(l) || KORB_RATIONAL_P(l) || KORB_COMPLEX_P(l))) {
+        slots[0] = rhs; slots[1] = l;
+        return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+    }
+    return RESULT_OK(KORB_FALSE);
 }
 
 NODE_DEF
@@ -576,7 +583,16 @@ node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
     }
-    return RESULT_OK(korb_value_eq(l, rhs) ? KORB_FALSE : KORB_TRUE);
+    if (korb_value_eq(l, rhs)) return RESULT_OK(KORB_FALSE);
+    /* reflexive numeric != : `5 != obj` → !(obj == 5). */
+    if (KORB_OBJECT_P(rhs) &&
+        (FIXNUM_P(l) || KORB_FLOAT_P(l) || KORB_BIGNUM_P(l) || KORB_RATIONAL_P(l) || KORB_COMPLEX_P(l))) {
+        slots[0] = rhs; slots[1] = l;
+        RESULT r = korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_FALSE : KORB_TRUE);
+    }
+    return RESULT_OK(KORB_TRUE);
 }
 
 // case/when subject test: `whenval === subj`.  For value-equality types
