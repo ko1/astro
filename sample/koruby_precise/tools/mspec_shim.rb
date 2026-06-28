@@ -153,75 +153,75 @@ class MSpecExpectation
     if matched then $ms_pass += 1
     else
       $ms_fail += 1
-      raise MSpecError, "expected #{@actual.inspect} =~ #{other.inspect}"
+      fail MSpecError, "expected #{@actual.inspect} =~ #{other.inspect}"
     end
   end
   def ==(expected)
     if @actual == expected then $ms_pass += 1
     else
       $ms_fail += 1
-      raise MSpecError, "expected #{expected.inspect}, got #{@actual.inspect}"
+      fail MSpecError, "expected #{expected.inspect}, got #{@actual.inspect}"
     end
   end
   def !=(expected)
     if @actual != expected then $ms_pass += 1
     else
       $ms_fail += 1
-      raise MSpecError, "expected != #{expected.inspect}"
+      fail MSpecError, "expected != #{expected.inspect}"
     end
   end
   def equal(expected)
     if @actual.equal?(expected) then $ms_pass += 1
     else
-      raise MSpecError, "expected to equal? #{expected.inspect}, got #{@actual.inspect}"
+      fail MSpecError, "expected to equal? #{expected.inspect}, got #{@actual.inspect}"
     end
   end
   def eql(expected)
     if @actual.eql?(expected) then $ms_pass += 1
     else
-      raise MSpecError, "expected eql? #{expected.inspect}, got #{@actual.inspect}"
+      fail MSpecError, "expected eql? #{expected.inspect}, got #{@actual.inspect}"
     end
   end
   def be_nil
     if @actual.nil? then $ms_pass += 1
-    else raise MSpecError, "expected nil, got #{@actual.inspect}"
+    else fail MSpecError, "expected nil, got #{@actual.inspect}"
     end
   end
   def be_true
     if @actual == true then $ms_pass += 1
-    else raise MSpecError, "expected true, got #{@actual.inspect}"
+    else fail MSpecError, "expected true, got #{@actual.inspect}"
     end
   end
   def be_false
     if @actual == false then $ms_pass += 1
-    else raise MSpecError, "expected false, got #{@actual.inspect}"
+    else fail MSpecError, "expected false, got #{@actual.inspect}"
     end
   end
   def be_truthy
     if @actual then $ms_pass += 1
-    else raise MSpecError, "expected truthy, got #{@actual.inspect}"
+    else fail MSpecError, "expected truthy, got #{@actual.inspect}"
     end
   end
   def be_falsy
     if !@actual then $ms_pass += 1
-    else raise MSpecError, "expected falsy, got #{@actual.inspect}"
+    else fail MSpecError, "expected falsy, got #{@actual.inspect}"
     end
   end
   def be_an_instance_of(klass)
     if @actual.class == klass then $ms_pass += 1
-    else raise MSpecError, "expected instance_of #{klass}, got #{@actual.class}"
+    else fail MSpecError, "expected instance_of #{klass}, got #{@actual.class}"
     end
   end
   def be_kind_of(klass)
     if @actual.kind_of?(klass) then $ms_pass += 1
-    else raise MSpecError, "expected kind_of #{klass}, got #{@actual.class}"
+    else fail MSpecError, "expected kind_of #{klass}, got #{@actual.class}"
     end
   end
   def be_a(klass); be_kind_of(klass); end
   def be_an(klass); be_kind_of(klass); end
   def be_close(target, tol)
     if (@actual - target).abs <= tol then $ms_pass += 1
-    else raise MSpecError, "expected close to #{target} ± #{tol}, got #{@actual.inspect}"
+    else fail MSpecError, "expected close to #{target} ± #{tol}, got #{@actual.inspect}"
     end
   end
   def include(*items)
@@ -237,19 +237,19 @@ class MSpecExpectation
         ok = @actual.include?(alt)
       end
       unless ok
-        raise MSpecError, "expected to include #{it.inspect}, got #{@actual.inspect}"
+        fail MSpecError, "expected to include #{it.inspect}, got #{@actual.inspect}"
       end
     end
     $ms_pass += 1
   end
   def respond_to(name)
     if @actual.respond_to?(name) then $ms_pass += 1
-    else raise MSpecError, "expected #{@actual.inspect} to respond_to #{name}"
+    else fail MSpecError, "expected #{@actual.inspect} to respond_to #{name}"
     end
   end
   def raise_error(klass = StandardError, msg = nil)
     if !@actual.is_a?(Proc) && !@actual.respond_to?(:call)
-      raise MSpecError, "raise_error needs a callable on .should"
+      fail MSpecError, "raise_error needs a callable on .should"
     end
     begin
       @actual.call
@@ -257,14 +257,14 @@ class MSpecExpectation
       if e.is_a?(klass) && (msg.nil? || msg === e.message)
         $ms_pass += 1; return
       end
-      raise MSpecError, "expected #{klass}, got #{e.class}: #{e.message}"
+      fail MSpecError, "expected #{klass}, got #{e.class}: #{e.message}"
     end
-    raise MSpecError, "expected #{klass}, no raise"
+    fail MSpecError, "expected #{klass}, no raise"
   end
-  def <(o); @actual < o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} < #{o}"); end
-  def <=(o); @actual <= o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} <= #{o}"); end
-  def >(o); @actual > o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} > #{o}"); end
-  def >=(o); @actual >= o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} >= #{o}"); end
+  def <(o); @actual < o ? ($ms_pass += 1) : (fail MSpecError, "expected #{@actual} < #{o}"); end
+  def <=(o); @actual <= o ? ($ms_pass += 1) : (fail MSpecError, "expected #{@actual} <= #{o}"); end
+  def >(o); @actual > o ? ($ms_pass += 1) : (fail MSpecError, "expected #{@actual} > #{o}"); end
+  def >=(o); @actual >= o ? ($ms_pass += 1) : (fail MSpecError, "expected #{@actual} >= #{o}"); end
 end
 
 # Standalone matchers — bareword calls inside `it` blocks like
