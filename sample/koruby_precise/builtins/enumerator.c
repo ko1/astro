@@ -373,4 +373,23 @@ static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
     return RESULT_OK(v->items->data[e->cursor]);
 }
+static RESULT korb_m_enum_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    SELF_ENUM->cursor = 0;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* next_values / peek_values: the yielded value(s) as an Array.  A multi-value
+ * yield is stored as an Array already (return it); a single value is wrapped. */
+static RESULT korb_enum_values_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool advance) {
+    KorbEnumerator *const e = SELF_ENUM;
+    const KorbArray *const v = VAL2ARY(e->values);
+    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "iteration reached an end");
+    slots[0] = v->items->data[e->cursor];             /* the single stored value (park before alloc) */
+    if (advance) e->cursor++;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    return RESULT_OK(slots[1]);
+}
+static RESULT korb_m_enum_next_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_enum_values_at_cursor(c, slots, self, true); }
+static RESULT korb_m_enum_peek_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_enum_values_at_cursor(c, slots, self, false); }
 
