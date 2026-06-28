@@ -46,8 +46,8 @@ module Enumerable
   def minmax; [min, max]; end
   def minmax_by; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
   def find_index(v = nil); i = 0; bg = block_given?; each { |x| return i if (bg ? yield(x) : (x == v)); i += 1 }; nil; end
-  def each_slice(n); r = []; s = []; each { |x| s << x; if s.size == n; r << s; s = []; end }; r << s unless s.empty?; if block_given?; r.each { |sl| yield sl }; nil; else; r; end; end
-  def each_cons(n); r = []; buf = []; each { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r; end; end
+  def each_slice(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid slice size" unless n > 0; r = []; s = []; each { |x| s << x; if s.size == n; r << s; s = []; end }; r << s unless s.empty?; if block_given?; r.each { |sl| yield sl }; nil; else; r; end; end
+  def each_cons(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid size" unless n > 0; r = []; buf = []; each { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r; end; end
   def zip(*others); os = others.map { |o| o.to_a }; r = []; i = 0; each { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }; if block_given?; r.each { |row| yield row }; nil; else; r; end; end
   def filter_map; r = []; each { |x| v = yield(x); r << v if v }; r; end
   def collect_concat; r = []; each { |x| v = yield(x); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end
