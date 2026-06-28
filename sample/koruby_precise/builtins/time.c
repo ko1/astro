@@ -43,7 +43,15 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_f", 4)) &&
         korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL)
         e = korb_time_epoch(c, v);                                /* Time.at(time) */
-    else korb_num_to_d(v, &e);
+    else if (!korb_num_to_d(v, &e)) {                             /* try #to_int, else TypeError */
+        if (korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6))) {
+            slots[0] = v;
+            RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            if (!korb_num_to_d(ir.value, &e))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(v));
+    }
     if (VALUE_SLICE_LEN(a) >= 2) {                                /* Time.at(sec, usec) → add microseconds */
         double usec = 0; korb_num_to_d(VALUE_SLICE_GET(a, 1), &usec);
         e += usec / 1e6;
@@ -99,7 +107,9 @@ TIME_COMPONENT(yday,  tm_yday, 1)
 static RESULT korb_m_time_usec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     const double e = korb_time_epoch(c, VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX((intptr_t)((e - (double)(time_t)e) * 1e6 + 0.5)));
+    /* truncate toward zero (CRuby), with a tiny epsilon to absorb the float
+     * reconstruction error for exact integer microseconds. */
+    return RESULT_OK(LONG2FIX((intptr_t)((e - (double)(time_t)e) * 1e6 + 1e-6)));
 }
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_time_is_utc(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
