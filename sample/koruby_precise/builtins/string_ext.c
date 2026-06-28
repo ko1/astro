@@ -337,6 +337,7 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* String#insert(index, str) — insert str before the char at index (negative
  * index counts from the end, inserting after); mutates and returns self. */
 static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     intptr_t idx;
     if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     VALUE iv = VALUE_SLICE_GET(a, 1);

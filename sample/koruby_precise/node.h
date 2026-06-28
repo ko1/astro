@@ -345,11 +345,22 @@ enum korb_etype {
     KORB_E_RANGE,
     KORB_E_INDEX,
     KORB_E_KEY,
+    KORB_E_FROZEN,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */
 const char *korb_type_name(VALUE v);
 const char *korb_a_type_name(VALUE v);
+
+/* mutation guard: raise FrozenError (returning from the caller) if `v` is a
+ * frozen heap object.  Used at the top of in-place mutators. */
+#define KORB_CHECK_FROZEN(c, slots, v) do {                                    \
+    const VALUE _kf = (v);                                                     \
+    if (UNLIKELY(AROH_IS_GC_OBJECT(_kf) &&                                     \
+                 (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_FROZEN))) \
+        return korb_raise((c), (slots), KORB_E_FROZEN, 0,                      \
+                          "can't modify frozen %s", korb_type_name(_kf));      \
+} while (0)
 
 /* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =
  * auto-detect 0x/0b/0o/leading-0.  Used by node_bignum (beyond-Fixnum literal). */

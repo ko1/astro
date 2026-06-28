@@ -174,6 +174,7 @@ static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, intptr_t sta
     return RESULT_OK(VALUE_REF_GET(valref));
 }
 static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
     VALUE iv = VALUE_SLICE_GET(a, 0);
     if (VALUE_SLICE_LEN(a) >= 3) {                        /* a[start, len] = val */
@@ -260,11 +261,13 @@ static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 static RESULT korb_m_ary_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_ary_push_val(c, slots, self, VALUE_SLICE_GET(a, 0)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
 static RESULT korb_m_ary_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t n = VALUE_SLICE_LEN(a);
     for (uint32_t i = 0; i < n; i++)
         CHECK(korb_ary_push_val(c, slots, self, VALUE_SLICE_GET(a, i)));   /* slice rooted across grow */
@@ -272,6 +275,7 @@ static RESULT korb_m_ary_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 
 static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* pop(n): remove & return last n as array */
         intptr_t n;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));

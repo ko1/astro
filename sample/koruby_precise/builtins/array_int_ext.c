@@ -3,6 +3,7 @@
 /* ---- more Array (query/mutate) + Integer (bit) methods ------------------- */
 
 static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t k = VALUE_SLICE_LEN(a);
     if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
     CHECK(korb_ary_ensure(c, slots, self, k));
@@ -17,6 +18,7 @@ static RESULT korb_m_ary_unshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 
 static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* shift(n): remove & return first n as array */
         intptr_t n;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
@@ -280,6 +282,7 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     intptr_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     uint32_t base = block ? 0 : 1;                        /* position args start here */
     if (UNLIKELY(!block && VALUE_SLICE_LEN(a) < 1))
@@ -410,6 +413,7 @@ static RESULT korb_m_hash_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_hash_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     (void)c;(void)slots;(void)a;
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;     /* drop all pairs (payload kept, becomes garbage) */
@@ -581,6 +585,7 @@ static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* Hash#replace(other) — replace self's contents with other's, in place; returns self. */
 static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE ov = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
@@ -857,9 +862,11 @@ static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *
     if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true); }
+static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true); }
 static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
-static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
+static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
 static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {

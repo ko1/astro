@@ -131,21 +131,25 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
 }
 static RESULT korb_m_str_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, 0)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++)
         CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, j)));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
     return korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, 0));
 }
 static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t pn = 0;
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         VALUE o = VALUE_SLICE_GET(a, j);
@@ -165,6 +169,7 @@ static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     (void)c;(void)slots;(void)a;
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     s->len = 0; s->buf->data[0] = '\0';
@@ -264,6 +269,7 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t na = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE repl = VALUE_SLICE_GET(a, na - 1);
@@ -278,6 +284,7 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(VALUE_SLICE_GET(a, na - 1));   /* re-read: splice's GC may have moved repl (the `a` slice is a rooted slot) */
 }
 static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t na = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE idx = VALUE_SLICE_GET(a, 0);
@@ -1301,6 +1308,7 @@ static RESULT korb_str_bang_from(CTX *c, VALUE *slots, VALUE_REF self, RESULT ne
     return korb_str_append_str(c, slots + 1, self, VALUE_REF_AT(&slots[0]));
 }
 static RESULT korb_m_str_succ_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     return korb_str_bang_from(c, slots, self, korb_m_str_succ(c, slots, self, a), false);
 }
 /* tr!/tr_s! return nil only when NO source char matched the from-set; a
@@ -1323,12 +1331,14 @@ static bool korb_str_tr_matched(VALUE_REF self, VALUE fv) {
     return false;
 }
 static RESULT korb_m_str_tr_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const bool matched = korb_str_tr_matched(self, VALUE_SLICE_GET(a, 0));
     RESULT r = korb_str_bang_from(c, slots, self, korb_m_str_tr(c, slots, self, a), false);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK(matched ? VALUE_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_tr_s_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const bool matched = korb_str_tr_matched(self, VALUE_SLICE_GET(a, 0));
     RESULT r = korb_str_bang_from(c, slots, self, korb_m_str_tr_s(c, slots, self, a), false);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;

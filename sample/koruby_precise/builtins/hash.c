@@ -82,6 +82,7 @@ static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_hash_set(c, slots, self, VALUE_SLICE_REF(a, 0), VALUE_SLICE_GET(a, 1)));
     return RESULT_OK(VALUE_SLICE_GET(a, 1));        /* []= yields the value (rooted re-read) */
 }
@@ -143,6 +144,7 @@ static RESULT korb_m_hash_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_hash_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_hash_collect(c, slots, self, 1); }
 
 static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     KorbHash *h = SELF_HASH;
     int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
     if (idx < 0) {
@@ -285,6 +287,7 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 /* Hash#update / merge! — like merge but mutates self in place, returns self. */
 static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE ov = VALUE_SLICE_GET(a, k);
         if (UNLIKELY(!KORB_HASH_P(ov)))

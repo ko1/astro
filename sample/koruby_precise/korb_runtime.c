@@ -3221,6 +3221,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "ScriptError",         -1,                "Exception" },
         { "NameError",           KORB_E_NAME,       "StandardError" },
         { "RuntimeError",        KORB_E_RUNTIME,    "StandardError" },
+        { "FrozenError",         KORB_E_FROZEN,     "RuntimeError" },
         { "TypeError",           KORB_E_TYPE,       "StandardError" },
         { "ArgumentError",       KORB_E_ARGUMENT,   "StandardError" },
         { "ZeroDivisionError",   KORB_E_ZERODIV,    "StandardError" },

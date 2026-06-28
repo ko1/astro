@@ -432,6 +432,7 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
     if (LIKELY(KORB_ARRAY_P(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push (skips the full send dispatch) */
+        KORB_CHECK_FROZEN(c, slots, l);
         KorbArray *const arr = VAL2ARY(l);
         if (LIKELY(arr->len < arr->capa)) {                     /* room → inline store (LTO-inlinable, no grow/GC) */
             korb_ary_store_at(c, l, arr->len, rhs);
@@ -1291,6 +1292,7 @@ node_aset(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
     const VALUE r = VALUE_REF_GET(recv);
     const VALUE iv = VALUE_REF_GET(idx);
     if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(iv) && !c->vm->aref_redefined)) {
+        KORB_CHECK_FROZEN(c, slots, r);
         const KorbArray *const a = VAL2ARY(r);
         intptr_t i = FIX2LONG(iv);
         if (i < 0) i += (intptr_t)a->len;
