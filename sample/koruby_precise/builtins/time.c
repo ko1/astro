@@ -124,7 +124,12 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
-    double d = 0; korb_num_to_d(VALUE_SLICE_GET(a, 0), &d);
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "time + time?");   /* Time + Time is invalid */
+    double d = 0;
+    if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
     return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t) + d, korb_time_is_utc(c, t));
 }
 static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -132,7 +137,9 @@ static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_OBJECT_P(o) && korb_ivar_get(c, o, korb_time_t_sym(c->vm)) != KORB_NIL)   /* Time - Time → seconds (Float) */
         return korb_float_new(c, slots, korb_time_epoch(c, t) - korb_time_epoch(c, o));
-    double d = 0; korb_num_to_d(o, &d);
+    double d = 0;
+    if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
     return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t) - d, korb_time_is_utc(c, t));
 }
 static RESULT korb_m_time_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
