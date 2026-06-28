@@ -80,10 +80,24 @@ static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
     if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, s->buf->data, s->len)); return true; }
     return false;
 }
+/* valid instance-variable name: '@' + (letter|'_') + (alnum|'_')*; not '@@x'. */
+static bool korb_valid_ivar_name(struct korb_vm *vm, uint32_t sym) {
+    const char *const nm = korb_sym_name(vm, sym);
+    const char f = nm[1];
+    if (nm[0] != '@' || f == '\0' || f == '@') return false;
+    if (!((f >= 'a' && f <= 'z') || (f >= 'A' && f <= 'Z') || f == '_')) return false;
+    for (const char *p = nm + 2; *p; p++) {
+        const char ch = *p;
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+    }
+    return true;
+}
 static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
     CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));
@@ -93,6 +107,8 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     (void)slots;
     if (!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
