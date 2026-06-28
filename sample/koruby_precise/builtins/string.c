@@ -800,19 +800,29 @@ static uint32_t korb_str_char_to_byte(const KorbString *s, intptr_t cidx) {
     return b;
 }
 static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t boff = 0;
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* index(substr, start): range-check start first */
         intptr_t start;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
-        uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+        const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
+        uint32_t ncp = korb_utf8_count(s0->buf->data, s0->len);
         if (start < 0) start += ncp;
         if (start < 0 || start > (intptr_t)ncp) return RESULT_OK(KORB_NIL);   /* out of range → nil (needle not coerced) */
-        boff = korb_str_char_to_byte(s, start);
+        boff = korb_str_char_to_byte(s0, start);
     }
     VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
-    const KorbString *n = VAL2STR(sv);
+    if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (!korb_responds_to(c, sv, to_str))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        slots[0] = sv;
+        RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (UNLIKELY(!KORB_STRING_P(cr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(slots[0]));
+        sv = cr.value;
+    }
+    const KorbString *const s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);   /* re-read s after coercion's GC */
     int32_t b = korb_byte_find(s->buf->data + boff, s->len - boff, n->buf->data, n->len);
     if (b < 0) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, boff + (uint32_t)b)));   /* char index */
