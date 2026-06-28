@@ -37,11 +37,39 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_ary_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_ARY->len)); }
 static RESULT korb_m_ary_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_ARY->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_ARRAY_P(o)) return RESULT_OK(KORB_NIL);
-    int r = korb_cmp_full(c, VALUE_REF_GET(self), o);   /* element-wise <=> */
-    return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r));
+    if (!KORB_ARRAY_P(o)) {                            /* coerce via #to_ary, else nil */
+        const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+        if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, to_ary)) return RESULT_OK(KORB_NIL);
+        slots[0] = o;
+        RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+        if (!KORB_ARRAY_P(ar.value)) return RESULT_OK(KORB_NIL);
+        o = ar.value;
+    }
+    slots[0] = VALUE_REF_GET(self);                    /* root both across any <=> dispatch GC */
+    slots[1] = o;
+    const uint32_t xl0 = VAL2ARY(slots[0])->len, yl0 = VAL2ARY(slots[1])->len;
+    const uint32_t m = xl0 < yl0 ? xl0 : yl0;
+    for (uint32_t i = 0; i < m; i++) {
+        const VALUE xi = VAL2ARY(slots[0])->items->data[i], yi = VAL2ARY(slots[1])->items->data[i];
+        if (xi == yi && !KORB_FLOAT_P(xi)) continue;   /* identical (also breaks self-referential) */
+        int cmp;
+        if (UNLIKELY(KORB_OBJECT_P(xi) || KORB_OBJECT_P(yi))) {   /* user/Comparable element → dispatch <=> */
+            slots[2] = xi; slots[3] = yi;
+            RESULT cr = korb_send(c, slots + 4, c->vm->mid_cmp, 0, 1);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!FIXNUM_P(cr.value)) return RESULT_OK(KORB_NIL);   /* element <=> returned nil */
+            const intptr_t v = FIX2LONG(cr.value);
+            cmp = (v > 0) - (v < 0);
+        } else {
+            cmp = korb_cmp_full(c, xi, yi);
+            if (UNLIKELY(cmp == 2)) return RESULT_OK(KORB_NIL);
+        }
+        if (cmp != 0) return RESULT_OK(LONG2FIX(cmp));
+    }
+    const uint32_t xl = VAL2ARY(slots[0])->len, yl = VAL2ARY(slots[1])->len;   /* re-read post-dispatch */
+    return RESULT_OK(LONG2FIX((xl > yl) - (xl < yl)));
 }
 static RESULT korb_m_ary_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_ary_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
