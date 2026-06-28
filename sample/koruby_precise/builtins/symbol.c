@@ -324,7 +324,10 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!KORB_METHOD_P(ov)) return RESULT_OK(KORB_FALSE);
     const KorbMethod *const m1 = VAL2METH(VALUE_REF_GET(self));
     const KorbMethod *const m2 = VAL2METH(ov);
-    if (m1->unbound != m2->unbound || m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
+    if (m1->unbound != m2->unbound) return RESULT_OK(KORB_FALSE);
+    /* bound methods must share the receiver object; unbound ones only need the
+     * same underlying definition (extracting from different subclasses is equal). */
+    if (!m1->unbound && m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
     if (m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
     const struct korb_method *const e1 = korb_meth_resolve(c, m1);
     const struct korb_method *const e2 = korb_meth_resolve(c, m2);
