@@ -293,17 +293,30 @@ static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
     }
     return (al > bl) - (al < bl);
 }
+/* coerce `o` to a String via #to_str for casecmp; returns false (→ caller yields
+ * nil) when not a String and not #to_str-coercible.  GC-safe: parks `o` in slots[0]. */
+static bool korb_casecmp_coerce(CTX *c, VALUE *slots, VALUE *o, RESULT *err) {
+    if (LIKELY(KORB_STRING_P(*o))) return true;
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (!korb_responds_to(c, *o, to_str)) return false;
+    slots[0] = *o;
+    RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(cr.state != KORB_NORMAL)) { *err = cr; return false; }
+    if (!KORB_STRING_P(cr.value)) return false;
+    *o = cr.value;
+    return true;
+}
 static RESULT korb_m_str_casecmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    RESULT err = RESULT_OK(KORB_NIL);
+    if (!korb_casecmp_coerce(c, slots, &o, &err)) return err.state != KORB_NORMAL ? err : RESULT_OK(KORB_NIL);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
     return RESULT_OK(LONG2FIX(korb_ci_cmp(s->buf->data, s->len, t->buf->data, t->len)));
 }
 static RESULT korb_m_str_casecmp_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    RESULT err = RESULT_OK(KORB_NIL);
+    if (!korb_casecmp_coerce(c, slots, &o, &err)) return err.state != KORB_NORMAL ? err : RESULT_OK(KORB_NIL);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *t = VAL2STR(o);
     return RESULT_OK(korb_ci_cmp(s->buf->data, s->len, t->buf->data, t->len) == 0 ? KORB_TRUE : KORB_FALSE);
 }
