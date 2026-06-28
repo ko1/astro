@@ -605,6 +605,29 @@ static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)); }
 static RESULT korb_m_obj_private_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<1)); }
 static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<2)); }
+/* Object#singleton_methods(all=true) → only the object's singleton class methods
+ * (public/protected); all=false excludes modules extended into the singleton.
+ * Never includes the regular class's methods. */
+static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const bool all = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
+    const uint32_t mid_init = c->vm->mid_initialize;
+    const uint8_t mask = (1u << 0) | (1u << 2);                     /* public + protected */
+    slots[1] = korb_dispatch_class(c, VALUE_REF_GET(self));         /* singleton (if any) or real class */
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 4));              /* result */
+    const VALUE_REF result = VALUE_REF_AT(&slots[0]);
+    slots[2] = KORB_NIL;                                            /* module scratch (rooted) */
+    if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
+        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), mask, mid_init));
+        if (all && VAL2CLASS(slots[1])->included != KORB_NIL) {     /* extended modules */
+            const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
+            for (uint32_t j = mlen; j-- > 0; ) {
+                slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];
+                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), mask, mid_init));
+            }
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(result));
+}
 /* Module#*_instance_methods: walk the module/class itself (not a singleton). */
 static RESULT korb_m_class_public_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<0)); }
 static RESULT korb_m_class_private_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<1)); }
