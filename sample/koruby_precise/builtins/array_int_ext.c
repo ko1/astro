@@ -598,6 +598,12 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         VALUE val = VAL2HASH(slots[0])->items->data[2 * i + 1];
         CHECK(korb_hash_set(c, slots + 2, self, VALUE_REF_AT(&slots[1]), val));
     }
+    /* replace also transfers the source's default value + default_proc. */
+    KorbHash *const dst = VAL2HASH(VALUE_REF_GET(self));
+    const VALUE dv = VAL2HASH(slots[0])->default_val;
+    const VALUE dp = VAL2HASH(slots[0])->default_proc;
+    ARO_STORE(c, dst, (VALUE *)(uintptr_t)&dst->default_val, dv);
+    ARO_STORE(c, dst, (VALUE *)(uintptr_t)&dst->default_proc, dp);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Hash#drop_while { |k,v| } — drop leading pairs while the block is true, return
