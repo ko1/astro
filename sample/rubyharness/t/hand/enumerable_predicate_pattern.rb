@@ -7,3 +7,6 @@ p c.none?(String)
 p c.one?(2)
 p c.all? { |x| x > 0 }
 p c.any?
+def t; yield; rescue ArgumentError => e; e.message; end
+p(t { c.all?(1, 2) })
+p(t { c.any?(1, 2) })
