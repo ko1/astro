@@ -5159,13 +5159,38 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
+            /* Data kwargs: a single Hash of all-symbol keys is taken as keyword form,
+             * so validate it against the members (unknown / missing keyword). */
+            if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {
+                const KorbHash *const h = VAL2HASH(slots[-(intptr_t)argc]);
+                bool all_sym = h->len > 0;
+                for (uint32_t j = 0; j < h->len; j++) if (!SYMBOL_P(h->items->data[2 * j])) { all_sym = false; break; }
+                if (all_sym) {
+                    const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                    for (uint32_t j = 0; j < h->len; j++) {       /* unknown keyword: key names no member */
+                        bool found = false;
+                        for (uint32_t k2 = 0; k2 < mm->len; k2++) if (mm->items->data[k2] == h->items->data[2 * j]) { found = true; break; }
+                        if (UNLIKELY(!found)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: :%s", korb_sym_name(vm, SYM2ID(h->items->data[2 * j])));
+                    }
+                    for (uint32_t k2 = 0; k2 < mm->len; k2++)     /* missing keyword: member absent */
+                        if (UNLIKELY(korb_hash_find(h, mm->items->data[k2]) < 0))
+                            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(mm->items->data[k2])));
+                }
+            }
             /* Data.new accepts positional OR keyword; detect keyword form as a single
              * Hash arg whose keys all name members (no kwargs flag exists to test). */
             if (is_data && !(argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
                              korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc]))) &&
-                argc != VAL2ARY(VAL2CLASS(*recv_slot)->members)->len)
-                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %u)",
-                                  argc, VAL2ARY(VAL2CLASS(*recv_slot)->members)->len);
+                argc != VAL2ARY(VAL2CLASS(*recv_slot)->members)->len) {
+                const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                if (argc < mm->len) {                          /* positional shortfall → the unfilled members are missing keywords */
+                    char buf[512]; int off = snprintf(buf, sizeof buf, "missing keyword%s:", (mm->len - argc) > 1 ? "s" : "");
+                    for (uint32_t i = argc; i < mm->len && off < (int)sizeof buf; i++)
+                        off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(mm->items->data[i])));
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
+                }
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..%u)", argc, mm->len);
+            }
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
             slots[0] = obj;
             const bool kwinit = is_data
