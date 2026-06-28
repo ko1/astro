@@ -3577,12 +3577,25 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(KORB_TRUE);
       }
       case 3: {                                          /* hash pattern {k: e ...} */
-        if (!KORB_HASH_P(VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE);
+        /* materialize the hash at cur[0]: a real Hash directly, else via the
+         * object's #deconstruct_keys (Struct/Data/custom pattern-match hook). */
+        if (KORB_HASH_P(VALUE_REF_GET(subjref))) {
+            cur[0] = VALUE_REF_GET(subjref);
+        }
+        else {
+            const uint32_t mid_dk = korb_intern(c->vm, "deconstruct_keys", 16);
+            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dk)) return RESULT_OK(KORB_FALSE);
+            cur[0] = VALUE_REF_GET(subjref); cur[1] = KORB_NIL;   /* recv, arg(nil → all keys) */
+            RESULT dr = korb_send(c, cur + 2, mid_dk, 0, 1);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            if (!KORB_HASH_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            cur[0] = dr.value;
+        }
         for (uint32_t i = 0; i < p->n; i++) {
-            const int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(subjref)), p->keys[i]);
+            const int32_t idx = korb_hash_find(VAL2HASH(cur[0]), p->keys[i]);
             if (idx < 0) return RESULT_OK(KORB_FALSE);
-            cur[0] = VAL2HASH(VALUE_REF_GET(subjref))->items->data[2 * idx + 1];
-            RESULT r = korb_pat_match(c, base, cur + 1, VALUE_REF_AT(&cur[0]), p->elems[i]);
+            cur[1] = VAL2HASH(cur[0])->items->data[2 * idx + 1];
+            RESULT r = korb_pat_match(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
