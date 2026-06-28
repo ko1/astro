@@ -6069,6 +6069,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "hash", korb_m_obj_hash, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_set", korb_m_obj_ivar_set, 2);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_get", korb_m_obj_ivar_get, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "instance_variable_defined?", korb_m_obj_ivar_defined, 1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "remove_instance_variable", korb_m_obj_remove_ivar, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_variables", korb_m_obj_ivars, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);

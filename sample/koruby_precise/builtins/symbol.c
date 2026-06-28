@@ -113,6 +113,30 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
 }
+/* Object#instance_variable_defined?(name) — true if the @ivar is set (non-nil). */
+static RESULT korb_m_obj_ivar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sym, name = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+    return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym) != KORB_NIL ? KORB_TRUE : KORB_FALSE);
+}
+/* Object#remove_instance_variable(name) → the removed value; NameError if unset. */
+static RESULT korb_m_obj_remove_ivar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE sym, name = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    const VALUE old = korb_ivar_get(c, VALUE_REF_GET(self), sym);
+    if (old == KORB_NIL)
+        return korb_raise(c, slots, KORB_E_NAME, 0, "instance variable %s not defined", korb_sym_name(c->vm, SYM2ID(sym)));
+    slots[0] = old;                                   /* park across the writeback (may GC) */
+    CHECK(korb_ivar_set(c, slots + 1, self, sym, KORB_NIL));
+    return RESULT_OK(slots[0]);
+}
 /* Object#instance_variables → [:@a, :@b, ...] in definition order. */
 static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
