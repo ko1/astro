@@ -363,6 +363,41 @@ static RESULT korb_m_rat_marshal_dump(CTX *c, VALUE *slots, VALUE_REF self, VALU
     CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
     return RESULT_OK(slots[2]);
 }
+/* Shared digit-scaling for Rational#round/truncate: nd==0 → Integer; nd>0 →
+ * Rational(intdiv(num*10^nd, den), 10^nd); nd<0 → Integer scaled.  `mode` selects
+ * the rounding (3/4/5 round variants, 0 floor, 1 ceil, 2 trunc-toward-zero). */
+static RESULT korb_rat_round_digits(CTX *c, VALUE *slots, VALUE num0, VALUE den0, intptr_t nd, int mode) {
+    if (nd == 0) return korb_rat_intdiv(c, slots, num0, den0, mode);
+    slots[0] = num0;
+    slots[1] = den0;                                      /* root across allocs */
+#ifdef KORB_HAVE_GMP
+    {
+        mpz_t p; mpz_init(p); mpz_ui_pow_ui(p, 10, (unsigned long)(nd > 0 ? nd : -nd));   /* 10^|nd| */
+        RESULT pr = korb_big_from_mpz(c, slots + 2, p); mpz_clear(p);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+        slots[2] = pr.value;
+    }
+    if (nd > 0) {                                         /* Rational(intdiv(num*10^nd, den), 10^nd) */
+        RESULT sc = korb_int_arith(c, slots + 3, slots[0], slots[2], 2, 0);   /* num * 10^nd */
+        if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
+        slots[3] = sc.value;
+        RESULT q = korb_rat_intdiv(c, slots + 4, slots[3], slots[1], mode);
+        if (UNLIKELY(q.state != KORB_NORMAL)) return q;
+        slots[4] = q.value;
+        return korb_rat_new_v(c, slots + 5, slots[4], slots[2]);
+    }
+    /* nd < 0: intdiv(num, den*10^-nd) * 10^-nd → Integer */
+    RESULT dsc = korb_int_arith(c, slots + 3, slots[1], slots[2], 2, 0);       /* den * 10^-nd */
+    if (UNLIKELY(dsc.state != KORB_NORMAL)) return dsc;
+    slots[3] = dsc.value;
+    RESULT q = korb_rat_intdiv(c, slots + 4, slots[0], slots[3], mode);
+    if (UNLIKELY(q.state != KORB_NORMAL)) return q;
+    slots[4] = q.value;
+    return korb_int_arith(c, slots + 5, slots[4], slots[2], 2, 0);             /* q * 10^-nd */
+#else
+    (void)nd; return korb_rat_intdiv(c, slots, slots[0], slots[1], mode);
+#endif
+}
 /* round([ndigits], half: :up|:even) — ndigits<=0 → Integer, ndigits>0 → Rational. */
 static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
@@ -379,36 +414,13 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     intptr_t nd = 0;
     if (n >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) nd = FIX2LONG(VALUE_SLICE_GET(a, 0));
-    if (nd == 0) return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, mode);
-    slots[0] = SELF_RAT->num;
-    slots[1] = SELF_RAT->den;                             /* root across allocs */
-#ifdef KORB_HAVE_GMP
-    {
-        mpz_t p; mpz_init(p); mpz_ui_pow_ui(p, 10, (unsigned long)(nd > 0 ? nd : -nd));   /* 10^|nd| */
-        RESULT pr = korb_big_from_mpz(c, slots + 2, p); mpz_clear(p);
-        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
-        slots[2] = pr.value;
-    }
-    if (nd > 0) {                                         /* Rational(round(num*10^nd / den), 10^nd) */
-        RESULT sc = korb_int_arith(c, slots + 3, slots[0], slots[2], 2, 0);   /* num * 10^nd */
-        if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
-        slots[3] = sc.value;
-        RESULT q = korb_rat_intdiv(c, slots + 4, slots[3], slots[1], mode);
-        if (UNLIKELY(q.state != KORB_NORMAL)) return q;
-        slots[4] = q.value;
-        return korb_rat_new_v(c, slots + 5, slots[4], slots[2]);
-    }
-    /* nd < 0: round(num / (den*10^-nd)) * 10^-nd → Integer */
-    RESULT dsc = korb_int_arith(c, slots + 3, slots[1], slots[2], 2, 0);       /* den * 10^-nd */
-    if (UNLIKELY(dsc.state != KORB_NORMAL)) return dsc;
-    slots[3] = dsc.value;
-    RESULT q = korb_rat_intdiv(c, slots + 4, slots[0], slots[3], mode);
-    if (UNLIKELY(q.state != KORB_NORMAL)) return q;
-    slots[4] = q.value;
-    return korb_int_arith(c, slots + 5, slots[4], slots[2], 2, 0);             /* q * 10^-nd */
-#else
-    (void)nd; return korb_rat_intdiv(c, slots, slots[0], slots[1], mode);
-#endif
+    return korb_rat_round_digits(c, slots, SELF_RAT->num, SELF_RAT->den, nd, mode);
+}
+/* truncate([ndigits]) — toward zero (mode 2). ndigits<=0 → Integer, >0 → Rational. */
+static RESULT korb_m_rat_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    intptr_t nd = 0;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) nd = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    return korb_rat_round_digits(c, slots, SELF_RAT->num, SELF_RAT->den, nd, 2);
 }
 static double korb_cospi(double x);   /* fwd (builtins/int_float_ext.c) */
 static double korb_sinpi(double x);
@@ -6429,7 +6441,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_f", korb_m_rat_to_f, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_i", korb_m_rat_to_i, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_int", korb_m_rat_to_i, 0);
-    korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_to_i, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_truncate, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "floor", korb_m_rat_floor, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "ceil", korb_m_rat_ceil, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "round", korb_m_rat_round, -1);
