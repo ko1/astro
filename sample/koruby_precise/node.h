@@ -361,6 +361,12 @@ const char *korb_a_type_name(VALUE v);
         return korb_raise((c), (slots), KORB_E_FROZEN, 0,                      \
                           "can't modify frozen %s", korb_type_name(_kf));      \
 } while (0)
+/* leaner variant for hot paths where `v` is already known to be a heap object
+ * of a known type (skips the tag check + type-name lookup). */
+#define KORB_CHECK_FROZEN_HEAP(c, slots, v, tname) do {                        \
+    if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN)) \
+        return korb_raise((c), (slots), KORB_E_FROZEN, 0, "can't modify frozen " tname); \
+} while (0)
 
 /* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =
  * auto-detect 0x/0b/0o/leading-0.  Used by node_bignum (beyond-Fixnum literal). */
