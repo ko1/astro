@@ -2156,21 +2156,18 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
     return KORB_NIL;
 }
 
-/* `$!` save-stack: realloc-backed (cold; rescue bodies only).  Visited as roots
- * by AROH_VISIT_ROOTS so parked exceptions survive the rescue body's GC. */
+/* `$!` stack (per-CTX, realloc-backed; rescue bodies only).  Top == `$!`.
+ * Visited as roots by AROH_VISIT_ROOTS so entries survive the body's GC. */
 void korb_errinfo_push(CTX *c, VALUE v) {
-    struct korb_vm *const vm = c->vm;
-    if (UNLIKELY(vm->errinfo_n == vm->errinfo_cap)) {
-        const uint32_t nc = vm->errinfo_cap ? vm->errinfo_cap * 2 : 16;
-        vm->errinfo_save = realloc(vm->errinfo_save, sizeof(VALUE) * nc);
-        vm->errinfo_cap = nc;
+    if (UNLIKELY(c->errinfo_n == c->errinfo_cap)) {
+        const uint32_t nc = c->errinfo_cap ? c->errinfo_cap * 2 : 16;
+        c->errinfo = realloc(c->errinfo, sizeof(VALUE) * nc);
+        c->errinfo_cap = nc;
     }
-    vm->errinfo_save[vm->errinfo_n++] = v;
+    c->errinfo[c->errinfo_n++] = v;
 }
-VALUE korb_errinfo_pop(CTX *c) {
-    struct korb_vm *const vm = c->vm;
-    return vm->errinfo_n ? vm->errinfo_save[--vm->errinfo_n] : KORB_NIL;
-}
+void korb_errinfo_pop(CTX *c) { if (c->errinfo_n) c->errinfo_n--; }
+VALUE korb_errinfo_top(const CTX *c) { return c->errinfo_n ? c->errinfo[c->errinfo_n - 1] : KORB_NIL; }
 
 /* const-table index of name_sym (UINT32_MAX if absent).  The table is
  * append-only, so an index captured once stays valid; const_vals[idx] is
@@ -7459,7 +7456,7 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
     }
     {   /* bare `raise` → re-raise the current exception ($!), else fresh RuntimeError */
-        const VALUE cur = korb_const_get(c->vm, korb_intern(c->vm, "$!", 2));
+        const VALUE cur = korb_errinfo_top(c);
         if (KORB_EXC_P(cur)) return RESULT_RAISE_(cur);
     }
     return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* bare raise, no $! → RuntimeError "" */

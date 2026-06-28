@@ -2667,8 +2667,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       /* Global variables `$x` reuse the flat const table — the `$` in the name
        * keeps them in a distinct namespace from constants.  Unset reads → nil. */
-      case PM_GLOBAL_VARIABLE_READ_NODE:
-        return ALLOC_node_const(kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name));
+      case PM_GLOBAL_VARIABLE_READ_NODE: {
+        const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name);
+        if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
+        return ALLOC_node_const(gn);
+      }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, gw->name);
