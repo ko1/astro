@@ -643,14 +643,49 @@ static RESULT korb_m_class_method_defined(CTX *c, VALUE *slots, VALUE_REF self, 
 }
 /* Module#const_get(sym|str) — consts are a flat (global) table here, so the
  * receiver's namespace is ignored; rightmost name resolves. */
+/* a valid constant name: [A-Z][A-Za-z0-9_]* */
+static bool korb_valid_const_name(const char *p, uint32_t len) {
+    if (len == 0 || !(p[0] >= 'A' && p[0] <= 'Z')) return false;
+    for (uint32_t i = 1; i < len; i++) {
+        const char ch = p[i];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+    }
+    return true;
+}
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    VALUE name = VALUE_SLICE_GET(a, 0);
+    const VALUE name = VALUE_SLICE_GET(a, 0);   /* optional 2nd arg `inherit` is ignored (flat const table) */
+    struct korb_vm *const vm = c->vm;
+    /* qualified string "A::B::C" — resolve each component left to right (flat table). */
+    if (KORB_STRING_P(name) && memchr(VAL2STR(name)->buf->data, ':', VAL2STR(name)->len)) {
+        const KorbString *const s = VAL2STR(name);
+        const char *p = s->buf->data, *const end = p + s->len;
+        if (p + 2 <= end && p[0] == ':' && p[1] == ':') p += 2;   /* leading :: (top-level) */
+        VALUE val = KORB_NIL;
+        while (p < end) {
+            const char *q = p;
+            while (q < end && !(q[0] == ':' && q + 1 < end && q[1] == ':')) q++;
+            const uint32_t clen = (uint32_t)(q - p);
+            if (!korb_valid_const_name(p, clen))
+                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)s->len, s->buf->data);
+            const uint32_t cid = korb_intern(vm, p, clen);
+            bool found = false;
+            for (uint32_t i = 0; i < vm->const_cnt; i++)
+                if (vm->const_names[i] == cid) { val = vm->const_vals[i]; found = true; break; }
+            if (!found) return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", clen, p);
+            p = (q < end) ? q + 2 : end;
+        }
+        return RESULT_OK(val);
+    }
     uint32_t id;
     if (SYMBOL_P(name)) id = SYM2ID(name);
-    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, s->buf->data, s->len); }
+    else if (KORB_STRING_P(name)) {
+        const KorbString *const s = VAL2STR(name);
+        if (!korb_valid_const_name(s->buf->data, s->len))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)s->len, s->buf->data);
+        id = korb_intern(vm, s->buf->data, s->len);
+    }
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
-    struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
     return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
