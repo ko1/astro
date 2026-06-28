@@ -507,7 +507,8 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
         const KorbClass *k = VAL2CLASS(slots[1]);
         for (uint32_t i = 0; i < k->method_cnt; i++) {
             const struct korb_method *m = k->methods[i];
-            if (m->mid == c->vm->mid_initialize) continue;  /* private */
+            if (m->mid == c->vm->mid_initialize) continue;  /* initialize is private */
+            if (m->visibility == 1) continue;               /* exclude private methods */
             const VALUE sym = ID2SYM(m->mid);
             const KorbArray *r = VAL2ARY(slots[0]);         /* dedup (a lower override shadows) */
             bool seen = false;
@@ -536,15 +537,15 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
     }
     return RESULT_OK(KORB_NIL);
 }
-/* Object#methods / public_methods / private_methods / protected_methods: walk the
- * object's dispatch MRO (singleton → class → included modules → super …).  With
- * inherit=false: only the singleton class(es) + the first real class's own methods. */
-static RESULT korb_collect_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis_mask) {
+/* Walk the MRO from `start_class` (class → included modules → super …) collecting
+ * visibility-matching method names.  With inherit=false: only the singleton
+ * class(es) + the first real class's own methods. */
+static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
     const uint32_t mid_init = c->vm->mid_initialize;
-    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));               /* result (rooted at slots[0]) */
+    slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
-    slots[1] = korb_dispatch_class(c, VALUE_REF_GET(self));         /* MRO cursor (rooted) */
     slots[2] = KORB_NIL;                                            /* module scratch (rooted; init so GC never scans garbage) */
     while (KORB_CLASS_P(slots[1])) {
         const bool is_sing = VAL2CLASS(slots[1])->is_singleton;
@@ -561,10 +562,15 @@ static RESULT korb_collect_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(VALUE_REF_GET(result));
 }
-static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_collect_obj_methods(c, slots, self, a, (1u<<0)|(1u<<2)); }
-static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_obj_methods(c, slots, self, a, (1u<<0)); }
-static RESULT korb_m_obj_private_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_obj_methods(c, slots, self, a, (1u<<1)); }
-static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_obj_methods(c, slots, self, a, (1u<<2)); }
+/* Object#*: walk the object's dispatch class (singleton + class + …). */
+static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)|(1u<<2)); }
+static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)); }
+static RESULT korb_m_obj_private_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<1)); }
+static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<2)); }
+/* Module#*_instance_methods: walk the module/class itself (not a singleton). */
+static RESULT korb_m_class_public_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<0)); }
+static RESULT korb_m_class_private_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<1)); }
+static RESULT korb_m_class_protected_imethods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u<<2)); }
 /* true if `sub` is `sup` or has `sup` among its ancestors (class chain + modules). */
 static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
     VALUE cls = sub;
