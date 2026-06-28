@@ -518,14 +518,32 @@ class MSpecExpectation
                                 end
                                 ok2
                               }
-         else raise MSpecError, "unknown matcher #{m.kind}"
+         else fail MSpecError, "unknown matcher #{m.kind}"
          end
     pass = negate ? !ok : ok
     if pass then $ms_pass += 1
     else
-      raise MSpecError, "expected #{negate ? '!' : ''}#{m.kind}(#{m.arg.inspect}), got #{@actual.inspect}"
+      fail MSpecError, "expected #{negate ? '!' : ''}#{m.kind}(#{m.arg.inspect}), got #{@actual.inspect}"
     end
     self
+  end
+  # `-> { ... }.should.raise(SomeError[, msg])` — the mspec method-chain raise
+  # matcher.  Defined explicitly so it overrides the (public) Kernel#raise that
+  # would otherwise just re-raise the class.  msg is ignored (koruby /re/ are
+  # Strings — see raise_error); an optional block gets the caught exception.
+  def raise(klass = StandardError, msg = nil, &blk)
+    begin
+      @actual.call
+    rescue ::Exception => e
+      classes = klass.is_a?(::Array) ? klass : [klass]
+      if classes.any? { |k| k.nil? || e.is_a?(k) }
+        blk.call(e) if blk
+        $ms_pass += 1
+        return self
+      end
+      fail MSpecError, "expected to raise #{klass}, got #{e.class}: #{e.message}"
+    end
+    fail MSpecError, "expected to raise #{klass}, but nothing was raised"
   end
   # Fallback proxy: `obj.should.foo?` / `obj.should.bar` delegates to
   # @actual.foo? / @actual.bar and asserts truthy.
@@ -533,7 +551,7 @@ class MSpecExpectation
     if @actual.respond_to?(name)
       result = @actual.send(name, *args, &blk)
       if result then $ms_pass += 1
-      else raise MSpecError, "expected #{@actual.inspect}.#{name}(#{args.inspect}) to be truthy, got #{result.inspect}"
+      else fail MSpecError, "expected #{@actual.inspect}.#{name}(#{args.inspect}) to be truthy, got #{result.inspect}"
       end
       result
     else
@@ -548,12 +566,12 @@ end
 class MSpecNegatedExpectation < MSpecExpectation
   def ==(expected)
     if @actual != expected then $ms_pass += 1
-    else raise MSpecError, "expected != #{expected.inspect}"
+    else fail MSpecError, "expected != #{expected.inspect}"
     end
   end
   def be_nil
     if !@actual.nil? then $ms_pass += 1
-    else raise MSpecError, "expected non-nil"
+    else fail MSpecError, "expected non-nil"
     end
   end
   # Fallback predicate proxy: `obj.should_not.empty?` invokes
@@ -563,12 +581,23 @@ class MSpecNegatedExpectation < MSpecExpectation
     if @actual.respond_to?(name)
       result = @actual.send(name, *args, &blk)
       if !result then $ms_pass += 1
-      else raise MSpecError, "expected !#{@actual.inspect}.#{name}(#{args.inspect}), got #{result.inspect}"
+      else fail MSpecError, "expected !#{@actual.inspect}.#{name}(#{args.inspect}), got #{result.inspect}"
       end
       result
     else
       super
     end
+  end
+  # `-> { ... }.should_not.raise(X)` — passes unless X is raised.
+  def raise(klass = StandardError, msg = nil, &blk)
+    begin
+      @actual.call
+    rescue ::Exception => e
+      classes = klass.is_a?(::Array) ? klass : [klass]
+      fail MSpecError, "expected not to raise #{klass}, but raised #{e.class}" if classes.any? { |k| k.nil? || e.is_a?(k) }
+    end
+    $ms_pass += 1
+    self
   end
 end
 

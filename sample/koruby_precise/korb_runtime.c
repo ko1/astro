@@ -7540,6 +7540,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
+    korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "warn", korb_bi_warn, -1);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require, -1);
