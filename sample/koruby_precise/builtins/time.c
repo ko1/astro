@@ -44,6 +44,10 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL)
         e = korb_time_epoch(c, v);                                /* Time.at(time) */
     else korb_num_to_d(v, &e);
+    if (VALUE_SLICE_LEN(a) >= 2) {                                /* Time.at(sec, usec) → add microseconds */
+        double usec = 0; korb_num_to_d(VALUE_SLICE_GET(a, 1), &usec);
+        e += usec / 1e6;
+    }
     return korb_time_make(c, slots, VALUE_REF_GET(self), e, false);
 }
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */

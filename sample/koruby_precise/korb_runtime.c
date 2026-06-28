@@ -3708,6 +3708,11 @@ RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_OBJECT_P(l)) {                          /* a user/builtin object (Time, ...) → dispatch its own + */
+        bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "+", &h);
+        if (h) return ur;
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '+' for %s", korb_a_type_name(l));
+    }
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 0);
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
@@ -3740,6 +3745,11 @@ RESULT
 korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
     VALUE l = VALUE_REF_GET(lhs);
+    if (KORB_OBJECT_P(l)) {                          /* a user/builtin object (Time, ...) → dispatch its own - */
+        bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h);
+        if (h) return ur;
+        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+    }
 #ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs)) return korb_int_arith(c, slots, l, rhs, 1, line);   /* fixnum overflow / bignum */
 #endif
