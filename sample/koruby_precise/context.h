@@ -619,6 +619,11 @@ struct korb_vm {
     uint32_t *const_names;
     VALUE    *const_vals;
     uint32_t  const_cnt, const_capa;
+    /* `$!` save-stack: outer last-exception values parked across rescue bodies.
+     * Live `$!` lives in the const table; this holds the values to restore on
+     * exit so they survive the body's GC (root-scanned by AROH_VISIT_ROOTS). */
+    VALUE    *errinfo_save;
+    uint32_t  errinfo_n, errinfo_cap;
     /* boxed Float-literal pool: non-flonum literals (2.0/-2.0/out-of-range) are
      * boxed once and reused (deduped by bit value) instead of heap-boxed on every
      * eval.  Root-scanned by AROH_VISIT_ROOTS so the boxes are GC-forwarded. */
@@ -819,6 +824,10 @@ struct CTX_struct {
     /* boxed Float-literal pool: forward each box so cached entries stay live */ \
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->flit_vals[_fi]);      \
+    }                                                                        \
+    /* `$!` save-stack: outer last-exception values parked across rescue bodies */ \
+    for (uint32_t _xi = 0; _xi < (c)->vm->errinfo_n; _xi++) {                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->errinfo_save[_xi]);   \
     }                                                                        \
     /* Kernel#srand's remembered last seed (may be a Bignum). */             \
     if ((c)->vm->default_rng_seeded)                                         \

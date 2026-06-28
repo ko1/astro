@@ -186,6 +186,10 @@ RESULT korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_
 RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
+/* `$!` save-stack (GC-visited): park/restore the outer last-exception across a
+ * rescue body so it survives the body's GC.  See node_rescue. */
+void   korb_errinfo_push(CTX *c, VALUE v);
+VALUE  korb_errinfo_pop(CTX *c);
 uint32_t korb_const_index(const struct korb_vm *vm, uint32_t name_sym);  /* UINT32_MAX if absent */
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,

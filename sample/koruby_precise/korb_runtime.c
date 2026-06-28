@@ -2156,6 +2156,22 @@ korb_const_get(struct korb_vm *vm, uint32_t name_sym)
     return KORB_NIL;
 }
 
+/* `$!` save-stack: realloc-backed (cold; rescue bodies only).  Visited as roots
+ * by AROH_VISIT_ROOTS so parked exceptions survive the rescue body's GC. */
+void korb_errinfo_push(CTX *c, VALUE v) {
+    struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(vm->errinfo_n == vm->errinfo_cap)) {
+        const uint32_t nc = vm->errinfo_cap ? vm->errinfo_cap * 2 : 16;
+        vm->errinfo_save = realloc(vm->errinfo_save, sizeof(VALUE) * nc);
+        vm->errinfo_cap = nc;
+    }
+    vm->errinfo_save[vm->errinfo_n++] = v;
+}
+VALUE korb_errinfo_pop(CTX *c) {
+    struct korb_vm *const vm = c->vm;
+    return vm->errinfo_n ? vm->errinfo_save[--vm->errinfo_n] : KORB_NIL;
+}
+
 /* const-table index of name_sym (UINT32_MAX if absent).  The table is
  * append-only, so an index captured once stays valid; const_vals[idx] is
  * GC-forwarded, so reading through it always yields the live object.  Exported

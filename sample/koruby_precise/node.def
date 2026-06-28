@@ -683,7 +683,15 @@ node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, 
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (korb_exc_matches(c, slots[0], cr.value)) {
         if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
-        return EVAL_ARG(c, body);                       /* same frame; may clobber slots[0] */
+        /* `$!` = the rescued exception for the body, restored to the outer value
+         * on exit.  The outer value is parked in the GC-visited save-stack so it
+         * survives the body's GC; const_define stores without allocating. */
+        const uint32_t bang = korb_intern(c->vm, "$!", 2);
+        korb_errinfo_push(c, korb_const_get(c->vm, bang));
+        korb_const_define(c, bang, slots[0]);
+        RESULT br = EVAL_ARG(c, body);                  /* same frame; may clobber slots[0] */
+        korb_const_define(c, bang, korb_errinfo_pop(c));
+        return br;
     }
     return EVAL_ARG(c, next);                            /* try next clause / re-raise */
 }
