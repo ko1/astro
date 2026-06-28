@@ -667,13 +667,22 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
 /* Module#method_defined?(sym|str[, inherit]) — true if an instance method by
  * that name is defined on the class / its ancestors (koruby doesn't track
  * visibility, so any defined method counts; public_method_defined? aliases it). */
-static RESULT korb_m_class_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+/* want: -1 = method_defined? (public or protected, not private); 0/1/2 = exact. */
+static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int want) {
     const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(mid == UINT32_MAX))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     const VALUE cls = VALUE_REF_GET(self);
-    return RESULT_OK((KORB_CLASS_P(cls) && korb_class_find_method(cls, mid, NULL) != NULL) ? KORB_TRUE : KORB_FALSE);
+    VALUE mdef = KORB_NIL;
+    const struct korb_method *const me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
+    if (me == NULL) return RESULT_OK(KORB_FALSE);
+    const bool ok = (want < 0) ? (me->visibility != 1) : (me->visibility == want);
+    return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
 }
+static RESULT korb_m_class_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_method_defined_vis(c, slots, self, a, -1); }
+static RESULT korb_m_class_public_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_method_defined_vis(c, slots, self, a, 0); }
+static RESULT korb_m_class_private_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_method_defined_vis(c, slots, self, a, 1); }
+static RESULT korb_m_class_protected_method_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_method_defined_vis(c, slots, self, a, 2); }
 /* Module#const_get(sym|str) — consts are a flat (global) table here, so the
  * receiver's namespace is ignored; rightmost name resolves. */
 /* a valid constant name: [A-Z][A-Za-z0-9_]* */
