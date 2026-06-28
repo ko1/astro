@@ -347,9 +347,22 @@ RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj) {
 /* Object#singleton_class — the object's (lazily-created) singleton class. */
 static RESULT korb_m_obj_singleton_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; VALUE sv = VALUE_REF_GET(self);
-    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
+    if (sv == KORB_NIL || sv == KORB_TRUE || sv == KORB_FALSE)   /* their class IS their singleton */
+        return RESULT_OK(korb_class_obj_of(c, sv));
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))                        /* Integer / Symbol / Float */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton class for %s", korb_type_name(sv));
     return korb_obj_singleton(c, slots, sv);
+}
+/* Object#initialize_copy / initialize_clone (private) — the default hook: type-
+ * check + return self (the actual ivar copy is done by dup/clone). */
+static RESULT korb_m_obj_initialize_copy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE sv = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
+    if (sv == o) return RESULT_OK(sv);
+    KORB_CHECK_FROZEN(c, slots, sv);
+    if (korb_class_of(sv) != korb_class_of(o) ||
+        (KORB_OBJECT_P(sv) && VAL2OBJ(sv)->klass != VAL2OBJ(o)->klass))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "initialize_copy should take same class object");
+    return RESULT_OK(sv);
 }
 /* Object#define_singleton_method(name, &block|proc) — define_method on self's
  * singleton class. */
