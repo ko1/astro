@@ -658,16 +658,44 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    char buf[64]; uint32_t j = 0, i = 0;
-    while (i < s->len && korb_is_ws((unsigned char)s->buf->data[i])) i++;
-    for (; i < s->len && j < sizeof(buf) - 1; i++) {
-        char ch = s->buf->data[i];
-        if (ch == '_') continue;                      /* digit separators are ignored */
-        buf[j++] = ch;
+    const KorbString *const s = VAL2STR(VALUE_REF_GET(self));
+    const char *const d = s->buf->data;
+    const uint32_t len = s->len;
+    char buf[320]; uint32_t j = 0, i = 0;
+    #define KORB_DIG(ch) ((ch) >= '0' && (ch) <= '9')
+    #define KORB_PUT(ch) do { if (j < sizeof(buf) - 1) buf[j++] = (ch); } while (0)
+    while (i < len && korb_is_ws((unsigned char)d[i])) i++;
+    if (i < len && (d[i] == '+' || d[i] == '-')) { KORB_PUT(d[i]); i++; }
+    bool any_digit = false;
+    while (i < len) {                                 /* integer part (underscore only between digits) */
+        if (KORB_DIG(d[i])) { KORB_PUT(d[i]); i++; any_digit = true; }
+        else if (d[i] == '_' && any_digit && i + 1 < len && KORB_DIG(d[i + 1])) i++;
+        else break;
+    }
+    if (i < len && d[i] == '.' && i + 1 < len && KORB_DIG(d[i + 1])) {   /* fractional (needs a digit after '.') */
+        KORB_PUT('.'); i++;
+        while (i < len) {
+            if (KORB_DIG(d[i])) { KORB_PUT(d[i]); i++; any_digit = true; }
+            else if (d[i] == '_' && i + 1 < len && KORB_DIG(d[i + 1]) && KORB_DIG(d[i - 1])) i++;
+            else break;
+        }
+    }
+    if (any_digit && i < len && (d[i] == 'e' || d[i] == 'E')) {          /* exponent (drop if no digits follow) */
+        const uint32_t save_j = j;
+        KORB_PUT(d[i]); i++;
+        if (i < len && (d[i] == '+' || d[i] == '-')) { KORB_PUT(d[i]); i++; }
+        bool exp_digit = false;
+        while (i < len) {
+            if (KORB_DIG(d[i])) { KORB_PUT(d[i]); i++; exp_digit = true; }
+            else if (d[i] == '_' && exp_digit && i + 1 < len && KORB_DIG(d[i + 1])) i++;
+            else break;
+        }
+        if (!exp_digit) j = save_j;                   /* "1e" with no exponent → strip the 'e' */
     }
     buf[j] = '\0';
-    return korb_float_new(c, slots, strtod(buf, NULL));
+    #undef KORB_DIG
+    #undef KORB_PUT
+    return korb_float_new(c, slots, any_digit ? strtod(buf, NULL) : 0.0);
 }
 static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;
