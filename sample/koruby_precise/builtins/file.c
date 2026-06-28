@@ -3,6 +3,7 @@
  * mspec `fixture()` helper and the File path specs (expand_path / join / dirname
  * / basename / extname).  Paths are byte strings; '/' is the only separator. */
 #include <unistd.h>
+#include <fnmatch.h>
 
 /* Normalize an absolute path in `src` (length n) into `dst`: collapse "//", drop
  * "." segments, resolve ".." by popping, keep a single leading "/".  Returns the
@@ -163,6 +164,28 @@ static RESULT korb_m_file_extname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, out, el);
 }
 
+/* File.fnmatch(pat, path[, flags]) — glob match via POSIX fnmatch(3), with the
+ * Ruby flag bits translated to glibc's (different numeric values).  Ruby's `**`
+ * and `{a,b}` (FNM_EXTGLOB) aren't POSIX, so those edge cases may differ. */
+static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)) || !KORB_STRING_P(VALUE_SLICE_GET(a, 1))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const KorbString *const pat = VAL2STR(VALUE_SLICE_GET(a, 0));
+    const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 1));
+    const long rf = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    char pbuf[4096], sbuf[4096];
+    if (UNLIKELY(pat->len >= sizeof pbuf || str->len >= sizeof sbuf)) return RESULT_OK(KORB_FALSE);
+    memcpy(pbuf, pat->buf->data, pat->len); pbuf[pat->len] = '\0';
+    memcpy(sbuf, str->buf->data, str->len); sbuf[str->len] = '\0';
+    int cf = 0;                                        /* Ruby bits → glibc bits */
+    if (rf & 1)  cf |= FNM_NOESCAPE;                   /* FNM_NOESCAPE  (Ruby 1) */
+    if (rf & 2)  cf |= FNM_PATHNAME;                   /* FNM_PATHNAME  (Ruby 2) */
+    if (rf & 8)  cf |= FNM_CASEFOLD;                   /* FNM_CASEFOLD  (Ruby 8) */
+    if (!(rf & 4)) cf |= FNM_PERIOD;                   /* no FNM_DOTMATCH → leading '.' not matched by '*' */
+    return RESULT_OK(fnmatch(pbuf, sbuf, cf) == 0 ? KORB_TRUE : KORB_FALSE);
+}
+
 void korb_init_file(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "File", 4), KORB_NIL)).value;
@@ -173,6 +196,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "dirname",     korb_m_file_dirname,     -1);
     korb_class_def_cfn(c, slots[1], "basename",    korb_m_file_basename,    -1);
     korb_class_def_cfn(c, slots[1], "extname",     korb_m_file_extname,     1);
+    korb_class_def_cfn(c, slots[1], "fnmatch",     korb_m_file_fnmatch,     -1);
+    korb_class_def_cfn(c, slots[1], "fnmatch?",    korb_m_file_fnmatch,     -1);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
      * koruby's const table is flat, so these resolve from File / File::Constants
      * / bare alike. */
