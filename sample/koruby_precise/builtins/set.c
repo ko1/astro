@@ -395,18 +395,23 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
     KorbClass *const k = VAL2CLASS(selfv);
     const uint32_t argc = VALUE_SLICE_LEN(a);
-    if (argc == 0) { k->cur_visibility = vis; return RESULT_OK(KORB_NIL); }
-    for (uint32_t i = 0; i < argc; i++) {
-        const VALUE arg = VALUE_SLICE_GET(a, i);
-        uint32_t mid;
-        if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
-        else continue;
-        for (uint32_t j = 0; j < k->method_cnt; j++)
-            if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+    if (argc == 0) {                                  /* bare `private` → set the body's default */
+        k->cur_visibility = vis;
+        return RESULT_OK(KORB_NIL);
     }
-    c->vm->method_serial++;
-    return RESULT_OK(argc == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
+    else {                                            /* `private :a, :b` → set those methods */
+        for (uint32_t i = 0; i < argc; i++) {
+            const VALUE arg = VALUE_SLICE_GET(a, i);
+            uint32_t mid;
+            if (SYMBOL_P(arg)) mid = SYM2ID(arg);
+            else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
+            else continue;
+            for (uint32_t j = 0; j < k->method_cnt; j++)
+                if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+        }
+        c->vm->method_serial++;
+        return RESULT_OK(argc == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
+    }
 }
 static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
@@ -719,18 +724,20 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
         return RESULT_OK(val);
     }
-    uint32_t id;
-    if (SYMBOL_P(name)) id = SYM2ID(name);
-    else if (KORB_STRING_P(name)) {
-        const KorbString *const s = VAL2STR(name);
-        if (!korb_valid_const_name(s->buf->data, s->len))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)s->len, s->buf->data);
-        id = korb_intern(vm, s->buf->data, s->len);
+    else {
+        uint32_t id;
+        if (SYMBOL_P(name)) id = SYM2ID(name);
+        else if (KORB_STRING_P(name)) {
+            const KorbString *const s = VAL2STR(name);
+            if (!korb_valid_const_name(s->buf->data, s->len))
+                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)s->len, s->buf->data);
+            id = korb_intern(vm, s->buf->data, s->len);
+        }
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+        for (uint32_t i = 0; i < vm->const_cnt; i++)
+            if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
     }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
-    for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
-    return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
 }
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

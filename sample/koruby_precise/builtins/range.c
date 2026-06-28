@@ -87,7 +87,9 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const uint32_t el = korb_utf8_count(VAL2STR(r2->rend)->buf->data, VAL2STR(r2->rend)->len);
         return RESULT_OK((xl >= bl && xl <= el) ? KORB_TRUE : KORB_FALSE);
     }
-    return korb_m_range_cover(c, slots, self, a);
+    else {
+        return korb_m_range_cover(c, slots, self, a);
+    }
 }
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
 static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step) {
