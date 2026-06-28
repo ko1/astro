@@ -370,13 +370,22 @@ static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self,
 /* Object#extend(*mods) — mix the modules into the object's singleton class. */
 static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_REF_GET(self);
+    if (UNLIKELY(VALUE_SLICE_LEN(a) == 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     if (UNLIKELY(!AROH_IS_GC_OBJECT(sv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* immediates */
     slots[0] = sv;                                                               /* root self */
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, sv));                      /* singleton (rooted) */
+    const uint32_t extended = korb_intern(c->vm, "extended", 8);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {                           /* include each module */
         slots[2] = VALUE_SLICE_GET(a, i);
         CHECK(korb_do_include(c, slots + 3, slots[1], VALUE_SLICE_MAKE(&slots[2], 1)));
+        if (UNLIKELY(korb_responds_to(c, slots[2], extended))) {                  /* fire Module#extended(obj) hook */
+            slots[3] = slots[2];                                                  /* module = receiver (sp[-2]) */
+            slots[4] = slots[0];                                                  /* extended object = arg (sp[-1]) */
+            RESULT hr = korb_send_impl(c, slots + 5, extended, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        }
     }
     return RESULT_OK(slots[0]);
 }
