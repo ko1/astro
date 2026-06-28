@@ -4993,6 +4993,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         /* Hash[k,v,k,v,...] | Hash[[[k,v],...]] | Hash[{...}] */
         slots[0] = UNWRAP(korb_hash_new(c, slots, argc));
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        if (argc == 1 && !KORB_HASH_P(base[0]) && !KORB_ARRAY_P(base[0]) && KORB_OBJECT_P(base[0]) &&
+            korb_responds_to(c, base[0], korb_intern(vm, "to_ary", 6))) {  /* Hash[obj] → obj.to_ary */
+            slots[1] = base[0];
+            RESULT ar = korb_send_impl(c, slots + 2, korb_intern(vm, "to_ary", 6), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+            if (KORB_ARRAY_P(ar.value)) base[0] = ar.value;
+        }
         if (argc == 1 && KORB_HASH_P(base[0])) {                          /* copy an existing Hash */
             const uint32_t n = VAL2HASH(base[0])->len;
             for (uint32_t i = 0; i < n; i++) {
