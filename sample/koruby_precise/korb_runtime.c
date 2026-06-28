@@ -6110,6 +6110,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "define_singleton_method", korb_m_obj_define_singleton_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attached_object", korb_m_class_attached_object, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "methods", korb_m_obj_methods, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "public_methods", korb_m_obj_public_methods, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "private_methods", korb_m_obj_private_methods, -1);
+    korb_def_cmethod(c, KORB_C_OBJECT, "protected_methods", korb_m_obj_protected_methods, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "alias_method", korb_m_class_alias_method, 2);

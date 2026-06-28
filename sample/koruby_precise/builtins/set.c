@@ -519,6 +519,52 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
     }
     return RESULT_OK(slots[0]);
 }
+/* push the visibility-matching method names of `klass_ref`'s class into `result`
+ * (with dedup).  vis_mask bit v set ⇒ include methods of visibility v.  Re-reads
+ * the class each iteration since korb_ary_push_val can move it under a moving GC. */
+static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF klass_ref, uint8_t vis_mask, uint32_t mid_init) {
+    const uint32_t n = VAL2CLASS(VALUE_REF_GET(klass_ref))->method_cnt;
+    for (uint32_t i = 0; i < n; i++) {
+        const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(klass_ref))->methods[i];   /* entries are immortal (libc) */
+        const uint8_t v = (m->mid == mid_init) ? 1 : m->visibility;  /* initialize is private */
+        if (!(vis_mask & (1u << v))) continue;
+        const VALUE sym = ID2SYM(m->mid);
+        const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
+        bool seen = false;
+        for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { seen = true; break; }
+        if (!seen) CHECK(korb_ary_push_val(c, slots, result, sym));
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* Object#methods / public_methods / private_methods / protected_methods: walk the
+ * object's dispatch MRO (singleton → class → included modules → super …).  With
+ * inherit=false: only the singleton class(es) + the first real class's own methods. */
+static RESULT korb_collect_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis_mask) {
+    const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
+    const uint32_t mid_init = c->vm->mid_initialize;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));               /* result (rooted at slots[0]) */
+    const VALUE_REF result = VALUE_REF_AT(&slots[0]);
+    slots[1] = korb_dispatch_class(c, VALUE_REF_GET(self));         /* MRO cursor (rooted) */
+    slots[2] = KORB_NIL;                                            /* module scratch (rooted; init so GC never scans garbage) */
+    while (KORB_CLASS_P(slots[1])) {
+        const bool is_sing = VAL2CLASS(slots[1])->is_singleton;
+        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), vis_mask, mid_init));
+        if (inherit && VAL2CLASS(slots[1])->included != KORB_NIL) { /* mixed-in modules */
+            const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
+            for (uint32_t j = mlen; j-- > 0; ) {
+                slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];   /* re-read (rooted class) */
+                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, mid_init));
+            }
+        }
+        if (!inherit && !is_sing) break;                           /* false: stop after the first non-singleton class */
+        slots[1] = VAL2CLASS(slots[1])->superclass;
+    }
+    return RESULT_OK(VALUE_REF_GET(result));
+}
+static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_collect_obj_methods(c, slots, self, a, (1u<<0)|(1u<<2)); }
+static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_obj_methods(c, slots, self, a, (1u<<0)); }
+static RESULT korb_m_obj_private_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_obj_methods(c, slots, self, a, (1u<<1)); }
+static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_obj_methods(c, slots, self, a, (1u<<2)); }
 /* true if `sub` is `sup` or has `sup` among its ancestors (class chain + modules). */
 static bool korb_class_is_descendant(VALUE sub, VALUE sup) {
     VALUE cls = sub;
