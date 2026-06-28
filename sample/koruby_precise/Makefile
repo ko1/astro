@@ -115,6 +115,10 @@ clean:
 
 # rubyharness (shared differential tests + bench)
 INTERP ?= ./koruby_precise
+# koruby reads BARUBY_GC_* (not the harness default ASTRO_GC_*), so override the
+# stress env BEFORE the include (harness uses ?=) — otherwise `make test STRESS=1`
+# would set the wrong vars and silently NOT stress (green but no GC audit).
+GC_STRESS_ENV := BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1
 include ../rubyharness/harness.mk
 test bench: koruby_precise
 
