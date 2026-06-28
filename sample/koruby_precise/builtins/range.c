@@ -953,6 +953,27 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
     if (block == NULL)                                /* → lazy ArithmeticSequence (recv = self range) */
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
+    {   /* Float step OR Float range bounds → iterate over doubles (count-based, like CRuby). */
+        const KorbRange *const rng = SELF_RANGE;
+        if ((KORB_FLOAT_P(sv) || KORB_FLOAT_P(rng->rbegin) || KORB_FLOAT_P(rng->rend))
+            && rng->rbegin != KORB_NIL && rng->rend != KORB_NIL) {
+            double dbeg, dend, dstep;
+            if (korb_num_to_d(rng->rbegin, &dbeg) && korb_num_to_d(rng->rend, &dend) && korb_num_to_d(sv, &dstep)) {
+                if (UNLIKELY(dstep <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
+                const bool excl = rng->exclude_end;
+                const double nf = (dend - dbeg) / dstep;
+                double err = (fabs(dbeg) + fabs(dend) + fabs(dend - dbeg)) / fabs(dstep) * DBL_EPSILON;
+                if (err > 0.5) err = 0.5;
+                const long lim = excl ? (long)ceil(nf - err) : (long)floor(nf + err) + 1;
+                for (long i = 0; i < lim; i++) {
+                    slots[0] = UNWRAP(korb_float_new(c, slots + 1, dbeg + (double)i * dstep));
+                    RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                }
+                return RESULT_OK(VALUE_REF_GET(self));
+            }
+        }
+    }
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
