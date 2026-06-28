@@ -642,13 +642,15 @@ def __ruby_version_in_range?(v)
 end
 
 def ruby_version_is(v, &blk)
-  return unless blk
-  blk.call if __ruby_version_in_range?(v)
+  in_range = __ruby_version_in_range?(v)
+  return in_range unless blk     # used as a boolean (e.g. `ruby_version_is("3.4") ? a : b`)
+  blk.call if in_range
 end
 
 def ruby_version_is_not(v, &blk)
-  return unless blk
-  blk.call unless __ruby_version_in_range?(v)
+  out_range = !__ruby_version_in_range?(v)
+  return out_range unless blk
+  blk.call if out_range
 end
 def ruby_bug(_id, _v); yield if block_given?; end
 def platform_is(*_opts, &blk); end
