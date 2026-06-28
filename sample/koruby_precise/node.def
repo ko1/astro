@@ -432,13 +432,15 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
     }
     if (LIKELY(KORB_ARRAY_P(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push (skips the full send dispatch) */
-        KORB_CHECK_FROZEN_HEAP(c, slots, l, "Array");
         KorbArray *const arr = VAL2ARY(l);
         if (LIKELY(arr->len < arr->capa)) {                     /* room → inline store (LTO-inlinable, no grow/GC) */
             korb_ary_store_at(c, l, arr->len, rhs);
             arr->len++;
             return RESULT_OK(l);
         }
+        /* len == capa: full OR frozen (freeze sets capa = len).  Frozen check on
+         * this cold grow path only — keeps the hot `a << x` fast path free. */
+        KORB_CHECK_FROZEN_HEAP(c, slots, l, "Array");
         return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path */
     }
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached String#<< / bignum / user */

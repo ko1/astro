@@ -59,7 +59,13 @@ static RESULT korb_m_obj_itself(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * immediates (Integer/Symbol/nil/true/false), false otherwise. */
 static RESULT korb_m_obj_freeze(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; VALUE v = VALUE_REF_GET(self);
-    if (AROH_IS_GC_OBJECT(v)) ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
+    if (AROH_IS_GC_OBJECT(v)) {
+        ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_FROZEN;
+        /* A frozen Array gets capa=len so node_shl's existing `len < capa` room
+         * check fails → the (rare) slow path does the FrozenError raise.  Keeps
+         * the hot `a << x` fast path free of any frozen test. */
+        if (KORB_ARRAY_P(v)) VAL2ARY(v)->capa = VAL2ARY(v)->len;
+    }
     return RESULT_OK(v);
 }
 static RESULT korb_m_obj_frozen_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
