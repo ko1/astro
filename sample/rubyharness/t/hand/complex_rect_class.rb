@@ -1,0 +1,5 @@
+p Complex.rect(1, 2)
+p Complex.rectangular(3, 4)
+p Complex.rect(1.5, 2)
+p Complex.rect(5)
+p (Complex.rect(Complex(1,1), 2) rescue "TE")

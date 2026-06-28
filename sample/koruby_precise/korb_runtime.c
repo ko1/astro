@@ -688,6 +688,18 @@ static RESULT korb_m_cpx_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, ab * sin(ar)));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
+/* Complex.rect(real[, imag]) / .rectangular — build a Complex, preserving the
+ * components' types.  Both must be real (non-real → TypeError). */
+static RESULT korb_m_cpx_class_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE re = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);
+    const VALUE im = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(0);
+    double tmp;
+    if (UNLIKELY(!korb_num_to_d(re, &tmp) || !korb_num_to_d(im, &tmp)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    slots[0] = re; slots[1] = im;
+    return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+}
 static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
 static RESULT korb_m_cpx_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_cpx_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
@@ -3254,7 +3266,9 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     /* Complex.polar class method (on Complex's singleton). */
     { slots[0] = korb_const_get(vm, korb_intern(vm, "Complex", 7));
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;
-      korb_class_def_cfn(c, slots[1], "polar", korb_m_cpx_polar, -1); }
+      korb_class_def_cfn(c, slots[1], "polar", korb_m_cpx_polar, -1);
+      korb_class_def_cfn(c, slots[1], "rect", korb_m_cpx_class_rect, -1);
+      korb_class_def_cfn(c, slots[1], "rectangular", korb_m_cpx_class_rect, -1); }
 
     /* Comparable / Enumerable as builtin modules, mixed into the relevant types
      * so is_a?/kind_of? report membership (the comparison/iteration methods
