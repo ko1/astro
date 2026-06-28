@@ -229,7 +229,29 @@ static RESULT korb_str_splice(CTX *c, VALUE *slots, VALUE_REF self, uint32_t bs,
 }
 /* Compute byte span [*bs,*be) for a string index target. idx + optional len arg
  * (len_v = KORB_NIL if absent). *found=false ⇒ no match / out of range. */
+/* If *v isn't already an integer but responds to #to_int, replace it with the
+ * coerced value (may GC — call before reading the receiver string). */
+static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
+    intptr_t tmp;
+    if (korb_to_index(*v, &tmp)) return RESULT_OK(KORB_TRUE);
+    const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+    if (!korb_responds_to(c, *v, to_int)) return RESULT_OK(KORB_FALSE);
+    slots[0] = *v;
+    RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!korb_to_index(r.value, &tmp)) return RESULT_OK(KORB_FALSE);
+    *v = r.value;
+    return RESULT_OK(KORB_TRUE);
+}
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
+    if (!KORB_STRING_P(idx) && !KORB_RANGE_P(idx)) {   /* coerce a non-String/Range index via #to_int (before reading self) */
+        RESULT cr = korb_coerce_to_int(c, slots, &idx);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    }
+    if (len_v != KORB_NIL) {
+        RESULT cr = korb_coerce_to_int(c, slots, &len_v);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
     *found = true;

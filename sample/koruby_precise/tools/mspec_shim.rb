@@ -750,24 +750,23 @@ class MSpecMock
   def to_s; e = @recv[:to_s]; e ? e.__return_value : super; end
   def hash; e = @recv[:hash]; e ? e.__return_value : super; end
   def ==(o); e = @recv[:==]; e ? e.__return_value : super; end
-  # Built-in / operator methods that the runtime resolves before method_missing;
-  # override so a stubbed value wins (mirrors to_s/hash/== above).
+  # Object-defined methods that the runtime resolves before method_missing, so a
+  # stubbed value must win (mirrors to_s/hash/== above).  Conversion methods
+  # (to_int/to_str/...) are NOT on Object — method_missing handles their stubs.
   def <=>(o); e = @recv[:<=>]; e ? e.__return_value : super; end
   def inspect; e = @recv[:inspect]; e ? e.__return_value : "#<mock(#{@name})>"; end
-  def to_str; e = @recv[:to_str]; e ? e.__return_value : super; end
-  def to_int; e = @recv[:to_int]; e ? e.__return_value : super; end
-  def to_ary; e = @recv[:to_ary]; e ? e.__return_value : super; end
-  def to_a; e = @recv[:to_a]; e ? e.__return_value : super; end
-  def to_proc; e = @recv[:to_proc]; e ? e.__return_value : super; end
-  def to_hash; e = @recv[:to_hash]; e ? e.__return_value : super; end
-  def to_io; e = @recv[:to_io]; e ? e.__return_value : super; end
-  def coerce(o); e = @recv[:coerce]; e ? e.__return_value : super; end
-  def each(*a); e = @recv[:each]; e ? e.__return_value : super; end
   def eql?(o); e = @recv[:eql?]; e ? e.__return_value : super; end
-  def <(o); e = @recv[:<]; e ? e.__return_value : super; end
-  def >(o); e = @recv[:>]; e ? e.__return_value : super; end
-  def <=(o); e = @recv[:<=]; e ? e.__return_value : super; end
-  def >=(o); e = @recv[:>=]; e ? e.__return_value : super; end
+  # Conversion methods: defining them makes the runtime's respond_to?/coercion
+  # see the stub; unstubbed → nil (NOT super, which would NoMethodError since
+  # Object lacks them), letting the caller treat the value as non-coercible.
+  def to_str; e = @recv[:to_str]; e ? e.__return_value : nil; end
+  def to_int; e = @recv[:to_int]; e ? e.__return_value : nil; end
+  def to_ary; e = @recv[:to_ary]; e ? e.__return_value : nil; end
+  def to_a; e = @recv[:to_a]; e ? e.__return_value : nil; end
+  def to_proc; e = @recv[:to_proc]; e ? e.__return_value : nil; end
+  def to_hash; e = @recv[:to_hash]; e ? e.__return_value : nil; end
+  def to_io; e = @recv[:to_io]; e ? e.__return_value : nil; end
+  def coerce(o); e = @recv[:coerce]; e ? e.__return_value : nil; end
 end
 
 class MSpecMockExpectation
