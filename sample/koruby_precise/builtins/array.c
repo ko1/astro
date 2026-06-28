@@ -83,6 +83,8 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     uint32_t n = SELF_ARY->len;
     VALUE i0 = VALUE_SLICE_GET(a, 0);
     if (KORB_RANGE_P(i0)) {                                 /* a[b..e] → subarray (incl. beginless/endless) */
+        if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2))             /* a[range, len] is invalid */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of Range into Integer");
         const KorbRange *r = VAL2RANGE(i0);
         const bool beginless = (r->rbegin == KORB_NIL);    /* a[..e] → from 0 */
         const bool endless   = (r->rend   == KORB_NIL);    /* a[b..] → to the end */
@@ -99,12 +101,18 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_ary_subseq(c, slots, self, (uint32_t)b, (uint32_t)cnt);
     }
     intptr_t i;
-    if (UNLIKELY(!korb_to_index(i0, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
+    if (UNLIKELY(!korb_to_index(i0, &i))) {
+        if (KORB_INTEGER_P(i0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
+    }
     if (i < 0) i += n;
     if (VALUE_SLICE_LEN(a) >= 2) {                          /* a[start, len] → subarray */
         VALUE lv = VALUE_SLICE_GET(a, 1);
         intptr_t len;
-        if (UNLIKELY(!korb_to_index(lv, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+        if (UNLIKELY(!korb_to_index(lv, &len))) {
+            if (KORB_INTEGER_P(lv)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+        }
         if (len < 0 || i < 0 || i > (intptr_t)n) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)n) len = (intptr_t)n - i;
         return korb_ary_subseq(c, slots, self, (uint32_t)i, (uint32_t)len);
