@@ -277,7 +277,16 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     else if (KORB_STRING_P(mv)) mid = korb_intern(vm, VAL2STR(mv)->buf->data, VAL2STR(mv)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(mv));
     VALUE sv = VALUE_REF_GET(self);
-    if (korb_responds_to(c, sv, mid)) return RESULT_OK(KORB_TRUE);
+    const VALUE incv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
+    const bool include_priv = (incv != KORB_NIL && incv != KORB_FALSE);
+    if (korb_responds_to(c, sv, mid)) {
+        /* private/protected methods are not "responded to" unless include_all. */
+        const VALUE dcls = korb_dispatch_class(c, sv);
+        VALUE mdef = KORB_NIL;
+        const struct korb_method *const me = KORB_CLASS_P(dcls) ? korb_class_find_method(dcls, mid, &mdef) : NULL;
+        if (me != NULL && me->visibility != 0 && !include_priv) return RESULT_OK(KORB_FALSE);
+        return RESULT_OK(KORB_TRUE);
+    }
     /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
     const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
     const VALUE dcls = korb_dispatch_class(c, sv);
@@ -378,6 +387,30 @@ static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)c;(void)slots;(void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
 }
+/* private/protected/public: with no args set the class body's default visibility;
+ * with args set those named methods' visibility.  vis: 1 priv / 2 prot / 0 pub. */
+static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
+    const VALUE selfv = VALUE_REF_GET(self);
+    if (!KORB_CLASS_P(selfv))                         /* top-level / non-class: best-effort no-op */
+        return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
+    KorbClass *const k = VAL2CLASS(selfv);
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (argc == 0) { k->cur_visibility = vis; return RESULT_OK(KORB_NIL); }
+    for (uint32_t i = 0; i < argc; i++) {
+        const VALUE arg = VALUE_SLICE_GET(a, i);
+        uint32_t mid;
+        if (SYMBOL_P(arg)) mid = SYM2ID(arg);
+        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
+        else continue;
+        for (uint32_t j = 0; j < k->method_cnt; j++)
+            if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+    }
+    c->vm->method_serial++;
+    return RESULT_OK(argc == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
+}
+static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
+static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
+static RESULT korb_m_public(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_set_visibility(c, slots, self, a, 0); }
 /* runtime attr_reader/writer/accessor (the dynamic `attr_reader id` form that
  * the parser can't desugar at parse time; self is the class). */
 static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {

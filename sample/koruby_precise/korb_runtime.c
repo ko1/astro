@@ -2397,6 +2397,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = KORB_METHOD_ISEQ;
+    m->visibility = k->cur_visibility;   /* inherit the class body's current default (private/protected) */
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
@@ -2782,6 +2783,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         korb_const_define(c, name_sym, cls);    /* now rooted in the const table */
     }
     slots[0] = cls;                              /* root for the body run + capture */
+    VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
     return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
 }
 
@@ -6144,9 +6146,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_MATCHDATA, "[]", korb_m_md_aref, -1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_s", korb_m_md_to_s, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_a", korb_m_md_to_a, 0);
-    korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_private, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_public, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_protected, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
     /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
     korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);

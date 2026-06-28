@@ -458,6 +458,7 @@ typedef struct KorbClass {
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
+    uint8_t  cur_visibility;         /* default visibility for `def` in this class body: 0 pub / 1 priv / 2 prot */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
@@ -566,6 +567,7 @@ typedef RESULT (*korb_method_blk_fn)(CTX *c, VALUE *slots, VALUE_REF self,
 struct korb_method {
     uint32_t mid;            /* interned name (current; changes on alias) */
     uint32_t orig_mid;       /* name at original definition; survives alias (for #original_name) */
+    uint8_t  visibility;     /* 0 public / 1 private / 2 protected */
     uint8_t  kind;           /* enum korb_method_kind */
     uint8_t  uses_block;     /* ISEQ: reserves 2 frame-top cells for yield/block_given? */
     uint8_t  is_simple;      /* ISEQ: fixed positional arity, no rest/opt/post/kw/block —
