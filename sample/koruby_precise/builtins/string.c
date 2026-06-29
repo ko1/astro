@@ -501,9 +501,22 @@ static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, ui
 /* String#tr(from, to) — byte-level translate; `^` negation, ranges, to-empty
  * deletes, to-shorter repeats its last char.  (UTF-8 chars beyond ASCII pass.) */
 static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE fv = VALUE_SLICE_GET(a, 0), tv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
+    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
+    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[1] = r.value;
+    }
+    if (UNLIKELY(!KORB_STRING_P(slots[0]) || !KORB_STRING_P(slots[1])))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
@@ -529,9 +542,22 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 /* tr_s: like tr, but runs of *translated* chars that map to the same output are
  * squeezed to one.  Pre-existing runs (untranslated) are left intact. */
 static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE fv = VALUE_SLICE_GET(a, 0), tv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(fv) || !KORB_STRING_P(tv)))
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
+    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
+    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[1] = r.value;
+    }
+    if (UNLIKELY(!KORB_STRING_P(slots[0]) || !KORB_STRING_P(slots[1])))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
