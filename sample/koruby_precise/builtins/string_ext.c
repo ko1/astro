@@ -431,6 +431,7 @@ static RESULT korb_m_str_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX((unsigned char)s->buf->data[i]));
 }
 static RESULT korb_m_str_setbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0), bv = VALUE_SLICE_GET(a, 1);
     intptr_t i, b;                                          /* index/value coerce via to_int (Float truncates) */
     if (UNLIKELY(!korb_to_index(iv, &i) || !korb_to_index(bv, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
