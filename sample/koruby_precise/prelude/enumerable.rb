@@ -45,7 +45,7 @@ module Enumerable
   def each_with_index; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
   def partition; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if yield(*ar); a << e; else; b << e; end }; [a, b]; end
   def group_by; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
-  def tally(h = {}); __each_el { |x| h[x] = (h[x] || 0) + 1 }; h; end
+  def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
   def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if k.nil? || k == :_separator; f = true; next; end; if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
   def chunk_while; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_when; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
