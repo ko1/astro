@@ -626,9 +626,23 @@ static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE wv = VALUE_SLICE_GET(a, 0);
+    { RESULT cr = korb_coerce_to_int(c, slots, &wv); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }   /* width #to_int */
     intptr_t width;
-    if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(wv));
-    const KorbString *padstr = (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) ? VAL2STR(VALUE_SLICE_GET(a, 1)) : NULL;
+    if (UNLIKELY(!korb_to_index(wv, &width))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    VALUE padv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    if (padv != KORB_NIL && !KORB_STRING_P(padv)) {       /* padstr #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(padv) && korb_responds_to(c, padv, to_str)) {
+            slots[0] = padv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            padv = sr.value;
+        }
+        if (UNLIKELY(!KORB_STRING_P(padv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 1)));
+    }
+    slots[0] = padv;                                      /* root pad across self alloc */
+    const KorbString *padstr = (padv != KORB_NIL) ? VAL2STR(padv) : NULL;
     if (padstr && padstr->len == 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "zero width padding");
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
