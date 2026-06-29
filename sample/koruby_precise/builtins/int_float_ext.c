@@ -84,13 +84,17 @@ static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE iv = VALUE_SLICE_GET(a, 0);
     intptr_t idx;
-    if (UNLIKELY(!korb_to_index(iv, &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    if (UNLIKELY(!korb_to_index(iv, &idx))) {            /* coerce position via #to_int */
+        RESULT cr = korb_coerce_to_int(c, slots, &iv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(iv, &idx)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     uint32_t k = VALUE_SLICE_LEN(a) - 1;
     if (k == 0) return RESULT_OK(VALUE_REF_GET(self));
     intptr_t orig = idx;
     uint32_t oldlen = VAL2ARY(VALUE_REF_GET(self))->len;
     if (idx < 0) idx += (intptr_t)oldlen + 1;
-    if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array", (long)orig);
+    if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too small for array", (long)orig);
     uint32_t at = (uint32_t)idx;
     uint32_t pad = at > oldlen ? at - oldlen : 0;
     CHECK(korb_ary_ensure(c, slots, self, pad + k));
