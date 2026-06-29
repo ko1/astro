@@ -7245,6 +7245,11 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
       case KORB_OBJ_SET:                               /* Set[a, b, c] (elements via inspect) */
         korb_fprint_set_d(c, fp, v, 0);
         return;
+      case KORB_OBJ_PROC: {                            /* #<Proc:0x.. (lambda)> (no source location) */
+        const KorbProc *const p = VAL2PROC(v);
+        fprintf(fp, "#<Proc:0x%012lx%s>", (unsigned long)(uintptr_t)v, p->is_lambda ? " (lambda)" : "");
+        return;
+      }
     }
     fputs("#<Object>", fp);
 }
