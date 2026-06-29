@@ -4248,6 +4248,14 @@ korb_etype_name(unsigned int etype)
       case KORB_E_LOCALJUMP: return "LocalJumpError";
       case KORB_E_RANGE:    return "RangeError";
       case KORB_E_INDEX:    return "IndexError";
+      case KORB_E_FROZEN:   return "FrozenError";
+      case KORB_E_KEY:      return "KeyError";
+      case KORB_E_STOP_ITERATION: return "StopIteration";
+      case KORB_E_UNCAUGHT_THROW: return "UncaughtThrowError";
+      case KORB_E_MATH_DOMAIN:    return "Math::DomainError";
+      case KORB_E_FLOAT_DOMAIN:   return "FloatDomainError";
+      case KORB_E_NO_MATCHING_PATTERN:     return "NoMatchingPatternError";
+      case KORB_E_NO_MATCHING_PATTERN_KEY: return "NoMatchingPatternKeyError";
       default:              return "RuntimeError";
     }
 }
