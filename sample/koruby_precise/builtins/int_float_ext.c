@@ -366,7 +366,12 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     intptr_t cnt = 1;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE cv = VALUE_SLICE_GET(a, 0);
-        if (UNLIKELY(!korb_to_index(cv, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
+        if (UNLIKELY(!korb_to_index(cv, &cnt))) {        /* coerce via #to_int */
+            const VALUE orig = cv;
+            RESULT cr = korb_coerce_to_int(c, slots, &cv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(cv, &cnt)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(orig));
+        }
     }
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     uint32_t n = ary->len;
