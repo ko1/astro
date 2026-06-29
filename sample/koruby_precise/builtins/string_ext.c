@@ -388,33 +388,46 @@ static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* String#bytesplice(index, length, str) / (range, str) — replace bytes in place,
  * return self. */
 static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t bn = s->len;
-    intptr_t start = 0, dellen = 0; VALUE repl;
+    intptr_t start = 0, dellen = 0; VALUE repl; uint32_t repl_pos;
     if (VALUE_SLICE_LEN(a) >= 2 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
         if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (start < 0) start += bn;
         intptr_t e; if (r->rend == KORB_NIL) e = bn; else { if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += bn; if (!r->exclude_end) e += 1; }
         dellen = e - start;
-        repl = VALUE_SLICE_GET(a, 1);
+        repl = VALUE_SLICE_GET(a, 1); repl_pos = 1;
     } else {
         if (UNLIKELY(VALUE_SLICE_LEN(a) < 3 || !korb_to_index(VALUE_SLICE_GET(a, 0), &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (start < 0) start += bn;
-        repl = VALUE_SLICE_GET(a, 2);
+        repl = VALUE_SLICE_GET(a, 2); repl_pos = 2;
     }
-    if (UNLIKELY(start < 0 || start > (intptr_t)bn)) return korb_raise(c, slots, KORB_E_RANGE, 0, "index %ld out of string", (long)start);
-    if (dellen < 0) dellen = 0;
+    if (UNLIKELY((repl_pos == 1 && VALUE_SLICE_LEN(a) != 2) || (repl_pos == 2 && VALUE_SLICE_LEN(a) != 3 && VALUE_SLICE_LEN(a) != 5)))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2, 3, or 5)", (unsigned)VALUE_SLICE_LEN(a));
+    if (UNLIKELY(start < 0 || start > (intptr_t)bn)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)start);
+    if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)dellen);
     if (start + dellen > (intptr_t)bn) dellen = (intptr_t)bn - start;
     if (UNLIKELY(!KORB_STRING_P(repl))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(repl));
-    const KorbString *rs = VAL2STR(repl); uint32_t rn = rs->len;
+    const KorbString *rs = VAL2STR(repl); uint32_t rn = rs->len, roff = 0;
+    if (VALUE_SLICE_LEN(a) == 5) {                          /* 5-arg form: replace with str[str_index, str_length] */
+        intptr_t si, sl;
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, repl_pos + 1), &si) || !korb_to_index(VALUE_SLICE_GET(a, repl_pos + 2), &sl)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (si < 0) si += rn;
+        if (UNLIKELY(si < 0 || si > (intptr_t)rn)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)si);
+        if (UNLIKELY(sl < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)sl);
+        if (si + sl > (intptr_t)rn) sl = (intptr_t)rn - si;
+        roff = (uint32_t)si; rn = (uint32_t)sl;
+    }
     uint32_t sufoff = (uint32_t)(start + dellen), suflen = bn - sufoff;
     uint32_t newlen = (uint32_t)start + rn + suflen;
     char *out = malloc(newlen ? newlen : 1);                /* assemble full new content (no GC) */
     s = VAL2STR(VALUE_REF_GET(self));
     memcpy(out, s->buf->data, (size_t)start);
-    memcpy(out + start, VAL2STR(repl)->buf->data, rn);
+    memcpy(out + start, VAL2STR(repl)->buf->data + roff, rn);
     memcpy(out + start + rn, s->buf->data + sufoff, suflen);
     KorbString *ns = korb_str_ensure(c, slots, self, newlen);   /* may move; out is libc-stable */
     memcpy(ns->buf->data, out, newlen); ns->len = newlen; ns->buf->data[newlen] = '\0';
