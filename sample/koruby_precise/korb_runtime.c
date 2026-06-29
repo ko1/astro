@@ -1586,8 +1586,10 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         slots[3] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, k));   /* arg 1: value */
         RESULT yr = korb_block_yield(c, slots + 4, block, def_env, &slots[2], 2, cself);
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
-        if (UNLIKELY(!KORB_ARRAY_P(yr.value) || VAL2ARY(yr.value)->len != 2))
+        if (UNLIKELY(!KORB_ARRAY_P(yr.value)))
             return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(yr.value));
+        if (UNLIKELY(VAL2ARY(yr.value)->len != 2))           /* wrong length → ArgumentError (not TypeError) */
+            return korb_raise(c, slots + 4, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(yr.value)->len);
         slots[4] = VAL2ARY(yr.value)->items->data[0];         /* new key */
         slots[5] = VAL2ARY(yr.value)->items->data[1];         /* new value */
         CHECK(korb_hash_set(c, slots + 6, dst, VALUE_REF_AT(&slots[4]), slots[5]));
