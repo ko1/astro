@@ -1,0 +1,7 @@
+S = Struct.new(:a, :b)
+s = S.new(1, { x: [10, 20] })
+p s.dig(:b, :x, 1)
+p s.dig(:a)
+p s.dig(:b, :y)
+p s.dig(0)
+p s.dig("b", :x, 0)

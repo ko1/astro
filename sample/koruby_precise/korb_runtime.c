@@ -1649,6 +1649,17 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (SYM2ID(mem->items->data[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
     return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", SYMBOL_P(k) ? korb_sym_name(c->vm, sym) : "?");
 }
+/* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result. */
+static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = VALUE_SLICE_GET(a, 0);                         /* first key (rooted) */
+    RESULT first = korb_m_struct_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&slots[0], 1));
+    if (UNLIKELY(first.state != KORB_NORMAL)) return first;
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (na == 1 || first.value == KORB_NIL) return first;
+    slots[0] = first.value;                                  /* receiver for the recursive dig */
+    for (uint32_t i = 1; i < na; i++) slots[i] = VALUE_SLICE_GET(a, i);
+    return korb_send_impl(c, slots + na, korb_intern(c->vm, "dig", 3), 0, na - 1, NULL, NULL, KORB_NIL);
+}
 static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
     VALUE k = VALUE_SLICE_GET(a, 0), v = VALUE_SLICE_GET(a, 1);
@@ -1757,6 +1768,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "dig", korb_m_struct_dig, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
@@ -1884,7 +1896,6 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
