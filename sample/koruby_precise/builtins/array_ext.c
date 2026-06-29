@@ -307,6 +307,53 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             slots[3] = (VALUE)r;
             CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             si += (nnib + 1) / 2;
+        } else if (d == 'm') {                            /* base64 decode (one value, consumes rest) */
+            const KorbString *s = VAL2STR(slots[1]);
+            unsigned char *const out = malloc((size_t)(s->len - si) * 3 / 4 + 4);
+            uint32_t olen = 0; int quad[4], qn = 0;
+            for (uint32_t k = si; k < s->len; k++) {
+                const int ch = (unsigned char)s->buf->data[k];
+                int v;
+                if (ch >= 'A' && ch <= 'Z') v = ch - 'A';
+                else if (ch >= 'a' && ch <= 'z') v = ch - 'a' + 26;
+                else if (ch >= '0' && ch <= '9') v = ch - '0' + 52;
+                else if (ch == '+') v = 62;
+                else if (ch == '/') v = 63;
+                else if (ch == '=') break;                /* padding → done */
+                else continue;                            /* skip newlines / non-base64 */
+                quad[qn++] = v;
+                if (qn == 4) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); out[olen++] = (unsigned char)((quad[2] << 6) | quad[3]); qn = 0; }
+            }
+            if (qn >= 2) { out[olen++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4)); if (qn >= 3) out[olen++] = (unsigned char)((quad[1] << 4) | (quad[2] >> 2)); }
+            KorbString *r = korb_str_alloc(c, slots + 3, olen);   /* may move slots; out is libc-stable */
+            memcpy(r->buf->data, out, olen); free(out);
+            slots[3] = (VALUE)r;
+            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            si = VAL2STR(slots[1])->len;
+        } else if (d == 'M') {                            /* quoted-printable decode (count/`*` ignored) */
+            const KorbString *s = VAL2STR(slots[1]);
+            unsigned char *const out = malloc((size_t)(s->len - si) + 4);
+            uint32_t olen = 0, k = si;
+            while (k < s->len) {
+                const int ch = (unsigned char)s->buf->data[k];
+                if (ch == '=' && k + 1 < s->len) {
+                    const int c1 = (unsigned char)s->buf->data[k + 1];
+                    if (c1 == '\n') { k += 2; continue; }                                  /* soft line break */
+                    if (c1 == '\r' && k + 2 < s->len && s->buf->data[k + 2] == '\n') { k += 3; continue; }
+                    #define KORB_HEXV(x) ((x) >= '0' && (x) <= '9' ? (x) - '0' : (x) >= 'A' && (x) <= 'F' ? (x) - 'A' + 10 : (x) >= 'a' && (x) <= 'f' ? (x) - 'a' + 10 : -1)
+                    if (k + 2 < s->len) {
+                        const int hi = KORB_HEXV(c1), lo = KORB_HEXV((unsigned char)s->buf->data[k + 2]);
+                        if (hi >= 0 && lo >= 0) { out[olen++] = (unsigned char)(hi * 16 + lo); k += 3; continue; }
+                    }
+                    #undef KORB_HEXV
+                    out[olen++] = '='; k++;                                                /* lone '=' kept */
+                } else { out[olen++] = (unsigned char)ch; k++; }
+            }
+            KorbString *r = korb_str_alloc(c, slots + 3, olen);   /* may move slots; out is libc-stable */
+            memcpy(r->buf->data, out, olen); free(out);
+            slots[3] = (VALUE)r;
+            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            si = VAL2STR(slots[1])->len;
         } else {                                          /* anything else → nil */
             const long reps = star ? 0 : cnt;
             for (long r = 0; r < reps; r++) CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL));
