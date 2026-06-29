@@ -141,13 +141,16 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)FIX2LONG(wv));
         } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
         if (i < flen && fmt[i] == '.') {
-            if (si < 70) spec[si++] = '.';
             i++;
             if (i < flen && fmt[i] == '*') {               /* dynamic precision from next arg */
                 i++; const VALUE pv = (ai < argn) ? args[ai++] : KORB_NIL;
                 if (!FIXNUM_P(pv)) { err = true; errmsg = "precision too big"; break; }
-                si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)FIX2LONG(pv));
-            } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+                const long pl = (long)FIX2LONG(pv);
+                if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", pl);   /* negative precision → ignored (CRuby) */
+            } else {
+                if (si < 70) spec[si++] = '.';
+                while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+            }
         }
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
         char conv = fmt[i];
