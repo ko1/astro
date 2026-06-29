@@ -351,20 +351,34 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * index counts from the end, inserting after); mutates and returns self. */
 static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* index arg */
+    slots[1] = VALUE_SLICE_GET(a, 1);                    /* other string (rooted across coercions) */
     intptr_t idx;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    VALUE iv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(iv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(iv));
+    if (UNLIKELY(!korb_to_index(slots[0], &idx))) {      /* coerce index via #to_int */
+        VALUE iv0 = slots[0];
+        RESULT cr = korb_coerce_to_int(c, slots + 2, &iv0);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(iv0, &idx)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    }
+    if (UNLIKELY(!KORB_STRING_P(slots[1]))) {            /* coerce other via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[1] = sr.value;
+        }
+        if (!KORB_STRING_P(slots[1])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 1)));
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
     intptr_t pos = idx >= 0 ? idx : (intptr_t)ncp + idx + 1;
     if (UNLIKELY(pos < 0 || pos > (intptr_t)ncp)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)idx);
     uint32_t boff = korb_str_char_to_byte(s, (uint32_t)pos);
-    uint32_t inn = VAL2STR(iv)->len, newlen = s->len + inn;
+    uint32_t inn = VAL2STR(slots[1])->len, newlen = s->len + inn;
     char *out = malloc(newlen ? newlen : 1);
     s = VAL2STR(VALUE_REF_GET(self));
     memcpy(out, s->buf->data, boff);
-    memcpy(out + boff, VAL2STR(iv)->buf->data, inn);
+    memcpy(out + boff, VAL2STR(slots[1])->buf->data, inn);
     memcpy(out + boff + inn, s->buf->data + boff, s->len - boff);
     KorbString *ns = korb_str_ensure(c, slots, self, newlen);
     memcpy(ns->buf->data, out, newlen); ns->len = newlen; ns->buf->data[newlen] = '\0';
