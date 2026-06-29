@@ -1059,11 +1059,19 @@ static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {   /* concat(*arrays) */
-        VALUE ov = VALUE_SLICE_GET(a, k);
-        if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
-        uint32_t n = VAL2ARY(ov)->len;
+        slots[0] = VALUE_SLICE_GET(a, k);                 /* arg (rooted; possibly coerced) */
+        if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {          /* coerce via #to_ary */
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_ary)) {
+                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                slots[0] = r.value;
+            }
+            if (!KORB_ARRAY_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+        }
+        const uint32_t n = VAL2ARY(slots[0])->len;        /* snapshot len (handles concat(self)) */
         for (uint32_t i = 0; i < n; i++)
-            CHECK(korb_ary_push_val(c, slots, self, VAL2ARY(VALUE_SLICE_GET(a, k))->items->data[i]));   /* re-read other (rooted) */
+            CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));   /* re-read other (rooted) */
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
