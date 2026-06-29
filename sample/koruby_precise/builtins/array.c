@@ -276,12 +276,28 @@ static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         start = b; dellen = last - b + 1; if (dellen < 0) dellen = 0;
         subseq_form = true;
     } else if (VALUE_SLICE_LEN(a) >= 2) {
-        if (UNLIKELY(!korb_to_index(iv, &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(iv, &start))) {        /* coerce start via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &iv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(iv, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        if (UNLIKELY(!korb_to_index(lv, &dellen))) {       /* coerce length via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &lv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(lv, &dellen)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        }
+        n = VAL2ARY(VALUE_REF_GET(self))->len;             /* re-read after any dispatch */
         if (UNLIKELY(dellen < 0)) return RESULT_OK(KORB_NIL);   /* (start, negative len) → nil */
         if (start < 0) start += n;
         subseq_form = true;
     } else {
-        if (UNLIKELY(!korb_to_index(iv, &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (UNLIKELY(!korb_to_index(iv, &start))) {        /* coerce index via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &iv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(iv, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            n = VAL2ARY(VALUE_REF_GET(self))->len;
+        }
         if (start < 0) start += n;
         if (start < 0 || start >= n) return RESULT_OK(KORB_NIL);
         slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[start];   /* removed elem */
