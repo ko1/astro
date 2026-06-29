@@ -334,16 +334,24 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t na = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    VALUE repl = VALUE_SLICE_GET(a, na - 1);
-    if (UNLIKELY(!KORB_STRING_P(repl))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(repl));
+    slots[0] = VALUE_SLICE_GET(a, na - 1);             /* replacement — coerce via #to_str first (Integer-index: TypeError before IndexError) */
+    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+            RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            slots[0] = cr.value;
+        }
+        if (!KORB_STRING_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, na - 1)));
+    }
     VALUE idx = VALUE_SLICE_GET(a, 0);
     VALUE len_v = (na == 3) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     bool found; uint32_t bs = 0, be = 0;
-    RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be, true);
+    RESULT sp = korb_str_target_span(c, slots + 1, self, idx, len_v, &found, &bs, &be, true);   /* slots+1: preserve repl in slots[0] */
     if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
     if (!found) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)(VALUE_SLICE_LEN(a)>=1 && FIXNUM_P(VALUE_SLICE_GET(a,0)) ? FIX2LONG(VALUE_SLICE_GET(a,0)) : 0));
-    CHECK(korb_str_splice(c, slots, self, bs, be, VALUE_SLICE_REF(a, na - 1), true));
-    return RESULT_OK(VALUE_SLICE_GET(a, na - 1));   /* re-read: splice's GC may have moved repl (the `a` slice is a rooted slot) */
+    CHECK(korb_str_splice(c, slots + 1, self, bs, be, VALUE_REF_AT(&slots[0]), true));   /* bs/be are byte offsets (GC-stable) */
+    return RESULT_OK(VALUE_SLICE_GET(a, na - 1));   /* `a[i]=v` evaluates to v (original RHS, not the coerced string) */
 }
 static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
