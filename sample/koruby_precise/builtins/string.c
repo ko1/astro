@@ -374,7 +374,8 @@ static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_chop_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)a;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* chop! checks frozen upfront (even for "") */
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     if (s->len == 0) return RESULT_OK(KORB_NIL);
     uint32_t n = s->len;

@@ -385,7 +385,10 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     KorbArrayItems *it = ary->items;
     uint32_t w = 0; VALUE last = KORB_NIL; bool found = false;
     for (uint32_t r = 0; r < ary->len; r++) {
-        if (korb_value_eq(it->data[r], slots[0])) { last = it->data[r]; found = true; }   /* return the deleted element */
+        if (korb_value_eq(it->data[r], slots[0])) {     /* match → would delete; frozen only errors if it would modify */
+            if (UNLIKELY(!found)) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+            last = it->data[r]; found = true;           /* return the deleted element */
+        }
         else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
     }
     for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
