@@ -1,6 +1,27 @@
 # Set#divide — partition into subsets.  1-arg block groups by its return value;
 # 2-arg block forms connected components (a,b related iff func(a,b) && func(b,a)).
 class Set
+  # flatten nested Sets into a new Set; recursion raises ArgumentError.
+  def flatten
+    __flatten([])
+  end
+  def __flatten(seen)
+    raise ArgumentError, "tried to flatten recursive Set" if seen.any? { |s| s.equal?(self) }
+    seen.push(self)
+    r = self.class.new
+    each { |e| e.is_a?(Set) ? e.__flatten(seen).each { |x| r << x } : (r << e) }
+    seen.pop
+    r
+  end
+  def flatten!
+    flat = flatten
+    if flat == self
+      nil
+    else
+      replace(flat)
+      self
+    end
+  end
   def divide(&func)
     if func.arity == 2
       els = to_a
