@@ -5256,6 +5256,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&base[i]), base[i+1]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
+    else if (KORB_CLASS_P(self) && mid == vm->mid_aref && korb_builtin_base_class(vm, self) == KORB_C_ARRAY) {
+        /* SubArray[a, b, ...] — Array's [] class-constructor on a subclass → a
+         * subclass instance holding the elements (the exact-Array case is handled above). */
+        slots[0] = self;                                   /* root the subclass across allocs */
+        VALUE *const abase = &slots[-(intptr_t)argc];
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, argc));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 2, dst, abase[i]));
+        korb_klass_override_set(c, slots[1], slots[0]);
+        return RESULT_OK(slots[1]);
+    }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Array.try_convert(obj) */
         const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
