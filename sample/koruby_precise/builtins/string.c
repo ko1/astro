@@ -150,19 +150,33 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    uint32_t pn = 0;
+    /* coerce each arg to a String (via #to_str) into a rooted array, so the grow
+     * below has them all pinned across any dispatch-induced GC. */
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
-        VALUE o = VALUE_SLICE_GET(a, j);
-        if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
-        pn += VAL2STR(o)->len;
+        slots[1] = VALUE_SLICE_GET(a, j);
+        if (UNLIKELY(!KORB_STRING_P(slots[1]))) {
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                slots[1] = sr.value;
+            }
+            if (!KORB_STRING_P(slots[1])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, j)));
+        }
+        CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
     }
+    uint32_t pn = 0;
+    { const KorbArray *ca = VAL2ARY(slots[0]); for (uint32_t j = 0; j < ca->len; j++) pn += VAL2STR(ca->items->data[j])->len; }
     uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
-    KorbString *s = korb_str_ensure(c, slots, self, slen + pn);   /* single grow; args rooted */
-    s = VAL2STR(VALUE_REF_GET(self));
+    korb_str_ensure(c, slots + 1, self, slen + pn);              /* single grow; args pinned in arr */
+    KorbString *s = VAL2STR(VALUE_REF_GET(self));
     memmove(s->buf->data + pn, s->buf->data, slen);
     uint32_t off = 0;
-    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
-        const KorbString *o = VAL2STR(VALUE_SLICE_GET(a, j));
+    const KorbArray *ca = VAL2ARY(slots[0]);
+    for (uint32_t j = 0; j < ca->len; j++) {
+        const KorbString *o = VAL2STR(ca->items->data[j]);
         memcpy(s->buf->data + off, o->buf->data, o->len); off += o->len;
     }
     s->len = slen + pn; s->buf->data[s->len] = '\0';
