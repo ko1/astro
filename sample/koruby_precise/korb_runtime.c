@@ -5535,6 +5535,15 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                     return RESULT_OK(slots[1]);
                 }
+                if (!uinit && base == KORB_C_HASH && (argc >= 1 || block != NULL)) {   /* Hash subclass: default value / default_proc */
+                    if (block != NULL) {
+                        slots[2] = UNWRAP(korb_make_proc(c, slots + 2, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+                        ARO_STORE(c, VAL2HASH(slots[1]), (VALUE *)(uintptr_t)&VAL2HASH(slots[1])->default_proc, slots[2]);
+                    } else {
+                        ARO_STORE(c, VAL2HASH(slots[1]), (VALUE *)(uintptr_t)&VAL2HASH(slots[1])->default_val, slots[-(intptr_t)argc]);
+                    }
+                    return RESULT_OK(slots[1]);
+                }
                 if (uinit) {
                     VALUE *ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
