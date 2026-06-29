@@ -25,7 +25,7 @@ struct koruby_option OPTION;
  * not into every program's code store. */
 #define KORUBY_PRELUDE_DIR  KORUBY_SRC_DIR "/prelude"
 static const char *const KORUBY_PRELUDE_FILES[] = {
-    "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb",
+    "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb", "numeric.rb",
 };
 
 static void
