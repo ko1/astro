@@ -1018,7 +1018,7 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             && rng->rbegin != KORB_NIL && rng->rend != KORB_NIL) {
             double dbeg, dend, dstep;
             if (korb_num_to_d(rng->rbegin, &dbeg) && korb_num_to_d(rng->rend, &dend) && korb_num_to_d(sv, &dstep)) {
-                if (UNLIKELY(dstep <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
+                if (UNLIKELY(dstep == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");   /* negative → count formula gives empty/backward */
                 const bool excl = rng->exclude_end;
                 const double nf = (dend - dbeg) / dstep;
                 double err = (fabs(dbeg) + fabs(dend) + fabs(dend - dbeg)) / fabs(dstep) * DBL_EPSILON;
@@ -1035,21 +1035,36 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
-    if (UNLIKELY(st <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0 or negative");
+    if (UNLIKELY(st == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → stride over to_a */
-        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
-        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i += (uint32_t)st) {
-            VALUE ev = VAL2ARY(slots[0])->items->data[i];
-            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &ev, 1, captured_self);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (st > 0) {                                    /* (backward string stepping not supported here) */
+            slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+            for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i += (uint32_t)st) {
+                VALUE ev = VAL2ARY(slots[0])->items->data[i];
+                RESULT r = korb_block_yield(c, slots + 1, block, def_env, &ev, 1, captured_self);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            }
         }
         return RESULT_OK(VALUE_REF_GET(self));
     }
-    for (intptr_t i = lo; i < hi; i += st) {
-        VALUE iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (st > 0) {
+        for (intptr_t i = lo; i < hi; i += st) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    } else {                                              /* negative step → iterate downward from begin */
+        const KorbRange *const rng = SELF_RANGE;
+        if (FIXNUM_P(rng->rbegin) && FIXNUM_P(rng->rend)) {
+            const intptr_t b = FIX2LONG(rng->rbegin), e = FIX2LONG(rng->rend);
+            const intptr_t limit = rng->exclude_end ? e : e - 1;   /* loop while i > limit */
+            for (intptr_t i = b; i > limit; i += st) {
+                VALUE iv = LONG2FIX(i);
+                RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            }
+        }
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
