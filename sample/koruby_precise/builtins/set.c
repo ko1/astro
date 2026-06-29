@@ -719,10 +719,18 @@ static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
-        const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0)); slots[0] = rg->rbegin; slots[1] = rg->rend;
+        const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(rg->exclude_end && rg->rend != KORB_NIL))   /* endless exclusive is fine (no upper bound) */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot clamp with an exclusive range");
+        slots[0] = rg->rbegin; slots[1] = rg->rend;
     } else if (VALUE_SLICE_LEN(a) >= 2) { slots[0] = VALUE_SLICE_GET(a, 0); slots[1] = VALUE_SLICE_GET(a, 1); }
     else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     /* slots[0]=lo, slots[1]=hi rooted across the (GC-causing) <=> dispatches */
+    if (slots[0] != KORB_NIL && slots[1] != KORB_NIL) {  /* both bounds present → min must be <= max */
+        int clh; RESULT rb = korb_comparable_cmp(c, slots + 2, slots[0], slots[1], &clh);
+        if (UNLIKELY(rb.state != KORB_NORMAL)) return rb;
+        if (clh == 2 || clh > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be smaller than max argument");
+    }
     int cl; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[0], &cl);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (cl != 2 && cl < 0) return RESULT_OK(slots[0]);    /* self < lo → lo */
