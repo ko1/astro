@@ -1276,6 +1276,8 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             if (ti >= 0) kwlim  = VAL2HASH(h)->items->data[2 * ti + 1];
             if (bi >= 0) kwstep = VAL2HASH(h)->items->data[2 * bi + 1];
             na--;
+            if (na >= 1 && ti >= 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "to is given twice");   /* positional limit + to: */
+            if (na >= 2 && bi >= 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step is given twice"); /* positional step + by: */
         }
     }
     const VALUE limv0 = na >= 1 ? VALUE_SLICE_GET(a, 0) : kwlim;                       /* limit (nil ⇒ endless) */
