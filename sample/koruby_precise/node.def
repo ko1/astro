@@ -373,8 +373,12 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_int_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
 #endif
     if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
-    if ((FIXNUM_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)))   /* numeric l, float involved */
+    if ((FIXNUM_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) {   /* numeric l, float involved */
+        double rd;
+        if (korb_num_to_d(rhs, &rd) && rd == 0.0)       /* Float modulo by zero → ZeroDivisionError (not NaN) */
+            return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
         return korb_num_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
+    }
     if (FIXNUM_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, n->u.node_mod.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     slots[0] = l; slots[1] = rhs;                       /* Range#% / user-defined % via dispatch */

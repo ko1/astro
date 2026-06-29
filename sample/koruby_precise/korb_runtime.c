@@ -6608,7 +6608,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FLOAT, "-", korb_m_num_sub, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "*", korb_m_num_mul, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "/", korb_m_num_div, 1);
-    korb_def_cmethod(c, KORB_C_FLOAT, "%", korb_m_num_mod, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT, "%", korb_m_flt_modulo, 1);   /* shares modulo's impl: ZeroDivisionError + alias-identity */
     korb_def_cmethod(c, KORB_C_FLOAT, "<", korb_m_num_lt, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, "<=", korb_m_num_le, 1);
     korb_def_cmethod(c, KORB_C_FLOAT, ">", korb_m_num_gt, 1);
