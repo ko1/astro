@@ -6135,6 +6135,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "pop", korb_m_ary_pop, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "include?", korb_m_ary_include, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "==", korb_m_ary_eq, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "eql?", korb_m_ary_eql, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sample", korb_m_ary_sample, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "shuffle", korb_m_ary_shuffle, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
@@ -6257,6 +6258,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "member?", korb_m_hash_key_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "value?", korb_m_hash_value_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "==", korb_m_hash_eq, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "eql?", korb_m_hash_eql, 1);
     korb_def_cmethod(c, KORB_C_HASH, "has_value?", korb_m_hash_value_q, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
     korb_def_cmethod(c, KORB_C_HASH, "assoc", korb_m_hash_assoc, 1);

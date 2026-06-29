@@ -156,6 +156,33 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(KORB_TRUE);
 }
+/* Hash#eql? — like Hash#== but values compared with #eql? (type-strict). */
+static RESULT korb_m_hash_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE other = VALUE_SLICE_GET(a, 0);
+    if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
+    if (!KORB_HASH_P(other)) return RESULT_OK(KORB_FALSE);
+    if (VAL2HASH(VALUE_REF_GET(self))->len != VAL2HASH(other)->len) return RESULT_OK(KORB_FALSE);
+    slots[0] = VALUE_REF_GET(self); slots[1] = other;
+    const uint32_t mid_eql = korb_intern(c->vm, "eql?", 4);
+    const uint32_t n = VAL2HASH(slots[0])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *x = VAL2HASH(slots[0]);
+        const VALUE k = x->items->data[2 * i], v = x->items->data[2 * i + 1];
+        const int32_t j = korb_hash_find(VAL2HASH(slots[1]), k);
+        if (j < 0) return RESULT_OK(KORB_FALSE);
+        const VALUE v2 = VAL2HASH(slots[1])->items->data[2 * j + 1];
+        if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
+            KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {
+            slots[2] = v; slots[3] = v2;
+            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (!KORB_TRUTHY(r.value)) return RESULT_OK(KORB_FALSE);
+        } else if (!korb_value_eql(v, v2)) {
+            return RESULT_OK(KORB_FALSE);
+        }
+    }
+    return RESULT_OK(KORB_TRUE);
+}
 static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across value == dispatch) */
     const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
