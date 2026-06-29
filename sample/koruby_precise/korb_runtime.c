@@ -1691,8 +1691,11 @@ static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const uint32_t na = VALUE_SLICE_LEN(a);
     if (na == 1 || first.value == KORB_NIL) return first;
     slots[0] = first.value;                                  /* receiver for the recursive dig */
+    const uint32_t mid_dig = korb_intern(c->vm, "dig", 3);
+    if (UNLIKELY(!korb_responds_to(c, slots[0], mid_dig)))   /* CRuby: intermediate must respond to #dig */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(slots[0]));
     for (uint32_t i = 1; i < na; i++) slots[i] = VALUE_SLICE_GET(a, i);
-    return korb_send_impl(c, slots + na, korb_intern(c->vm, "dig", 3), 0, na - 1, NULL, NULL, KORB_NIL);
+    return korb_send_impl(c, slots + na, mid_dig, 0, na - 1, NULL, NULL, KORB_NIL);
 }
 static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
