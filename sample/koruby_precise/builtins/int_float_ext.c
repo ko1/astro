@@ -339,6 +339,10 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
             CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[2]), val));
         }
+        KorbHash *const dh = VAL2HASH(slots[1]);            /* preserve default value / default_proc */
+        const KorbHash *const sh = VAL2HASH(VALUE_REF_GET(self));
+        ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_val, sh->default_val);
+        ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_proc, sh->default_proc);
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
