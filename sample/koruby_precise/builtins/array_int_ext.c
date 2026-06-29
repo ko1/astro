@@ -69,18 +69,23 @@ static RESULT korb_m_ary_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    VALUE iv = VALUE_SLICE_GET(a, 0);
+    const bool have_default = VALUE_SLICE_LEN(a) >= 2;
+    slots[0] = VALUE_SLICE_GET(a, 0);                     /* original index arg (rooted; yielded to the block as-is) */
+    slots[1] = have_default ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     intptr_t i;
-    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    if (UNLIKELY(!korb_to_index(slots[0], &i))) {         /* coerce a non-Integer index via #to_int */
+        VALUE iv2 = slots[0];
+        RESULT cr = korb_coerce_to_int(c, slots + 2, &iv2);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(iv2, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[0]));
+    }
+    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));  /* re-read after possible dispatch */
     intptr_t orig = i;
     if (i < 0) i += ary->len;
     if (i >= 0 && (uint32_t)i < ary->len) return RESULT_OK(ary->items->data[i]);
-    if (block != NULL) {                                  /* out of range: block form yields the index (wins over a default) */
-        VALUE ix = LONG2FIX(orig);
-        return korb_block_yield(c, slots, block, def_env, &ix, 1, cself);
-    }
-    if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
+    if (block != NULL)                                    /* out of range: block yields the ORIGINAL arg (wins over a default) */
+        return korb_block_yield(c, slots + 2, block, def_env, &slots[0], 1, cself);
+    if (have_default) return RESULT_OK(slots[1]);
     return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld outside of array bounds: %ld...%u",
                       (long)orig, ary->len ? -(long)ary->len : 0L, ary->len);
 }
