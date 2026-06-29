@@ -400,7 +400,16 @@ static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
 /* delete_prefix/suffix (mode 0/1); in_place → bang (self if changed else nil). */
 static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode, bool in_place) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    if (UNLIKELY(!KORB_STRING_P(pv))) {                  /* coerce arg via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(pv) && korb_responds_to(c, pv, to_str)) {
+            slots[0] = pv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            pv = sr.value;
+        }
+        if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *p = VAL2STR(pv);
     uint32_t bs = 0, be = s->len; bool match = false;
     if (p->len <= s->len) {
