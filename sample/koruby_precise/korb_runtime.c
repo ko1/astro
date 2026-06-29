@@ -6963,8 +6963,9 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         korb_fprint_to_s(c, fp, x->re);
         char *ib = NULL; size_t isz = 0; FILE *ims = open_memstream(&ib, &isz);
         if (ims) { korb_fprint_to_s(c, ims, x->im); fclose(ims); }
-        if (ib && ib[0] == '-') fprintf(fp, "-%si", ib + 1);
-        else                    fprintf(fp, "+%si", ib ? ib : "0");
+        const char *const isuf = (KORB_FLOAT_P(x->im) && !isfinite(korb_float_val(x->im))) ? "*i" : "i";   /* Infinity/NaN → *i (parseable) */
+        if (ib && ib[0] == '-') fprintf(fp, "-%s%s", ib + 1, isuf);
+        else                    fprintf(fp, "+%s%s", ib ? ib : "0", isuf);
         free(ib);
         return;
       }
@@ -7035,7 +7036,7 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         const char *mag = neg ? ib + 1 : (ib ? ib : "0");
         fputc(neg ? '-' : '+', fp);
         if (im_comp) { fputc('(', fp); fputs(mag, fp); fputs(")*i", fp); }
-        else fprintf(fp, "%si", mag);
+        else fprintf(fp, "%s%s", mag, (KORB_FLOAT_P(x->im) && !isfinite(korb_float_val(x->im))) ? "*i" : "i");
         free(ib);
         fputc(')', fp);
         return;
