@@ -632,7 +632,7 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    { RESULT o = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(o.state != KORB_NORMAL)) return o; }
     uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */

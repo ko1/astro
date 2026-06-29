@@ -10,6 +10,32 @@ static RESULT korb_m_str_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbString *s = SELF_STR;
     return RESULT_OK(ID2SYM(korb_intern(c->vm, s->buf->data, s->len)));
 }
+/* Validate case-mapping options (the mapping itself stays ASCII-only).  op:
+ * 0=upcase 1=downcase 2=capitalize 3=swapcase.  Accepts () | :ascii | :turkic |
+ * :lithuanian | :fold (downcase only) | {:turkic,:lithuanian}; else ArgumentError. */
+static RESULT korb_str_case_opts(CTX *c, VALUE *slots, VALUE_SLICE a, int op) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n == 0) return RESULT_OK(KORB_NIL);
+    struct korb_vm *const vm = c->vm;
+    const uint32_t s_ascii = korb_intern(vm, "ascii", 5), s_turkic = korb_intern(vm, "turkic", 6),
+                   s_lith = korb_intern(vm, "lithuanian", 10), s_fold = korb_intern(vm, "fold", 4);
+    uint32_t id[2] = {0, 0};
+    for (uint32_t i = 0; i < n && i < 2; i++) {
+        const VALUE v = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!SYMBOL_P(v))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid option");
+        id[i] = SYM2ID(v);
+    }
+    if (n == 1) {
+        const bool ok = id[0] == s_ascii || id[0] == s_turkic || id[0] == s_lith || (id[0] == s_fold && op == 1);
+        if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid option");
+    } else if (n == 2) {
+        const bool ok = (id[0] == s_turkic && id[1] == s_lith) || (id[0] == s_lith && id[1] == s_turkic);
+        if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid option");
+    } else {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too many options");
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* transform-into-new-string helper (op: 0=upcase 1=downcase 2=capitalize 3=reverse) */
 static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op) {
     uint32_t len = SELF_STR->len;
@@ -31,9 +57,9 @@ static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op) {
     }
     return RESULT_OK((VALUE)r);
 }
-static RESULT korb_m_str_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_str_transform(c, slots, self, 0); }
-static RESULT korb_m_str_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform(c, slots, self, 1); }
-static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform(c, slots, self, 2); }
+static RESULT korb_m_str_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { { RESULT o = korb_str_case_opts(c, slots, a, 0); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform(c, slots, self, 0); }
+static RESULT korb_m_str_downcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { { RESULT o = korb_str_case_opts(c, slots, a, 1); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform(c, slots, self, 1); }
+static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { { RESULT o = korb_str_case_opts(c, slots, a, 2); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform(c, slots, self, 2); }
 /* String#reverse — reverse CHARACTERS (UTF-8 sequences kept intact), not bytes. */
 static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -223,10 +249,10 @@ static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int 
     }
     return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
 }
-static RESULT korb_m_str_upcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_str_transform_bang(c, slots, self, 0); }
-static RESULT korb_m_str_downcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform_bang(c, slots, self, 1); }
-static RESULT korb_m_str_capitalize_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_str_transform_bang(c, slots, self, 2); }
-static RESULT korb_m_str_swapcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_str_transform_bang(c, slots, self, 3); }
+static RESULT korb_m_str_upcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { { RESULT o = korb_str_case_opts(c, slots, a, 0); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform_bang(c, slots, self, 0); }
+static RESULT korb_m_str_downcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { { RESULT o = korb_str_case_opts(c, slots, a, 1); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform_bang(c, slots, self, 1); }
+static RESULT korb_m_str_capitalize_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { { RESULT o = korb_str_case_opts(c, slots, a, 2); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform_bang(c, slots, self, 2); }
+static RESULT korb_m_str_swapcase_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { { RESULT o = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(o.state != KORB_NORMAL)) return o; } return korb_str_transform_bang(c, slots, self, 3); }
 static RESULT korb_m_str_reverse_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)a; return korb_str_transform_bang(c, slots, self, 4); }
 
 /* Replace self bytes [bs,be) with replref (a rooted String); do_repl=false deletes. */
