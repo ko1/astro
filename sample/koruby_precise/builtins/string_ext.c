@@ -550,15 +550,31 @@ static RESULT korb_m_sym_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
     return korb_m_str_end_with(c, slots + 1, VALUE_REF_AT(&slots[0]), a);
 }
+/* coerce the search arg (slots[0]) via #to_str, returns true if it is now a String. */
+static bool korb_str_search_coerce(CTX *c, VALUE *slots) {
+    if (KORB_STRING_P(slots[0])) return true;
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+        RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (cr.state == KORB_NORMAL) slots[0] = cr.value;
+    }
+    return KORB_STRING_P(slots[0]);
+}
 static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
-    uint32_t off = 0;
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
+    if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
+    intptr_t start = 0;
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* byteindex(substr, start_byte) */
-        intptr_t start;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        VALUE ov = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(ov, &start))) {
+            RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(ov, &start)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        }
+    }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
+    uint32_t off = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {
         if (start < 0) start += s->len;
         if (start < 0 || start > (intptr_t)s->len) return RESULT_OK(KORB_NIL);
         off = (uint32_t)start;
@@ -567,15 +583,22 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
 static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(sv)) return RESULT_OK(KORB_NIL);
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
+    slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
+    if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
+    intptr_t stop; bool have_stop = false;
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byterindex(substr, stop_byte) */
+        VALUE ov = VALUE_SLICE_GET(a, 1);
+        if (UNLIKELY(!korb_to_index(ov, &stop))) {
+            RESULT cr = korb_coerce_to_int(c, slots + 1, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(ov, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        }
+        have_stop = true;
+    }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(slots[0]);   /* read after dispatch */
     if (n->len > s->len) return RESULT_OK(KORB_NIL);
     int32_t hi = (int32_t)(s->len - n->len);
-    if (VALUE_SLICE_LEN(a) >= 2) {                    /* byterindex(substr, stop_byte) */
-        intptr_t stop;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+    if (have_stop) {
         if (stop < 0) stop += s->len;
         if (stop < 0) return RESULT_OK(KORB_NIL);
         if (stop < hi) hi = (int32_t)stop;
