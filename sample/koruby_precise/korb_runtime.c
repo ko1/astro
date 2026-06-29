@@ -7903,6 +7903,17 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
             FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
         return korb_float_new(c, slots, d);
     }
+    if (KORB_OBJECT_P(a0)) {                                  /* object with #to_f → use it (nil/true/false excluded: not objects) */
+        const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
+        if (korb_responds_to(c, a0, to_f)) {
+            const char *const cls = korb_type_name(a0);       /* capture before dispatch (a0 may move) */
+            slots[0] = a0;
+            RESULT r = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (UNLIKELY(!KORB_FLOAT_P(r.value))) FLT_FAIL(KORB_E_TYPE, 0, "can't convert %s into Float (%s#to_f gives %s)", cls, cls, korb_type_name(r.value));
+            return RESULT_OK(r.value);
+        }
+    }
     FLT_FAIL(KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(a0));
 #undef FLT_FAIL
 }
