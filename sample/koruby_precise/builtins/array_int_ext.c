@@ -87,6 +87,7 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* dig: recursive index into nested Array/Hash */
 static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     VALUE cur = VALUE_REF_GET(self);
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
@@ -359,6 +360,7 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* Hash dig / values_at / slice / except */
 static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     VALUE cur = VALUE_REF_GET(self);
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
