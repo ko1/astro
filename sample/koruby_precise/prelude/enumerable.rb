@@ -27,8 +27,10 @@ module Enumerable
   alias inject reduce
   def sum(init = 0); s = init; if block_given?; each { |*a| s = s + yield(*a) }; else; __each_el { |x| s = s + x }; end; s; end
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
-  def min(n = nil, &blk); s = blk ? to_a.sort(&blk) : to_a.sort; n ? s.first(n) : s.first; end
-  def max(n = nil, &blk); s = blk ? to_a.sort(&blk) : to_a.sort; n ? s.last(n).reverse : s.last; end
+  # Running min/max (not sort-based): honours a degenerate comparator block that
+  # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
+  def min(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).first(n) if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c < 0; end }; r; end
+  def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
   def min_by(n = nil); s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
   def max_by(n = nil); s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
   def sort; to_a.sort; end
