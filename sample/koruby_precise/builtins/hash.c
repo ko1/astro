@@ -67,7 +67,8 @@ static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 
 static RESULT korb_m_hash_cmp_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)a;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE v = VALUE_REF_GET(self);
     ((AroObjectHeader *)(uintptr_t)v)->flags |= KORB_FL_CMP_BY_ID;
     return RESULT_OK(v);
