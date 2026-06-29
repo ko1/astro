@@ -1,0 +1,8 @@
+S = Struct.new(:a, :b)
+p (S.new(1, 2).hash == S.new(1, 2).hash)
+p (S.new(1, 2).hash == S.new(1, 3).hash)
+p (S.new(1, 2).eql?(S.new(1, 2)))
+p (S.new(1, 2).hash.is_a?(Integer))
+D = Data.define(:x)
+p (D.new(5).hash == D.new(5).hash)
+p (D.new(5).hash == D.new(6).hash)

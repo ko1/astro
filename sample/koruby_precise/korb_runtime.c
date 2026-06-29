@@ -1629,6 +1629,20 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Struct/Data#hash — deterministic over class + member values (so #eql? values
+ * hash equal).  Not bit-compatible with CRuby, only self-consistent. */
+static RESULT korb_m_struct_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
+    uint64_t h = 14695981039346656037ULL;
+    h ^= (uint64_t)VAL2CLASS(klass)->name_sym; h *= 1099511628211ULL;
+    const KorbArray *const mem = VAL2ARY(VAL2CLASS(klass)->members);
+    for (uint32_t i = 0; i < mem->len; i++) {
+        const VALUE iv = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i]));
+        h ^= korb_value_hash(iv); h *= 1099511628211ULL;
+    }
+    return RESULT_OK(LONG2FIX((intptr_t)(h & 0x3FFFFFFFFFFFFFFFULL)));
+}
 static RESULT korb_m_struct_members(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = STRUCT_MEMBERS(self);
@@ -1798,6 +1812,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_struct_inspect, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_struct_inspect, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
@@ -1918,6 +1933,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_data_inspect, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_data_inspect, 0);
