@@ -467,12 +467,13 @@ static uint64_t korb_d2u(double d) { uint64_t b; memcpy(&b, &d, 8); return (b & 
 static double   korb_u2d(uint64_t u) { uint64_t b = (u & 0x8000000000000000ULL) ? (u & ~0x8000000000000000ULL) : ~u; double d; memcpy(&d, &b, 8); return d; }
 /* classify a bsearch block result: 0=exact hit, -1=go left (smaller), +1=go right
  * (bigger), with *cand set when this index is a find-minimum candidate. */
-static int korb_bsearch_dir(VALUE v, bool *cand) {
-    *cand = false;
+static int korb_bsearch_dir(VALUE v, bool *cand, bool *valid) {
+    *cand = false; *valid = true;
     if (FIXNUM_P(v)) { intptr_t n = FIX2LONG(v); return n == 0 ? 0 : (n < 0 ? -1 : 1); }
     if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); return d == 0 ? 0 : (d < 0 ? -1 : 1); }
-    if (KORB_TRUTHY(v)) { *cand = true; return -1; }   /* find-minimum: truthy → record + go left */
-    return 1;                                          /* false/nil → go right */
+    if (v == KORB_TRUE) { *cand = true; return -1; }   /* find-minimum: true → record + go left */
+    if (v == KORB_FALSE || v == KORB_NIL) return 1;    /* go right */
+    *valid = false; return 1;                          /* Object/String/etc. → invalid (caller raises) */
 }
 static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
@@ -496,7 +497,7 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             VALUE fv = UNWRAP(korb_float_new(c, slots, korb_u2d(mid)));
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &fv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            bool cand, valid; int dir = korb_bsearch_dir(r.value, &cand, &valid); if (UNLIKELY(!valid)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (must be numeric, true, false or nil)", korb_type_name(r.value));
             if (dir == 0) return korb_float_new(c, slots, korb_u2d(mid));
             if (dir < 0) { hi = mid; if (cand) { found = true; ans = korb_u2d(mid); } }
             else lo = mid + 1;
@@ -516,7 +517,7 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             VALUE iv = LONG2FIX(have_lo ? lo + diff : diff);
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            bool cand, valid; int dir = korb_bsearch_dir(r.value, &cand, &valid); if (UNLIKELY(!valid)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (must be numeric, true, false or nil)", korb_type_name(r.value));
             if (dir <= 0) { hi = (have_lo ? lo + diff : diff) + 1; break; }
             if (diff > (INTPTR_MAX / 2)) { hi = INTPTR_MAX; break; }
             diff *= 2;
@@ -530,7 +531,7 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             VALUE iv = LONG2FIX(probe);
             RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+            bool cand, valid; int dir = korb_bsearch_dir(r.value, &cand, &valid); if (UNLIKELY(!valid)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (must be numeric, true, false or nil)", korb_type_name(r.value));
             if (dir > 0) { lo = probe + 1; break; }       /* predicate goes right here → bound below is lo */
             if (diff > (INTPTR_MAX / 2)) { lo = INTPTR_MIN; break; }
             diff *= 2;
@@ -542,7 +543,7 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         VALUE iv = LONG2FIX(mid);
         RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        bool cand; int dir = korb_bsearch_dir(r.value, &cand);
+        bool cand, valid; int dir = korb_bsearch_dir(r.value, &cand, &valid); if (UNLIKELY(!valid)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (must be numeric, true, false or nil)", korb_type_name(r.value));
         if (dir == 0) return RESULT_OK(LONG2FIX(mid));
         if (dir < 0) { hi = mid; if (cand) { found = true; ans = mid; } }
         else lo = mid + 1;
