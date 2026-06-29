@@ -1356,7 +1356,12 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (VALUE_SLICE_LEN(a) >= 2) {                  /* s[start, len] */
         VALUE lv = VALUE_SLICE_GET(a, 1);
         intptr_t len;
-        if (UNLIKELY(!korb_to_index(lv, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+        if (UNLIKELY(!korb_to_index(lv, &len))) {   /* coerce length via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &lv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            s = SELF_STR;                           /* re-read after dispatch */
+        }
         if (len < 0 || i < 0 || i > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)ncp) len = (intptr_t)ncp - i;
         uint32_t bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)i);
