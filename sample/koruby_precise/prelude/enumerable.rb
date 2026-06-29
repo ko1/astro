@@ -18,7 +18,7 @@ module Enumerable
   def to_a; r = []; __each_el { |e| r << e }; r; end
   def to_h(*args); h = {}; bg = block_given?; each(*args) { |*a| pair = bg ? yield(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
   def entries; r = []; __each_el { |e| r << e }; r; end
-  def count; n = 0; each { |*a| n += 1 }; n; end
+  def count(*args); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif block_given?; each { |*a| n += 1 if yield(*a) }; else; each { |*a| n += 1 }; end; n; end
   def include?(v); __each_el { |e| return true if e == v }; false; end
   def member?(v); __each_el { |e| return true if e == v }; false; end
   def first(n = nil); if n.nil?; __each_el { |e| return e }; nil; else; r = []; c = 0; __each_el { |e| if c < n; r << e; c += 1; end }; r; end; end
