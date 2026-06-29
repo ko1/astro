@@ -444,8 +444,11 @@ static RESULT korb_m_hash_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_hash_default_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE v = VALUE_SLICE_GET(a, 0);
-    ARO_STORE(c, VAL2HASH(VALUE_REF_GET(self)), (VALUE *)(uintptr_t)&VAL2HASH(VALUE_REF_GET(self))->default_val, v);
+    KorbHash *const h = VAL2HASH(VALUE_REF_GET(self));
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_val, v);
+    ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_proc, KORB_NIL);   /* default= clears any default_proc */
     return RESULT_OK(v);
 }
 static RESULT korb_m_hash_compact_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

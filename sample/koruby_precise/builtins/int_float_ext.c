@@ -164,12 +164,21 @@ static RESULT korb_m_hash_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(VALUE_REF_GET(nh));
 }
-static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, j));
-        if (idx < 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "key not found");
+        if (idx < 0) {
+            if (block != NULL) {                          /* block form: yield the missing key, use its result */
+                slots[1] = VALUE_SLICE_GET(a, j);         /* root the key across the yield */
+                RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+                continue;
+            }
+            return korb_raise(c, slots, KORB_E_KEY, 0, "key not found");
+        }
         CHECK(korb_ary_push_val(c, slots + 1, dst, h->items->data[2 * idx + 1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
