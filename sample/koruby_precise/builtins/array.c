@@ -136,7 +136,10 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     intptr_t i;
     if (UNLIKELY(!korb_to_index(i0, &i))) {
         if (KORB_INTEGER_P(i0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
+        RESULT cr = korb_coerce_to_int(c, slots, &i0);     /* coerce via #to_int */
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(i0, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        n = SELF_ARY->len;                                 /* re-read after dispatch */
     }
     if (i < 0) i += n;
     if (VALUE_SLICE_LEN(a) >= 2) {                          /* a[start, len] → subarray */
@@ -144,7 +147,10 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         intptr_t len;
         if (UNLIKELY(!korb_to_index(lv, &len))) {
             if (KORB_INTEGER_P(lv)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+            RESULT cr = korb_coerce_to_int(c, slots, &lv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            n = SELF_ARY->len;
         }
         if (len < 0 || i < 0 || i > (intptr_t)n) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)n) len = (intptr_t)n - i;
