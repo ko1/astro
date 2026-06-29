@@ -158,6 +158,10 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_range_seq(c, slots, lo, take, 1);
     }
     if (korb_range_int_bounds(r, &lo, &hi)) return RESULT_OK(hi > lo ? LONG2FIX(lo) : KORB_NIL);
+    if (r->rend != KORB_NIL) {                            /* non-int: begin, unless begin > end → empty → nil */
+        const int cmp = korb_cmp_values(r->rbegin, r->rend);
+        if (cmp == 1 || (r->exclude_end && cmp == 0)) return RESULT_OK(KORB_NIL);
+    }
     return RESULT_OK(r->rbegin);
 }
 static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
