@@ -237,6 +237,22 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
     }
     NODE *entry = p->iseq;
+    /* Lambdas enforce arity (unlike plain procs/blocks).  Positional-only check
+     * (skip when the lambda declares keywords — the trailing kw Hash would skew
+     * the count). */
+    if (UNLIKELY(p->is_lambda) && entry != KORB_BLK_CPROC && korb_entry_kw_info(entry) == NULL) {
+        const uint32_t pc  = korb_entry_params_cnt(entry);
+        const bool has_rest = korb_entry_rest_slot(entry) >= 0;
+        const bool variable = (korb_entry_opt_defaults(entry) != NULL) || has_rest;   /* same basis as Proc#arity */
+        const uint32_t req = variable ? korb_entry_req_cnt(entry) : pc;               /* non-variable → all required */
+        if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
+            char exp[32];
+            if (has_rest)       snprintf(exp, sizeof exp, "%u+", req);
+            else if (req == pc) snprintf(exp, sizeof exp, "%u", req);
+            else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %s)", argc, exp);
+        }
+    }
     VALUE penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
     slots[0] = p->self;                                  /* captured self (rooted) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
