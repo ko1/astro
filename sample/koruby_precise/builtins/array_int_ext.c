@@ -389,16 +389,27 @@ static RESULT korb_m_hash_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* slice (keep==true) / except (keep==false) the listed keys */
 static RESULT korb_hash_pick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool keep) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
-    uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
-    for (uint32_t i = 0; i < n; i++) {
-        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
-        VALUE key = h->items->data[2 * i];
-        bool listed = false;
-        for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) if (korb_value_eq(VALUE_SLICE_GET(a, j), key)) { listed = true; break; }
-        if (listed == keep) {
-            slots[0] = key;                               /* root key (scratch above dst) */
-            VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+    if (keep) {                                           /* slice: walk the requested keys (preserve their order) */
+        for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            const int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, j));
+            if (idx < 0) continue;
+            slots[0] = h->items->data[2 * idx];           /* the hash's own key (root) */
+            VALUE val = h->items->data[2 * idx + 1];
             CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+        }
+    } else {                                              /* except: walk self, drop listed keys (self's order) */
+        uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+        for (uint32_t i = 0; i < n; i++) {
+            const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+            VALUE key = h->items->data[2 * i];
+            bool listed = false;
+            for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) if (korb_value_eq(VALUE_SLICE_GET(a, j), key)) { listed = true; break; }
+            if (!listed) {
+                slots[0] = key;                           /* root key (scratch above dst) */
+                VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+                CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+            }
         }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
