@@ -56,7 +56,15 @@ static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_hash_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
 static RESULT korb_m_hash_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_hash_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->default_val); }
+static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) >= 1 && SELF_HASH->default_proc != KORB_NIL) {   /* default(key) + proc → proc.call(self, key) */
+        slots[0] = SELF_HASH->default_proc;
+        slots[1] = VALUE_REF_GET(self);
+        slots[2] = VALUE_SLICE_GET(a, 0);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, KORB_NIL);
+    }
+    return RESULT_OK(SELF_HASH->default_val);
+}
 
 static RESULT korb_m_hash_cmp_by_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
