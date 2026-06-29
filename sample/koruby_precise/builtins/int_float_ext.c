@@ -283,12 +283,20 @@ RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
 }
 static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* other (rooted; possibly coerced) */
+    if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {            /* coerce via #to_ary before mutating self */
+        const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_ary)) {
+            RESULT cr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            slots[0] = cr.value;
+        }
+        if (!KORB_ARRAY_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* clear, then copy other */
-    uint32_t on = VAL2ARY(VALUE_SLICE_GET(a, 0))->len;
+    const uint32_t on = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < on; i++)
-        CHECK(korb_ary_push_val(c, slots, self, VAL2ARY(VALUE_SLICE_GET(a, 0))->items->data[i]));
+        CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
