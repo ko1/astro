@@ -336,6 +336,7 @@ static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
+static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_REF_GET(self);
@@ -5526,6 +5527,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
                 slots[1] = inst;                               /* root instance */
                 korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                if (!uinit && base == KORB_C_ARRAY && (argc >= 1 || block != NULL)) {
+                    /* no ISEQ override → run the builtin Array#initialize so the args
+                     * (size+default / array-copy / block) populate the subclass instance. */
+                    RESULT ir = korb_m_ary_initialize(c, slots + 2, VALUE_REF_AT(&slots[1]),
+                                                      VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(slots[1]);
+                }
                 if (uinit) {
                     VALUE *ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
