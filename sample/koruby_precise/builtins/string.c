@@ -885,7 +885,12 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     bool have_base = false;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* to_i(base): base 0 = auto-detect prefix */
         intptr_t b;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &b))) {   /* coerce base via #to_int */
+            VALUE bv = VALUE_SLICE_GET(a, 0);
+            RESULT cr = korb_coerce_to_int(c, slots, &bv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(bv, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        }
         base = (int)b; have_base = true;
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
