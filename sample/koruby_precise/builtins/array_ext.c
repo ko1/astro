@@ -395,11 +395,15 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE iv = VALUE_SLICE_GET(a, 0);
     intptr_t i;
-    if (!korb_to_index(iv, &i)) return RESULT_OK(KORB_NIL);
-    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+    if (!korb_to_index(iv, &i)) {                        /* coerce index via #to_int */
+        RESULT cr = korb_coerce_to_int(c, slots, &iv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));       /* re-read after possible dispatch */
     if (i < 0) i += ary->len;
     if (i < 0 || (uint32_t)i >= ary->len) return RESULT_OK(KORB_NIL);
     KorbArrayItems *it = ary->items;

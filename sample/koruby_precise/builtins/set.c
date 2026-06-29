@@ -1011,6 +1011,13 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                          : korb_etype_name(e->etype);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
+/* Exception#message → self.to_s (so a subclass overriding #to_s is honoured;
+ * the default #to_s is korb_m_exc_message above, so no recursion). */
+static RESULT korb_m_exc_message_via_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = VALUE_REF_GET(self);
+    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+}
 /* Exception#inspect → "#<ClassName: message>" (or "#<ClassName>" if #to_s is
  * empty).  Uses the dispatched (overridable) #to_s for the message. */
 static RESULT korb_m_exc_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
