@@ -369,16 +369,27 @@ static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* coerce(other) → [other, self] both as Integer, or both Float if other is Float */
 static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    intptr_t s = SELF_INT;
-    if (KORB_FLOAT_P(o)) {
-        double od = korb_float_val(o);
-        slots[0] = UNWRAP(korb_float_new(c, slots, od));
-        slots[1] = UNWRAP(korb_float_new(c, slots + 1, (double)s));
-    } else if (FIXNUM_P(o)) {
-        slots[0] = o; slots[1] = LONG2FIX(s);
-    } else {
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Integer", korb_type_name(o));
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (FIXNUM_P(o) || KORB_BIGNUM_P(o)) {                /* Integer → [other, self] */
+        slots[0] = o; slots[1] = VALUE_REF_GET(self);
+    } else {                                              /* else → [Float(other), Float(self)] */
+        double od;
+        if (korb_num_to_d(o, &od)) {                     /* Float/Rational → its double */
+            slots[0] = UNWRAP(korb_float_new(c, slots, od));
+        } else if (KORB_STRING_P(o)) {                   /* "2.5" → Float() parse (ArgumentError if invalid) */
+            RESULT fr = korb_bi_float(c, slots, a);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            slots[0] = fr.value;
+        } else if (KORB_OBJECT_P(o) && korb_responds_to(c, o, korb_intern(c->vm, "to_f", 4))) {
+            slots[0] = o;
+            RESULT fr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_f", 4), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            slots[0] = fr.value;
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't coerce %s into Integer", korb_type_name(o));
+        }
+        double sd = 0; (void)korb_num_to_d(VALUE_REF_GET(self), &sd);
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, sd));
     }
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
     VALUE_REF dst = VALUE_REF_AT(&slots[2]);
