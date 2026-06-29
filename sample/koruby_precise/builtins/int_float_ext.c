@@ -82,6 +82,7 @@ static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_ary_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));    /* insert checks frozen upfront (even with no values) */
     VALUE iv = VALUE_SLICE_GET(a, 0);
     intptr_t idx;
     if (UNLIKELY(!korb_to_index(iv, &idx))) {            /* coerce position via #to_int */
