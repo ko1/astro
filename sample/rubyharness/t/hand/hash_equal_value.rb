@@ -1,0 +1,12 @@
+p({ a: 1 } == { a: 1 })
+p({ a: 1 } == { a: 1.0 })
+p({ a: 1 } == { a: 2 })
+p({ a: 1, b: 2 } == { b: 2, a: 1 })
+p({ a: 1 } == { a: 1, b: 2 })
+class V; def initialize(x); @x = x; end; def ==(o); o.instance_variable_get(:@x) == @x; end; end
+p({ k: V.new(5) } == { k: V.new(5) })
+p({ k: V.new(5) } == { k: V.new(6) })
+p({ a: 1 } != { a: 2 })
+p({ 1 => "x" } == { 1 => "x" })
+p({} == {})
+p({ a: 1 } == "notahash")

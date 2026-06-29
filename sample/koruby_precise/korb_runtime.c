@@ -6222,6 +6222,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "include?", korb_m_hash_key_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "member?", korb_m_hash_key_q, 1);
     korb_def_cmethod(c, KORB_C_HASH, "value?", korb_m_hash_value_q, 1);
+    korb_def_cmethod(c, KORB_C_HASH, "==", korb_m_hash_eq, 1);
     korb_def_cmethod(c, KORB_C_HASH, "has_value?", korb_m_hash_value_q, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "fetch", korb_m_hash_fetch, -1);
     korb_def_cmethod(c, KORB_C_HASH, "assoc", korb_m_hash_assoc, 1);
