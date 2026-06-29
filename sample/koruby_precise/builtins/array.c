@@ -326,6 +326,30 @@ static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(v);
 }
 
+/* Array#== — same length, elements compared with #== (object/array/hash elements
+ * dispatch, so user == and nested value-equality are honoured; korb_value_eq alone
+ * cannot dispatch without a CTX). */
+static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE other = VALUE_SLICE_GET(a, 0);
+    if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
+    if (!KORB_ARRAY_P(other)) return RESULT_OK(KORB_FALSE);
+    if (VAL2ARY(VALUE_REF_GET(self))->len != VAL2ARY(other)->len) return RESULT_OK(KORB_FALSE);
+    slots[0] = VALUE_REF_GET(self); slots[1] = other;     /* root both across element == dispatch */
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE v = VAL2ARY(slots[0])->items->data[i], v2 = VAL2ARY(slots[1])->items->data[i];
+        if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
+            KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* dispatch == (recurses for nested) */
+            slots[2] = v; slots[3] = v2;
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (!KORB_TRUTHY(r.value)) return RESULT_OK(KORB_FALSE);
+        } else if (!korb_value_eq(v, v2)) {
+            return RESULT_OK(KORB_FALSE);
+        }
+    }
+    return RESULT_OK(KORB_TRUE);
+}
 static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatches) */
     const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
