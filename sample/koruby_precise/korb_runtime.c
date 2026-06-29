@@ -7252,6 +7252,13 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         fprintf(fp, "#<Proc:0x%012lx%s>", (unsigned long)(uintptr_t)v, p->is_lambda ? " (lambda)" : "");
         return;
       }
+      case KORB_OBJ_METHOD: {                          /* #<Method: Recv#name> / #<UnboundMethod: Owner#name> */
+        const KorbMethod *const m = (const KorbMethod *)(uintptr_t)v;
+        const VALUE owner = m->unbound ? m->recv : korb_class_obj_of(c, m->recv);
+        const char *const cname = KORB_CLASS_P(owner) ? korb_sym_name(c->vm, VAL2CLASS(owner)->name_sym) : "Object";
+        fprintf(fp, "#<%s: %s#%s>", m->unbound ? "UnboundMethod" : "Method", cname, korb_sym_name(c->vm, m->mid));
+        return;
+      }
     }
     fputs("#<Object>", fp);
 }
