@@ -353,6 +353,20 @@ static RESULT korb_m_rat_mod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
      * operands so the allocs can't strand a moved VALUE. */
     return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1);
 }
+/* divmod → [self.div(other), self % other]. */
+static RESULT korb_m_rat_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT d = korb_m_rat_divfloor(c, slots, self, a);
+    if (UNLIKELY(d.state != KORB_NORMAL)) return d;
+    slots[0] = d.value;
+    RESULT m = korb_m_rat_mod(c, slots + 1, self, a);
+    if (UNLIKELY(m.state != KORB_NORMAL)) return m;
+    slots[1] = m.value;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* marshal_dump → [numerator, denominator]. */
 static RESULT korb_m_rat_marshal_dump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -6583,6 +6597,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "zero?", korb_m_rat_zero, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "integer?", korb_m_rat_integerp, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "div", korb_m_rat_divfloor, 1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "divmod", korb_m_rat_divmod, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "%", korb_m_rat_mod, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "modulo", korb_m_rat_mod, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "marshal_dump", korb_m_rat_marshal_dump, 0);
