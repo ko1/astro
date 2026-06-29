@@ -6671,7 +6671,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "instance_of?", korb_m_obj_instance_of, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_false, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "dup", korb_m_obj_dup, 0);
-    korb_def_cmethod(c, KORB_C_OBJECT, "clone", korb_m_obj_dup, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "clone", korb_m_obj_clone, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "frozen?", korb_m_true_lit2, 0);   /* all Numeric instances are frozen (Bignum via Integer) */
     korb_def_cmethod(c, KORB_C_COMPLEX,  "frozen?", korb_m_true_lit2, 0);

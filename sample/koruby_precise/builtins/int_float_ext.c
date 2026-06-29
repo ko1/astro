@@ -345,6 +345,24 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (sub) korb_klass_override_set(c, slots[1], slots[0]);
     return RESULT_OK(slots[1]);
 }
+/* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
+ * freeze: false), and freeze: true forces it.  (Singleton-class copy not done.) */
+static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int fmode = -1;                                       /* -1 preserve, 0 unfreeze, 1 freeze */
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
+        const VALUE h = VALUE_SLICE_GET(a, n - 1);
+        const int32_t fi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "freeze", 6)));
+        if (fi >= 0) { const VALUE fv = VAL2HASH(h)->items->data[2 * fi + 1]; fmode = (fv == KORB_NIL) ? -1 : (KORB_TRUTHY(fv) ? 1 : 0); }
+    }
+    const VALUE sv = VALUE_REF_GET(self);
+    const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
+    RESULT r = korb_m_obj_dup(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (((fmode == 1) || (fmode == -1 && self_frozen)) && AROH_IS_GC_OBJECT(r.value))
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
+}
 
 /* in-place reverse of items[lo, hi) — no alloc, so pointers are stable. */
 static void korb_ary_rev_range(CTX *c, KorbArrayItems *it, uint32_t lo, uint32_t hi) {
