@@ -370,6 +370,17 @@ static RESULT korb_m_ary_shuffle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     return RESULT_OK(slots[0]);
 }
+static RESULT korb_m_ary_shuffle_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    KorbMT *const st = korb_rng_from_kwargs(c, a);                /* may parse kwargs → re-read items after */
+    KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(self))->items;
+    for (uint32_t i = len; i > 1; i--) {                          /* in-place Fisher-Yates */
+        const uint32_t j = korb_mt_limited(st, i - 1);
+        const VALUE t = it->data[i - 1]; it->data[i - 1] = it->data[j]; it->data[j] = t;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     intptr_t n;

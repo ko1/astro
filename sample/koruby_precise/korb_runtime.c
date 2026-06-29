@@ -6224,6 +6224,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "eql?", korb_m_ary_eql, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "sample", korb_m_ary_sample, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "shuffle", korb_m_ary_shuffle, -1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "shuffle!", korb_m_ary_shuffle_bang, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse", korb_m_ary_reverse, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse!", korb_m_ary_reverse_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
