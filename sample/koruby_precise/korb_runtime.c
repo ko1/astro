@@ -5280,6 +5280,35 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         korb_klass_override_set(c, slots[1], slots[0]);
         return RESULT_OK(slots[1]);
     }
+    else if (KORB_CLASS_P(self) && mid == vm->mid_aref && korb_builtin_base_class(vm, self) == KORB_C_HASH) {
+        /* SubHash[k,v,...] | SubHash[[[k,v],...]] | SubHash[{...}] → subclass instance. */
+        slots[0] = self;                                   /* root the subclass */
+        VALUE *const abase = &slots[-(intptr_t)argc];
+        slots[1] = UNWRAP(korb_hash_new(c, slots + 1, argc));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        if (argc == 1 && KORB_HASH_P(abase[0])) {          /* copy an existing Hash */
+            const uint32_t n = VAL2HASH(abase[0])->len;
+            for (uint32_t i = 0; i < n; i++) {
+                const KorbHash *src = VAL2HASH(abase[0]);
+                slots[2] = src->items->data[2*i]; slots[3] = src->items->data[2*i+1];
+                CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
+            }
+        } else if (argc == 1 && KORB_ARRAY_P(abase[0])) {  /* array of [k,v] pairs */
+            const uint32_t n = VAL2ARY(abase[0])->len;
+            for (uint32_t i = 0; i < n; i++) {
+                const VALUE pr = VAL2ARY(abase[0])->items->data[i];
+                if (UNLIKELY(!KORB_ARRAY_P(pr))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                slots[2] = VAL2ARY(pr)->items->data[0];
+                slots[3] = VAL2ARY(pr)->len >= 2 ? VAL2ARY(pr)->items->data[1] : KORB_NIL;
+                CHECK(korb_hash_set(c, slots + 4, dst, VALUE_REF_AT(&slots[2]), slots[3]));
+            }
+        } else {
+            if (UNLIKELY(argc & 1u)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "odd number of arguments for Hash");
+            for (uint32_t i = 0; i < argc; i += 2) CHECK(korb_hash_set(c, slots + 2, dst, VALUE_REF_AT(&abase[i]), abase[i+1]));
+        }
+        korb_klass_override_set(c, slots[1], slots[0]);
+        return RESULT_OK(slots[1]);
+    }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Array.try_convert(obj) */
         const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
