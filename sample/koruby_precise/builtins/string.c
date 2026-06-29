@@ -322,7 +322,7 @@ static RESULT korb_m_str_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* in-place whitespace strip (mode: 0 both, 1 left, 2 right). self if changed else nil. */
 static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch);
 static RESULT korb_str_strip_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
-    (void)c;(void)slots;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t lo = 0, hi = s->len;
     bool has_set = VALUE_SLICE_LEN(a) >= 1;
