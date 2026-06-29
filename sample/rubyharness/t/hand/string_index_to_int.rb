@@ -1,7 +1,8 @@
-class TI; def to_int; 1; end; end
-p "hello"[TI.new]
-p "hello"[TI.new, 2]
-p "hello".slice(TI.new, 2)
-s = "hi".dup
-s[TI.new] = "X"
-p s
+class TI; def to_int; 2; end; end
+p "hello".index("l", TI.new)
+p "hello".index("l")
+p "hello".rindex("l", TI.new)
+p "hello".rindex("l")
+def t; yield; rescue TypeError; "TE"; end
+p t { "x".index("x", Object.new) }
+p t { "x".rindex("x", Object.new) }

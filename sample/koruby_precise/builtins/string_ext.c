@@ -597,7 +597,12 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     bool have_stop = false; int32_t stopb = 0;
     if (VALUE_SLICE_LEN(a) >= 2) {
         intptr_t stop;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &stop))) {   /* coerce start via #to_int */
+            VALUE sv = VALUE_SLICE_GET(a, 1);
+            RESULT cr = korb_coerce_to_int(c, slots, &sv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(sv, &stop)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        }
         const KorbString *const s0 = VAL2STR(VALUE_REF_GET(self));
         uint32_t ncp = korb_utf8_count(s0->buf->data, s0->len);
         if (stop < 0) stop += ncp;
