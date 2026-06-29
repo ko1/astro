@@ -278,6 +278,40 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 slots[3] = (VALUE)r;
                 CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             }
+        } else if (d == 'N' || d == 'n' || d == 'V' || d == 'v') {   /* endian unsigned int (N/n=big, V/v=little) */
+            const int sz = (d == 'N' || d == 'V') ? 4 : 2;
+            const bool big = (d == 'N' || d == 'n');
+            const long reps = star ? (long)((slen - si) / sz) : cnt;
+            for (long r = 0; r < reps; r++) {
+                const KorbString *s = VAL2STR(slots[1]);
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                uint32_t v = 0;
+                for (int k = 0; k < sz; k++) v |= (uint32_t)(unsigned char)s->buf->data[si + k] << (8 * (big ? (sz - 1 - k) : k));
+                si += (uint32_t)sz;
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
+            }
+        } else if (d == 'e' || d == 'E' || d == 'g' || d == 'G') {   /* IEEE float (e/E=little, g/G=big; lower=32, upper=64) */
+            const int sz = (d == 'e' || d == 'g') ? 4 : 8;
+            const bool big = (d == 'g' || d == 'G');
+            const long reps = star ? (long)((slen - si) / sz) : cnt;
+            for (long r = 0; r < reps; r++) {
+                const KorbString *s = VAL2STR(slots[1]);
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                unsigned char tmp[8];
+                for (int k = 0; k < sz; k++) tmp[k] = (unsigned char)s->buf->data[si + (big ? (sz - 1 - k) : k)];   /* → native (LE) order */
+                si += (uint32_t)sz;
+                double dv; if (sz == 4) { float f; memcpy(&f, tmp, 4); dv = (double)f; } else memcpy(&dv, tmp, 8);
+                slots[3] = UNWRAP(korb_float_new(c, slots + 3, dv));
+                CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            }
+        } else if (d == 'w') {                            /* BER compressed integer */
+            for (long r = 0; (star || r < cnt); r++) {
+                const KorbString *s = VAL2STR(slots[1]);
+                if (si >= s->len) break;
+                uint64_t v = 0;
+                while (si < s->len) { const unsigned char b = (unsigned char)s->buf->data[si++]; v = (v << 7) | (uint64_t)(b & 0x7f); if (!(b & 0x80)) break; }
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
+            }
         } else if (d == 'b' || d == 'B') {                /* bit string (b=LSB-first, B=MSB-first) */
             const uint32_t avail = (VAL2STR(slots[1])->len - si) * 8;
             const uint32_t nbits = star ? avail : ((uint32_t)cnt < avail ? (uint32_t)cnt : avail);
