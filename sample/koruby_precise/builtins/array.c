@@ -154,7 +154,7 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, intptr_t start, intptr_t dellen, VALUE_REF valref) {
     intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if (start < 0) start += len;
-    if (UNLIKELY(start < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%ld", (long)(start - len + len), (long)len);
+    if (UNLIKELY(start < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too small for array; minimum: -%ld", (long)(start - len + len), (long)len);
     if (dellen < 0) dellen = 0;
     bool splat = KORB_ARRAY_P(VALUE_REF_GET(valref));
     /* fast path: same-length in-range replacement (a[i, n] = n-elem array, or a[i]=v).
@@ -231,7 +231,7 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     intptr_t i;
     if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
     if (i < 0) i += ary->len;
-    if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld too small for array; minimum: -%u", (long)i, ary->len);
+    if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too small for array; minimum: -%u", (long)i, ary->len);
     if ((uint32_t)i >= ary->len) {
         CHECK(korb_ary_ensure(c, slots, self, (uint32_t)i + 1 - ary->len));
         ary = SELF_ARY;                                  /* re-read after grow GC */
