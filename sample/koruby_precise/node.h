@@ -360,18 +360,18 @@ const char *korb_a_type_name(VALUE v);
 
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */
+RESULT korb_raise_frozen(CTX *c, VALUE *slots, VALUE v);   /* "can't modify frozen <Type>: <inspect>" */
 #define KORB_CHECK_FROZEN(c, slots, v) do {                                    \
     const VALUE _kf = (v);                                                     \
     if (UNLIKELY(AROH_IS_GC_OBJECT(_kf) &&                                     \
                  (((const AroObjectHeader *)(uintptr_t)_kf)->flags & KORB_FL_FROZEN))) \
-        return korb_raise((c), (slots), KORB_E_FROZEN, 0,                      \
-                          "can't modify frozen %s", korb_type_name(_kf));      \
+        return korb_raise_frozen((c), (slots), _kf);                           \
 } while (0)
 /* leaner variant for hot paths where `v` is already known to be a heap object
- * of a known type (skips the tag check + type-name lookup). */
+ * of a known type (skips the tag check). */
 #define KORB_CHECK_FROZEN_HEAP(c, slots, v, tname) do {                        \
     if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_FL_FROZEN)) \
-        return korb_raise((c), (slots), KORB_E_FROZEN, 0, "can't modify frozen " tname); \
+        return korb_raise_frozen((c), (slots), (v));                           \
 } while (0)
 
 /* string→integer parse (Fixnum or, on overflow with GMP, a Bignum); base 0 =

@@ -4260,6 +4260,19 @@ korb_etype_name(unsigned int etype)
     }
 }
 
+/* FrozenError with CRuby's message shape: "can't modify frozen <Type>: <inspect>".
+ * Called from the KORB_CHECK_FROZEN macro (error path → the inspect cost is fine). */
+RESULT
+korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
+{
+    char *ibuf = NULL; size_t ilen = 0;
+    FILE *ims = open_memstream(&ibuf, &ilen);
+    if (ims) { korb_fprint_inspect(c, ims, v); fclose(ims); }
+    RESULT r = korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", korb_type_name(v), ibuf ? ibuf : "");
+    free(ibuf);
+    return r;
+}
+
 /* etype for `Klass.new` on an exception class (mirrors the `raise Klass` path):
  * nearest builtin-exception ancestor's exc_etype, else KORB_E_RUNTIME for an
  * abstract base / user subclass of Exception, else -1 (not an exception). */
