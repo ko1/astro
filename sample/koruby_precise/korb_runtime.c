@@ -5108,7 +5108,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             const uint32_t n = VAL2ARY(base[0])->len;
             for (uint32_t i = 0; i < n; i++) {
                 const VALUE pr = VAL2ARY(base[0])->items->data[i];        /* re-read */
-                if (UNLIKELY(!KORB_ARRAY_P(pr) || VAL2ARY(pr)->len < 1)) continue;
+                if (UNLIKELY(!KORB_ARRAY_P(pr)))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong element type %s at %u (expected array)", korb_type_name(pr), i);
+                if (UNLIKELY(VAL2ARY(pr)->len < 1 || VAL2ARY(pr)->len > 2))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "invalid number of elements (%u for 1..2)", VAL2ARY(pr)->len);
                 slots[1] = VAL2ARY(pr)->items->data[0];                   /* key (rooted) */
                 slots[2] = VAL2ARY(pr)->len >= 2 ? VAL2ARY(pr)->items->data[1] : KORB_NIL;
                 CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[1]), slots[2]));
