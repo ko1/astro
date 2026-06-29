@@ -6606,6 +6606,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "alias_method", korb_m_class_alias_method, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);

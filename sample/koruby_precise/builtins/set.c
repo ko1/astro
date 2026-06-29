@@ -506,6 +506,11 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
     (void)c;(void)slots;(void)a;
     return RESULT_OK(VAL2CLASS(VALUE_REF_GET(self))->superclass);
 }
+/* Class#allocate — a bare instance with no #initialize call. */
+static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    return korb_obj_new(c, slots, VALUE_REF_GET(self));
+}
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */
 static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
