@@ -3244,6 +3244,8 @@ korb_class_obj_of(CTX *c, VALUE self)
         uint32_t et = VAL2EXC(self)->etype;
         if (et < 24) return korb_const_get(c->vm, c->vm->exc_name[et]);
     }
+    if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module)    /* a Module object → Module (not Class) */
+        return korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
     return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
 }
 
