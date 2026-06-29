@@ -7,24 +7,24 @@ module Enumerable
   # single-value each, `a.size == 1` so behaviour is unchanged.
   def __each_el; each { |*a| yield(a.size <= 1 ? a[0] : a) }; end
   def map; r = []; each { |*a| r << yield(*a) }; r; end
-  def collect; r = []; each { |*a| r << yield(*a) }; r; end
+  alias collect map
   def select; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
-  def filter; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
-  def find_all; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
+  alias filter select
+  alias find_all select
   def reject; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless yield(*a) }; r; end
   def flat_map; r = []; each { |*a| v = yield(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
-  def detect(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
+  alias detect find
   def to_a; r = []; __each_el { |e| r << e }; r; end
   def to_h(*args); h = {}; bg = block_given?; each(*args) { |*a| pair = bg ? yield(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
-  def entries; r = []; __each_el { |e| r << e }; r; end
+  alias entries to_a
   def count(*args); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif block_given?; each { |*a| n += 1 if yield(*a) }; else; each { |*a| n += 1 }; end; n; end
   def include?(v); __each_el { |e| return true if e == v }; false; end
-  def member?(v); __each_el { |e| return true if e == v }; false; end
+  alias member? include?
   def first(n = nil); if n.nil?; __each_el { |e| return e }; nil; else; r = []; c = 0; __each_el { |e| if c < n; r << e; c += 1; end }; r; end; end
   # reduce/inject: (sym) | (init, sym) | { block } | (init) { block }.
   def reduce(*args); if block_given?; if args.size >= 1; acc = args[0]; f = false; else; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = yield(acc, x); end }; acc; else; if args.size >= 2; acc = args[0]; op = args[1]; f = false; else; op = args[0]; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = acc.send(op, x); end }; acc; end; end
-  def inject(*args, &blk); reduce(*args, &blk); end
+  alias inject reduce
   def sum(init = 0); s = init; if block_given?; each { |*a| s = s + yield(*a) }; else; __each_el { |x| s = s + x }; end; s; end
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
   def min(n = nil, &blk); s = blk ? to_a.sort(&blk) : to_a.sort; n ? s.first(n) : s.first; end
@@ -58,7 +58,7 @@ module Enumerable
   def each_cons(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid size" unless n > 0; r = []; buf = []; __each_el { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r.each; end; end
   def zip(*others); os = others.map { |o| o.to_a }; r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }; if block_given?; r.each { |row| yield row }; nil; else; r; end; end
   def filter_map; r = []; each { |*ar| v = yield(*ar); r << v if v }; r; end
-  def collect_concat(&blk); flat_map(&blk); end
+  alias collect_concat flat_map
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry; __each_el { |x| yield x }; self; end
