@@ -5260,7 +5260,28 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(slots[0]);
         }
-        if (cname == vm->class_name[KORB_C_ARRAY]) {       /* Array.new(n[,v]) / Array.new(n){|i|} */
+        if (cname == vm->class_name[KORB_C_ARRAY]) {       /* Array.new(n[,v]) / Array.new(n){|i|} / Array.new(ary) */
+            if (UNLIKELY(argc >= 3)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..2)", argc);
+            if (argc == 1) {                               /* Array.new(ary) / #to_ary-able → a copy */
+                VALUE av = slots[-(intptr_t)argc];
+                if (!KORB_ARRAY_P(av) && KORB_OBJECT_P(av)) {
+                    const uint32_t to_ary = korb_intern(vm, "to_ary", 6);
+                    if (korb_responds_to(c, av, to_ary)) {
+                        slots[0] = av;
+                        RESULT r = korb_send_impl(c, slots + 1, to_ary, line, 0, NULL, NULL, KORB_NIL);
+                        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                        if (KORB_ARRAY_P(r.value)) av = r.value;
+                    }
+                }
+                if (KORB_ARRAY_P(av)) {
+                    slots[0] = av;
+                    const uint32_t m = VAL2ARY(slots[0])->len;
+                    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, m));
+                    VALUE_REF cdst = VALUE_REF_AT(&slots[1]);
+                    for (uint32_t i = 0; i < m; i++) CHECK(korb_ary_push_val(c, slots + 2, cdst, VAL2ARY(slots[0])->items->data[i]));
+                    return RESULT_OK(VALUE_REF_GET(cdst));
+                }
+            }
             intptr_t n = 0;
             if (argc >= 1) {
                 if (UNLIKELY(!korb_to_index(slots[-(intptr_t)argc], &n))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion into Integer");
