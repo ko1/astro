@@ -537,15 +537,17 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    intptr_t lo, hi;
-    if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
-        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
-        return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0), NULL, NULL, KORB_NIL);
-    }
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
-    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(lo) : KORB_NIL));
-    CHECK(korb_ary_push_val(c, slots + 1, dst, hi > lo ? LONG2FIX(hi - 1) : KORB_NIL));
+    /* [min, max] via #min/#max so endless/beginless raise RangeError (not iterate). */
+    RESULT mn = korb_m_range_min(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (UNLIKELY(mn.state != KORB_NORMAL)) return mn;
+    slots[0] = mn.value;
+    RESULT mx = korb_m_range_max(c, slots + 1, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (UNLIKELY(mx.state != KORB_NORMAL)) return mx;
+    slots[1] = mx.value;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Range#sort/min/max/minmax with a comparator block: materialize to_a (ascending)
