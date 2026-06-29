@@ -5,16 +5,16 @@ module Enumerable
   # stays as-is.  Collection/search use the gathered element; methods that call a
   # user block forward the raw values so block arity destructures them.  For a
   # single-value each, `a.size == 1` so behaviour is unchanged.
-  def __each_el; each { |*a| yield(a.size == 1 ? a[0] : a) }; end
+  def __each_el; each { |*a| yield(a.size <= 1 ? a[0] : a) }; end
   def map; r = []; each { |*a| r << yield(*a) }; r; end
   def collect; r = []; each { |*a| r << yield(*a) }; r; end
-  def select; r = []; each { |*a| e = a.size == 1 ? a[0] : a; r << e if yield(*a) }; r; end
-  def filter; r = []; each { |*a| e = a.size == 1 ? a[0] : a; r << e if yield(*a) }; r; end
-  def find_all; r = []; each { |*a| e = a.size == 1 ? a[0] : a; r << e if yield(*a) }; r; end
-  def reject; r = []; each { |*a| e = a.size == 1 ? a[0] : a; r << e unless yield(*a) }; r; end
+  def select; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
+  def filter; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
+  def find_all; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
+  def reject; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless yield(*a) }; r; end
   def flat_map; r = []; each { |*a| v = yield(*a); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end
-  def find(ifnone = nil); each { |*a| if yield(*a); return(a.size == 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
-  def detect(ifnone = nil); each { |*a| if yield(*a); return(a.size == 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
+  def find(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
+  def detect(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
   def to_a; r = []; __each_el { |e| r << e }; r; end
   def to_h; h = {}; if block_given?; each { |*a| kv = yield(*a); h[kv[0]] = kv[1] }; else; __each_el { |x| h[x[0]] = x[1] }; end; h; end
   def entries; r = []; __each_el { |e| r << e }; r; end
@@ -40,16 +40,16 @@ module Enumerable
   def cycle(n = nil); a = to_a; return nil if a.empty?; if n.nil?; loop { a.each { |x| yield x } }; else; n.times { a.each { |x| yield x } }; end; nil; end
   def each_with_object(o); __each_el { |x| yield x, o }; o; end
   def each_with_index; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
-  def partition; a = []; b = []; each { |*ar| e = ar.size == 1 ? ar[0] : ar; if yield(*ar); a << e; else; b << e; end }; [a, b]; end
+  def partition; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if yield(*ar); a << e; else; b << e; end }; [a, b]; end
   def group_by; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
-  def tally; h = {}; __each_el { |x| h[x] = (h[x] || 0) + 1 }; h; end
+  def tally(h = {}); __each_el { |x| h[x] = (h[x] || 0) + 1 }; h; end
   def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
   def chunk_while; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_when; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
   def take(n); r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
   def drop(n); r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
-  def take_while; r = []; each { |*ar| e = ar.size == 1 ? ar[0] : ar; break unless yield(*ar); r << e }; r; end
-  def drop_while; r = []; dropping = true; each { |*ar| e = ar.size == 1 ? ar[0] : ar; dropping = false if dropping && !yield(*ar); r << e unless dropping }; r; end
+  def take_while; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless yield(*ar); r << e }; r; end
+  def drop_while; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !yield(*ar); r << e unless dropping }; r; end
   def minmax; [min, max]; end
   def minmax_by; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
   def find_index(v = nil); i = 0; if block_given?; each { |*ar| return i if yield(*ar); i += 1 }; else; __each_el { |x| return i if x == v; i += 1 }; end; nil; end
