@@ -10,6 +10,12 @@ class Exception
     highlight ? "\e[1m#{m} (\e[1;4m#{cn}\e[m\e[1m)\e[m" : "#{m} (#{cn})"
   end
   def full_message(**opts); "#{message} (#{self.class})"; end
+  # Equal iff same object, or same class + message + backtrace.
+  def ==(other)
+    return true if equal?(other)
+    return false unless other.is_a?(Exception)
+    self.class == other.class && message == other.message && backtrace == other.backtrace
+  end
 end
 module Warning
   def self.[](category); false; end
@@ -18,10 +24,10 @@ module Warning
 end
 class Object
   def to_enum(meth = :each)
-    a = []; send(meth) { |*vs| a << (vs.size == 1 ? vs[0] : vs) }; a.each
+    a = []; send(meth) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
   end
   def enum_for(meth = :each)
-    a = []; send(meth) { |*vs| a << (vs.size == 1 ? vs[0] : vs) }; a.each
+    a = []; send(meth) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
   end
 end
 # Minimal Errno: just enough that Errno::X constant references resolve (as

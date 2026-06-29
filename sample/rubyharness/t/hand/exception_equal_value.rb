@@ -1,0 +1,7 @@
+p(RuntimeError.new == RuntimeError.new)
+p(TypeError.new("m") == TypeError.new("m"))
+p(TypeError.new("m") == TypeError.new("n"))
+p(RuntimeError.new("m") == TypeError.new("m"))
+e = StandardError.new("x")
+p(e == e)
+p(RuntimeError.new == "x")
