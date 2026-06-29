@@ -607,7 +607,18 @@ static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
+    if (UNLIKELY(!KORB_HASH_P(ov))) {                            /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
+        const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+        if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, to_hash)) {
+            slots[0] = ov;
+            RESULT hr = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            ov = hr.value;
+        }
+        if (UNLIKELY(!KORB_HASH_P(ov)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));            /* re-check (self could move under the dispatch) */
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;                       /* clear, then copy other's pairs */
     slots[0] = ov;
