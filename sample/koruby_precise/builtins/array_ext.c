@@ -145,7 +145,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 }
                 if (used) PK_PUT(byte);                   /* flush partial nibble */
             } else if (d == 'M') {                        /* quoted-printable */
-                const long wrap = (has_cnt && cnt > 1) ? cnt : 72;
+                const long wrap = (has_cnt && cnt > 1) ? cnt + 1 : 72;   /* CRuby: M<n> → n+1 chars/line; 0/1/none → 72 */
                 long col = 0; char last = 0;
                 static const char HX[] = "0123456789ABCDEF";
                 for (uint32_t k = 0; k < elen; k++) {

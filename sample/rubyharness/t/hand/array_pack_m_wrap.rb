@@ -1,0 +1,8 @@
+p ["abcdefghi"].pack("M2")
+p ["abcdefghi"].pack("M3")
+p ["abcdefghi"].pack("M5")
+p ["abcdefghi"].pack("M0")
+p ["abcdefghi"].pack("M1")
+p ["\x19\x19\x19\x19"].pack("M2")
+p ["abcdef"].pack("M2")
+p ["x"].pack("M3")
