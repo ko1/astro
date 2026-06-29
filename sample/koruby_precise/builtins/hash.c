@@ -96,15 +96,33 @@ static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_hash_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    int32_t idx = korb_hash_find(SELF_HASH, VALUE_SLICE_GET(a, 0));
-    if (idx < 0) return RESULT_OK(KORB_NIL);
-    slots[0] = SELF_HASH->items->data[2 * idx];        /* root k,v across the array alloc */
-    slots[1] = SELF_HASH->items->data[2 * idx + 1];
-    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
-    VALUE_REF arr = VALUE_REF_AT(slots + 2);
-    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
-    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
-    return RESULT_OK(VALUE_REF_GET(arr));
+    /* CRuby Hash#assoc is a linear scan comparing keys with #== (not the eql?/hash
+     * lookup), so e.g. assoc(1) matches a 1.0 key. */
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (rooted across == dispatch) */
+    const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
+        const VALUE k = h->items->data[2 * i];
+        bool match;
+        if (KORB_OBJECT_P(k) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (key == needle) */
+            slots[1] = k; slots[2] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            match = KORB_TRUTHY(r.value);
+        } else {
+            match = korb_value_eq(k, slots[0]);
+        }
+        if (match) {
+            const KorbHash *h2 = VAL2HASH(VALUE_REF_GET(self));
+            slots[1] = h2->items->data[2 * i]; slots[2] = h2->items->data[2 * i + 1];
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
+            VALUE_REF arr = VALUE_REF_AT(slots + 3);
+            CHECK(korb_ary_push_val(c, slots + 4, arr, slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 4, arr, slots[2]));
+            return RESULT_OK(VALUE_REF_GET(arr));
+        }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 
 static RESULT korb_m_hash_key_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
