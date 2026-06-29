@@ -1,0 +1,13 @@
+p(Numeric === 1)
+p(Comparable === 1)
+p(Comparable === "s")
+p(Enumerable === [1])
+p(Enumerable === {})
+p(Kernel === Object.new)
+p(Numeric === "s")
+p(case 3.5; when Integer; :int; when Numeric; :num; end)
+p([1, "a", 2.0, :s].grep(Numeric))
+p([1, 2, 3].all?(Numeric))
+p([1, "a"].all?(Numeric))
+class C; include Enumerable; def each; yield 1; end; end
+p(Enumerable === C.new)

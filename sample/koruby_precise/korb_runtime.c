@@ -3698,10 +3698,19 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         bool upper = r->exclude_end ? (uc < 0) : (uc <= 0);
         return lower && upper;
     }
-    if (KORB_CLASS_P(pat)) {
+    if (KORB_CLASS_P(pat)) {                              /* Module#=== ⟺ val.is_a?(pat): walk ancestors incl. modules */
         if (pat == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT])) return true;
-        VALUE cls = korb_class_obj_of(c, val);
-        while (KORB_CLASS_P(cls)) { if (cls == pat) return true; cls = VAL2CLASS(cls)->superclass; }
+        VALUE cls = (AROH_IS_GC_OBJECT(val) && (((const AroObjectHeader *)(uintptr_t)val)->flags & KORB_FL_HAS_KLASS))
+                      ? korb_klass_override_get(c->vm, val)   /* singleton/extended modules count */
+                      : korb_class_obj_of(c, val);
+        while (KORB_CLASS_P(cls)) {
+            if (cls == pat) return true;
+            const VALUE pre = VAL2CLASS(cls)->prepended;
+            if (pre != KORB_NIL) { const KorbArray *pa = VAL2ARY(pre); for (uint32_t j = 0; j < pa->len; j++) if (pa->items->data[j] == pat) return true; }
+            const VALUE inc = VAL2CLASS(cls)->included;
+            if (inc != KORB_NIL) { const KorbArray *ia = VAL2ARY(inc); for (uint32_t j = 0; j < ia->len; j++) if (ia->items->data[j] == pat) return true; }
+            cls = VAL2CLASS(cls)->superclass;
+        }
         return false;
     }
     if (KORB_REGEXP_P(pat)) {                             /* Regexp#=== : match against a String or Symbol (Symbol coerced to its name, CRuby) */
