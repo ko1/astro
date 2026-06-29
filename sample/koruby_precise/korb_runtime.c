@@ -5544,6 +5544,16 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     }
                     return RESULT_OK(slots[1]);
                 }
+                if (!uinit && base == KORB_C_SET && argc >= 1) {   /* Set subclass: populate from the enumerable */
+                    const VALUE src = korb_set_elems_of(slots[-(intptr_t)argc]);
+                    if (UNLIKELY(src == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+                    slots[2] = src;
+                    RESULT sr = korb_set_from_array(c, slots + 3, VALUE_REF_AT(&slots[2]));
+                    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                    slots[1] = sr.value;
+                    korb_klass_override_set(c, slots[1], slots[0]);   /* re-apply the subclass override to the populated set */
+                    return RESULT_OK(slots[1]);
+                }
                 if (uinit) {
                     VALUE *ibase = slots - argc;
                     RESULT ir = korb_invoke_method(c, slots, uinit, argc, line, imid, slots[1], idef, block, def_env, KORB_CSELF_VAL(captured_self));
