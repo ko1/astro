@@ -12,7 +12,7 @@ module Enumerable
   def filter; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
   def find_all; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if yield(*a) }; r; end
   def reject; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless yield(*a) }; r; end
-  def flat_map; r = []; each { |*a| v = yield(*a); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end
+  def flat_map; r = []; each { |*a| v = yield(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
   def detect(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
   def to_a; r = []; __each_el { |e| r << e }; r; end
@@ -58,7 +58,7 @@ module Enumerable
   def each_cons(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid size" unless n > 0; r = []; buf = []; __each_el { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r.each; end; end
   def zip(*others); os = others.map { |o| o.to_a }; r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }; if block_given?; r.each { |row| yield row }; nil; else; r; end; end
   def filter_map; r = []; each { |*ar| v = yield(*ar); r << v if v }; r; end
-  def collect_concat; r = []; each { |*ar| v = yield(*ar); if v.is_a?(Array); v.each { |e| r << e }; else; r << v; end }; r; end
+  def collect_concat(&blk); flat_map(&blk); end
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry; __each_el { |x| yield x }; self; end
