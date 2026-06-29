@@ -1711,6 +1711,7 @@ static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
@@ -1762,6 +1763,8 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]", korb_m_struct_aref, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_struct_inspect, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
@@ -1821,14 +1824,14 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* Data#inspect → "#<data Name member=val, ...>" (anonymous → no Name). */
-static RESULT korb_m_data_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+/* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
+static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    fputs("#<data", ms);
+    fputc('#', ms); fputc('<', ms); fputs(kind, ms);
     if (k->name_sym) { fputc(' ', ms); fputs(korb_sym_name(c->vm, k->name_sym), ms); }
     const KorbArray *const mem = VAL2ARY(k->members);
     for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
@@ -1845,6 +1848,8 @@ static RESULT korb_m_data_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     free(buf);
     return r;
 }
+static RESULT korb_m_data_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)a; return korb_struct_inspect_impl(c, slots, self, "data"); }
+static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_struct_inspect_impl(c, slots, self, "struct"); }
 
 /* Data.define(*members [, &block]) → an anonymous immutable value class. */
 /* class-level `[]` constructor: Klass[a, b, ...] == Klass.new(a, b, ...).  Shared
