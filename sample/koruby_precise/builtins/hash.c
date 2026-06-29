@@ -219,6 +219,7 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Hash#shift — remove & return the first [k,v] pair (insertion order); nil if empty. */
 static RESULT korb_m_hash_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (VAL2HASH(VALUE_REF_GET(self))->len == 0) return RESULT_OK(KORB_NIL);
     slots[0] = VAL2HASH(VALUE_REF_GET(self))->items->data[0];   /* key */
     slots[1] = VAL2HASH(VALUE_REF_GET(self))->items->data[1];   /* val */

@@ -924,10 +924,10 @@ static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *
 }
 static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true); }
-static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
+static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
 static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
-static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
+static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
