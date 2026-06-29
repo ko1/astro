@@ -278,6 +278,35 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 slots[3] = (VALUE)r;
                 CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             }
+        } else if (d == 'b' || d == 'B') {                /* bit string (b=LSB-first, B=MSB-first) */
+            const uint32_t avail = (VAL2STR(slots[1])->len - si) * 8;
+            const uint32_t nbits = star ? avail : ((uint32_t)cnt < avail ? (uint32_t)cnt : avail);
+            KorbString *r = korb_str_alloc(c, slots + 3, nbits);   /* may move slots */
+            const KorbString *s = VAL2STR(slots[1]);              /* re-read */
+            for (uint32_t k = 0; k < nbits; k++) {
+                const unsigned char byte = (unsigned char)s->buf->data[si + k / 8];
+                const int bit = (d == 'B') ? ((byte >> (7 - (k % 8))) & 1) : ((byte >> (k % 8)) & 1);
+                r->buf->data[k] = (char)('0' + bit);
+            }
+            r->len = nbits; r->buf->data[nbits] = '\0';
+            slots[3] = (VALUE)r;
+            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            si += (nbits + 7) / 8;
+        } else if (d == 'h' || d == 'H') {                /* hex string (h=low-nibble-first, H=high-first) */
+            const uint32_t avail = (VAL2STR(slots[1])->len - si) * 2;
+            const uint32_t nnib = star ? avail : ((uint32_t)cnt < avail ? (uint32_t)cnt : avail);
+            KorbString *r = korb_str_alloc(c, slots + 3, nnib);   /* may move slots */
+            const KorbString *s = VAL2STR(slots[1]);              /* re-read */
+            for (uint32_t k = 0; k < nnib; k++) {
+                const unsigned char byte = (unsigned char)s->buf->data[si + k / 2];
+                const int nib = (d == 'H') ? ((k % 2 == 0) ? (byte >> 4) : (byte & 0xF))
+                                           : ((k % 2 == 0) ? (byte & 0xF) : (byte >> 4));
+                r->buf->data[k] = "0123456789abcdef"[nib];
+            }
+            r->len = nnib; r->buf->data[nnib] = '\0';
+            slots[3] = (VALUE)r;
+            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
+            si += (nnib + 1) / 2;
         } else {                                          /* anything else → nil */
             const long reps = star ? 0 : cnt;
             for (long r = 0; r < reps; r++) CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL));
