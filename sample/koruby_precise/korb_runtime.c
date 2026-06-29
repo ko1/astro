@@ -5227,6 +5227,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (UNLIKELY(!is_mod && !KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
+            if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
+                const uint32_t inh = korb_intern(vm, "inherited", 9);
+                if (korb_responds_to(c, slots[0], inh)) {
+                    slots[2] = slots[0]; slots[3] = slots[1];
+                    RESULT hr = korb_send_impl(c, slots + 4, inh, line, 1, NULL, NULL, KORB_NIL);
+                    if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+                }
+            }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
@@ -6369,6 +6377,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "inherited", korb_m_lit_nil, 1);   /* default no-op hook (so user inherited can call super) */
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
