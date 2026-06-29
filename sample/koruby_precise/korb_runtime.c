@@ -783,6 +783,7 @@ korb_float_to_s(double d, char *buf)
     return (uint32_t)strlen(buf);
 }
 
+static RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, uint32_t line, bool *handled);   /* fwd */
 /* numeric arithmetic with at least one Float operand.  op: 0+ 1- 2* 3/ 4% */
 RESULT
 korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
@@ -791,8 +792,11 @@ korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
     double a = 0.0, b = 0.0;
     if (UNLIKELY(!korb_num_to_d(l, &b)))     /* l not numeric → method missing on l */
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for %s", opn[op], korb_a_type_name(l));
-    if (UNLIKELY(!korb_num_to_d(rhs, &b)))   /* rhs not numeric → coercion error */
+    if (UNLIKELY(!korb_num_to_d(rhs, &b))) {  /* rhs not numeric → coerce protocol, else coercion error */
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, opn[op], line, &h);
+        if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Float", korb_type_name(rhs));
+    }
     (void)korb_num_to_d(l, &a);
     double r;
     switch (op) {
@@ -3893,6 +3897,24 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
     return RESULT_OK(KORB_NIL);
 }
 
+/* Numeric coerce protocol: `l OP rhs` where rhs is non-numeric → if rhs responds
+ * to #coerce, do `a, b = rhs.coerce(l); a OP b`.  *handled stays false if rhs has
+ * no #coerce (caller raises its own TypeError). */
+static RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, uint32_t line, bool *handled) {
+    *handled = false;
+    const uint32_t coerce_id = korb_intern(c->vm, "coerce", 6);
+    if (!korb_responds_to(c, rhs, coerce_id)) return RESULT_OK(KORB_NIL);
+    *handled = true;
+    slots[0] = rhs; slots[1] = l;                            /* recv=rhs, arg=l for #coerce */
+    RESULT cr = korb_send_impl(c, slots + 2, coerce_id, line, 1, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (UNLIKELY(!KORB_ARRAY_P(cr.value) || VAL2ARY(cr.value)->len != 2))
+        return korb_raise(c, slots, KORB_E_TYPE, line, "coerce must return [x, y]");
+    slots[0] = cr.value;
+    slots[1] = VAL2ARY(slots[0])->items->data[0];           /* a (recv) */
+    slots[2] = VAL2ARY(slots[0])->items->data[1];           /* b (arg) */
+    return korb_send_impl(c, slots + 3, korb_intern(c->vm, op, (uint32_t)strlen(op)), line, 1, NULL, NULL, KORB_NIL);
+}
 RESULT
 korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
 {
@@ -3917,9 +3939,11 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_ary_plus_ref(c, slots, lhs, r);
     }
-    if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line,
-                          "%s can't be coerced into Integer", korb_type_name(rhs));
+    if (FIXNUM_P(l)) {
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "+", line, &h);
+        if (h) return cr;
+        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+    }
     if (KORB_STRING_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "no implicit conversion of %s into String", korb_type_name(rhs));
@@ -3946,8 +3970,11 @@ korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);   /* mixed Float (e.g. Float-Rational) */
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
     if (KORB_ARRAY_P(l) || KORB_SET_P(l)) return korb_sub_slow(c, slots, lhs, rhs, line);
-    if (FIXNUM_P(l))
+    if (FIXNUM_P(l)) {
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "-", line, &h);
+        if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+    }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
 }
@@ -3983,9 +4010,11 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_ARRAY_P(l))                             /* Array * non-int/str */
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "no implicit conversion of %s into Integer", korb_type_name(rhs));
-    if (FIXNUM_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line,
-                          "%s can't be coerced into Integer", korb_type_name(rhs));
+    if (FIXNUM_P(l)) {
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "*", line, &h);
+        if (h) return cr;
+        return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
+    }
     if (KORB_STRING_P(l))
         return korb_raise(c, slots, KORB_E_TYPE, line,
                           "no implicit conversion of %s into Integer", korb_type_name(rhs));
