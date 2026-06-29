@@ -47,19 +47,26 @@ static RESULT korb_m_ary_shift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* assoc (idx 0) / rassoc (idx 1): find the sub-array whose [idx] == key */
 static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, uint32_t idx) {
     slots[0] = key;                                          /* root key across element == dispatches */
+    const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
     const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     for (uint32_t i = 0; i < n; i++) {
-        const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* re-read each iter */
-        if (!KORB_ARRAY_P(e) || VAL2ARY(e)->len <= idx) continue;
-        const VALUE el = VAL2ARY(e)->items->data[idx];
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* element (rooted; returned on match) */
+        if (!KORB_ARRAY_P(slots[1])) {                       /* coerce a non-Array element via #to_ary */
+            if (!KORB_OBJECT_P(slots[1]) || !korb_responds_to(c, slots[1], to_ary)) continue;
+            RESULT cr = korb_send_impl(c, slots + 2, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!KORB_ARRAY_P(cr.value)) continue;
+            slots[1] = cr.value;
+        }
+        if (VAL2ARY(slots[1])->len <= idx) continue;
+        const VALUE el = VAL2ARY(slots[1])->items->data[idx];
         if (KORB_OBJECT_P(el) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (el == key) */
-            slots[1] = e;                                    /* root e (returned on match) */
             slots[2] = el; slots[3] = slots[0];              /* recv, arg */
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[1]);
         } else if (korb_value_eq(el, slots[0])) {
-            return RESULT_OK(e);
+            return RESULT_OK(slots[1]);
         }
     }
     return RESULT_OK(KORB_NIL);
