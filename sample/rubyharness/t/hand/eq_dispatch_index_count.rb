@@ -1,0 +1,11 @@
+class O; def ==(o); o == 99; end; end
+p({a: O.new}.value?(99))
+p({a: O.new}.has_value?(99))
+p [1, O.new, 3].index(99)
+p [1, O.new, 3].rindex(99)
+p [1, O.new, 3, O.new].count(99)
+p [1, 2, 3].index(2)
+p [3, 2, 1].rindex(2)
+p [1, 2, 2, 3].count(2)
+p({a: 1, b: 2}.value?(2))
+p [1, 2, 3].rindex(5)

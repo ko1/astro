@@ -17,10 +17,19 @@ static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         return RESULT_OK(KORB_NIL);
     }
-    const KorbArray *ary = SELF_ARY;
-    VALUE needle = VALUE_SLICE_GET(a, 0);
-    for (uint32_t i = 0; i < ary->len; i++)
-        if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(LONG2FIX(i));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
+    const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
+            slots[1] = e; slots[2] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
+        } else if (korb_value_eq(e, slots[0])) {
+            return RESULT_OK(LONG2FIX(i));
+        }
+    }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -37,12 +46,22 @@ static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         return RESULT_OK(LONG2FIX(n));
     }
-    const KorbArray *ary = SELF_ARY;
-    if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(LONG2FIX(ary->len));
-    VALUE needle = VALUE_SLICE_GET(a, 0);
-    intptr_t n = 0;
-    for (uint32_t i = 0; i < ary->len; i++) if (korb_value_eq(ary->items->data[i], needle)) n++;
-    return RESULT_OK(LONG2FIX(n));
+    if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(LONG2FIX(SELF_ARY->len));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
+    const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
+    intptr_t cnt = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
+            slots[1] = e; slots[2] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) cnt++;
+        } else if (korb_value_eq(e, slots[0])) {
+            cnt++;
+        }
+    }
+    return RESULT_OK(LONG2FIX(cnt));
 }
 
 static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

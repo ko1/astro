@@ -418,10 +418,18 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         return RESULT_OK(KORB_NIL);
     }
-    const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    VALUE needle = VALUE_SLICE_GET(a, 0);
-    for (int32_t i = (int32_t)ary->len - 1; i >= 0; i--)
-        if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(LONG2FIX(i));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
+    for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
+        const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
+            slots[1] = e; slots[2] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
+        } else if (korb_value_eq(e, slots[0])) {
+            return RESULT_OK(LONG2FIX(i));
+        }
+    }
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

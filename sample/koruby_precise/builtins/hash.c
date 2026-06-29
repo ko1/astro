@@ -113,11 +113,19 @@ static RESULT korb_m_hash_key_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    const KorbHash *h = SELF_HASH;
-    VALUE needle = VALUE_SLICE_GET(a, 0);
-    for (uint32_t i = 0; i < h->len; i++)
-        if (korb_value_eq(h->items->data[2 * i + 1], needle)) return RESULT_OK(KORB_TRUE);
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across value == dispatch) */
+    const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE v = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+        if (KORB_OBJECT_P(v) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (value == needle) */
+            slots[1] = v; slots[2] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) return RESULT_OK(KORB_TRUE);
+        } else if (korb_value_eq(v, slots[0])) {
+            return RESULT_OK(KORB_TRUE);
+        }
+    }
     return RESULT_OK(KORB_FALSE);
 }
 
