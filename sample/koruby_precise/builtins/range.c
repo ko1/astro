@@ -87,8 +87,38 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const uint32_t el = korb_utf8_count(VAL2STR(r2->rend)->buf->data, VAL2STR(r2->rend)->len);
         return RESULT_OK((xl >= bl && xl <= el) ? KORB_TRUE : KORB_FALSE);
     }
+    else if (!KORB_OBJECT_P(r->rbegin)) {
+        return korb_m_range_cover(c, slots, self, a);        /* numeric/other → cover-based (fast) */
+    }
     else {
-        return korb_m_range_cover(c, slots, self, a);
+        /* custom-object range → succ-membership: walk begin, begin.succ, ...
+         * checking == x, until current passes end (CRuby: include? ≠ cover here). */
+        slots[0] = r->rbegin;                                /* current (rooted) */
+        slots[1] = x;                                        /* target */
+        slots[2] = r->rend;                                  /* end (may be nil) */
+        const bool excl = VAL2RANGE(VALUE_REF_GET(self))->exclude_end;
+        const uint32_t mid_eq = korb_intern(c->vm, "==", 2);
+        const uint32_t mid_cmp = korb_intern(c->vm, "<=>", 3);
+        const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);
+        for (int guard = 0; guard < 10000000; guard++) {
+            if (slots[2] != KORB_NIL) {                      /* current <=> end → stop once past the end */
+                slots[3] = slots[0]; slots[4] = slots[2];
+                RESULT cmp = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(cmp.state != KORB_NORMAL)) return cmp;
+                if (!FIXNUM_P(cmp.value)) return RESULT_OK(KORB_FALSE);
+                const intptr_t cv = FIX2LONG(cmp.value);
+                if (excl ? (cv >= 0) : (cv > 0)) return RESULT_OK(KORB_FALSE);
+            }
+            slots[3] = slots[0]; slots[4] = slots[1];        /* current == x */
+            RESULT eq = korb_send_impl(c, slots + 5, mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(eq.state != KORB_NORMAL)) return eq;
+            if (KORB_TRUTHY(eq.value)) return RESULT_OK(KORB_TRUE);
+            slots[3] = slots[0];                             /* current = current.succ */
+            RESULT sc = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
+            slots[0] = sc.value;
+        }
+        return RESULT_OK(KORB_FALSE);
     }
 }
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
