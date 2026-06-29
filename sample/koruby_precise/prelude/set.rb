@@ -19,6 +19,16 @@ class Set
     enum.each { |x| delete(x) }
     self
   end
+  # in-place filters: collect the targets into a fresh array first (Set#to_a aliases
+  # internal storage, so deleting while iterating it would skip elements).
+  def delete_if; rm = []; each { |x| rm << x if yield(x) }; rm.each { |x| delete(x) }; self; end
+  def keep_if; rm = []; each { |x| rm << x unless yield(x) }; rm.each { |x| delete(x) }; self; end
+  def reject!; n = size; delete_if { |x| yield(x) }; size == n ? nil : self; end
+  def select!; n = size; keep_if { |x| yield(x) }; size == n ? nil : self; end
+  def filter!(&b); select!(&b); end
+  def collect!; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; old.each { |x| delete(x) }; nw.each { |x| self << x }; self; end
+  def map!(&b); collect!(&b); end
+  def classify; h = {}; each { |e| k = yield(e); (h[k] ||= self.class.new) << e }; h; end
   def flatten!
     flat = flatten
     if flat == self
