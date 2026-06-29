@@ -3096,6 +3096,16 @@ static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj) {
         if (vm->sklass_obj[i] == obj) return vm->sklass_cls[i];
     return KORB_NIL;
 }
+/* Start-of-lookup class for a user instance: its singleton class if one exists
+ * (so `send`/internal dispatch see singleton methods), else its plain class.
+ * The HAS_KLASS bit gates the scan, so objects without a singleton pay nothing. */
+static inline VALUE korb_obj_dispatch_klass(const struct korb_vm *vm, VALUE self) {
+    if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)) {
+        const VALUE ov = korb_klass_override_get(vm, self);
+        if (ov != KORB_NIL) return ov;
+    }
+    return VAL2OBJ(self)->klass;
+}
 static void korb_klass_override_set(CTX *c, VALUE obj, VALUE cls) {
     struct korb_vm *const vm = c->vm;
     for (uint32_t i = 0; i < vm->sklass_cnt; i++)        /* replace if present */
@@ -4263,7 +4273,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * (a miss falls through to the global function table). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
-        struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
+        struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
         if (um) {
             if (um->kind == KORB_METHOD_ATTR_R)
                 return RESULT_OK(korb_ivar_get(c, self, ID2SYM(um->attr_ivar)));
@@ -5010,7 +5020,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     /* user instance → dispatch through its class chain (miss falls to Object). */
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) {
         VALUE def_class = KORB_NIL;
-        struct korb_method *um = korb_mcache_find(vm, VAL2OBJ(self)->klass, mid, &def_class);
+        struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
         if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self);
     }
     /* class receiver → Klass.new (allocate + initialize). */
