@@ -343,6 +343,15 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         const KorbHash *const sh = VAL2HASH(VALUE_REF_GET(self));
         ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_val, sh->default_val);
         ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_proc, sh->default_proc);
+    } else if (KORB_SET_P(v)) {                            /* copy a Set (dup returned self before) */
+        const uint32_t sn = VAL2ARY(korb_set_elems_of(v))->len;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, sn));   /* fresh element copy */
+        VALUE_REF cp = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < sn; i++)
+            CHECK(korb_ary_push_val(c, slots + 2, cp, VAL2ARY(korb_set_elems_of(VALUE_REF_GET(self)))->items->data[i]));
+        RESULT sr = korb_set_from_array(c, slots + 2, cp);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[1] = sr.value;
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
