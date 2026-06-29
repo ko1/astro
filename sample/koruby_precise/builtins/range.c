@@ -20,8 +20,11 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a;
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
-        if (KORB_FLOAT_P(SELF_RANGE->rbegin))            /* Float begin → not iterable */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rbegin));
+        const KorbRange *const r = SELF_RANGE;
+        if (KORB_FLOAT_P(r->rbegin))                     /* Float begin → not iterable (even endless) */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
+        if (r->rend == KORB_NIL && KORB_INTEGER_P(r->rbegin))   /* endless Integer → Infinity */
+            return korb_float_new(c, slots, INFINITY);
         return RESULT_OK(KORB_NIL);                      /* non-numeric begin (e.g. String) → nil */
     }
     return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
