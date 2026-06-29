@@ -6058,6 +6058,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "delete_prefix!", korb_m_str_delete_prefix_b, 1);
     korb_def_cmethod(c, KORB_C_STRING, "delete_suffix!", korb_m_str_delete_suffix_b, 1);
     korb_def_cmethod(c, KORB_C_STRING, "dump", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "undump", korb_m_str_undump, 0);
     korb_def_cmethod(c, KORB_C_STRING, "between?", korb_m_str_between, 2);
     korb_def_cmethod(c, KORB_C_STRING, "clamp", korb_m_str_clamp, 2);
     korb_def_cmethod(c, KORB_C_STRING, "delete", korb_m_str_delete, -1);

@@ -647,6 +647,56 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, (uint32_t)i)));
     return RESULT_OK(KORB_NIL);
 }
+/* String#undump — inverse of #dump: parse a "..."-wrapped, escaped literal back
+ * to the original bytes.  (.force_encoding(...) suffix is ignored.) */
+static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    if (s->len < 2 || s->buf->data[0] != '"')
+        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form");
+    unsigned char *const out = malloc(s->len);
+    uint32_t olen = 0, i = 1; bool closed = false;
+    #define KORB_HEXV(x) ((x) >= '0' && (x) <= '9' ? (x) - '0' : (x) >= 'A' && (x) <= 'F' ? (x) - 'A' + 10 : (x) >= 'a' && (x) <= 'f' ? (x) - 'a' + 10 : -1)
+    while (i < s->len) {
+        const int ch = (unsigned char)s->buf->data[i];
+        if (ch == '"') { closed = true; i++; break; }
+        if (ch != '\\') { out[olen++] = (unsigned char)ch; i++; continue; }
+        if (++i >= s->len) break;
+        const int e = (unsigned char)s->buf->data[i++];
+        switch (e) {
+            case 'n': out[olen++] = '\n'; break;   case 't': out[olen++] = '\t'; break;
+            case 'r': out[olen++] = '\r'; break;   case 'a': out[olen++] = 7;    break;
+            case 'b': out[olen++] = 8;    break;   case 'v': out[olen++] = 11;   break;
+            case 'f': out[olen++] = 12;   break;   case 'e': out[olen++] = 27;   break;
+            case 's': out[olen++] = ' ';  break;   case '0': out[olen++] = 0;    break;
+            case '"': out[olen++] = '"';  break;   case '\\': out[olen++] = '\\'; break;
+            case '#': out[olen++] = '#';  break;
+            case 'x': {                            /* \xHH */
+                if (i + 1 < s->len) { const int hi = KORB_HEXV((unsigned char)s->buf->data[i]), lo = KORB_HEXV((unsigned char)s->buf->data[i + 1]);
+                    if (hi >= 0 && lo >= 0) { out[olen++] = (unsigned char)(hi * 16 + lo); i += 2; break; } }
+                out[olen++] = 'x'; break;
+            }
+            case 'u': {                            /* \uHHHH or \u{HHHH ...} → UTF-8 */
+                uint32_t cp = 0; bool brace = (i < s->len && s->buf->data[i] == '{');
+                if (brace) i++;
+                int nd = 0; while (i < s->len) { const int hv = KORB_HEXV((unsigned char)s->buf->data[i]); if (hv < 0) break; cp = cp * 16 + (uint32_t)hv; i++; nd++; if (!brace && nd == 4) break; }
+                if (brace && i < s->len && s->buf->data[i] == '}') i++;
+                if (cp < 0x80) out[olen++] = (unsigned char)cp;
+                else if (cp < 0x800) { out[olen++] = (unsigned char)(0xC0 | (cp >> 6)); out[olen++] = (unsigned char)(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x10000) { out[olen++] = (unsigned char)(0xE0 | (cp >> 12)); out[olen++] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F)); out[olen++] = (unsigned char)(0x80 | (cp & 0x3F)); }
+                else { out[olen++] = (unsigned char)(0xF0 | (cp >> 18)); out[olen++] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F)); out[olen++] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F)); out[olen++] = (unsigned char)(0x80 | (cp & 0x3F)); }
+                break;
+            }
+            default: out[olen++] = (unsigned char)e; break;   /* unknown escape → literal */
+        }
+    }
+    #undef KORB_HEXV
+    if (!closed) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form"); }
+    KorbString *r = korb_str_alloc(c, slots, olen);   /* may move; out is libc-stable */
+    memcpy(r->buf->data, out, olen); free(out);
+    r->buf->data[olen] = '\0'; r->len = olen;
+    return RESULT_OK((VALUE)r);
+}
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     { RESULT o = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(o.state != KORB_NORMAL)) return o; }
     uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
