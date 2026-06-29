@@ -1767,6 +1767,19 @@ static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);   /* fwd (defined below) */
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
+    uint32_t mstart = 0, name_id = 0; bool has_name = false;   /* String/nil first arg = the constant name slot */
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        const VALUE first = VALUE_SLICE_GET(a, 0);
+        if (KORB_STRING_P(first)) {
+            const KorbString *const ns = VAL2STR(first);
+            bool valid = ns->len > 0 && ns->buf->data[0] >= 'A' && ns->buf->data[0] <= 'Z';
+            for (uint32_t k = 1; valid && k < ns->len; k++) { const char ch = ns->buf->data[k]; if (!(isalnum((unsigned char)ch) || ch == '_')) valid = false; }
+            if (UNLIKELY(!valid)) return korb_raise(c, slots, KORB_E_NAME, 0, "identifier %.*s needs to be constant", (int)ns->len, ns->buf->data);
+            name_id = korb_intern(vm, ns->buf->data, ns->len); has_name = true; mstart = 1;
+        } else if (first == KORB_NIL) {
+            mstart = 1;                                       /* explicit anonymous */
+        }
+    }
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = korb_const_get(vm, korb_intern(vm, "Enumerable", 10));   /* Struct includes Enumerable */
@@ -1774,7 +1787,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     uint8_t kwinit = 0;   /* 0 = unspecified (→ keyword_init? nil), 1 = true, 2 = explicit false */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+    for (uint32_t i = mstart; i < VALUE_SLICE_LEN(a); i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
@@ -1803,6 +1816,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
     }
+    if (has_name) korb_const_define(c, name_id, VALUE_REF_GET(cls));   /* Struct.new("Name",..) → Struct::Name */
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     /* common Struct instance methods (read members + @ivars generically).
      * korb_class_def_cfn interns the name → may GC → re-read the class from the
