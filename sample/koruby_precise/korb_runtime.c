@@ -3444,6 +3444,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "IndexError",          KORB_E_INDEX,      "StandardError" },
         { "KeyError",            KORB_E_KEY,        "IndexError" },
         { "StopIteration",       KORB_E_STOP_ITERATION, "IndexError" },
+        { "DomainError",         KORB_E_MATH_DOMAIN, "StandardError" },   /* Math::DomainError (flat const) */
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },

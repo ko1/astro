@@ -19,7 +19,10 @@ static double korb_cbrt(double f) {
         (void)self; double x;                                                           \
         if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x)))                          \
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0))); \
-        return korb_float_new(c, slots, fn(x));                                         \
+        const double r_ = fn(x);                                                        \
+        if (UNLIKELY(isnan(r_) && !isnan(x) && !isinf(x)))   /* finite input → NaN = out of domain */ \
+            return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"%s\"", #nm); \
+        return korb_float_new(c, slots, r_);                                            \
     }
 #define KORB_MATH2(nm, fn)                                                              \
     static RESULT korb_m_math_##nm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
@@ -55,13 +58,17 @@ static RESULT korb_m_math_log2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)self; double d; long e;
     if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    return korb_float_new(c, slots, log2(d) + (double)e);
+    const double r2 = log2(d) + (double)e;
+    if (UNLIKELY(isnan(r2) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log2\"");
+    return korb_float_new(c, slots, r2);
 }
 static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double d; long e;
     if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    return korb_float_new(c, slots, log10(d) + (double)e * 0.301029995663981195213738894724); /* + e·log10(2) */
+    const double r10 = log10(d) + (double)e * 0.301029995663981195213738894724; /* + e·log10(2) */
+    if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log10\"");
+    return korb_float_new(c, slots, r10);
 }
 KORB_MATH2(atan2, atan2) KORB_MATH2(hypot, hypot) KORB_MATH2(copysign, copysign)
 KORB_MATH2(pow, pow)
@@ -73,6 +80,7 @@ static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
     const double lnx = log(d) + (double)e * M_LN2;   /* ln(d·2^e) */
+    if (UNLIKELY(isnan(lnx) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log\"");
     if (VALUE_SLICE_LEN(a) >= 2) {
         double db; long eb;
         if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb)))
