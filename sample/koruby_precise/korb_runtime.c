@@ -1721,12 +1721,25 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
-            int32_t ki = korb_hash_find(VAL2HASH(sym), ID2SYM(korb_intern(vm, "keyword_init", 12)));
+            const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
+            const KorbHash *const h = VAL2HASH(sym);
+            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed */
+                if (h->items->data[2 * j] != kw_sym)
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
+                                      SYMBOL_P(h->items->data[2 * j]) ? korb_sym_name(vm, SYM2ID(h->items->data[2 * j])) : korb_type_name(h->items->data[2 * j]));
+            int32_t ki = korb_hash_find(h, kw_sym);
             if (ki >= 0) kwinit = KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1]) ? 1 : 2;
             continue;
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
-        if (!SYMBOL_P(sym)) continue;
+        if (UNLIKELY(!SYMBOL_P(sym)))                         /* member must be a Symbol/String */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+        {   /* duplicate member → ArgumentError */
+            const KorbArray *const mm = VAL2ARY(VALUE_REF_GET(mem));
+            for (uint32_t k = 0; k < mm->len; k++)
+                if (mm->items->data[k] == sym)
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "duplicate member: %s", korb_sym_name(vm, SYM2ID(sym)));
+        }
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256];
         snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
