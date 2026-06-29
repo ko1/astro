@@ -283,9 +283,17 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             }
             continue;
         }
-        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
+        intptr_t i;
+        if (!korb_to_index(iv, &i)) {                 /* coerce a non-Integer index via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots + 1, &iv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(iv, &i))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, j)));
+        }
+        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         VALUE e = KORB_NIL;
-        intptr_t i; if (korb_to_index(iv, &i)) { if (i < 0) i += ary->len; if (i >= 0 && (uint32_t)i < ary->len) e = ary->items->data[i]; }
+        if (i < 0) i += ary->len;
+        if (i >= 0 && (uint32_t)i < ary->len) e = ary->items->data[i];
         CHECK(korb_ary_push_val(c, slots + 1, dst, e));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
