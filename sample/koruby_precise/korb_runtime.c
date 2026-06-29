@@ -3446,6 +3446,8 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "StopIteration",       KORB_E_STOP_ITERATION, "IndexError" },
         { "DomainError",         KORB_E_MATH_DOMAIN, "StandardError" },   /* Math::DomainError (flat const) */
         { "FloatDomainError",    KORB_E_FLOAT_DOMAIN, "RangeError" },
+        { "NoMatchingPatternError",    KORB_E_NO_MATCHING_PATTERN, "StandardError" },
+        { "NoMatchingPatternKeyError", KORB_E_NO_MATCHING_PATTERN_KEY, "NoMatchingPatternError" },
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },

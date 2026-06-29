@@ -350,6 +350,8 @@ enum korb_etype {
     KORB_E_STOP_ITERATION,
     KORB_E_MATH_DOMAIN,
     KORB_E_FLOAT_DOMAIN,
+    KORB_E_NO_MATCHING_PATTERN,
+    KORB_E_NO_MATCHING_PATTERN_KEY,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

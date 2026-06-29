@@ -838,8 +838,14 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
     slots[0] = subj;
     RESULT m = korb_pat_match(c, slots, slots + 1, VALUE_REF_AT(&slots[0]), (const struct korb_pat *)desc);
     if (UNLIKELY(m.state != KORB_NORMAL)) return m;
-    if (m.value != KORB_TRUE)
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "NoMatchingPatternError");
+    if (m.value != KORB_TRUE) {                          /* message is the inspected subject (CRuby) */
+        char *ibuf = NULL; size_t ilen = 0;
+        FILE *ims = open_memstream(&ibuf, &ilen);
+        if (ims) { korb_fprint_inspect(c, ims, slots[0]); fclose(ims); }
+        RESULT rr = korb_raise(c, slots, KORB_E_NO_MATCHING_PATTERN, 0, "%s", ibuf ? ibuf : "");
+        free(ibuf);
+        return rr;
+    }
     return RESULT_OK(KORB_NIL);
 }
 
