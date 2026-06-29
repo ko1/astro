@@ -315,34 +315,35 @@ static RESULT korb_m_hash_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * String/Array/Hash get a fresh shallow copy. */
 static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    VALUE v = VALUE_REF_GET(self);
+    const VALUE v = VALUE_REF_GET(self);
+    /* preserve the subclass: a builtin-subclass instance dups to the same class */
+    const bool sub = AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
+    slots[0] = sub ? korb_klass_override_get(c->vm, v) : KORB_NIL;   /* override class (rooted across the copy) */
     if (KORB_STRING_P(v)) {
         uint32_t len = VAL2STR(v)->len;
-        KorbString *r = korb_str_alloc(c, slots, len);
-        const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after alloc */
-        memcpy(r->buf->data, s->buf->data, len);
-        return RESULT_OK((VALUE)r);
-    }
-    if (KORB_ARRAY_P(v)) {
+        KorbString *r = korb_str_alloc(c, slots + 1, len);
+        memcpy(r->buf->data, VAL2STR(VALUE_REF_GET(self))->buf->data, len);   /* re-read after alloc */
+        slots[1] = (VALUE)r;
+    } else if (KORB_ARRAY_P(v)) {
         uint32_t n = VAL2ARY(v)->len;
-        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
-        for (uint32_t i = 0; i < n; i++) {
-            VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
-            CHECK(korb_ary_push_val(c, slots, dst, e));
-        }
-        return RESULT_OK(VALUE_REF_GET(dst));
-    }
-    if (KORB_HASH_P(v)) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < n; i++)
+            CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+    } else if (KORB_HASH_P(v)) {
         uint32_t n = VAL2HASH(v)->len;
-        VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, n)));
+        slots[1] = UNWRAP(korb_hash_new(c, slots + 1, n));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < n; i++) {
-            slots[0] = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i];
+            slots[2] = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i];
             VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
-            CHECK(korb_hash_set(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), val));
+            CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[2]), val));
         }
-        return RESULT_OK(VALUE_REF_GET(dst));
+    } else {
+        return RESULT_OK(v);   /* immediate / no special copy */
     }
-    return RESULT_OK(v);   /* immutable / no special copy */
+    if (sub) korb_klass_override_set(c, slots[1], slots[0]);
+    return RESULT_OK(slots[1]);
 }
 
 /* in-place reverse of items[lo, hi) — no alloc, so pointers are stable. */
