@@ -355,12 +355,13 @@ static void korb_ary_rev_range(CTX *c, KorbArrayItems *it, uint32_t lo, uint32_t
     }
 }
 static RESULT korb_m_ary_reverse_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;(void)a;
+    (void)a; KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
     korb_ary_rev_range(c, ary->items, 0, ary->len);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     intptr_t cnt = 1;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE cv = VALUE_SLICE_GET(a, 0);

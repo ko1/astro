@@ -192,7 +192,7 @@ static RESULT korb_m_str_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* in-place case/reverse (op: 0 upcase 1 downcase 2 capitalize 3 swapcase 4 reverse);
  * returns self if changed, else nil (Ruby bang convention) — reverse! always self. */
 static RESULT korb_str_transform_bang(CTX *c, VALUE *slots, VALUE_REF self, int op) {
-    (void)c;(void)slots;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* bang mutators check frozen upfront */
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t len = s->len; bool changed = false;
     if (op == 4) {                                     /* reverse! (UTF-8 char-aware) */
@@ -352,7 +352,7 @@ static RESULT korb_m_str_strip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_str_lstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip_bang(c, slots, self, a, 1); }
 static RESULT korb_m_str_rstrip_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip_bang(c, slots, self, a, 2); }
 static RESULT korb_m_str_chomp_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     if (n == 0) return RESULT_OK(KORB_NIL);           /* empty → no-op → nil, before any sep-type check (CRuby) */
@@ -764,6 +764,7 @@ static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* squeeze: collapse runs of identical chars (only those in the sets, if given). */
 static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
+    if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* squeeze! checks frozen upfront */
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     bool has_set = VALUE_SLICE_LEN(a) > 0;
