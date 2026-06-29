@@ -26,10 +26,11 @@ module Enumerable
   def reduce(*args); if block_given?; if args.size >= 1; acc = args[0]; f = false; else; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = yield(acc, x); end }; acc; else; if args.size >= 2; acc = args[0]; op = args[1]; f = false; else; op = args[0]; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = acc.send(op, x); end }; acc; end; end
   def inject(*args, &blk); reduce(*args, &blk); end
   def sum(init = 0); s = init; if block_given?; each { |*a| s = s + yield(*a) }; else; __each_el { |x| s = s + x }; end; s; end
-  def min; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c < 0; end }; r; end
-  def max; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
-  def min_by; r = nil; rk = nil; f = true; __each_el { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif (k <=> rk) < 0; r = x; rk = k; end }; r; end
-  def max_by; r = nil; rk = nil; f = true; __each_el { |x| k = yield(x); if f; r = x; rk = k; f = false; elsif (k <=> rk) > 0; r = x; rk = k; end }; r; end
+  # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
+  def min(n = nil, &blk); s = blk ? to_a.sort(&blk) : to_a.sort; n ? s.first(n) : s.first; end
+  def max(n = nil, &blk); s = blk ? to_a.sort(&blk) : to_a.sort; n ? s.last(n).reverse : s.last; end
+  def min_by(n = nil); s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
+  def max_by(n = nil); s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
   def sort; to_a.sort; end
   def sort_by; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
