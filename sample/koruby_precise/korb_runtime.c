@@ -3152,7 +3152,7 @@ korb_exc_matches(CTX *c, VALUE exc, VALUE rescue_class)
     const VALUE uc = VAL2EXC(exc)->exc_class;            /* user exception subclass */
     if (uc != KORB_NIL) return korb_class_le(uc, rescue_class);
     uint32_t et = VAL2EXC(exc)->etype;
-    if (et >= 16) return false;
+    if (et >= 24) return false;
     VALUE exc_class = korb_const_get(c->vm, c->vm->exc_name[et]);
     return korb_class_le(exc_class, rescue_class);
 }
@@ -3219,7 +3219,7 @@ korb_class_obj_of(CTX *c, VALUE self)
     if (KORB_EXC_P(self)) {
         if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass */
         uint32_t et = VAL2EXC(self)->etype;
-        if (et < 16) return korb_const_get(c->vm, c->vm->exc_name[et]);
+        if (et < 24) return korb_const_get(c->vm, c->vm->exc_name[et]);
     }
     return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
 }
@@ -3265,7 +3265,7 @@ korb_dispatch_class(CTX *c, VALUE self)
     if (KORB_EXC_P(self)) {
         if (VAL2EXC(self)->exc_class != KORB_NIL) return VAL2EXC(self)->exc_class;   /* user exception subclass → its MRO */
         const uint32_t et = VAL2EXC(self)->etype;
-        if (et < 16 && vm->exc_name[et]) {
+        if (et < 24 && vm->exc_name[et]) {
             const VALUE k = korb_const_get(vm, vm->exc_name[et]);
             if (KORB_CLASS_P(k)) return k;
         }
@@ -3445,6 +3445,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "KeyError",            KORB_E_KEY,        "IndexError" },
         { "StopIteration",       KORB_E_STOP_ITERATION, "IndexError" },
         { "DomainError",         KORB_E_MATH_DOMAIN, "StandardError" },   /* Math::DomainError (flat const) */
+        { "FloatDomainError",    KORB_E_FLOAT_DOMAIN, "RangeError" },
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },

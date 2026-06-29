@@ -651,7 +651,7 @@ struct korb_vm {
 
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */
-    uint32_t  exc_name[16];
+    uint32_t  exc_name[24];
     /* korb_class enum → builtin class constant name (Integer/String/...). */
     uint32_t  class_name[KORB_NCLASS];
     /* korb_class enum → const-table index of its class object (append-only table,

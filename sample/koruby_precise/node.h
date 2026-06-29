@@ -349,6 +349,7 @@ enum korb_etype {
     KORB_E_UNCAUGHT_THROW,
     KORB_E_STOP_ITERATION,
     KORB_E_MATH_DOMAIN,
+    KORB_E_FLOAT_DOMAIN,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

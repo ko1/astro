@@ -44,6 +44,8 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */
 static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
+    if (UNLIKELY(!isfinite(d)))                          /* Infinity / NaN → Integer is out of domain */
+        return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     double t = kind == 0 ? floor(d) : kind == 1 ? ceil(d) : kind == 2 ? round(d) : trunc(d);
     if (UNLIKELY(!isfinite(t) || t < (double)FIXNUM_MIN || t > (double)FIXNUM_MAX))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
@@ -81,6 +83,8 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
     if (npos >= 1) {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    if (ndig <= 0 && UNLIKELY(!isfinite(d)))                    /* Inf/NaN → Integer-returning form is out of domain */
+        return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     if (ndig == 0) {
         if (kind == 2 && half != 0) {                          /* round to integer with explicit half mode */
             const double t = korb_round_half_apply(d, half);
