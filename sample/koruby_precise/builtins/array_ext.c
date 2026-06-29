@@ -71,6 +71,39 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
                 PK_PUT(b & 0xFF);
             }
+        } else if (d == 'N' || d == 'n' || d == 'V' || d == 'v' || d == 'L' || d == 'l' ||
+                   d == 'S' || d == 's' || d == 'Q' || d == 'q' || d == 'I' || d == 'i') {   /* multi-byte ints */
+            int sz; bool big;
+            switch (d) {
+                case 'N': sz = 4; big = true;  break;   case 'n': sz = 2; big = true;  break;
+                case 'V': sz = 4; big = false; break;   case 'v': sz = 2; big = false; break;
+                case 'S': case 's': sz = 2; big = false; break;
+                case 'Q': case 'q': sz = 8; big = false; break;
+                default:  sz = 4; big = false; break;   /* L/l/I/i = 4-byte native (LE) */
+            }
+            uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t k = 0; k < emit; k++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                VALUE e = ary->items->data[ai++];
+                const uint64_t v = FIXNUM_P(e) ? (uint64_t)FIX2LONG(e) : 0;
+                for (int b = 0; b < sz; b++) PK_PUT((v >> (8 * (big ? (sz - 1 - b) : b))) & 0xFF);
+            }
+        } else if (d == 'e' || d == 'E' || d == 'g' || d == 'G' || d == 'f' || d == 'F' || d == 'd' || d == 'D') {   /* IEEE floats */
+            int sz; bool big;
+            switch (d) {
+                case 'g': sz = 4; big = true;  break;   case 'G': sz = 8; big = true;  break;
+                case 'E': sz = 8; big = false; break;   case 'd': case 'D': sz = 8; big = false; break;
+                default:  sz = 4; big = false; break;   /* e/f/F = 4-byte little/native */
+            }
+            uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t k = 0; k < emit; k++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                VALUE e = ary->items->data[ai++];
+                const double dv = KORB_FLOAT_P(e) ? korb_float_val(e) : (FIXNUM_P(e) ? (double)FIX2LONG(e) : 0.0);
+                unsigned char tmp[8];
+                if (sz == 4) { float f = (float)dv; memcpy(tmp, &f, 4); } else memcpy(tmp, &dv, 8);
+                for (int b = 0; b < sz; b++) PK_PUT(tmp[big ? (sz - 1 - b) : b]);
+            }
         } else if (d == 'U') {                            /* UTF-8: codepoints → bytes */
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) {
@@ -290,8 +323,21 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 si += (uint32_t)sz;
                 CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX((intptr_t)v)));
             }
-        } else if (d == 'e' || d == 'E' || d == 'g' || d == 'G') {   /* IEEE float (e/E=little, g/G=big; lower=32, upper=64) */
-            const int sz = (d == 'e' || d == 'g') ? 4 : 8;
+        } else if (d == 'S' || d == 's' || d == 'L' || d == 'l' || d == 'I' || d == 'i') {   /* native-endian int (S/L/I unsigned, s/l/i signed) */
+            const int sz = (d == 'S' || d == 's') ? 2 : 4;
+            const bool sgn = (d == 's' || d == 'l' || d == 'i');
+            const long reps = star ? (long)((slen - si) / sz) : cnt;
+            for (long r = 0; r < reps; r++) {
+                const KorbString *s = VAL2STR(slots[1]);
+                if (si + (uint32_t)sz > s->len) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); si = s->len; continue; }
+                uint32_t v = 0;
+                for (int k = 0; k < sz; k++) v |= (uint32_t)(unsigned char)s->buf->data[si + k] << (8 * k);   /* little-endian native */
+                si += (uint32_t)sz;
+                const intptr_t iv = sgn ? (sz == 2 ? (intptr_t)(int16_t)v : (intptr_t)(int32_t)v) : (intptr_t)v;
+                CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX(iv)));
+            }
+        } else if (d == 'e' || d == 'E' || d == 'g' || d == 'G' || d == 'f' || d == 'F' || d == 'd' || d == 'D') {   /* IEEE float (e/E=little, g/G=big, f/F/d/D=native; e/g/f/F=32, rest=64) */
+            const int sz = (d == 'e' || d == 'g' || d == 'f' || d == 'F') ? 4 : 8;
             const bool big = (d == 'g' || d == 'G');
             const long reps = star ? (long)((slen - si) / sz) : cnt;
             for (long r = 0; r < reps; r++) {
