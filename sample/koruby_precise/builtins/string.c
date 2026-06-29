@@ -1523,12 +1523,21 @@ static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* upto(other[, exclusive]) — yield self, self.succ, ... up to other (String
  * range semantics: stop when current > other or its length exceeds other's). */
 static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (VALUE_SLICE_LEN(a) < 1 || !KORB_STRING_P(VALUE_SLICE_GET(a, 0)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
-                          VALUE_SLICE_LEN(a) >= 1 ? korb_type_name(VALUE_SLICE_GET(a, 0)) : "nil");
+    if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of nil into String");
     const bool excl = VALUE_SLICE_LEN(a) >= 2 && KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
     slots[0] = VALUE_REF_GET(self);          /* cur (rooted) */
     slots[1] = VALUE_SLICE_GET(a, 0);        /* end (rooted) */
+    if (!KORB_STRING_P(slots[1])) {          /* coerce end via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[1] = sr.value;
+            slots[0] = VALUE_REF_GET(self);  /* re-read after dispatch */
+        }
+        if (!KORB_STRING_P(slots[1]))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     if (block == NULL) slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* collect for the Enumerator */
     /* single-byte begin AND end → iterate by byte value (CRuby fast path:
      * "9".upto("A") = 9 : ; < = > ? @ A, NOT succ which would carry "9"→"10"). */
