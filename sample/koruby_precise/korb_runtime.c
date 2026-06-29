@@ -3416,21 +3416,22 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     uint32_t enum_sym = korb_intern(vm, "Enumerable", 10);
     korb_const_define(c, enum_sym, KORB_NIL);
     { VALUE enm = korb_class_new(c, slots, enum_sym, KORB_NIL).value; VAL2CLASS(enm)->is_module = 1; korb_const_define(c, enum_sym, enm); }
-    /* Numeric: a tag module on the numeric types so is_a?(Numeric) / `Integer <
-     * Numeric` answer correctly (the arithmetic methods live on the concretes). */
+    /* Numeric: a real class (CRuby) — Object → Numeric → Integer/Float/Rational/
+     * Complex — so `class MyNum < Numeric` reaches Object (Object methods resolve).
+     * Numeric includes Comparable; the concrete numerics inherit it via Numeric. */
     uint32_t num_sym = korb_intern(vm, "Numeric", 7);
     korb_const_define(c, num_sym, KORB_NIL);
-    { VALUE num = korb_class_new(c, slots, num_sym, KORB_NIL).value; VAL2CLASS(num)->is_module = 1; korb_const_define(c, num_sym, num); }
+    { VALUE num = korb_class_new(c, slots, num_sym, korb_builtin_class_obj(vm, KORB_C_OBJECT)).value; korb_const_define(c, num_sym, num); }
     { slots[0] = korb_const_get(vm, comp_sym);                   /* Numeric includes Comparable (CRuby) */
       VALUE num = korb_const_get(vm, num_sym);
       (void)korb_do_include(c, slots + 1, num, VALUE_SLICE_MAKE(&slots[0], 1)); }
     static const int num_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX };
     for (size_t i = 0; i < sizeof(num_in)/sizeof(num_in[0]); i++) {
-        slots[0] = korb_const_get(vm, num_sym);
+        const VALUE num = korb_const_get(vm, num_sym);
         VALUE k = korb_const_get(vm, vm->class_name[num_in[i]]);
-        (void)korb_do_include(c, slots + 1, k, VALUE_SLICE_MAKE(&slots[0], 1));
+        if (KORB_CLASS_P(k)) ARO_STORE(c, VAL2CLASS(k), (VALUE *)(uintptr_t)&VAL2CLASS(k)->superclass, num);   /* superclass = Numeric */
     }
-    static const int comp_in[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING, KORB_C_SYMBOL, KORB_C_RATIONAL };
+    static const int comp_in[] = { KORB_C_STRING, KORB_C_SYMBOL };   /* numerics inherit Comparable via Numeric */
     for (size_t i = 0; i < sizeof(comp_in)/sizeof(comp_in[0]); i++) {
         slots[0] = korb_const_get(vm, comp_sym);
         VALUE k = korb_const_get(vm, vm->class_name[comp_in[i]]);
