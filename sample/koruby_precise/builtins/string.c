@@ -1205,9 +1205,17 @@ static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    if (!KORB_STRING_P(o)) {                              /* coerce via #to_str, else incomparable */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(o) && korb_responds_to(c, o, to_str)) {
+            slots[0] = o;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            o = sr.value;
+        }
+        if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+    }
     return RESULT_OK(LONG2FIX(korb_cmp_values(VALUE_REF_GET(self), o)));
 }
 
