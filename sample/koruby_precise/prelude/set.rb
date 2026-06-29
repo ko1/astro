@@ -13,6 +13,12 @@ class Set
     seen.pop
     r
   end
+  # subtract — remove every element of the enumerable in place, returning self.
+  def subtract(enum)
+    raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)
+    enum.each { |x| delete(x) }
+    self
+  end
   def flatten!
     flat = flatten
     if flat == self
