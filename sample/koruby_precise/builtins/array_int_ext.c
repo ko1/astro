@@ -558,6 +558,10 @@ static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         slots[1] = h->items->data[2*i]; slots[2] = h->items->data[2*i+1];
         CHECK(korb_hash_set(c, slots + 3, dst, VALUE_REF_AT(&slots[1]), slots[2]));
     }
+    KorbHash *const dh = VAL2HASH(VALUE_REF_GET(dst));        /* retain default value / default_proc */
+    const KorbHash *const sh = VAL2HASH(VALUE_REF_GET(self));
+    ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_val, sh->default_val);
+    ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_proc, sh->default_proc);
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
