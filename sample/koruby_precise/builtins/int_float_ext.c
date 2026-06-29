@@ -422,17 +422,30 @@ static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 
-static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a))));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
-        VALUE iv = VALUE_SLICE_GET(a, j);
+        slots[1] = VALUE_SLICE_GET(a, j);                 /* original index arg (rooted; yielded as-is) */
         intptr_t idx;
-        if (UNLIKELY(!korb_to_index(iv, &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        if (UNLIKELY(!korb_to_index(slots[1], &idx))) {   /* coerce a non-Integer index via #to_int */
+            VALUE iv2 = slots[1];
+            RESULT cr = korb_coerce_to_int(c, slots + 2, &iv2);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(iv2, &idx)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[1]));
+        }
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         intptr_t n = ary->len, orig = idx;
         if (idx < 0) idx += n;
-        if (idx < 0 || idx >= n) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "index %ld outside of array bounds: -%ld...%ld", (long)orig, (long)n, (long)n);
-        CHECK(korb_ary_push_val(c, slots + 1, dst, ary->items->data[idx]));
+        if (idx < 0 || idx >= n) {
+            if (block != NULL) {                          /* block form: yield the original index, use its result */
+                RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                CHECK(korb_ary_push_val(c, slots + 2, dst, r.value));
+                continue;
+            }
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld outside of array bounds: -%ld...%ld", (long)orig, (long)n, (long)n);
+        }
+        CHECK(korb_ary_push_val(c, slots + 2, dst, ary->items->data[idx]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }

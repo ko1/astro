@@ -6107,7 +6107,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "reverse!", korb_m_ary_reverse_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "rotate!", korb_m_ary_rotate_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "product", korb_m_ary_product, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "fetch_values", korb_m_ary_fetch_values, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "one?", korb_m_ary_one, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reverse_each", korb_m_ary_reverse_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "take_while", korb_m_ary_take_while, 0);
