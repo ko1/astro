@@ -604,7 +604,14 @@ static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 static RESULT korb_m_hash_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t depth = 1;                                   /* default flattens one level (pairs → k,v,...) */
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) (void)korb_to_index(VALUE_SLICE_GET(a, 0), &depth);
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        VALUE dv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(dv, &depth))) {       /* coerce depth via #to_int, else TypeError */
+            RESULT cr = korb_coerce_to_int(c, slots, &dv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(dv, &depth)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+    }
     uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n * 2)));
     for (uint32_t i = 0; i < n; i++) {
