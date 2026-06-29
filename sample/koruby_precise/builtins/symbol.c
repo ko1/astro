@@ -161,6 +161,25 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     free(syms);
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Struct/Data#instance_variables — like Object#instance_variables but excluding
+ * the members (stored internally as @<member> ivars, not user-visible). */
+static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT all = korb_m_obj_ivars(c, slots, self, a);
+    if (UNLIKELY(all.state != KORB_NORMAL)) return all;
+    slots[0] = all.value;                                /* all ivars (rooted) */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 0));    /* result */
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE ivsym = VAL2ARY(slots[0])->items->data[i];
+        const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(VALUE_REF_GET(self))->klass)->members);   /* re-read */
+        bool is_member = false;
+        for (uint32_t j = 0; j < mem->len; j++)
+            if (korb_member_ivar_sym(c->vm, mem->items->data[j]) == ivsym) { is_member = true; break; }
+        if (!is_member) CHECK(korb_ary_push_val(c, slots + 2, dst, ivsym));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Object#method(:sym) → bound Method. */
 static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE name = VALUE_SLICE_GET(a, 0);

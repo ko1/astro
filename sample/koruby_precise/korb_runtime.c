@@ -1757,6 +1757,7 @@ static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);     /* fwd (defined in symbol.c) */
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
     slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
@@ -1810,6 +1811,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "[]=", korb_m_struct_aset, 2);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "==", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_struct_inspect, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_struct_inspect, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
@@ -1936,6 +1938,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "with", korb_m_data_with, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "inspect", korb_m_data_inspect, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "instance_variables", korb_m_struct_ivars, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_s", korb_m_data_inspect, 0);
     slots[2] = VALUE_REF_GET(cls);                            /* root across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
