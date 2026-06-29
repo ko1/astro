@@ -885,8 +885,14 @@ static RESULT korb_m_ary_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_ary_cycle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     const bool bounded = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
     intptr_t n = 0;
-    if (bounded && UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (bounded) {
+        VALUE nv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(nv, &n))) {          /* coerce count via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &nv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(nv, &n)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        }
+    }
     if (block == NULL) {
         if (bounded) {                                  /* finite → eager Enumerator of repeated elements */
             const uint32_t blen = VAL2ARY(VALUE_REF_GET(self))->len;
