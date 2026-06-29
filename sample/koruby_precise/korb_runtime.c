@@ -5501,7 +5501,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                 return RESULT_OK(slots[1]);                          /* exception identity (mutated in place) */
             }
-            if (argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) /* default: arg0 is the message */
+            if (argc >= 1)                                 /* default: arg0 is the message (any object; #to_s'd lazily) */
                 ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->msg, slots[-(intptr_t)argc]);
             return RESULT_OK(slots[1]);
         }
@@ -7824,6 +7824,8 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
                 r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, s->buf->data);
             } else {
                 r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
+                if (n >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL && KORB_EXC_P(r.value))   /* non-String message → store the object; #message #to_s's it */
+                    ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, VALUE_SLICE_GET(args, 1));
             }
             slots[1] = r.value;                          /* root the exception */
             if (VAL2CLASS(slots[0])->exc_etype < 0)      /* user subclass → tag the instance with it */

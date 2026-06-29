@@ -999,7 +999,11 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbException *e = VAL2EXC(VALUE_REF_GET(self));
-    if (e->msg != KORB_NIL) return RESULT_OK(e->msg);
+    if (e->msg != KORB_NIL) {
+        if (KORB_STRING_P(e->msg)) return RESULT_OK(e->msg);
+        slots[0] = e->msg;                                /* non-String message → #to_s it */
+        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    }
     /* no explicit message → the class name (exc_class for an abstract/user class,
      * else the builtin etype name), matching CRuby's default. */
     const char *nm = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
