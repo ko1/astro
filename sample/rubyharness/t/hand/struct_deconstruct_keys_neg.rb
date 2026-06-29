@@ -1,0 +1,7 @@
+S = Struct.new(:x, :y)
+s = S.new(1, 2)
+p s.deconstruct_keys([-1])
+p s.deconstruct_keys([0, -1])
+p s.deconstruct_keys([:x, :y, :z])
+p s.deconstruct_keys([:x])
+p s.deconstruct_keys(nil)

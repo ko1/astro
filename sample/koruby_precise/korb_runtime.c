@@ -1590,6 +1590,7 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
     const uint32_t nk = VAL2ARY(slots[1])->len;
     slots[2] = UNWRAP(korb_hash_new(c, slots + 3, nk));
     VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    if (nk > VAL2ARY(slots[0])->len) return RESULT_OK(VALUE_REF_GET(dst));   /* more keys than members → {} */
     for (uint32_t k = 0; k < nk; k++) {
         const VALUE key = VAL2ARY(slots[1])->items->data[k];
         const KorbArray *const mem = VAL2ARY(slots[0]);        /* re-read post-GC */
@@ -1599,7 +1600,8 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
         if (SYMBOL_P(key)) msym = key;
         else if (KORB_STRING_P(key)) msym = ID2SYM(korb_intern(c->vm, VAL2STR(key)->buf->data, VAL2STR(key)->len));
         else if (FIXNUM_P(key)) {
-            const intptr_t idx = FIX2LONG(key);
+            intptr_t idx = FIX2LONG(key);
+            if (idx < 0) idx += mem->len;                      /* negative index from the end */
             if (idx < 0 || (uint32_t)idx >= mem->len) break;
             msym = mem->items->data[idx];
         }
