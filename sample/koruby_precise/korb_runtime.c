@@ -3451,6 +3451,22 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "NoMethodError",       KORB_E_NOMETHOD,   "NameError" },
         { "NotImplementedError", KORB_E_NOTIMPL,    "ScriptError" },
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },
+        /* const-only (etype -1): exist with the right hierarchy for kind_of?/
+         * ancestors/rescue-class checks; the runtime doesn't raise them itself. */
+        { "LoadError",           -1,                "ScriptError" },
+        { "SyntaxError",         -1,                "ScriptError" },
+        { "NoMemoryError",       -1,                "Exception" },
+        { "SecurityError",       -1,                "Exception" },
+        { "SystemExit",          -1,                "Exception" },
+        { "SignalException",     -1,                "Exception" },
+        { "Interrupt",           -1,                "SignalException" },
+        { "EncodingError",       -1,                "StandardError" },
+        { "IOError",             -1,                "StandardError" },
+        { "EOFError",            -1,                "IOError" },
+        { "FiberError",          -1,                "StandardError" },
+        { "ThreadError",         -1,                "StandardError" },
+        { "RegexpError",         -1,                "StandardError" },
+        { "SystemCallError",     -1,                "StandardError" },
     };
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
         uint32_t name_sym = korb_intern(vm, defs[i].name, strlen(defs[i].name));
