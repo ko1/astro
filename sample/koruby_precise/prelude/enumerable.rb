@@ -47,8 +47,8 @@ module Enumerable
   def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if k.nil? || k == :_separator; f = true; next; end; if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
   def chunk_while; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_when; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
-  def take(n); r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
-  def drop(n); r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
+  def take(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
+  def drop(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless yield(*ar); r << e }; r; end
   def drop_while; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !yield(*ar); r << e unless dropping }; r; end
   def minmax; [min, max]; end
