@@ -3607,6 +3607,10 @@ korb_value_eq(VALUE a, VALUE b)
         }
         return true;
     }
+    if (KORB_RANGE_P(a) && KORB_RANGE_P(b)) {         /* Range#==: == begin/end + same exclude_end */
+        const KorbRange *const x = VAL2RANGE(a), *const y = VAL2RANGE(b);
+        return x->exclude_end == y->exclude_end && korb_value_eq(x->rbegin, y->rbegin) && korb_value_eq(x->rend, y->rend);
+    }
     if (KORB_COMPLEX_P(a) || KORB_COMPLEX_P(b)) {     /* complex == complex / == real(im 0) */
         if (KORB_COMPLEX_P(a) && KORB_COMPLEX_P(b))
             return korb_value_eq(VAL2CPX(a)->re, VAL2CPX(b)->re) && korb_value_eq(VAL2CPX(a)->im, VAL2CPX(b)->im);
@@ -6295,6 +6299,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
     korb_def_cmethod(c, KORB_C_RANGE, "frozen?", korb_m_range_frozen, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
+    korb_def_cmethod(c, KORB_C_RANGE, "==", korb_m_range_eq, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "eql?", korb_m_range_eq, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "entries", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);

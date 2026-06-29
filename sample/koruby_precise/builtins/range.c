@@ -121,6 +121,18 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return RESULT_OK(KORB_FALSE);
     }
 }
+/* Range#== — another Range with == begin / == end and the same exclude_end. */
+static RESULT korb_m_range_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_RANGE_P(o)) return RESULT_OK(KORB_FALSE);
+    const KorbRange *const r = SELF_RANGE;
+    const KorbRange *const r2 = VAL2RANGE(o);
+    const bool eq = (r->exclude_end == r2->exclude_end)
+                 && korb_value_eq(r->rbegin, r2->rbegin)      /* handles nil==nil and cross-numeric */
+                 && korb_value_eq(r->rend, r2->rend);
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
+}
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
 static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, take)));
