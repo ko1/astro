@@ -16,7 +16,7 @@ module Enumerable
   def find(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
   def detect(ifnone = nil); each { |*a| if yield(*a); return(a.size <= 1 ? a[0] : a); end }; ifnone ? ifnone.call : nil; end
   def to_a; r = []; __each_el { |e| r << e }; r; end
-  def to_h; h = {}; if block_given?; each { |*a| kv = yield(*a); h[kv[0]] = kv[1] }; else; __each_el { |x| h[x[0]] = x[1] }; end; h; end
+  def to_h(*args); h = {}; bg = block_given?; each(*args) { |*a| pair = bg ? yield(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
   def entries; r = []; __each_el { |e| r << e }; r; end
   def count; n = 0; each { |*a| n += 1 }; n; end
   def include?(v); __each_el { |e| return true if e == v }; false; end
