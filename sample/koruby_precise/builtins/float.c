@@ -305,7 +305,7 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
         mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);   /* GMP copy: independent of the GC heap, survives the allocs below */
-        if (mpz_sgn(z) < 0) { mpz_clear(z); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain"); }
+        if (mpz_sgn(z) < 0) { mpz_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain"); }
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 8)));
         if (mpz_sgn(z) == 0) {
             CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(0)));
@@ -320,7 +320,7 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
 #endif
     intptr_t n = SELF_INT;
-    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of domain");
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     do {
         CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(n % base)));
