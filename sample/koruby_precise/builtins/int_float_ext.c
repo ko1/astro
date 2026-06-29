@@ -426,6 +426,7 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
 
 /* one?: exactly one truthy element (or exactly one block-truthy element). */
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     uint32_t cnt = 0;
     for (uint32_t i = 0; ; i++) {

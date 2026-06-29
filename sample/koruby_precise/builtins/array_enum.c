@@ -1296,6 +1296,7 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* any? (mode 0) / all? (1) / none? (2). A pattern arg (case ===) wins over a block. */
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
