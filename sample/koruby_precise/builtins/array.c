@@ -706,8 +706,15 @@ static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         if (korb_num_to_d(lv, &d) && isinf(d) && d > 0)
             return korb_arithseq_new(c, slots, VALUE_REF_GET(self), lv, LONG2FIX(1), 2, 0);
     }
-    if (UNLIKELY(!FIXNUM_P(lv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
-    intptr_t to = FIX2LONG(lv), from = FIX2LONG(VALUE_REF_GET(self));
+    intptr_t to, from = FIX2LONG(VALUE_REF_GET(self));
+    if (LIKELY(FIXNUM_P(lv))) {
+        to = FIX2LONG(lv);
+    } else if (KORB_FLOAT_P(lv) && isfinite(korb_float_val(lv))) {   /* Float endpoint: floor (upto) / ceil (downto) */
+        const double d = korb_float_val(lv);
+        to = (intptr_t)(up ? floor(d) : ceil(d));
+    } else {
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+    }
     if (block == NULL) {                              /* → Enumerator of the sequence */
         slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
