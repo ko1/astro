@@ -1771,10 +1771,17 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)FIX2LONG(k), mem->len);
         return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
     }
-    uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : (KORB_STRING_P(k) ? korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len) : 0);
+    if (KORB_FLOAT_P(k)) {                                /* Float index → truncate toward zero, like to_int */
+        intptr_t i = (intptr_t)korb_float_val(k); if (i < 0) i += mem->len;
+        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)(intptr_t)korb_float_val(k), mem->len);
+        return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
+    }
+    if (UNLIKELY(!SYMBOL_P(k) && !KORB_STRING_P(k)))      /* not Integer/Float/Symbol/String → no implicit Integer conversion */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(k));
+    uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len);
     for (uint32_t i = 0; i < mem->len; i++)
         if (SYM2ID(mem->items->data[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
-    return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", SYMBOL_P(k) ? korb_sym_name(c->vm, sym) : "?");
+    return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
 }
 /* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result. */
 static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
