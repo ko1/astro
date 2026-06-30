@@ -720,14 +720,22 @@ static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 /* recursively join leaves of nested arrays with `sep` (no koruby alloc; all reads). */
-static void korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbString *sep, bool *first) {
+#define KORB_JOIN_MAX_DEPTH 4096
+/* anc = the arrays on the current recursion path; a repeat (or overflow) means a
+ * recursive array → false (caller raises ArgumentError) instead of a SEGV.  This
+ * recursion is GC-free, so the raw KorbArray pointers stay valid. */
+static bool korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbString *sep, bool *first, const KorbArray **anc, int depth) {
+    if (UNLIKELY(depth >= KORB_JOIN_MAX_DEPTH)) return false;
+    for (int j = 0; j < depth; j++) if (anc[j] == ary) return false;
+    anc[depth] = ary;
     for (uint32_t i = 0; i < ary->len; i++) {
         VALUE e = ary->items->data[i];
-        if (KORB_ARRAY_P(e)) { korb_join_rec(c, ms, VAL2ARY(e), sep, first); continue; }
+        if (KORB_ARRAY_P(e)) { if (!korb_join_rec(c, ms, VAL2ARY(e), sep, first, anc, depth + 1)) return false; continue; }
         if (!*first && sep) fwrite(sep->buf->data, 1, sep->len, ms);
         korb_fprint_to_s(c, ms, e);
         *first = false;
     }
+    return true;
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (SELF_ARY->len == 0) return korb_str_new(c, slots, "", 0);   /* [].join(anything) → "" (sep not validated) */
@@ -753,8 +761,12 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const KorbArray *ary = SELF_ARY;                                /* re-read after possible to_str dispatch */
     const KorbString *sep = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;
     bool first = true;
-    korb_join_rec(c, ms, ary, sep, &first);             /* recurse into nested arrays (no GC) */
+    const KorbArray **const anc = malloc(sizeof(*anc) * KORB_JOIN_MAX_DEPTH);   /* ancestor-path scratch (cycle detection) */
+    if (!anc) { fprintf(stderr, "koruby_precise: malloc failed\n"); abort(); }
+    const bool ok = korb_join_rec(c, ms, ary, sep, &first, anc, 0);   /* recurse into nested arrays (no GC) */
+    free(anc);
     fclose(ms);
+    if (UNLIKELY(!ok)) { free(buf); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array join"); }
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
     return r;
