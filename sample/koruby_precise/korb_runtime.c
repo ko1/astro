@@ -4897,7 +4897,9 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
         CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
     }
     base[pos_argc] = VALUE_REF_GET(h);
-    return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, self);
+    /* `self` (the by-value param) may have moved during the Hash build above — it
+     * is staged at base[-1] (a scanned slot), so re-read the forwarded receiver. */
+    return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, base[-1]);
 }
 
 RESULT

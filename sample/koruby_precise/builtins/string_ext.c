@@ -115,9 +115,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const bool bare = (fmt[i] == '{');
             i++; const uint32_t nstart = i;
             while (i < flen && fmt[i] != close) i++;
-            if (i >= flen || !KORB_HASH_P(single)) { err = true; errmsg = "malformed format sequence"; break; }
-            const int32_t hidx = korb_hash_find(VAL2HASH(single), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
-            named_arg = (hidx >= 0) ? VAL2HASH(single)->items->data[2 * hidx + 1] : KORB_NIL;
+            /* named source = args[0] (a Hash): String#% passes it as `single`; Kernel#format
+             * collects values into an Array so the hash is unwrapped into args[0]. Same slot. */
+            const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
+            if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
+            const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+            named_arg = (hidx >= 0) ? VAL2HASH(nh)->items->data[2 * hidx + 1] : KORB_NIL;
             has_named = true;                              /* i is at the close char */
             if (bare) {                                    /* %{name} → to_s, no conversion */
                 if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
