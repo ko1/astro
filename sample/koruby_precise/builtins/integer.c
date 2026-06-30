@@ -254,7 +254,15 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (KORB_FLOAT_P(bv)) {                            /* Integer#divmod(Float) → [Integer floor div, Float mod] */
         double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        slots[0] = LONG2FIX((intptr_t)floor(s / f));
+        if (UNLIKELY(isnan(f))) return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, "NaN");
+        const double q = floor(s / f);
+#ifdef KORB_HAVE_GMP
+        if (q >= -4611686018427387904.0 && q < 4611686018427387904.0)   /* within [-2^62, 2^62): a Fixnum */
+            slots[0] = LONG2FIX((intptr_t)q);
+        else { mpz_t zq; mpz_init(zq); mpz_set_d(zq, q); slots[0] = UNWRAP(korb_big_from_mpz(c, slots, zq)); mpz_clear(zq); }   /* quotient exceeds Fixnum range */
+#else
+        slots[0] = LONG2FIX((intptr_t)q);
+#endif
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_fmod(s, f)));
         slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
