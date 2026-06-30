@@ -1191,7 +1191,17 @@ RESULT
 korb_hash_merge_val(CTX *c, VALUE *slots, VALUE_REF href, VALUE src)
 {
     if (src == KORB_NIL) return RESULT_OK(VALUE_REF_GET(href));
-    if (UNLIKELY(!KORB_HASH_P(src))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(src));
+    if (UNLIKELY(!KORB_HASH_P(src))) {                 /* `**obj` → obj.to_hash */
+        const char *const orig = korb_type_name(src);
+        const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+        if (KORB_OBJECT_P(src) && korb_responds_to(c, src, to_hash)) {
+            slots[0] = src;
+            RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            src = r.value;
+        }
+        if (!KORB_HASH_P(src)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", orig);
+    }
     VALUE_REF sref = SLOTS_PUSH(slots, src);          /* root src across grow GCs */
     uint32_t n = VAL2HASH(VALUE_REF_GET(sref))->len;
     for (uint32_t i = 0; i < n; i++) {
