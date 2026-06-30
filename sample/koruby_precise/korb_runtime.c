@@ -6713,6 +6713,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "singleton_methods", korb_m_obj_singleton_methods, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "===", korb_m_class_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_CLASS, "define_method", korb_m_define_method, -1);
+    /* class_eval/module_eval (block) rebind self=class, so `def` inside targets the
+     * class as an instance method (node_def uses self); class_exec/module_exec also
+     * forward block args.  Same self-rebind logic as instance_eval/instance_exec. */
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_eval", korb_m_obj_instance_eval, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_eval", korb_m_obj_instance_eval, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_exec", korb_m_obj_instance_exec, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_exec", korb_m_obj_instance_exec, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "alias_method", korb_m_class_alias_method, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
