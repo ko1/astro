@@ -2581,6 +2581,7 @@ static bool korb_class_has_ancestor(VALUE klass, VALUE anc) {
 /* Copy the method `oldm` (found on klass / its ancestors / the global table) into
  * a new slot `newm` on klass.  Shared by Module#alias_method and `alias`. */
 RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t oldm) {
+    if (!KORB_CLASS_P(klass)) klass = korb_dispatch_class(c, klass);   /* top-level (self=main) → alias on its class (Object) */
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
     const struct korb_method *src = korb_class_find_method(klass, oldm, NULL);
