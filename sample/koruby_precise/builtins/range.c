@@ -295,6 +295,8 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (SELF_RANGE->rend == KORB_NIL && SELF_RANGE->rbegin != KORB_NIL)   /* endless range → can't materialize */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot convert endless range to an array");
     intptr_t lo, hi;
     if (korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, (uint32_t)(hi > lo ? hi - lo : 0))));
@@ -315,6 +317,27 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (excl && cmp == 0) break;
             CHECK(korb_ary_push_val(c, slots + 3, out, slots[1]));
             if (cmp == 0) break;                           /* inclusive end reached */
+            slots[1] = UNWRAP(korb_m_str_succ(c, slots + 3, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(NULL, 0)));
+        }
+        return RESULT_OK(VALUE_REF_GET(out));
+    }
+    if (SYMBOL_P(SELF_RANGE->rbegin) && SYMBOL_P(SELF_RANGE->rend)) {   /* Symbol range → succ over the names, collect Symbols */
+        const char *const bn = korb_sym_name(c->vm, SYM2ID(SELF_RANGE->rbegin));
+        const char *const en = korb_sym_name(c->vm, SYM2ID(SELF_RANGE->rend));
+        const bool excl = SELF_RANGE->exclude_end != 0;
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, bn, (uint32_t)strlen(bn)));   /* cur (String) */
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, en, (uint32_t)strlen(en)));   /* end (String) */
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 3, 8));
+        VALUE_REF out = VALUE_REF_AT(&slots[0]);
+        for (int guard = 0; guard < 100000000; guard++) {
+            const uint32_t curlen = VAL2STR(slots[1])->len, endlen = VAL2STR(slots[2])->len;
+            if (curlen > endlen) break;
+            const int cmp = korb_cmp_values(slots[1], slots[2]);
+            if (cmp > 0) break;
+            if (excl && cmp == 0) break;
+            const KorbString *const cs = VAL2STR(slots[1]);
+            CHECK(korb_ary_push_val(c, slots + 3, out, ID2SYM(korb_intern(c->vm, cs->buf->data, cs->len))));
+            if (cmp == 0) break;
             slots[1] = UNWRAP(korb_m_str_succ(c, slots + 3, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(NULL, 0)));
         }
         return RESULT_OK(VALUE_REF_GET(out));
