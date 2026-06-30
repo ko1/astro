@@ -435,7 +435,11 @@ static RESULT korb_m_range_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Range#reverse_each without a block is not supported");
+    if (UNLIKELY(block == NULL)) {                        /* no block → self.to_enum(:reverse_each) (finite range) */
+        slots[0] = VALUE_REF_GET(self);
+        slots[1] = ID2SYM(korb_intern(c->vm, "reverse_each", 12));
+        return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, KORB_NIL);
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
