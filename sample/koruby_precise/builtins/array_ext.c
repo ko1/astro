@@ -455,6 +455,7 @@ static RESULT korb_m_str_unpack1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_ary_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     intptr_t n;
+    if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int (like Array#drop) */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -547,6 +548,7 @@ static RESULT korb_m_ary_shuffle_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE nv = VALUE_SLICE_GET(a, 0);
     intptr_t n;
+    if (UNLIKELY(KORB_BIGNUM_P(nv))) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
     if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce count via #to_int */
         RESULT cr = korb_coerce_to_int(c, slots, &nv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
