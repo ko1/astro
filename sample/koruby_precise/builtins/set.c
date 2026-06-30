@@ -372,6 +372,7 @@ static RESULT korb_m_obj_singleton_class(CTX *c, VALUE *slots, VALUE_REF self, V
 static RESULT korb_m_obj_initialize_copy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE sv = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
     if (sv == o) return RESULT_OK(sv);
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(sv))) return korb_raise_frozen(c, slots, sv);   /* immediates (Integer/Symbol/...) are frozen */
     KORB_CHECK_FROZEN(c, slots, sv);
     if (korb_class_of(sv) != korb_class_of(o) ||
         (KORB_OBJECT_P(sv) && VAL2OBJ(sv)->klass != VAL2OBJ(o)->klass))
