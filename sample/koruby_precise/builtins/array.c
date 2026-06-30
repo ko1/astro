@@ -721,7 +721,9 @@ static RESULT korb_int_iter(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         const double d = korb_float_val(lv);
         to = (intptr_t)(up ? floor(d) : ceil(d));
     } else {
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+        double d;
+        if (korb_num_to_d(lv, &d)) to = (intptr_t)(up ? floor(d) : ceil(d));   /* Bignum/Rational endpoint */
+        else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Integer with %s failed", korb_type_name(lv));   /* non-numeric */
     }
     if (block == NULL) {                              /* → Enumerator of the sequence */
         slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
