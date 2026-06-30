@@ -681,16 +681,27 @@ static void korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbStri
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (SELF_ARY->len == 0) return korb_str_new(c, slots, "", 0);   /* [].join(anything) → "" (sep not validated) */
-    /* sep at slots scratch so it survives the per-element to_s allocs */
+    /* coerced separator parked in slots[0] so it survives the per-element to_s allocs */
+    slots[0] = KORB_NIL;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         VALUE sv = VALUE_SLICE_GET(a, 0);
-        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        if (UNLIKELY(!KORB_STRING_P(sv))) {                         /* coerce a #to_str separator */
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(sv) && korb_responds_to(c, sv, to_str)) {
+                slots[0] = sv;
+                const RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                sv = sr.value;
+            }
+            if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        slots[0] = sv;                                              /* the (possibly coerced) String sep */
     }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    const KorbArray *ary = SELF_ARY;
-    const KorbString *sep = (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) ? VAL2STR(VALUE_SLICE_GET(a, 0)) : NULL;
+    const KorbArray *ary = SELF_ARY;                                /* re-read after possible to_str dispatch */
+    const KorbString *sep = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;
     bool first = true;
     korb_join_rec(c, ms, ary, sep, &first);             /* recurse into nested arrays (no GC) */
     fclose(ms);

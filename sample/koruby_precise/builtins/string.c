@@ -154,6 +154,17 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
         char buf[4]; uint32_t n = korb_utf8_encode((uint32_t)cp, buf);   /* stable C buffer */
         return korb_str_cat(c, slots, self, buf, n);
     }
+    { const uint32_t to_str = korb_intern(c->vm, "to_str", 6);   /* coerce a #to_str object → String */
+      if (KORB_OBJECT_P(o) && korb_responds_to(c, o, to_str)) {
+          slots[0] = o;                                          /* receiver, rooted across dispatch */
+          const RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+          if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+          if (LIKELY(KORB_STRING_P(sr.value))) {
+              VALUE_REF sref = SLOTS_PUSH(slots, sr.value);      /* coerced String (self stays rooted) */
+              return korb_str_append_str(c, slots, self, sref);
+          }
+      }
+    }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
 }
 static RESULT korb_m_str_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

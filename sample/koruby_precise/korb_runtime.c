@@ -4085,9 +4085,21 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_type_name(rhs));
     }
-    if (KORB_STRING_P(l))
-        return korb_raise(c, slots, KORB_E_TYPE, line,
-                          "no implicit conversion of %s into String", korb_type_name(rhs));
+    if (KORB_STRING_P(l)) {                          /* String + non-String → coerce via #to_str */
+        const uint32_t to_str_mid = korb_intern(c->vm, "to_str", 6);
+        if (!korb_responds_to(c, rhs, to_str_mid))
+            return korb_raise(c, slots, KORB_E_TYPE, line,
+                              "no implicit conversion of %s into String", korb_type_name(rhs));
+        const char *const rcls = korb_type_name(rhs);   /* capture before dispatch (STRESS-safe) */
+        slots[0] = rhs;                              /* receiver, rooted across dispatch */
+        const RESULT tr = korb_send_impl(c, slots + 1, to_str_mid, line, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+        if (UNLIKELY(!KORB_STRING_P(tr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to String (%s#to_str gives %s)",
+                              rcls, rcls, korb_type_name(tr.value));
+        VALUE_REF r = SLOTS_PUSH(slots, tr.value);   /* the coerced String (lhs stays rooted) */
+        return korb_str_plus_ref(c, slots, lhs, r);
+    }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "+", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, line,
                       "undefined method '+' for %s", korb_a_type_name(l));
@@ -4144,13 +4156,15 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
                 CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2ARY(VALUE_REF_GET(lhs))->items->data[i]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
-    if (KORB_ARRAY_P(l) && KORB_STRING_P(rhs)) {     /* Array * sep → join */
-        slots[0] = rhs;
-        return korb_m_ary_join(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
-    }
-    if (KORB_ARRAY_P(l))                             /* Array * non-int/str */
-        return korb_raise(c, slots, KORB_E_TYPE, line,
+    if (KORB_ARRAY_P(l)) {                           /* Array * String-or-#to_str → join (join coerces the sep) */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_STRING_P(rhs) || (KORB_OBJECT_P(rhs) && korb_responds_to(c, rhs, to_str))) {
+            slots[0] = rhs;
+            return korb_m_ary_join(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, line,   /* non-int / non-str */
                           "no implicit conversion of %s into Integer", korb_type_name(rhs));
+    }
     if (FIXNUM_P(l)) {
         bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "*", line, &h);
         if (h) return cr;
