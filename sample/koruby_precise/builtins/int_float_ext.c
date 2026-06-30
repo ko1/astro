@@ -360,6 +360,22 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         RESULT sr = korb_set_from_array(c, slots + 2, cp);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         slots[1] = sr.value;
+    } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
+        slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        const uint32_t sid0 = VAL2OBJ(VALUE_REF_GET(self))->shape_id;   /* re-read self (obj_new GC'd; `v` is stale) */
+        const uint32_t nv = c->vm->shapes[sid0].ivar_count;
+        if (nv) {
+            uint32_t *const syms = (uint32_t *)malloc((size_t)nv * sizeof(uint32_t));   /* libc: stable across GC */
+            if (UNLIKELY(!syms)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
+            for (uint32_t sid = sid0; sid; ) { const struct korb_shape *s = &c->vm->shapes[sid]; if (s->ivar_count >= 1 && s->ivar_count <= nv) syms[s->ivar_count - 1] = s->edge_sym; sid = s->parent; }
+            for (uint32_t i = 0; i < nv; i++) {
+                slots[2] = VAL2OBJ(VALUE_REF_GET(self))->ivars->data[i];   /* re-read self (ivar_set GCs) */
+                RESULT ir = korb_ivar_set(c, slots + 3, dst, ID2SYM(syms[i]), slots[2]);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(syms); return ir; }
+            }
+            free(syms);
+        }
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
