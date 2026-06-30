@@ -1383,11 +1383,38 @@ korb_class_ivar_set(CTX *c, VALUE *slots, VALUE_REF clsref, VALUE name_sym, VALU
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+/* A custom Exception subclass instance keeps its ivars in a side hash (like a
+ * Class), so `@id` on a NotFound exception works.  KorbException has no shape. */
+static VALUE
+korb_exc_ivar_get(VALUE exc, VALUE name_sym)
+{
+    const VALUE h = VAL2EXC(exc)->ivars;
+    if (h == KORB_NIL) return KORB_NIL;
+    const int32_t idx = korb_hash_find(VAL2HASH(h), name_sym);
+    return idx >= 0 ? VAL2HASH(h)->items->data[2 * idx + 1] : KORB_NIL;
+}
+
+static RESULT
+korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val)
+{
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root across hash alloc/grow */
+    VALUE_REF nref = SLOTS_PUSH(slots, name_sym);
+    if (VAL2EXC(VALUE_REF_GET(excref))->ivars == KORB_NIL) {
+        const VALUE h = UNWRAP(korb_hash_new(c, slots, 4));
+        ARO_STORE(c, VAL2EXC(VALUE_REF_GET(excref)),
+                  (VALUE *)(uintptr_t)&VAL2EXC(VALUE_REF_GET(excref))->ivars, h);
+    }
+    VALUE_REF href = SLOTS_PUSH(slots, VAL2EXC(VALUE_REF_GET(excref))->ivars);
+    CHECK(korb_hash_set(c, slots, href, nref, VALUE_REF_GET(vref)));
+    return RESULT_OK(VALUE_REF_GET(vref));
+}
+
 VALUE
 korb_ivar_get(CTX *c, VALUE self, VALUE name_sym)
 {
     if (UNLIKELY(!KORB_OBJECT_P(self))) {            /* class → side hash; other builtins (Proc/Fiber/...) carry no ivars */
         if (KORB_CLASS_P(self)) return korb_class_ivar_get(self, name_sym);
+        if (KORB_EXC_P(self)) return korb_exc_ivar_get(self, name_sym);
         return KORB_NIL;
     }
     const KorbObject *o = VAL2OBJ(self);
@@ -1408,6 +1435,8 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
     if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(selfref)))) {
         if (KORB_CLASS_P(VALUE_REF_GET(selfref)))     /* class object's own @ivars → side hash */
             return korb_class_ivar_set(c, slots, selfref, name_sym, val);
+        if (KORB_EXC_P(VALUE_REF_GET(selfref)))       /* custom Exception subclass ivars → side hash */
+            return korb_exc_ivar_set(c, slots, selfref, name_sym, val);
         return RESULT_OK(val);                        /* Proc/Fiber/... : no ivar storage (silently dropped) */
     }
     const uint32_t sym = SYM2ID(name_sym);

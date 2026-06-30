@@ -1722,7 +1722,7 @@ node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, st
         ic->shape_id = o->shape_id; ic->slot = idx;
         return RESULT_OK(o->ivars->data[idx]);
     }
-    if (KORB_CLASS_P(self)) return RESULT_OK(korb_ivar_get(c, self, ID2SYM(name)));   /* class object's own @ivars (cold) */
+    if (KORB_CLASS_P(self) || KORB_EXC_P(self)) return RESULT_OK(korb_ivar_get(c, self, ID2SYM(name)));   /* class / exception side hash (cold) */
     return RESULT_OK(KORB_NIL);   /* @x on non-object self → nil */
 }
 
@@ -1744,7 +1744,7 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VA
         }
         return r;
     }
-    if (KORB_CLASS_P(slots[self_off]))                /* class object's own @ivars → side hash (cold) */
+    if (KORB_CLASS_P(slots[self_off]) || KORB_EXC_P(slots[self_off]))   /* class / exception → side hash (cold) */
         return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
     return korb_raise(c, slots, KORB_E_RUNTIME, 0, "instance variable set on a non-object self");
 }

@@ -98,7 +98,7 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
-    if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))))
+    if (UNLIKELY(!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self)) && !KORB_EXC_P(VALUE_REF_GET(self))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));
@@ -111,7 +111,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     (void)slots;
-    if (!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
+    if (!KORB_OBJECT_P(VALUE_REF_GET(self)) && !KORB_CLASS_P(VALUE_REF_GET(self)) && !KORB_EXC_P(VALUE_REF_GET(self))) return RESULT_OK(KORB_NIL);
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));
 }
 /* Object#instance_variable_defined?(name) — true if the @ivar is set (non-nil). */
@@ -142,6 +142,14 @@ static RESULT korb_m_obj_remove_ivar(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE sv = VALUE_REF_GET(self);
+    if (KORB_EXC_P(sv)) {                                       /* exception ivars live in a side hash */
+        if (VAL2EXC(sv)->ivars == KORB_NIL) return korb_ary_new(c, slots, 0);
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(VAL2EXC(sv)->ivars)->len));   /* alloc may GC → re-read self below */
+        VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; i < VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->len; i++)
+            CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items->data[2 * i]));
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     if (!KORB_OBJECT_P(sv)) return korb_ary_new(c, slots, 0);   /* immediates / builtins: none */
     const uint32_t sid0 = VAL2OBJ(sv)->shape_id;                /* read shape BEFORE any alloc */
     const uint32_t n = c->vm->shapes[sid0].ivar_count;
