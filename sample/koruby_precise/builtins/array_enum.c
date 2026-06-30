@@ -1127,6 +1127,7 @@ static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 
 static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    const uint32_t self_len0 = VAL2ARY(VALUE_REF_GET(self))->len;   /* initial length: concat(self, self) appends the original, not the growing, self */
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {   /* concat(*arrays) */
         slots[0] = VALUE_SLICE_GET(a, k);                 /* arg (rooted; possibly coerced) */
         if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {          /* coerce via #to_ary */
@@ -1138,7 +1139,7 @@ static RESULT korb_m_ary_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             }
             if (!KORB_ARRAY_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
         }
-        const uint32_t n = VAL2ARY(slots[0])->len;        /* snapshot len (handles concat(self)) */
+        const uint32_t n = (slots[0] == VALUE_REF_GET(self)) ? self_len0 : VAL2ARY(slots[0])->len;   /* self-arg → its original length */
         for (uint32_t i = 0; i < n; i++)
             CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));   /* re-read other (rooted) */
     }

@@ -194,8 +194,16 @@ static RESULT korb_m_str_ltlt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++)
-        CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, j)));
+    const uint32_t self_len0 = VAL2STR(VALUE_REF_GET(self))->len;   /* original bytes: concat(self,...) appends these, not the growing self */
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        if (UNLIKELY(VALUE_SLICE_GET(a, j) == VALUE_REF_GET(self))) {   /* self-arg → append the original bytes only */
+            KorbString *s = korb_str_ensure(c, slots, self, VAL2STR(VALUE_REF_GET(self))->len + self_len0);
+            const KorbString *o = VAL2STR(VALUE_REF_GET(self));        /* re-read after grow (s == o) */
+            memcpy(s->buf->data + s->len, o->buf->data, self_len0);    /* dest past src by >= self_len0 → no overlap */
+            s->len += self_len0; s->buf->data[s->len] = '\0';
+        }
+        else CHECK(korb_str_append_one(c, slots, self, VALUE_SLICE_REF(a, j)));
+    }
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
