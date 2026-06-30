@@ -505,6 +505,12 @@ static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* self.to_enum(:meth) — for no-block enumerator returns. */
+static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char *meth) {
+    slots[0] = VALUE_REF_GET(self);
+    slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+    return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, KORB_NIL);
+}
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#min_by/max_by without a block is not supported");
@@ -525,10 +531,11 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
     }
     return RESULT_OK(slots[0]);
 }
-static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
-static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
+static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; if (block == NULL) return korb_ary_to_enum(c, slots, self, "min_by"); return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
+static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; if (block == NULL) return korb_ary_to_enum(c, slots, self, "max_by"); return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
 static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
+    if (block == NULL) return korb_ary_to_enum(c, slots, self, "minmax_by");
     slots[0] = UNWRAP(korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1));
     slots[1] = UNWRAP(korb_ary_minmax_by(c, slots + 1, self, block, def_env, cself, 1));
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
