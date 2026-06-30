@@ -5,6 +5,28 @@
 
 static bool korb_math_d(VALUE v, double *out) { return korb_num_to_d(v, out); }
 
+/* Coerce v to a double for a Math function: fast numeric path, else Float(v) via
+ * #to_f (CRuby rb_to_float semantics — accepts any object that defines #to_f).
+ * Returns a RAISE result (TypeError, or whatever #to_f raised) on failure. */
+static RESULT korb_math_coerce_d(CTX *c, VALUE *slots, VALUE v, double *out) {
+    if (LIKELY(korb_num_to_d(v, out))) return RESULT_OK(KORB_NIL);
+    slots[0] = v;                                   /* root for the dispatch + error message */
+    /* CRuby rb_to_float: only a Numeric (subclass) is coerced via #to_f — a plain
+     * object that merely defines #to_f is still rejected with TypeError. */
+    if (KORB_OBJECT_P(v)) {
+        const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
+        const VALUE numeric = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+        const VALUE vcls = korb_class_obj_of(c, v);
+        if (KORB_CLASS_P(numeric) && KORB_CLASS_P(vcls) && korb_class_le(vcls, numeric)
+            && korb_responds_to(c, v, to_f)) {
+            RESULT fr = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            if (LIKELY(korb_num_to_d(fr.value, out))) return RESULT_OK(KORB_NIL);
+        }
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(slots[0]));
+}
+
 /* CRuby refines glibc's cbrt with one Newton step for correct rounding. */
 static double korb_cbrt(double f) {
     double r = cbrt(f);
@@ -17,8 +39,7 @@ static double korb_cbrt(double f) {
 #define KORB_MATH1(nm, fn)                                                              \
     static RESULT korb_m_math_##nm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
         (void)self; double x;                                                           \
-        if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x)))                          \
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0))); \
+        { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; } \
         const double r_ = fn(x);                                                        \
         if (UNLIKELY(isnan(r_) && !isnan(x) && !isinf(x)))   /* finite input → NaN = out of domain */ \
             return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"%s\"", #nm); \
@@ -27,8 +48,8 @@ static double korb_cbrt(double f) {
 #define KORB_MATH2(nm, fn)                                                              \
     static RESULT korb_m_math_##nm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
         (void)self; double x, y;                                                        \
-        if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x) || !korb_math_d(VALUE_SLICE_GET(a, 1), &y))) \
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");     \
+        { RESULT _c1 = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_c1.state != KORB_NORMAL)) return _c1; } \
+        { RESULT _c2 = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 1), &y); if (UNLIKELY(_c2.state != KORB_NORMAL)) return _c2; } \
         return korb_float_new(c, slots, fn(x, y));                                      \
     }
 
@@ -56,16 +77,18 @@ static bool korb_math_frexp_val(VALUE v, double *d, long *e) {
 }
 static RESULT korb_m_math_log2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    }
     const double r2 = log2(d) + (double)e;
     if (UNLIKELY(isnan(r2) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log2\"");
     return korb_float_new(c, slots, r2);
 }
 static RESULT korb_m_math_log10(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Float", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    }
     const double r10 = log10(d) + (double)e * 0.301029995663981195213738894724; /* + e·log10(2) */
     if (UNLIKELY(isnan(r10) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log10\"");
     return korb_float_new(c, slots, r10);
@@ -77,14 +100,16 @@ KORB_MATH2(pow, pow)
  * decomposition so ln stays finite past the double range. */
 static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double d; long e;
-    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
+    if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 0), &d, &e))) {
+        RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &d); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; e = 0;
+    }
     const double lnx = log(d) + (double)e * M_LN2;   /* ln(d·2^e) */
     if (UNLIKELY(isnan(lnx) && !isnan(d))) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"log\"");
     if (VALUE_SLICE_LEN(a) >= 2) {
         double db; long eb;
-        if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
+        if (UNLIKELY(!korb_math_frexp_val(VALUE_SLICE_GET(a, 1), &db, &eb))) {
+            RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 1), &db); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; eb = 0;
+        }
         return korb_float_new(c, slots, lnx / (log(db) + (double)eb * M_LN2));
     }
     return korb_float_new(c, slots, lnx);
@@ -92,7 +117,8 @@ static RESULT korb_m_math_log(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* Math.ldexp(frac, exp) = frac * 2**exp. */
 static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double x; intptr_t n;
-    if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x) || !korb_to_index(VALUE_SLICE_GET(a, 1), &n)))
+    { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float/Integer");
     return korb_float_new(c, slots, ldexp(x, (int)n));
 }
