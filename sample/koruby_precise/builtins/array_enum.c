@@ -524,7 +524,13 @@ static RESULT korb_m_ary_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 /* flat_map: map then flatten one level (Array results spliced). */
 static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#flat_map");           /* no-block enum would map, not flat_map → raise */
+    (void)a;
+    if (UNLIKELY(block == NULL)) {                          /* no block → Enumerator tagged op=3 so .with_index/.each flat-map */
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "flat_map"));
+        RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        if (er.state == KORB_NORMAL) VAL2ENUM(er.value)->op = 3;
+        return er;
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));

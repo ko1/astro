@@ -238,7 +238,7 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return RESULT_OK(VALUE_REF_GET(self));
     }
     const uint8_t op = SELF_ENUM->op;
-    if (op != 0) {                                    /* select/reject enum: re-drive the op, collect kept values */
+    if (op != 0) {                                    /* select/reject/flat_map enum: re-drive the op, collect results */
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
         for (uint32_t i = 0; ; i++) {
             const KorbArray *v = VAL2ARY(SELF_ENUM->values);
@@ -246,7 +246,17 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             slots[0] = v->items->data[i];            /* slots advanced by SLOTS_PUSH; dst is below */
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (KORB_TRUTHY(r.value) == (op == 1)) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+            if (op == 3) {                            /* flat_map: flatten the block result one level */
+                slots[1] = r.value;
+                if (KORB_ARRAY_P(slots[1])) {
+                    VALUE_REF fr = VALUE_REF_AT(&slots[1]);
+                    for (uint32_t k = 0; k < VAL2ARY(VALUE_REF_GET(fr))->len; k++)
+                        CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(VALUE_REF_GET(fr))->items->data[k]));
+                } else {
+                    CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+                }
+            }
+            else if (KORB_TRUTHY(r.value) == (op == 1)) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
         }
         return RESULT_OK(VALUE_REF_GET(dst));
     }
@@ -400,6 +410,16 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (opc == 0) CHECK(korb_ary_push_val(c, slots + 3, dst, r.value));   /* map/each: collect block result */
+            else if (opc == 3) {                                                 /* flat_map: flatten the block result one level */
+                slots[3] = r.value;
+                if (KORB_ARRAY_P(slots[3])) {
+                    VALUE_REF fr = VALUE_REF_AT(&slots[3]);
+                    for (uint32_t k = 0; k < VAL2ARY(VALUE_REF_GET(fr))->len; k++)
+                        CHECK(korb_ary_push_val(c, slots + 4, dst, VAL2ARY(VALUE_REF_GET(fr))->items->data[k]));
+                } else {
+                    CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
+                }
+            }
             else if (KORB_TRUTHY(r.value) == (opc == 1)) CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));   /* select/reject: keep value */
         } else {                                       /* build [value, idx] pair */
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
