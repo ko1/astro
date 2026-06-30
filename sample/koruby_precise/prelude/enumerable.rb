@@ -8,11 +8,11 @@ module Enumerable
   def __each_el; each { |*a| yield(a.size <= 1 ? a[0] : a) }; end
   def map(&blk); return to_enum(:map) unless blk; r = []; each { |*a| r << blk.call(*a) }; r; end
   alias collect map
-  def select(&blk); return to_enum(:select) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(*a) }; r; end
+  def select(&blk); return to_a.select unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(*a) }; r; end
   alias filter select
   alias find_all select
-  def reject(&blk); return to_enum(:reject) unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(*a) }; r; end
-  def flat_map(&blk); return to_enum(:flat_map) unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
+  def reject(&blk); return to_a.reject unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e unless blk.call(*a) }; r; end
+  def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil, &blk); return to_enum(:find) unless blk; res = nil; found = false; each { |*a| if blk.call(*a); res = (a.size <= 1 ? a[0] : a); found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
   def to_a; r = []; __each_el { |e| r << e }; r; end
