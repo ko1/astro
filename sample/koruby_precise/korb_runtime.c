@@ -5062,7 +5062,7 @@ static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
                                const VALUE *restrict argv, uint32_t argc) {
     const KorbProc *const p = VAL2PROC(procv);
     const uint32_t mid = p->sym_mid;
-    if (p->is_lambda) {                                  /* Method#to_proc: recv.mid(args...) */
+    if (p->self != KORB_NIL) {                           /* Method#to_proc (bound receiver): recv.mid(args...) */
         const VALUE recv = p->self;
         for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[1 + i] = argv[i];
         slots[0] = recv;

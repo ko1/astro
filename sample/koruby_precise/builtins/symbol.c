@@ -246,7 +246,7 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t argc = VALUE_SLICE_LEN(a);
     if (p->iseq == NULL) {                               /* no body: symbol proc / method proc */
         uint32_t mid = p->sym_mid;
-        if (p->is_lambda) {                              /* Method#to_proc: recv.mid(args...) */
+        if (p->self != KORB_NIL) {                       /* Method#to_proc (bound receiver): recv.mid(args...) */
             slots[0] = p->self;
             for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
             return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
@@ -296,7 +296,7 @@ static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)a;
     uint32_t mid = SYM2ID(VALUE_REF_GET(self));
     KorbProc *p = korb_alloc(c, slots, sizeof(KorbProc), KORB_OBJ_PROC);
-    p->iseq = NULL; p->sym_mid = mid; p->is_lambda = 0;
+    p->iseq = NULL; p->sym_mid = mid; p->is_lambda = 1;   /* CRuby: Symbol#to_proc returns a lambda */
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->env, 0);
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, KORB_NIL);
     return RESULT_OK((VALUE)p);
