@@ -1082,13 +1082,20 @@ static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* recursive flatten helper: append all leaves of `src` into dst */
 /* depth-limited flatten: depth<0 = full, 0 = copy as-is, >0 = that many levels. */
-static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_REF src, int depth) {
+/* guard = the arrays on the current recursion path (seeded with the top-level
+ * self); a child already present means a cycle → ArgumentError, not a SEGV. */
+static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_REF src, int depth, VALUE_REF guard) {
     uint32_t n = VAL2ARY(VALUE_REF_GET(src))->len;
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
         if (KORB_ARRAY_P(e) && depth != 0) {
+            const KorbArray *const g = VAL2ARY(VALUE_REF_GET(guard));
+            for (uint32_t j = 0; j < g->len; j++)
+                if (g->items->data[j] == e) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to flatten recursive array");
             slots[0] = e;
-            CHECK(korb_ary_flatten_depth(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), depth < 0 ? depth : depth - 1));
+            CHECK(korb_ary_push_val(c, slots + 1, guard, e));            /* push e onto the path */
+            CHECK(korb_ary_flatten_depth(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), depth < 0 ? depth : depth - 1, guard));
+            VAL2ARY(VALUE_REF_GET(guard))->len--;                        /* pop (e stays rooted in slots[0] until here) */
         } else {
             CHECK(korb_ary_push_val(c, slots, dst, e));
         }
@@ -1100,8 +1107,12 @@ static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     intptr_t d;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &d)) depth = (int)d;
     uint32_t n = SELF_ARY->len;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
-    CHECK(korb_ary_flatten_depth(c, slots + 1, dst, self, depth));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));                    /* guard (arrays on the path) */
+    VALUE_REF guard = VALUE_REF_AT(&slots[1]);
+    CHECK(korb_ary_push_val(c, slots + 2, guard, VALUE_REF_GET(self)));
+    CHECK(korb_ary_flatten_depth(c, slots + 2, dst, self, depth, guard));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_flatten_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
