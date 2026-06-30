@@ -34,7 +34,7 @@ module Enumerable
   def max(n = nil, &blk); return (blk ? to_a.sort(&blk) : to_a.sort).last(n).reverse if n; r = nil; f = true; __each_el { |x| if f; r = x; f = false; else; c = blk ? blk.call(x, r) : (x <=> r); raise ArgumentError, "comparison of #{x.class} with #{r.class} failed" if c.nil?; r = x if c > 0; end }; r; end
   def min_by(n = nil); return to_enum(:min_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.first(n) : s.first; end
   def max_by(n = nil); return to_enum(:max_by) unless block_given?; s = sort_by { |x| yield(x) }; n ? s.last(n).reverse : s.last; end
-  def sort; to_a.sort; end
+  def sort(&blk); to_a.sort(&blk); end
   def sort_by; return to_enum(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
   def all?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return false unless pt === x }; elsif blk; ok = true; each { |*ar| unless blk.call(*ar); ok = false; break; end }; return ok; else; __each_el { |x| return false unless x }; end; true; end
@@ -64,5 +64,5 @@ module Enumerable
   alias collect_concat flat_map
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
-  def each_entry; __each_el { |x| yield x }; self; end
+  def each_entry; return to_enum(:each_entry) unless block_given?; __each_el { |x| yield x }; self; end
 end
