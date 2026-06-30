@@ -150,11 +150,17 @@ static RESULT korb_m_math_lgamma(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 
-/* register a Math module function as a CFUNC on Math's singleton class. */
+/* Register a Math module function (module_function semantics): a CFUNC both on
+ * Math's singleton class (Math.sqrt) AND as an instance method on the module
+ * itself, so `include Math` makes it callable (sqrt(x) / obj.send(:sqrt, x)). */
 static void korb_def_modfunc(CTX *c, VALUE *slots, VALUE modobj, const char *name, korb_method_fn fn, int32_t arity) {
-    VALUE sing = korb_obj_singleton(c, slots, modobj).value;   /* created once, reused after */
-    struct korb_method *m = korb_class_method_slot(VAL2CLASS(sing), korb_intern(c->vm, name, strlen(name)));
+    const uint32_t mid = korb_intern(c->vm, name, strlen(name));
+    slots[0] = modobj;                                         /* root across the singleton/table allocs */
+    VALUE sing = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* created once, reused after */
+    struct korb_method *m = korb_class_method_slot(VAL2CLASS(sing), mid);
     m->kind = KORB_METHOD_CFUNC; m->owner = sing; m->params_cnt = arity; m->rfn = fn; m->rbfn = NULL; m->uses_block = 0;
+    struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* slots[0] = (re-read) Math module */
+    im->kind = KORB_METHOD_CFUNC; im->owner = slots[0]; im->params_cnt = arity; im->rfn = fn; im->rbfn = NULL; im->uses_block = 0;
 }
 
 void korb_init_math(CTX *c, VALUE *slots) {
