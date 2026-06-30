@@ -546,6 +546,19 @@ static RESULT korb_m_cpx_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#arg with non-real components");
     return korb_float_new(c, slots, atan2(im, re));
 }
+/* Complex#polar (instance) → [abs, arg] (magnitude 0 at the origin is Integer 0, matching #abs). */
+static RESULT korb_m_cpx_to_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; double re, im;
+    if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#polar with non-real components");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    slots[1] = (re == 0.0 && im == 0.0) ? LONG2FIX(0) : UNWRAP(korb_float_new(c, slots + 1, sqrt(re * re + im * im)));
+    CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
+    slots[1] = UNWRAP(korb_float_new(c, slots + 1, atan2(im, re)));
+    CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
 static int korb_cmp_full(CTX *c, VALUE a, VALUE b);   /* fwd (defined below) */
 /* Complex#<=>: comparable only when both are real (imaginary part 0) → compare
  * the real parts; otherwise nil (CRuby). */
@@ -7087,6 +7100,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_f", korb_m_rat_to_f, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_i", korb_m_rat_to_i, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_int", korb_m_rat_to_i, 0);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "to_c", korb_m_num_to_c, 0);   /* Rational#to_c → Complex(self, 0) */
     korb_def_cmethod(c, KORB_C_RATIONAL, "truncate", korb_m_rat_truncate, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "floor", korb_m_rat_floor, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "ceil", korb_m_rat_ceil, -1);
@@ -7129,6 +7143,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "arg", korb_m_cpx_arg, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "angle", korb_m_cpx_arg, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "phase", korb_m_cpx_arg, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "polar", korb_m_cpx_to_polar, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "fdiv", korb_m_cpx_fdiv, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "magnitude", korb_m_cpx_abs, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_c", korb_m_cpx_self, 0);
