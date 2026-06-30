@@ -539,6 +539,13 @@ static RESULT korb_m_cpx_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (re == 0.0 && im == 0.0) return RESULT_OK(LONG2FIX(0));   /* Complex(0,0).abs → Integer 0 (CRuby) */
     return korb_float_new(c, slots, sqrt(re * re + im * im));
 }
+/* Complex#arg / angle / phase → atan2(imaginary, real) — the polar angle. */
+static RESULT korb_m_cpx_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; double re, im;
+    if (!korb_num_to_d(SELF_CPX->re, &re) || !korb_num_to_d(SELF_CPX->im, &im))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Complex#arg with non-real components");
+    return korb_float_new(c, slots, atan2(im, re));
+}
 static int korb_cmp_full(CTX *c, VALUE a, VALUE b);   /* fwd (defined below) */
 /* Complex#<=>: comparable only when both are real (imaginary part 0) → compare
  * the real parts; otherwise nil (CRuby). */
@@ -7119,6 +7126,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "conjugate", korb_m_cpx_conj, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "conj", korb_m_cpx_conj, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "abs", korb_m_cpx_abs, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "arg", korb_m_cpx_arg, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "angle", korb_m_cpx_arg, 0);
+    korb_def_cmethod(c, KORB_C_COMPLEX, "phase", korb_m_cpx_arg, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "fdiv", korb_m_cpx_fdiv, 1);
     korb_def_cmethod(c, KORB_C_COMPLEX, "magnitude", korb_m_cpx_abs, 0);
     korb_def_cmethod(c, KORB_C_COMPLEX, "to_c", korb_m_cpx_self, 0);
