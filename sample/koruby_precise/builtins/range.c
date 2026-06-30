@@ -304,6 +304,19 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     if (KORB_STRING_P(SELF_RANGE->rbegin) && KORB_STRING_P(SELF_RANGE->rend)) {   /* String range via succ */
+        if (VAL2STR(SELF_RANGE->rbegin)->len == 1 && VAL2STR(SELF_RANGE->rend)->len == 1) {   /* single byte → codepoint iterate (CRuby: "A".."z" spans 58, incl. punctuation) */
+            const uint8_t b0 = (uint8_t)VAL2STR(SELF_RANGE->rbegin)->buf->data[0];
+            const uint8_t e0 = (uint8_t)VAL2STR(SELF_RANGE->rend)->buf->data[0];
+            const uint32_t end_ch = SELF_RANGE->exclude_end ? e0 : (uint32_t)e0 + 1;
+            slots[0] = UNWRAP(korb_ary_new(c, slots + 1, b0 < end_ch ? end_ch - b0 : 0));
+            VALUE_REF out = VALUE_REF_AT(&slots[0]);
+            for (uint32_t ch = b0; ch < end_ch; ch++) {
+                const char cc = (char)ch;
+                slots[1] = UNWRAP(korb_str_new(c, slots + 1, &cc, 1));
+                CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
+            }
+            return RESULT_OK(VALUE_REF_GET(out));
+        }
         slots[1] = SELF_RANGE->rbegin;                     /* cur  (rooted before any alloc) */
         slots[2] = SELF_RANGE->rend;                       /* end  (rooted) */
         const bool excl = SELF_RANGE->exclude_end != 0;
@@ -325,6 +338,17 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         const char *const bn = korb_sym_name(c->vm, SYM2ID(SELF_RANGE->rbegin));
         const char *const en = korb_sym_name(c->vm, SYM2ID(SELF_RANGE->rend));
         const bool excl = SELF_RANGE->exclude_end != 0;
+        if (strlen(bn) == 1 && strlen(en) == 1) {          /* single byte → codepoint iterate (:A..:z = 58) */
+            const uint8_t b0 = (uint8_t)bn[0], e0 = (uint8_t)en[0];
+            const uint32_t end_ch = excl ? e0 : (uint32_t)e0 + 1;
+            slots[0] = UNWRAP(korb_ary_new(c, slots + 1, b0 < end_ch ? end_ch - b0 : 0));
+            VALUE_REF out = VALUE_REF_AT(&slots[0]);
+            for (uint32_t ch = b0; ch < end_ch; ch++) {
+                const char cc = (char)ch;
+                CHECK(korb_ary_push_val(c, slots + 1, out, ID2SYM(korb_intern(c->vm, &cc, 1))));
+            }
+            return RESULT_OK(VALUE_REF_GET(out));
+        }
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, bn, (uint32_t)strlen(bn)));   /* cur (String) */
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, en, (uint32_t)strlen(en)));   /* end (String) */
         slots[0] = UNWRAP(korb_ary_new(c, slots + 3, 8));
