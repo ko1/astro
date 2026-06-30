@@ -433,7 +433,23 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* with_object(o): yield (value, o) for each; return o. */
 static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (UNLIKELY(block == NULL || VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(block == NULL)) {                     /* no block → Enumerator over [elem, obj] pairs */
+        slots[0] = VALUE_SLICE_GET(a, 0);             /* obj (rooted) */
+        const uint32_t n = VAL2ARY(SELF_ENUM->values)->len;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));   /* pairs (rooted) */
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < n; i++) {
+            slots[2] = VAL2ARY(SELF_ENUM->values)->items->data[i];   /* elem (rooted) */
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));        /* [elem, obj] */
+            VALUE_REF pr = VALUE_REF_AT(&slots[3]);
+            CHECK(korb_ary_push_val(c, slots + 4, pr, slots[2]));
+            CHECK(korb_ary_push_val(c, slots + 4, pr, slots[0]));
+            CHECK(korb_ary_push_val(c, slots + 4, dst, VALUE_REF_GET(pr)));
+        }
+        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "with_object"));
+        return korb_enum_new(c, slots + 3, VALUE_REF_GET(dst), slots[2]);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                  /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
