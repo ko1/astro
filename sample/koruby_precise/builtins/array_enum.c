@@ -1315,8 +1315,18 @@ static RESULT korb_m_ary_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_ary_intersect_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
-    const KorbArray *me = VAL2ARY(VALUE_REF_GET(self)), *other = VAL2ARY(ov);
+    if (UNLIKELY(!KORB_ARRAY_P(ov))) {                /* coerce via #to_ary */
+        const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+        if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, to_ary)) {
+            slots[0] = ov;
+            RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+            ov = ar.value;
+        }
+        if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    slots[0] = ov;                                   /* root the (possibly coerced) other across nothing-but-defensive */
+    const KorbArray *me = VAL2ARY(VALUE_REF_GET(self)), *other = VAL2ARY(slots[0]);
     for (uint32_t i = 0; i < me->len; i++)
         if (korb_ary_has(other, me->items->data[i])) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(KORB_FALSE);
