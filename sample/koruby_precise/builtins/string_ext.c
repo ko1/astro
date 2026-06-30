@@ -254,8 +254,15 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             break;
           }
           case 'c': {
-            if (FIXNUM_P(arg)) fputc((int)FIX2LONG(arg), ms);
-            else if (KORB_STRING_P(arg) && VAL2STR(arg)->len > 0) fwrite(VAL2STR(arg)->buf->data, 1, 1, ms);
+            int ch = -1;
+            if (FIXNUM_P(arg)) ch = (int)(unsigned char)FIX2LONG(arg);
+            else if (KORB_STRING_P(arg) && VAL2STR(arg)->len > 0) ch = (int)(unsigned char)VAL2STR(arg)->buf->data[0];
+            if (ch < 0) break;
+            if (si > 1) {                                  /* width/flags present → pad like C %c */
+                if (si < 70) spec[si++] = 'c';
+                spec[si] = '\0';
+                char tmp[128]; snprintf(tmp, sizeof tmp, spec, ch); fputs(tmp, ms);
+            } else fputc(ch, ms);
             break;
           }
           default: err = true; errmsg = "malformed format sequence"; break;
