@@ -232,6 +232,7 @@ static RESULT korb_m_meth_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * a tagged-odd live-slots pointer (correct while the defining frame is alive). */
 static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
+    const bool is_lam = p->is_lambda;                    /* captured before the body runs (a lambda's `return` returns from the lambda) */
     uint32_t argc = VALUE_SLICE_LEN(a);
     if (p->iseq == NULL) {                               /* no body: symbol proc / method proc */
         uint32_t mid = p->sym_mid;
@@ -267,11 +268,18 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     /* If this proc has a `|&b|` param and the call site passed a (real) block,
      * forward it so &b binds to it — via the full path (the hot wrapper is
      * untouched; a no-block call leaves &b nil). */
+    RESULT r;
     if (block != NULL && block != KORB_BLK_CPROC && block->head.kind == &kind_node_entry &&
         korb_entry_blk_param_slot(entry) >= 0)
-        return korb_block_yield_full(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv,
-                                     &slots[1], argc, &slots[0], block, def_env, cself);
-    return korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
+        r = korb_block_yield_full(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv,
+                                  &slots[1], argc, &slots[0], block, def_env, cself);
+    else
+        r = korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
+    if (UNLIKELY(is_lam && r.state == KORB_RETURN)) {    /* lambda boundary consumes its own `return` */
+        c->return_target = NULL;
+        r.state = KORB_NORMAL;
+    }
+    return r;
 }
 /* Symbol#to_proc — a Proc that sends the symbol to its first argument. */
 static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
