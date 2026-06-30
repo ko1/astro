@@ -5,6 +5,11 @@ class Numeric
     return [other, self] if other.instance_of?(self.class)
     [Float(other), Float(self)]
   end
+  # Generic fallbacks for Numeric subclasses (Integer/Float/Rational/Complex have
+  # their own C implementations, which take precedence).
+  def abs; self < 0 ? -self : self; end
+  def magnitude; abs; end
+  def abs2; self * self; end
 end
 
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
