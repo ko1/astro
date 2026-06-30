@@ -1686,16 +1686,27 @@ static const char *korb_line_sep(VALUE_SLICE a, uint32_t *seplen) {
     }
     *seplen = 1; return "\n";
 }
+/* lines/each_line `chomp:` keyword (trailing Hash). */
+static bool korb_line_chomp(CTX *c, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
+        const int32_t idx = korb_hash_find(VAL2HASH(VALUE_SLICE_GET(a, n - 1)), ID2SYM(korb_intern(c->vm, "chomp", 5)));
+        if (idx >= 0) return KORB_TRUTHY(VAL2HASH(VALUE_SLICE_GET(a, n - 1))->items->data[2 * idx + 1]);
+    }
+    return false;
+}
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line");
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    const bool chomp = korb_line_chomp(c, a);
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
         uint32_t ll = korb_str_line_len(s, pos, sepbuf, seplen);
-        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, ll));   /* root the line */
+        uint32_t yl = (chomp && ll >= seplen && memcmp(s->buf->data + pos + ll - seplen, sepbuf, seplen) == 0) ? ll - seplen : ll;
+        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, yl));   /* root the line (chomped if requested) */
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         pos += ll;
@@ -1710,13 +1721,15 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
+    const bool chomp = korb_line_chomp(c, a);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
         uint32_t ll = korb_str_line_len(s, pos, sepbuf, seplen);
-        CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, ll))));
+        uint32_t yl = (chomp && ll >= seplen && memcmp(s->buf->data + pos + ll - seplen, sepbuf, seplen) == 0) ? ll - seplen : ll;
+        CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, yl))));
         pos += ll;
     }
     return RESULT_OK(VALUE_REF_GET(dst));
