@@ -595,6 +595,19 @@ static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self,
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Proc", korb_type_name(slots[0]));
         p = pr.value;
     }
+    if (p != KORB_NIL && VAL2PROC(p)->is_lambda) {           /* a lambda default_proc must accept exactly 2 args */
+        const KorbProc *const pp = VAL2PROC(p);
+        intptr_t n;
+        if (pp->iseq == NULL) n = -2;                        /* symbol/method proc */
+        else {
+            const NODE *const e = pp->iseq;
+            const bool var = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+            const uint32_t reqc = var ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
+            n = var ? -((intptr_t)reqc + 1) : (intptr_t)reqc;
+        }
+        if (n != 2 && (n >= 0 || n < -3))                    /* fixed arity != 2, or needs >2 before a splat */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "default_proc takes two arguments (2 for %ld)", (long)n);
+    }
     KorbHash *const h = VAL2HASH(VALUE_REF_GET(self));        /* re-read after the dispatch */
     ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_proc, p);
     ARO_STORE(c, h, (VALUE *)(uintptr_t)&h->default_val, KORB_NIL);   /* setting a proc clears the static default */
