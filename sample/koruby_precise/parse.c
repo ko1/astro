@@ -1092,6 +1092,17 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-5) */
     }
 
+    /* __method__ / __callee__ — the enclosing method's name (nil at top level),
+     * baked at parse time (#__method__ returns the definition name). */
+    if (argc == 0 && cn->block == NULL && cn->receiver == NULL) {
+        const char *const nm = kp_cid_cstr(tc, cn->name);
+        if (strcmp(nm, "__method__") == 0 || strcmp(nm, "__callee__") == 0) {
+            uint32_t mid = 0;                            /* walk out through block frames to the enclosing method */
+            for (const struct kp_frame *f = tc->frame; f; f = f->prev) { if (f->method_mid) { mid = f->method_mid; break; } }
+            return ALLOC_node_lit(mid ? ID2SYM(mid) : KORB_NIL);
+        }
+    }
+
     /* `binding` — capture the current frame's local scope into a Binding.  Bakes
      * the scope's local-name table (sym per slot index) + frame base + self. */
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
