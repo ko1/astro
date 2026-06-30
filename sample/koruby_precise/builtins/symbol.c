@@ -203,6 +203,16 @@ static RESULT korb_m_meth_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'call' for an UnboundMethod (use #bind)");
     uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a);
+    const VALUE owner = m->owner;
+    if (UNLIKELY(owner != KORB_NIL && KORB_CLASS_P(owner))) {   /* bound-from-unbound: invoke the FIXED method from its owner (not virtual) */
+        struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
+        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {   /* korb_invoke_method handles ISEQ only; builtins fall to virtual */
+            slots[0] = m->recv;                          /* self (the bound receiver) */
+            slots[1] = owner;                            /* def_class for super resolution */
+            for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, i);
+            return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], block, def_env, KORB_CSELF_VAL(cself));
+        }
+    }
     slots[0] = m->recv;                                  /* recv below the args */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
     return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);   /* forward the block to the method */
@@ -466,7 +476,7 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         else for (int32_t i = 0; i < km->params_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
         return RESULT_OK(VALUE_REF_GET(res));
     }
-    /* ISEQ: required, optional, rest, post (names not stored) */
+    /* ISEQ: required, optional, rest, post (names not stored for methods) */
     for (uint32_t i = 0; i < km->req_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
     const uint32_t nopt = (km->params_cnt >= 0 && (uint32_t)km->params_cnt > km->req_cnt) ? (uint32_t)km->params_cnt - km->req_cnt : 0;
     for (uint32_t i = 0; i < nopt; i++) CHECK(korb_param_push(c, slots + 1, res, "opt"));
@@ -505,16 +515,31 @@ static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(!m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'bind' for a Method");
-    const VALUE obj = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!korb_case_eq(c, m->recv, obj)))                    /* owner === obj  ⇔  obj.is_a?(owner) */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", korb_type_name(m->recv));
-    return korb_method_new(c, slots, obj, m->mid);
+    slots[0] = m->recv;                                             /* owner class (rooted across dispatch/alloc) */
+    const uint32_t mid = m->mid;
+    if (UNLIKELY(!korb_case_eq(c, slots[0], VALUE_SLICE_GET(a, 0))))  /* owner === obj  ⇔  obj.is_a?(owner) */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", korb_type_name(slots[0]));
+    slots[1] = VALUE_SLICE_GET(a, 0);                              /* obj (re-read after dispatch) */
+    RESULT r = korb_method_new(c, slots + 2, slots[1], mid);       /* bound: recv = obj */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);   /* fix the dispatch to the unbound's owner */
+    return r;
 }
 /* UnboundMethod#bind_call(obj, *args) → bind then call. */
 static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const uint32_t mid = m->mid, argc = VALUE_SLICE_LEN(a) - 1;
+    const VALUE owner = m->unbound ? m->recv : m->owner;   /* unbound: recv is the owner class */
+    if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */
+        struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
+        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {   /* ISEQ only; builtins fall to virtual */
+            slots[0] = VALUE_SLICE_GET(a, 0);             /* self (the bind target) */
+            slots[1] = owner;
+            for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, 1 + i);
+            return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], NULL, NULL, KORB_NIL);
+        }
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
     return korb_send(c, slots + 1 + argc, mid, 0, argc);

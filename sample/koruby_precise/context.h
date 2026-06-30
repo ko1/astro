@@ -313,6 +313,7 @@ typedef struct KorbBinding {
 typedef struct KorbMethod {
     AroObjectHeader head;            /* KORB_OBJ_METHOD */
     VALUE ARO_GC_EDGE recv;          /* bound: the receiver; unbound: the owner class */
+    VALUE ARO_GC_EDGE owner;         /* bound-from-unbound: the class to invoke from (fixed, not virtual); nil = virtual re-dispatch by mid */
     uint32_t mid;                    /* interned method name */
     uint8_t  unbound;                /* 1 = UnboundMethod (recv holds the owner class) */
 } KorbMethod;
@@ -979,6 +980,7 @@ struct CTX_struct {
       case KORB_OBJ_METHOD: {                                                \
         KorbMethod *_m = (KorbMethod *)(payload);                           \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_m->recv);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_m->owner);                   \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
