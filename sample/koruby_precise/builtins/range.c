@@ -215,10 +215,14 @@ static RESULT korb_m_range_take(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_range_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the first element of beginless range");
     if (VALUE_SLICE_LEN(a) >= 1) return korb_m_range_take(c, slots, self, a);
     return RESULT_OK(SELF_RANGE->rbegin);
 }
 static RESULT korb_m_range_last(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  {
+    if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the last element of endless range");
     if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(SELF_RANGE->rend);
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
