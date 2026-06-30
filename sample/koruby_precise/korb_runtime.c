@@ -1971,6 +1971,7 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* Data#inspect → "#<data Name member=val, ...>" (anonymous → no Name). */
 /* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
+static void korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
@@ -1986,7 +1987,7 @@ static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, con
         fputs(i == 0 ? " " : ", ", ms);
         fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
         fputc('=', ms);
-        korb_fprint_inspect(c, ms, val);
+        korb_fprint_inspect_d(c, ms, val, 1);                    /* _d → nested Struct/Data fields render in full */
     }
     fputc('>', ms);
     fclose(ms);
@@ -7413,6 +7414,26 @@ korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth)
           case KORB_OBJ_ARRAY: korb_fprint_ary_d(c, fp, v, depth);  return;
           case KORB_OBJ_HASH:  korb_fprint_hash_d(c, fp, v, depth); return;
           case KORB_OBJ_SET:   korb_fprint_set_d(c, fp, v, depth);  return;
+          case KORB_OBJ_OBJECT: {                                   /* Struct/Data element → "#<struct Name f=v, …>" */
+            const VALUE klass = VAL2OBJ(v)->klass;
+            if (klass != KORB_NIL && KORB_ARRAY_P(VAL2CLASS(klass)->members)) {
+                const KorbClass *const k = VAL2CLASS(klass);
+                fputc('#', fp); fputc('<', fp); fputs(k->is_data ? "data" : "struct", fp);
+                if (k->name_sym) { fputc(' ', fp); fputs(korb_sym_name(c->vm, k->name_sym), fp); }
+                const KorbArray *const mem = VAL2ARY(k->members);    /* no GC below (formatter only writes to fp) */
+                for (uint32_t i = 0; i < mem->len; i++) {
+                    const VALUE msym = mem->items->data[i];
+                    const VALUE mval = korb_ivar_get(c, v, korb_member_ivar_sym(c->vm, msym));
+                    fputs(i == 0 ? " " : ", ", fp);
+                    fputs(korb_sym_name(c->vm, SYM2ID(msym)), fp);
+                    fputc('=', fp);
+                    korb_fprint_inspect_d(c, fp, mval, depth + 1);
+                }
+                fputc('>', fp);
+                return;
+            }
+            break;
+          }
           default: break;
         }
     }
