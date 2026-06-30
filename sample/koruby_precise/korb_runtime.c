@@ -7923,10 +7923,38 @@ korb_bi_array(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (a0 == KORB_NIL) return korb_ary_new(c, slots, 0);
     if (KORB_ARRAY_P(a0)) return RESULT_OK(a0);
-    slots[0] = a0;                                        /* root before alloc */
-    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));     /* arr at slots[1] */
+    slots[0] = a0;                                        /* root across to_ary/to_a dispatch + alloc */
+    const uint32_t conv[2] = { korb_intern(c->vm, "to_ary", 6), korb_intern(c->vm, "to_a", 4) };
+    for (int k = 0; k < 2; k++) {                         /* CRuby: to_ary, then to_a; an Array result wins */
+        if (korb_responds_to(c, slots[0], conv[k])) {
+            slots[1] = slots[0];                          /* receiver */
+            const RESULT r = korb_send_impl(c, slots + 2, conv[k], 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_ARRAY_P(r.value)) return RESULT_OK(r.value);
+        }
+    }
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));     /* otherwise wrap: [a0] */
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
     return RESULT_OK(slots[1]);
+}
+/* Kernel#Hash(arg): nil/[] → {}, Hash → itself, #to_hash → its result, else TypeError. */
+static RESULT
+korb_bi_hash(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
+    VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (a0 == KORB_NIL) return korb_hash_new(c, slots, 0);
+    if (KORB_HASH_P(a0)) return RESULT_OK(a0);
+    if (KORB_ARRAY_P(a0) && VAL2ARY(a0)->len == 0) return korb_hash_new(c, slots, 0);   /* Hash([]) → {} */
+    const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+    if (KORB_OBJECT_P(a0) && korb_responds_to(c, a0, to_hash)) {
+        slots[0] = a0;                                    /* receiver */
+        const RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_HASH_P(r.value)) return RESULT_OK(r.value);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Hash", korb_type_name(a0));
 }
 
 /* Kernel#String(arg) — arg.to_s (String → itself). */
@@ -8190,6 +8218,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "Integer", korb_bi_integer, -1);
     korb_builtin_define(c, "Float", korb_bi_float, -1);
     korb_builtin_define(c, "Array", korb_bi_array, -1);
+    korb_builtin_define(c, "Hash", korb_bi_hash, -1);
     korb_builtin_define(c, "String", korb_bi_string, -1);
     korb_builtin_define(c, "format", korb_bi_format, -1);
     korb_builtin_define(c, "sprintf", korb_bi_format, -1);
