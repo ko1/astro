@@ -3465,7 +3465,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
     /* Class < Module < Object (CRuby).  Module was created with super=Object above;
      * re-parent Class's superclass from Object to Module. */
-    { VALUE cls = korb_const_get(vm, vm->class_name[KORB_C_CLASS]), mod = korb_const_get(vm, vm->name_module);
+    { VALUE cls = korb_const_get(vm, vm->class_name[KORB_C_CLASS]), mod = korb_const_get(c->vm, c->vm->name_module);
       if (KORB_CLASS_P(cls) && KORB_CLASS_P(mod))
           ARO_STORE(c, VAL2CLASS(cls), (VALUE *)(uintptr_t)&VAL2CLASS(cls)->superclass, mod); }
     /* Complex.polar class method (on Complex's singleton). */
@@ -6805,6 +6805,59 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "attr_writer", korb_m_class_attr_writer, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_accessor", korb_m_class_attr_accessor, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr", korb_m_class_attr_reader, -1);
+    /* The above are registered on Class, but Module-level methods must also be on
+     * Module (Class < Module) so runtime *module values* (m.name, mods.map(&:name),
+     * m.ancestors, m.module_eval, …) dispatch them — not just const-ref `M.name`.
+     * Re-register the shared (non-Class-specific) ones on the Module class object.
+     * Class-only (new/superclass/allocate/inherited/attached_object) stay on Class. */
+    #define MOD_CFN(nm, fn, ar)     korb_class_def_cfn(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
+    #define MOD_CFN_BLK(nm, fn, ar) korb_class_def_cfn_blk(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
+    MOD_CFN("name", korb_m_class_name, 0);
+    MOD_CFN("to_s", korb_m_class_to_s, 0);
+    MOD_CFN("inspect", korb_m_class_to_s, 0);
+    MOD_CFN("ancestors", korb_m_class_ancestors, 0);
+    MOD_CFN("===", korb_m_class_case_eq, 1);
+    MOD_CFN("instance_method", korb_m_class_instance_method, 1);
+    MOD_CFN("instance_methods", korb_m_class_instance_methods, -1);
+    MOD_CFN("public_instance_methods", korb_m_class_public_imethods, -1);
+    MOD_CFN("private_instance_methods", korb_m_class_private_imethods, -1);
+    MOD_CFN("protected_instance_methods", korb_m_class_protected_imethods, -1);
+    MOD_CFN("method_defined?", korb_m_class_method_defined, -1);
+    MOD_CFN("public_method_defined?", korb_m_class_public_method_defined, -1);
+    MOD_CFN("private_method_defined?", korb_m_class_private_method_defined, -1);
+    MOD_CFN("protected_method_defined?", korb_m_class_protected_method_defined, -1);
+    MOD_CFN("include?", korb_m_class_include_q, 1);
+    MOD_CFN("include", korb_m_class_include, -1);
+    MOD_CFN("prepend", korb_m_class_prepend, -1);
+    MOD_CFN("const_set", korb_m_class_const_set, 2);
+    MOD_CFN("const_get", korb_m_class_const_get, -1);
+    MOD_CFN("const_defined?", korb_m_class_const_defined, 1);
+    MOD_CFN("remove_const", korb_m_class_remove_const, 1);
+    MOD_CFN("remove_method", korb_m_class_remove_method, -1);
+    MOD_CFN("undef_method", korb_m_class_undef_method, -1);
+    MOD_CFN("alias_method", korb_m_class_alias_method, 2);
+    MOD_CFN("<",  korb_m_class_lt, 1);
+    MOD_CFN("<=", korb_m_class_le, 1);
+    MOD_CFN(">",  korb_m_class_gt, 1);
+    MOD_CFN(">=", korb_m_class_ge, 1);
+    MOD_CFN("attr_reader", korb_m_class_attr_reader, -1);
+    MOD_CFN("attr_writer", korb_m_class_attr_writer, -1);
+    MOD_CFN("attr_accessor", korb_m_class_attr_accessor, -1);
+    MOD_CFN("attr", korb_m_class_attr_reader, -1);
+    MOD_CFN("private", korb_m_private, -1);
+    MOD_CFN("public", korb_m_public, -1);
+    MOD_CFN("protected", korb_m_protected, -1);
+    MOD_CFN("module_function", korb_m_visibility_noop, -1);
+    MOD_CFN("private_constant", korb_m_visibility_noop, -1);
+    MOD_CFN("public_constant", korb_m_visibility_noop, -1);
+    MOD_CFN("const_source_location", korb_m_lit_nil, -1);
+    MOD_CFN_BLK("define_method", korb_m_define_method, -1);
+    MOD_CFN_BLK("class_eval", korb_m_obj_instance_eval, -1);
+    MOD_CFN_BLK("module_eval", korb_m_obj_instance_eval, -1);
+    MOD_CFN_BLK("class_exec", korb_m_obj_instance_exec, -1);
+    MOD_CFN_BLK("module_exec", korb_m_obj_instance_exec, -1);
+    #undef MOD_CFN
+    #undef MOD_CFN_BLK
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);

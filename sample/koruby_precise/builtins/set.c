@@ -572,9 +572,9 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));       /* result (rooted) */
     slots[1] = VALUE_REF_GET(self);                         /* current class (rooted) */
     while (KORB_CLASS_P(slots[1])) {
-        const KorbClass *k = VAL2CLASS(slots[1]);
-        for (uint32_t i = 0; i < k->method_cnt; i++) {
-            const struct korb_method *m = k->methods[i];
+        const uint32_t mc = VAL2CLASS(slots[1])->method_cnt;   /* stable during read-only iteration */
+        for (uint32_t i = 0; i < mc; i++) {
+            const struct korb_method *m = VAL2CLASS(slots[1])->methods[i];   /* re-read class: push below GCs */
             if (m->mid == c->vm->mid_initialize) continue;  /* initialize is private */
             if (m->visibility == 1) continue;               /* exclude private methods */
             const VALUE sym = ID2SYM(m->mid);
