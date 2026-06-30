@@ -1123,9 +1123,11 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
             }
         }
         if (KORB_ARRAY_P(e) && depth != 0) {
-            const KorbArray *const g = VAL2ARY(VALUE_REF_GET(guard));
-            for (uint32_t j = 0; j < g->len; j++)
-                if (g->items->data[j] == e) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to flatten recursive array");
+            if (depth < 0) {                              /* only unlimited flatten can loop; a finite depth bounds it (and CRuby doesn't raise) */
+                const KorbArray *const g = VAL2ARY(VALUE_REF_GET(guard));
+                for (uint32_t j = 0; j < g->len; j++)
+                    if (g->items->data[j] == e) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to flatten recursive array");
+            }
             slots[0] = e;
             CHECK(korb_ary_push_val(c, slots + 1, guard, e));            /* push e onto the path */
             CHECK(korb_ary_flatten_depth(c, slots + 1, dst, VALUE_REF_AT(&slots[0]), depth < 0 ? depth : depth - 1, guard));
