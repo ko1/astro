@@ -1341,8 +1341,13 @@ static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(have_acc ? slots[0] : KORB_NIL);
 }
 static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    HASH_REQ_BLOCK("Hash#each_with_object");
     if (VALUE_SLICE_LEN(a) < 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(block == NULL)) {                /* no block → self.to_enum(:each_with_object, memo) */
+        slots[0] = VALUE_REF_GET(self);
+        slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
+        slots[2] = VALUE_SLICE_GET(a, 0);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, KORB_NIL);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);             /* memo */
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));

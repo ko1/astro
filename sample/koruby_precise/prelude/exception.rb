@@ -23,11 +23,11 @@ module Warning
   def self.warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end
 end
 class Object
-  def to_enum(meth = :each)
-    a = []; send(meth) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
+  def to_enum(meth = :each, *args)
+    a = []; send(meth, *args) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
   end
-  def enum_for(meth = :each)
-    a = []; send(meth) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
+  def enum_for(meth = :each, *args)
+    a = []; send(meth, *args) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
   end
 end
 # Minimal Errno: just enough that Errno::X constant references resolve (as

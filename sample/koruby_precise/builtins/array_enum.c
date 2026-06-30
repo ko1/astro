@@ -1462,7 +1462,12 @@ static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 static RESULT korb_m_ary_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    ARY_REQUIRE_BLOCK("Array#each_with_object");
+    if (UNLIKELY(block == NULL)) {                        /* no block → self.to_enum(:each_with_object, memo) */
+        slots[0] = VALUE_REF_GET(self);
+        slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
+        slots[2] = VALUE_SLICE_GET(a, 0);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, KORB_NIL);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                      /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;

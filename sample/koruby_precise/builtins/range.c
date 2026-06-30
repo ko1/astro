@@ -360,7 +360,13 @@ static RESULT korb_m_range_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(h));
 }
 static RESULT korb_m_range_each_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (UNLIKELY(block == NULL || VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (UNLIKELY(block == NULL)) {                        /* no block → self.to_enum(:each_with_object, memo) */
+        slots[0] = VALUE_REF_GET(self);
+        slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
+        slots[2] = VALUE_SLICE_GET(a, 0);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, KORB_NIL);
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));

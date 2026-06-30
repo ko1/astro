@@ -42,7 +42,7 @@ module Enumerable
   def none?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return false if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return !hit; else; __each_el { |x| return false if x }; end; true; end
   def one?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; n = 0; if a.size > 0; pt = a[0]; __each_el { |x| n += 1 if pt === x }; elsif blk; each { |*ar| n += 1 if blk.call(*ar) }; else; __each_el { |x| n += 1 if x }; end; n == 1; end
   def cycle(n = nil, &blk); n.nil? ? to_a.cycle(&blk) : to_a.cycle(n, &blk); end   # delegate to Array#cycle (no-block Enumerator + break both handled there)
-  def each_with_object(o); __each_el { |x| yield x, o }; o; end
+  def each_with_object(o); return to_enum(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index; return to_enum(:each_with_index) unless block_given?; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
   def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(*ar); a << e; else; b << e; end }; [a, b]; end
   def group_by; return to_enum(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
