@@ -1,0 +1,11 @@
+p [1,2,3].cycle.take(8)
+p [1,2,3].cycle.first(7)
+p [1,2,3].cycle.take(3)
+p [1,2,3].cycle.take(0)
+p [1,2].cycle(2).take(3)
+p (1..Float::INFINITY).lazy.take(5).to_a
+p [1,2,3,4,5].lazy.take(3).force
+p [1,2,3,4,5].take(3)
+p [10,20].cycle.take(5)
+p [1,2,3].cycle.take(8).sum
+p ["a","b"].cycle.first(5).join

@@ -328,6 +328,8 @@ static RESULT korb_lazy_count_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (!strcmp(op, "take")) return korb_enum_gen_run(c, slots, self, n);
         RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     }
+    if (SELF_ENUM->mode == 2 && !strcmp(op, "take"))     /* cycle#take(n) is eager (only Lazy#take is deferred) */
+        return korb_lazy_drive(c, slots, self, n);
     if (SELF_ENUM->mode != 0) { slots[0] = LONG2FIX(n); return korb_lazy_chain(c, slots + 1, self, op, slots[0]); }
     const bool is_take = !strcmp(op, "take");                    /* eager: slice values into a plain Array */
     const KorbArray *v = VAL2ARY(SELF_ENUM->values);
