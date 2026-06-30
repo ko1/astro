@@ -450,14 +450,16 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_ARRAY_PATTERN_NODE)) {
         const pm_array_pattern_node_t *ap = (const pm_array_pattern_node_t *)pat;
-        if (!ap->constant && !ap->rest && ap->posts.size == 0) {
+        if (!ap->rest && ap->posts.size == 0) {
             p->kind = 2; p->n = (uint32_t)ap->requireds.size;
+            if (ap->constant) p->value_node = transduce(tc, ap->constant);   /* `Const[...]` → Const === subject first */
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
             return p;
         }
-        if (!ap->constant && ap->rest) {                      /* `[pre..., *rest, post...]` */
+        if (ap->rest) {                                       /* `[pre..., *rest, post...]` (optionally `Const[...]`) */
             p->kind = 6; p->n = (uint32_t)ap->requireds.size; p->npost = (uint32_t)ap->posts.size;
+            if (ap->constant) p->value_node = transduce(tc, ap->constant);
             const uint32_t total = p->n + p->npost;
             p->elems = calloc(total ? total : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, ap->requireds.nodes[i]);
@@ -474,8 +476,9 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_FIND_PATTERN_NODE)) {        /* `[*pre, mid..., *post]` find pattern */
         const pm_find_pattern_node_t *fp = (const pm_find_pattern_node_t *)pat;
-        if (!fp->constant) {
+        {
             p->kind = 8; p->n = (uint32_t)fp->requireds.size;
+            if (fp->constant) p->value_node = transduce(tc, fp->constant);   /* `Const[*, …, *]` */
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, fp->requireds.nodes[i]);
             p->bind_off = INT32_MIN;                              /* leading `*pre` slot (or anonymous) */
@@ -497,10 +500,11 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_HASH_PATTERN_NODE)) {
         const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
-        if (!hp->constant) {
+        {
             bool ok = true;
             p->kind = 3; p->n = (uint32_t)hp->elements.size;
             p->npost = 0; p->bind_off = INT32_MIN;        /* rest mode: 0=none, 1=**rest, 2=**nil */
+            if (hp->constant) p->value_node = transduce(tc, hp->constant);   /* `Const(k: …)` → Const === subject */
             p->keys  = calloc(p->n ? p->n : 1, sizeof(VALUE));
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) {

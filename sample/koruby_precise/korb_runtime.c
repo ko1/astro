@@ -3861,6 +3861,8 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
       }
       case 2: {                                          /* array pattern [e0..en) — Array, else #deconstruct'd to one */
+        if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…]` → Const === subject */
+                             if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
         if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
@@ -3882,6 +3884,8 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(KORB_TRUE);
       }
       case 3: {                                          /* hash pattern {k: e ...} */
+        if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const(k: …)` → Const === subject */
+                             if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
         /* materialize the hash at cur[0]: a real Hash directly, else via the
          * object's #deconstruct_keys (Struct/Data/custom pattern-match hook). */
         if (KORB_HASH_P(VALUE_REF_GET(subjref))) {
@@ -3923,6 +3927,8 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(KORB_TRUE);
       }
       case 8: {                                          /* find pattern [*left, mid..., *right] */
+        if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[*, …, *]` */
+                             if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
         if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
@@ -3978,6 +3984,8 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         return RESULT_OK(KORB_FALSE);
       }
       case 6: {                                          /* array w/ rest: [pre..., *rest, post...] — Array or #deconstruct'd */
+        if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…, *rest, …]` */
+                             if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
         if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
