@@ -720,17 +720,28 @@ static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, ep * sin(q)));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
+/* Coerce a Complex.polar argument to a double: a real, or a Complex whose
+ * imaginary part is zero (CRuby treats (x+0i) as the real x here). */
+static bool korb_polar_real_d(VALUE v, double *out) {
+    if (korb_num_to_d(v, out)) return true;
+    if (KORB_COMPLEX_P(v)) {
+        double im; const KorbComplex *const cx = VAL2CPX(v);
+        if (korb_num_to_d(cx->im, &im) && im == 0.0 && korb_num_to_d(cx->re, out)) return true;
+    }
+    return false;
+}
 /* Complex.polar(abs, arg=0) → abs·(cos arg + i·sin arg) (Float components). */
 static RESULT korb_m_cpx_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     double ab, ar = 0;
-    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &ab))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    if (UNLIKELY(!korb_polar_real_d(VALUE_SLICE_GET(a, 0), &ab))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     if (VALUE_SLICE_LEN(a) < 2) {                                    /* no angle → real part keeps its type, imag 0.0 */
-        slots[0] = VALUE_SLICE_GET(a, 0);
+        const VALUE a0 = VALUE_SLICE_GET(a, 0);
+        slots[0] = KORB_COMPLEX_P(a0) ? VAL2CPX(a0)->re : a0;        /* (x+0i) → x */
         slots[1] = UNWRAP(korb_float_new(c, slots + 1, 0.0));
         return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
     }
-    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 1), &ar))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    if (UNLIKELY(!korb_polar_real_d(VALUE_SLICE_GET(a, 1), &ar))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     slots[0] = UNWRAP(korb_float_new(c, slots, ab * cos(ar)));
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, ab * sin(ar)));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
