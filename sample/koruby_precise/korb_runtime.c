@@ -222,8 +222,13 @@ static bool korb_as_rat_v(VALUE v, VALUE *num, VALUE *den) {
  * staged in slots[0..] so each Bignum alloc keeps the operands rooted. */
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) return korb_num_arith(c, slots, l, r, op, 0);
-    if (UNLIKELY(!korb_as_rat_v(l, &slots[0], &slots[1]) || !korb_as_rat_v(r, &slots[2], &slots[3])))
+    if (UNLIKELY(!korb_as_rat_v(l, &slots[0], &slots[1]) || !korb_as_rat_v(r, &slots[2], &slots[3]))) {
+        if (KORB_RATIONAL_P(l) && KORB_OBJECT_P(r)) {     /* a, b = r.coerce(l); a OP b */
+            static const char *const ratop[] = { "+", "-", "*", "/", "%" };
+            bool h; RESULT cr = korb_try_coerce(c, slots, l, r, ratop[op], 0, &h); if (h) return cr;
+        }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(KORB_RATIONAL_P(l) ? r : l));
+    }
     /* slots[0..3] = ln, ld, rn, rd (rooted); compute num→slots[6], den→slots[7]. */
     if (op == 0 || op == 1) {                                  /* (ln*rd ± rn*ld) / (ld*rd) */
         slots[4] = UNWRAP(korb_int_arith(c, slots + 4, slots[0], slots[3], 2, 0));   /* ln*rd */
@@ -467,6 +472,7 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         double ex;
         if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
         else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
+        else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
         if (base < 0 && ex != floor(ex)) {                 /* negative base, fractional exp → Complex */
             const double mag = pow(-base, ex);

@@ -262,7 +262,10 @@ static RESULT korb_m_int_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return RESULT_OK(slots[2]);
     }
     if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 2);
-    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.divmod(b) */
+        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "divmod", 0, &h); if (h) return cr; }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
         return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 2);
     intptr_t b = FIX2LONG(bv);
