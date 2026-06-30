@@ -496,7 +496,15 @@ static RESULT korb_m_rat_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_rat_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1); }
 static RESULT korb_m_rat_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 2); }
 static RESULT korb_m_rat_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_rat_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 3); }
-static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 2 ? KORB_NIL : LONG2FIX(r)); }
+static RESULT korb_m_rat_cmp_m(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    int r = korb_rat_cmp(VALUE_REF_GET(self), o);
+    if (r == 2) {                                          /* coercible object → a, b = o.coerce(self); a <=> b */
+        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), o, "<=>", 0, &h); if (h) return cr; }
+        return RESULT_OK(KORB_NIL);
+    }
+    return RESULT_OK(LONG2FIX(r));
+}
 static RESULT korb_m_rat_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; int r = korb_rat_cmp(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); return RESULT_OK(r == 0 ? KORB_TRUE : KORB_FALSE); }
 
 static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op);

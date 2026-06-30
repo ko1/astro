@@ -38,8 +38,12 @@ static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_flt_nan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(isnan(SELF_FLT) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_flt_inf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; double d = SELF_FLT; return RESULT_OK(isinf(d) ? LONG2FIX(d < 0 ? -1 : 1) : KORB_NIL); }
 static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    double o; if (!korb_num_to_d(VALUE_SLICE_GET(a, 0), &o)) return RESULT_OK(KORB_NIL);
+    const VALUE ov = VALUE_SLICE_GET(a, 0);
+    double o;
+    if (!korb_num_to_d(ov, &o)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
+        if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "<=>", 0, &h); if (h) return cr; }
+        return RESULT_OK(KORB_NIL);
+    }
     double s = SELF_FLT; return RESULT_OK(LONG2FIX((s > o) - (s < o)));
 }
 /* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */

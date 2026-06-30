@@ -431,13 +431,15 @@ static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     VALUE selfv = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
 #ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(o)) return RESULT_OK(LONG2FIX(korb_int_cmp(selfv, o)));   /* exact */
 #endif
     double y, x;
-    if (!korb_num_to_d(o, &y)) return RESULT_OK(KORB_NIL);   /* incomparable → nil */
+    if (!korb_num_to_d(o, &y)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
+        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, o, "<=>", 0, &h); if (h) return cr; }
+        return RESULT_OK(KORB_NIL);                          /* incomparable → nil */
+    }
     (void)korb_num_to_d(selfv, &x);
     return RESULT_OK(LONG2FIX((x > y) - (x < y)));
 }
