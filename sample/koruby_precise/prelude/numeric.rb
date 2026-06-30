@@ -10,6 +10,22 @@ class Numeric
   def abs; self < 0 ? -self : self; end
   def magnitude; abs; end
   def abs2; self * self; end
+  def zero?; self == 0; end
+  def nonzero?; zero? ? nil : self; end
+  def negative?; self < 0; end
+  def positive?; self > 0; end
+  def integer?; false; end
+  def to_int; to_i; end
+  def div(other); (self / other).floor; end
+  def modulo(other); self - other * self.div(other); end
+  def %(other); modulo(other); end
+  def divmod(other); q = self.div(other); [q, self - other * q]; end
+  def remainder(other)
+    z = self % other
+    (z != 0 && (self < 0) != (other < 0)) ? z - other : z
+  end
+  def fdiv(other); self.to_f.fdiv(other); end
+  def quo(other); self.to_r.quo(other); end
 end
 
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
