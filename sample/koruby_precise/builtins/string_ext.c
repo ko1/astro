@@ -158,6 +158,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
         char conv = fmt[i];
         const bool sequential = (!has_named && explicit_idx < 0);
+        if (sequential && conv != '%' && ai >= argn) { err = true; errmsg = "too few arguments"; break; }
         VALUE arg = has_named ? named_arg
                   : (explicit_idx >= 0 ? ((uint32_t)explicit_idx < argn ? args[explicit_idx] : KORB_NIL)
                                        : ((ai < argn) ? args[ai] : KORB_NIL));
