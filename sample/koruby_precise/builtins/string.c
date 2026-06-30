@@ -485,6 +485,29 @@ static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
     }
     return true;
 }
+/* A charset spec with a descending range "b-a" (b > a) is invalid in Ruby.
+ * Returns the offending pair via lo and hi (else false). Skips a leading '^'. */
+static bool korb_charset_bad_range(const char *set, uint32_t n, unsigned char *lo, unsigned char *hi) {
+    uint32_t i = 0;
+    if (n > 1 && set[0] == '^') i = 1;
+    for (; i < n; i++) {
+        if (i + 2 < n && set[i+1] == '-') {
+            if ((unsigned char)set[i] > (unsigned char)set[i+2]) { *lo = (unsigned char)set[i]; *hi = (unsigned char)set[i+2]; return true; }
+            i += 2;
+        }
+    }
+    return false;
+}
+/* Raise ArgumentError if any set arg in `a` has a descending range. */
+static RESULT korb_str_sets_validate(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    unsigned char lo, hi;
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const VALUE sv = VALUE_SLICE_GET(a, j);
+        if (KORB_STRING_P(sv) && korb_charset_bad_range(VAL2STR(sv)->buf->data, VAL2STR(sv)->len, &lo, &hi))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", lo, hi);
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* delete_prefix/suffix (mode 0/1); in_place → bang (self if changed else nil). */
 static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode, bool in_place) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -539,6 +562,7 @@ static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 /* delete: remove chars present in ALL set args. (in_place → delete!) */
 static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
+    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     KorbString *r = korb_str_alloc(c, slots, n);
@@ -591,6 +615,9 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
+    { unsigned char rlo, rhi;
+      if (UNLIKELY(korb_charset_bad_range(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range(ts->buf->data, ts->len, &rlo, &rhi)))
+          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", rlo, rhi); }
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
     uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
@@ -632,6 +659,9 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
+    { unsigned char rlo, rhi;
+      if (UNLIKELY(korb_charset_bad_range(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range(ts->buf->data, ts->len, &rlo, &rhi)))
+          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", rlo, rhi); }
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512], tox[512];
     uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
@@ -874,8 +904,8 @@ static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_float_new(c, slots, any_digit ? strtod(buf, NULL) : 0.0);
 }
 static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     intptr_t cnt = 0;
     for (uint32_t i = 0; i < s->len; i++)
@@ -895,6 +925,7 @@ static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* squeeze: collapse runs of identical chars (only those in the sets, if given). */
 static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
     if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* squeeze! checks frozen upfront */
+    { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     bool has_set = VALUE_SLICE_LEN(a) > 0;
