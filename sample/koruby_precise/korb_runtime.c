@@ -3098,12 +3098,19 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         KorbClass *k = VAL2CLASS(VALUE_REF_GET(kref));   /* re-read after GC */
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->included, arr);
     }
+    const uint32_t included_mid = korb_intern(c->vm, "included", 8);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
-        VALUE mod = VALUE_SLICE_GET(mods, i);
-        if (UNLIKELY(!KORB_CLASS_P(mod)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mod));
+        if (UNLIKELY(!KORB_CLASS_P(VALUE_SLICE_GET(mods, i))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(VALUE_SLICE_GET(mods, i)));
         slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;   /* the array (rooted) */
-        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), mod));
+        slots[2] = VALUE_SLICE_GET(mods, i);                   /* mod (rooted across push + hook) */
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
+        if (UNLIKELY(korb_responds_to(c, slots[2], included_mid))) {   /* fire Module#included(base) hook */
+            slots[3] = slots[2];                               /* recv = mod */
+            slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
+            RESULT hr = korb_send_impl(c, slots + 5, included_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        }
     }
     return RESULT_OK(VALUE_REF_GET(kref));
 }
