@@ -50,6 +50,8 @@ module Enumerable
   def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if k.nil? || k == :_separator; f = true; next; end; if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
   def chunk_while; return to_enum(:chunk_while) unless block_given?; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_when; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
+  def slice_before(*pat); blk = block_given?; r = []; cur = nil; __each_el { |x| t = blk ? yield(x) : (pat[0] === x); if t && cur; r << cur; cur = [x]; elsif cur; cur << x; else; cur = [x]; end }; r << cur if cur; r; end
+  def slice_after(*pat); blk = block_given?; r = []; cur = []; __each_el { |x| cur << x; t = blk ? yield(x) : (pat[0] === x); if t; r << cur; cur = []; end }; r << cur unless cur.empty?; r; end
   def take(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
   def drop(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while(&blk); return to_enum(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
