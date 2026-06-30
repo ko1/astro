@@ -4347,6 +4347,20 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         if (UNLIKELY(!korb_to_index(rhs, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
     }
+    if (KORB_ARRAY_P(l) && KORB_OBJECT_P(rhs)) {        /* Array * obj: CRuby tries #to_str (join) first, then #to_int (repeat count) */
+        const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+        if (!korb_responds_to(c, rhs, korb_intern(c->vm, "to_str", 6)) && korb_responds_to(c, rhs, to_int)) {
+            slots[1] = rhs;                              /* receiver for the dispatch (base[-1]) */
+            RESULT ir = korb_send_impl(c, slots + 2, to_int, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            if (UNLIKELY(!KORB_INTEGER_P(ir.value)))
+                return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to Integer (%s#to_int gives %s)",
+                                  korb_type_name(slots[1]), korb_type_name(slots[1]), korb_type_name(ir.value));
+            if (UNLIKELY(!FIXNUM_P(ir.value))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "argument too big");
+            rhs = ir.value;                              /* now a Fixnum → fall into the repeat path */
+            l = VALUE_REF_GET(lhs);                      /* re-read: the dispatch may have moved the array */
+        }
+    }
     if (KORB_ARRAY_P(l) && (FIXNUM_P(rhs) || KORB_FLOAT_P(rhs))) {   /* Array * n → repeated array (Float coerced via to_int) */
         intptr_t cnt = FIXNUM_P(rhs) ? FIX2LONG(rhs) : (intptr_t)korb_float_val(rhs);
         if (cnt < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative argument");
