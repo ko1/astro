@@ -6215,8 +6215,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "empty?", korb_m_str_empty, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_s", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_str", korb_m_str_self, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "+@", korb_m_str_self, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "-@", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "+@", korb_m_str_plus_at, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "-@", korb_m_str_uminus, 0);
     korb_def_cmethod(c, KORB_C_STRING, "to_i", korb_m_str_to_i, -1);
     korb_def_cmethod(c, KORB_C_STRING, "hex", korb_m_str_hex, 0);
     korb_def_cmethod(c, KORB_C_STRING, "oct", korb_m_str_oct, 0);

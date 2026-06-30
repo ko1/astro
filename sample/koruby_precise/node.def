@@ -486,8 +486,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
     if (KORB_BIGNUM_P(v)) return korb_big_neg(c, slots, v);
 #endif
     if (KORB_FLOAT_P(v)) return korb_flo(c, slots, -korb_float_val(v));
-    if (KORB_STRING_P(v)) return RESULT_OK(v);   /* -@ on a String → self (frozen dup) */
-    slots[0] = v;                                /* Rational/Complex/user-defined -@ via dispatch */
+    slots[0] = v;                                /* String (→ frozen dup) / Rational / Complex / user-defined -@ via dispatch */
     return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0);
 }
 

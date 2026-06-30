@@ -5,6 +5,26 @@
 static RESULT korb_m_str_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_STR->len)); }
 static RESULT korb_m_str_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_STR->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+static inline bool korb_str_is_frozen(VALUE v) {
+    return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
+}
+/* String#-@ → a frozen string (self if already frozen, else a frozen copy). */
+static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (korb_str_is_frozen(VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = VALUE_REF_GET(self);
+    RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* GC-safe copy via #dup */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (AROH_IS_GC_OBJECT(r.value)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
+}
+/* String#+@ → a mutable string (self if already mutable, else an unfrozen copy). */
+static RESULT korb_m_str_plus_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (!korb_str_is_frozen(VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = VALUE_REF_GET(self);
+    return korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);       /* mutable copy via #dup */
+}
 static RESULT korb_m_str_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const KorbString *s = SELF_STR;
