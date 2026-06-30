@@ -288,6 +288,7 @@ RESULT korb_sub_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t li
     return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
 }
 static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));    /* modify-check before coercing the argument */
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* other (rooted; possibly coerced) */
     if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {            /* coerce via #to_ary before mutating self */
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);

@@ -125,8 +125,7 @@ static RESULT korb_m_math_ldexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Math.frexp(x) → [fraction, exponent]. */
 static RESULT korb_m_math_frexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; double x; int e = 0;
-    if (UNLIKELY(!korb_math_d(VALUE_SLICE_GET(a, 0), &x)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert into Float");
+    { RESULT _cr = korb_math_coerce_d(c, slots, VALUE_SLICE_GET(a, 0), &x); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; }
     double frac = frexp(x, &e);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);

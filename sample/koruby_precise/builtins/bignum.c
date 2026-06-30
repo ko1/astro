@@ -181,7 +181,7 @@ static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     mpz_t z, r;
     korb_to_mpz(n, z);
-    if (UNLIKELY(mpz_sgn(z) < 0)) { mpz_clear(z); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Numerical argument is out of domain - \"isqrt\""); }
+    if (UNLIKELY(mpz_sgn(z) < 0)) { mpz_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "Numerical argument is out of domain - \"isqrt\""); }
     mpz_init(r);
     mpz_sqrt(r, z);
     RESULT res = korb_big_from_mpz(c, slots, r);
