@@ -195,7 +195,7 @@ uint32_t korb_const_index(const struct korb_vm *vm, uint32_t name_sym);  /* UINT
 RESULT korb_obj_singleton(CTX *c, VALUE *slots, VALUE obj);
 void   korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                             uint32_t uses_block, struct Node **opt_defaults, void *kw_info);
+                             uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
 /* attr_reader/writer/accessor: define a getter/setter on the class. */
 void   korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is_writer);
 /* parse-time descriptor list for node_attr (one entry per generated method). */
@@ -280,7 +280,7 @@ struct korb_kw_info  { uint32_t count; int32_t kwrest_slot; struct korb_kw_entry
 /* method machinery */
 void   korb_method_define(CTX *c, uint32_t mid, NODE *body,
                           uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info);
+                          uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info);
 void   korb_builtin_define(CTX *c, const char *name, korb_builtin_fn fn,
                            int32_t params_cnt);
 /* `self` is the callee's receiver (the caller's self for a no-receiver call);

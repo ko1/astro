@@ -860,26 +860,26 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 // `self_off` reads the default definee: inside a `class` body self is the
 // class (def attaches to it); elsewhere self is main/an instance → global table.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, int32_t self_off)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
 {
     (void)n; (void)body_dispatcher;
     VALUE definee = slots[self_off];
     if (KORB_CLASS_P(definee))
-        korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info);
+        korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     else
-        korb_method_define(c, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info);
+        korb_method_define(c, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     return RESULT_OK(ID2SYM(mid));
 }
 
 // `def recv.name ... end` — singleton method: attach to recv's singleton class.
 NODE_DEF @noinline
-node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, VALUE_REF recv@child)
+node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, VALUE_REF recv@child)
 {
     (void)n; (void)body_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
     if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
-    korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info);
+    korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
      * object actually defines it (no default → no per-def cost otherwise; and
      * since the method is added first, defining the hook fires it for itself). */

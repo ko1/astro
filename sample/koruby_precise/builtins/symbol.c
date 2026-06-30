@@ -476,7 +476,24 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         else for (int32_t i = 0; i < km->params_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
         return RESULT_OK(VALUE_REF_GET(res));
     }
-    /* ISEQ: required, optional, rest, post (names not stored for methods) */
+    /* ISEQ: the full param_info (kinds + names + kwargs + block), like Proc#parameters
+     * — methods are strict (a required positional is :req, never :opt). param_info is
+     * immortal libc (no GC). NULL (e.g. define_method) → fall back to the counts. */
+    const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
+    if (km->kind == KORB_METHOD_ISEQ && pi != NULL) {
+        static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block" };
+        for (uint32_t i = 0; i < pi->n; i++) {
+            const uint8_t kind = pi->e[i].kind;
+            const char *const kn = knames[kind];
+            const uint32_t nm = pi->e[i].name;
+            slots[1] = UNWRAP(korb_ary_new(c, slots + 1, nm ? 2 : 1));
+            VALUE_REF sub = VALUE_REF_AT(&slots[1]);
+            CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(korb_intern(c->vm, kn, (uint32_t)strlen(kn)))));
+            if (nm) CHECK(korb_ary_push_val(c, slots + 2, sub, ID2SYM(nm)));
+            CHECK(korb_ary_push_val(c, slots + 2, res, VALUE_REF_GET(sub)));
+        }
+        return RESULT_OK(VALUE_REF_GET(res));
+    }
     for (uint32_t i = 0; i < km->req_cnt; i++) CHECK(korb_param_push(c, slots + 1, res, "req"));
     const uint32_t nopt = (km->params_cnt >= 0 && (uint32_t)km->params_cnt > km->req_cnt) ? (uint32_t)km->params_cnt - km->req_cnt : 0;
     for (uint32_t i = 0; i < nopt; i++) CHECK(korb_param_push(c, slots + 1, res, "opt"));

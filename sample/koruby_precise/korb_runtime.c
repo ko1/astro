@@ -2710,7 +2710,7 @@ extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                      uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
+                      uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
 {
     korb_check_basic_op_redef(c, klass, mid);
     KorbClass *const k = VAL2CLASS(klass);
@@ -2727,6 +2727,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     m->body = body;
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
+    m->param_info = param_info;
     m->bfn = NULL;
     /* fixed positional arity, nothing exotic → streamlined invoke eligible. */
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
@@ -4397,7 +4398,7 @@ korb_method_slot(CTX *c, uint32_t mid)
 void
 korb_method_define(CTX *c, uint32_t mid, NODE *body,
                    uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
-                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info)
+                   uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info)
 {
     struct korb_method *m = korb_method_slot(c, mid);
     m->kind = KORB_METHOD_ISEQ;
@@ -4410,6 +4411,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body,
     m->body = body;
     m->opt_defaults = opt_defaults;
     m->kw_info = kw_info;
+    m->param_info = param_info;
     m->bfn = NULL;
     m->is_simple = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 &&
                     req_cnt == params_cnt && !uses_block);

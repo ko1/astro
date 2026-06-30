@@ -591,6 +591,7 @@ struct korb_method {
                               * Manually GC-forwarded next to owner (entry is immortal libc). */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
+    void *param_info;        /* ISEQ: struct korb_param_info * (full param list for #parameters), NULL if none — cold-read only */
     korb_builtin_fn bfn;     /* BUILTIN (global C fn) */
     /* CFUNC (receiver-dispatch builtin): arity in params_cnt (-1 = variadic),
      * takes_block in uses_block.  rbfn used when uses_block, else rfn. */
