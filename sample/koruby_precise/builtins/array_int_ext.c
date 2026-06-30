@@ -303,15 +303,17 @@ static RESULT korb_m_ary_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         VALUE iv = VALUE_SLICE_GET(a, j);
         if (KORB_RANGE_P(iv)) {                       /* values_at(range): each index in the range */
             const KorbRange *r = VAL2RANGE(iv);
+            slots[0] = r->rbegin; slots[1] = r->rend;   /* root the bounds across any #to_int dispatch */
+            const bool excl = r->exclude_end != 0;
             const intptr_t len0 = VAL2ARY(VALUE_REF_GET(self))->len;
             intptr_t b, e2, last;
-            if (r->rbegin == KORB_NIL) b = 0;         /* beginless → 0 */
-            else { if (!korb_to_index(r->rbegin, &b)) continue; if (b < 0) b += len0; }
-            if (r->rend == KORB_NIL) last = len0 - 1; /* endless → to end */
-            else { if (!korb_to_index(r->rend, &e2)) continue; if (e2 < 0) e2 += len0; last = r->exclude_end ? e2 - 1 : e2; }
+            if (slots[0] == KORB_NIL) b = 0;          /* beginless → 0 */
+            else { if (!korb_to_index(slots[0], &b)) { RESULT cr = korb_coerce_to_int(c, slots + 2, &slots[0]); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; if (!korb_to_index(slots[0], &b)) continue; } if (b < 0) b += len0; }
+            if (slots[1] == KORB_NIL) last = len0 - 1; /* endless → to end */
+            else { if (!korb_to_index(slots[1], &e2)) { RESULT cr = korb_coerce_to_int(c, slots + 2, &slots[1]); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; if (!korb_to_index(slots[1], &e2)) continue; } if (e2 < 0) e2 += len0; last = excl ? e2 - 1 : e2; }
             for (intptr_t i = b; i <= last; i++) {
                 const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-                CHECK(korb_ary_push_val(c, slots + 1, dst, (i >= 0 && (uint32_t)i < ary->len) ? ary->items->data[i] : KORB_NIL));
+                CHECK(korb_ary_push_val(c, slots + 2, dst, (i >= 0 && (uint32_t)i < ary->len) ? ary->items->data[i] : KORB_NIL));
             }
             continue;
         }
