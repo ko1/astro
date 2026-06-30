@@ -713,7 +713,13 @@ static RESULT korb_m_cpx_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (!korb_num_to_d(SELF_CPX->re, &zre) || !korb_num_to_d(SELF_CPX->im, &zim))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "Complex#** with non-numeric components");
     if (KORB_COMPLEX_P(ev)) { korb_num_to_d(VAL2CPX(ev)->re, &wre); korb_num_to_d(VAL2CPX(ev)->im, &wim); }
-    else if (!korb_num_to_d(ev, &wre)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(ev));
+    else if (!korb_num_to_d(ev, &wre)) {
+        if (KORB_OBJECT_P(ev)) {                          /* a, b = ev.coerce(self); a ** b */
+            bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ev, "**", 0, &h);
+            if (h) return cr;
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(ev));
+    }
     const double r = hypot(zre, zim), th = atan2(zim, zre), lnr = log(r);
     const double p = wre * lnr - wim * th, q = wre * th + wim * lnr, ep = exp(p);
     slots[0] = UNWRAP(korb_float_new(c, slots, ep * cos(q)));
