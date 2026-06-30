@@ -1780,7 +1780,9 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
             mstart = 1;                                       /* explicit anonymous */
         }
     }
-    slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
+    { VALUE st = korb_const_get(vm, korb_intern(vm, "Struct", 6));      /* anon class, super Struct (is_a?(Struct)) */
+      if (!KORB_CLASS_P(st)) st = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+      slots[0] = UNWRAP(korb_class_new(c, slots, 0, st)); }
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = korb_const_get(vm, korb_intern(vm, "Enumerable", 10));   /* Struct includes Enumerable */
     { RESULT ir = korb_do_include(c, slots + 2, VALUE_REF_GET(cls), VALUE_SLICE_MAKE(&slots[1], 1)); if (UNLIKELY(ir.state != KORB_NORMAL)) return ir; }
@@ -1935,7 +1937,9 @@ static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)self; (void)cself;
     struct korb_vm *const vm = c->vm;
-    slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));   /* anon class, super Object */
+    { VALUE dt = korb_const_get(vm, korb_intern(vm, "Data", 4));        /* anon class, super Data (is_a?(Data)) */
+      if (!KORB_CLASS_P(dt)) dt = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+      slots[0] = UNWRAP(korb_class_new(c, slots, 0, dt)); }
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     VALUE_REF mem = VALUE_REF_AT(&slots[1]);
