@@ -451,17 +451,45 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     KorbArray *vd = VAL2ARY(VALUE_REF_GET(vals)), *kd = VAL2ARY(VALUE_REF_GET(keys));
     KorbArrayItems *const vit = vd->items, *const kit = kd->items;
     const VALUE *vdat = vit->data, *kdat = kit->data;
-    for (uint32_t i = 1; i < vd->len; i++) {             /* lockstep insertion sort, no alloc */
+    for (uint32_t i = 1; i < vd->len; i++) {             /* fast lockstep insertion sort by scalar key, no alloc/GC */
         VALUE vk = vdat[i], kk = kdat[i]; uint32_t j = i;
         while (j > 0) {
             int cmp = korb_cmp_full(c, kdat[j-1], kk);
-            if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(kdat[j-1]), korb_type_name(kk));
+            if (UNLIKELY(cmp == 2)) goto dispatch_sort;  /* key not comparable by value → redo via <=> (GC-safe) */
             if (cmp <= 0) break;
             ARO_STORE(c, vit, &vdat[j], vdat[j-1]); ARO_STORE(c, kit, &kdat[j], kdat[j-1]); j--;
         }
         ARO_STORE(c, vit, &vdat[j], vk); ARO_STORE(c, kit, &kdat[j], kk);
     }
     return RESULT_OK(VALUE_REF_GET(vals));
+
+  dispatch_sort:;   /* a block key needs <=> dispatch (Comparable user object): index-based
+                     * insertion sort, re-reading the (movable) arrays each step and rooting the
+                     * in-flight val/key in slots.  Matches Array#sort's object path. */
+    {
+        const uint32_t len = VAL2ARY(VALUE_REF_GET(keys))->len;
+        for (uint32_t i = 1; i < len; i++) {
+            slots[2] = VAL2ARY(VALUE_REF_GET(vals))->items->data[i];   /* val_i (rooted) */
+            slots[3] = VAL2ARY(VALUE_REF_GET(keys))->items->data[i];   /* key_i (rooted) */
+            uint32_t j = i;
+            while (j > 0) {
+                const VALUE prevk = VAL2ARY(VALUE_REF_GET(keys))->items->data[j-1];
+                int cmp = 0;
+                CHECK(korb_cmp_spaceship(c, slots + 4, prevk, slots[3], &cmp));   /* keys[j-1] <=> key_i */
+                if (cmp <= 0) break;
+                KorbArray *const vv = VAL2ARY(VALUE_REF_GET(vals));
+                ARO_STORE(c, vv->items, &vv->items->data[j], vv->items->data[j-1]);
+                KorbArray *const kq = VAL2ARY(VALUE_REF_GET(keys));
+                ARO_STORE(c, kq->items, &kq->items->data[j], kq->items->data[j-1]);
+                j--;
+            }
+            KorbArray *const vv = VAL2ARY(VALUE_REF_GET(vals));
+            ARO_STORE(c, vv->items, &vv->items->data[j], slots[2]);
+            KorbArray *const kq = VAL2ARY(VALUE_REF_GET(keys));
+            ARO_STORE(c, kq->items, &kq->items->data[j], slots[3]);
+        }
+        return RESULT_OK(VALUE_REF_GET(vals));
+    }
 }
 /* sort_by!: sort in place by block key (sort_by then copy back into self). */
 static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -492,7 +520,7 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
         slots[3] = r.value;
         if (!have) { slots[0] = slots[2]; slots[1] = slots[3]; have = true; continue; }
         int cmp = korb_cmp_full(c, slots[3], slots[1]);
-        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (UNLIKELY(cmp == 2)) CHECK(korb_cmp_spaceship(c, slots + 4, slots[3], slots[1], &cmp));   /* user object key → <=> */
         if ((want < 0 && cmp < 0) || (want > 0 && cmp > 0)) { slots[0] = slots[2]; slots[1] = slots[3]; }
     }
     return RESULT_OK(slots[0]);
