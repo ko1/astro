@@ -1659,8 +1659,7 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
     uint32_t line = kp_line(tc, t);
     if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
         const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)t;
-        if (lt->depth != 0) return NULL;
-        return lvar_write(tc, t, lt->name, 0, mw_index_get(tc, src_tmp, idx, aref, line));
+        return lvar_write(tc, t, lt->name, lt->depth, mw_index_get(tc, src_tmp, idx, aref, line));   /* depth-aware (closure target) */
     }
     if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE))
         return bake_ivar_set(tc, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
@@ -2099,8 +2098,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             for (uint32_t i = 0; i < nt; i++) {
                 const pm_node_t *t = mw->lefts.nodes[i];
                 if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                    if (((const pm_local_variable_target_node_t *)t)->depth != 0)
-                        return kp_unsupported(tc, t, "outer-scope multi-assign target");
+                    if (((const pm_local_variable_target_node_t *)t)->depth != 0) {
+                        all_local = false; needs_general = true;   /* outer-scope local → general synth-temp desugar (depth-aware) */
+                    }
                 } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
                     all_local = false;
