@@ -348,8 +348,11 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_flo(c, slots, (double)FIX2LONG(l) / korb_float_val(rhs));
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 3, n->u.node_div.line);
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 3);
-    if (FIXNUM_P(l))
+    if (KORB_INTEGER_P(l)) {                            /* Fixnum or Bignum: coerce protocol, else TypeError */
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, rhs, "/", n->u.node_div.line, &h);
+        if (h) return cr;
         return korb_raise(c, slots, KORB_E_TYPE, n->u.node_div.line, "%s can't be coerced into Integer", korb_type_name(rhs));
+    }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "/", &h); if (h) return ur; }
     return korb_raise(c, slots, KORB_E_NOMETHOD, n->u.node_div.line, "undefined method '/' for %s", korb_a_type_name(l));
 }
@@ -373,13 +376,13 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_int_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
 #endif
     if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
-    if ((FIXNUM_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) {   /* numeric l, float involved */
+    if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) {   /* numeric l (incl. Bignum), float involved */
         double rd;
         if (korb_num_to_d(rhs, &rd) && rd == 0.0)       /* Float modulo by zero → ZeroDivisionError (not NaN) */
             return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
         return korb_num_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
     }
-    if (FIXNUM_P(l))
+    if (KORB_INTEGER_P(l))                              /* Fixnum or Bignum / non-numeric → TypeError, not NoMethodError */
         return korb_raise(c, slots, KORB_E_TYPE, n->u.node_mod.line, "%s can't be coerced into Integer", korb_type_name(rhs));
     slots[0] = l; slots[1] = rhs;                       /* Range#% / user-defined % via dispatch */
     return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), n->u.node_mod.line, 1);
