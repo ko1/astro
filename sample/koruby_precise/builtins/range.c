@@ -263,6 +263,17 @@ static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
         return korb_enum_new(c, slots + 2, slots[0], slots[1]);
     }
+    /* endless (1..) or +∞-end (1..Float::INFINITY) integer range: iterate from
+     * begin upward indefinitely — the block is expected to break. */
+    if (FIXNUM_P(SELF_RANGE->rbegin) &&
+        (SELF_RANGE->rend == KORB_NIL ||
+         (KORB_FLOAT_P(SELF_RANGE->rend) && isinf(korb_float_val(SELF_RANGE->rend)) && korb_float_val(SELF_RANGE->rend) > 0))) {
+        for (intptr_t i = FIX2LONG(SELF_RANGE->rbegin); ; i++) {   /* i is a plain C int → GC-safe */
+            VALUE iv = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;        /* break/return/raise exits here */
+        }
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-integer (e.g. String) range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
