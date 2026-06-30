@@ -143,6 +143,8 @@ static RESULT korb_m_set_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_send_impl(c, slots + 1, korb_intern(c->vm, "join", 4), 0, n, NULL, NULL, NULL);
 }
 static RESULT korb_set_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int rel) {
+    if (UNLIKELY(!KORB_SET_P(VALUE_SLICE_GET(a, 0))))   /* subset?/superset?/</<= require a Set (not just set-like) */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be a set");
     VALUE ov = korb_set_elems_of(VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(ov == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "value must be a set");
     const KorbArray *me = VAL2ARY(SELF_SET->elems), *ot = VAL2ARY(ov);
