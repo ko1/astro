@@ -1303,7 +1303,7 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
         if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));/* beyond Fixnum width = sign extension */
         return RESULT_OK(LONG2FIX((n >> i) & 1));
     }
-    if (LIKELY(KORB_HASH_P(r) && !c->vm->hash_aref_redefined)) {   /* hash[key] → inline lookup, skip the send + dispatch */
+    if (LIKELY(KORB_HASH_P(r) && !c->vm->hash_aref_redefined && !KORB_OBJECT_P(idx))) {   /* hash[key] → inline lookup, skip the send + dispatch (user-object key falls to the CTX-aware method for custom eql?/hash) */
         const KorbHash *const h = VAL2HASH(r);
         const int32_t hi = korb_hash_find(h, idx);
         if (hi >= 0) return RESULT_OK(h->items->data[2 * hi + 1]);

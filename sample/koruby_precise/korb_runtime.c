@@ -1147,6 +1147,36 @@ korb_hash_find(const KorbHash *h, VALUE key)
     return -1;
 }
 
+/* CTX-aware find: a user object key (which may define a custom eql?/hash) is
+ * matched by dispatching `stored.eql?(searched)` over a linear scan; every other
+ * key type uses the CTX-free fast find.  `href` is the rooted Hash (re-read each
+ * step since eql? may GC).  On a dispatch error *out_err carries it (result -1). */
+static int32_t
+korb_hash_find_ctx(CTX *c, VALUE *slots, VALUE_REF href, VALUE key, RESULT *out_err)
+{
+    *out_err = RESULT_OK(KORB_NIL);
+    if (LIKELY(!KORB_OBJECT_P(key)))
+        return korb_hash_find(VAL2HASH(VALUE_REF_GET(href)), key);
+    if (VAL2HASH(VALUE_REF_GET(href))->head.flags & KORB_FL_CMP_BY_ID) {   /* compare_by_identity: pointer only */
+        const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
+        for (uint32_t i = 0; i < h->len; i++) if (h->items->data[2 * i] == key) return (int32_t)i;
+        return -1;
+    }
+    slots[0] = key;                                       /* root searched key across dispatch */
+    const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *const h = VAL2HASH(VALUE_REF_GET(href));
+        if (i >= h->len) return -1;
+        const VALUE existing = h->items->data[2 * i];
+        if (existing == slots[0]) return (int32_t)i;      /* identity shortcut (no dispatch) */
+        slots[1] = existing;                              /* root stored key */
+        slots[2] = existing; slots[3] = slots[0];         /* stored.eql?(searched) */
+        const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) { *out_err = r; return -1; }
+        if (KORB_TRUTHY(r.value)) return (int32_t)i;
+    }
+}
+
 /* Insert pair `pi` into an existing index (no alloc; caller ensures capacity). */
 static void korb_hash_index_put(KorbHash *h, uint32_t pi) {
     uint32_t *const tab = (uint32_t *)h->index->data;
@@ -1215,9 +1245,10 @@ korb_hash_merge_val(CTX *c, VALUE *slots, VALUE_REF href, VALUE src)
 RESULT
 korb_hash_set(CTX *c, VALUE *slots, VALUE_REF href, VALUE_REF kref, VALUE val)
 {
-    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow GC */
-    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));
-    int32_t idx = korb_hash_find(h, VALUE_REF_GET(kref));
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val across grow / eql? GC */
+    RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, href, VALUE_REF_GET(kref), &ferr);
+    if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+    KorbHash *h = VAL2HASH(VALUE_REF_GET(href));      /* re-read after possible eql? dispatch GC */
     if (idx >= 0) {
         KorbArrayItems *it = h->items;
         ARO_STORE(c, it, &it->data[2 * idx + 1], VALUE_REF_GET(vref));

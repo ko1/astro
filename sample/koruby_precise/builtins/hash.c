@@ -78,8 +78,9 @@ static RESULT korb_m_hash_cmp_by_id_q(CTX *c, VALUE *slots, VALUE_REF self, VALU
     return RESULT_OK((((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_CMP_BY_ID) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_hash_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbHash *h = SELF_HASH;
-    const int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    RESULT ferr; const int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, 0), &ferr);
+    if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+    const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */
     if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
     if (h->default_proc != KORB_NIL) {                    /* Hash.new { |h,k| } → default_proc.call(self, key) */
         slots[0] = h->default_proc;
@@ -127,8 +128,9 @@ static RESULT korb_m_hash_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 static RESULT korb_m_hash_key_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
-    return RESULT_OK(korb_hash_find(SELF_HASH, VALUE_SLICE_GET(a, 0)) >= 0 ? KORB_TRUE : KORB_FALSE);
+    RESULT ferr; const int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, 0), &ferr);
+    if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+    return RESULT_OK(idx >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
 /* Hash#== — same size, same keys (eql?/hash), values compared with #== (so a
@@ -203,8 +205,9 @@ static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 
 static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_LEN(a) > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", (unsigned)VALUE_SLICE_LEN(a));
-    const KorbHash *h = SELF_HASH;
-    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, 0), &ferr);
+    if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+    const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */
     if (idx >= 0) return RESULT_OK(h->items->data[2 * idx + 1]);
     if (block != NULL) {                                  /* miss: block form yields the key (wins over a default) */
         VALUE k = VALUE_SLICE_GET(a, 0);
@@ -233,8 +236,9 @@ static RESULT korb_m_hash_values(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    KorbHash *h = SELF_HASH;
-    int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, 0));
+    RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, 0), &ferr);
+    if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+    KorbHash *h = SELF_HASH;                              /* re-read after possible eql? dispatch */
     if (idx < 0) {
         if (block != NULL) {                              /* miss + block: yield the key, return its result */
             VALUE k = VALUE_SLICE_GET(a, 0);
