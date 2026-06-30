@@ -1814,11 +1814,24 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (SYM2ID(mem->items->data[i]) == sym) return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
     return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
 }
-/* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result. */
+/* Struct/Data#dig(key, *rest) — self[key], then recurse #dig on the result.
+ * Lenient like CRuby's rb_struct_lookup: a non-member name digs to nil. */
 static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    slots[0] = VALUE_SLICE_GET(a, 0);                         /* first key (rooted) */
-    RESULT first = korb_m_struct_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&slots[0], 1));
-    if (UNLIKELY(first.state != KORB_NORMAL)) return first;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
+    const VALUE key = VALUE_SLICE_GET(a, 0);
+    RESULT first;
+    if (SYMBOL_P(key) || KORB_STRING_P(key)) {               /* non-member name → nil (not NameError, unlike #[]) */
+        const uint32_t sym = SYMBOL_P(key) ? SYM2ID(key) : korb_intern(c->vm, VAL2STR(key)->buf->data, VAL2STR(key)->len);
+        const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));   /* read after intern (may GC) */
+        first = RESULT_OK(KORB_NIL);
+        for (uint32_t i = 0; i < mem->len; i++)
+            if (SYM2ID(mem->items->data[i]) == sym) { first = RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i]))); break; }
+    }
+    else {                                                    /* numeric index → struct_aref (IndexError on out-of-range) */
+        slots[0] = key;
+        first = korb_m_struct_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&slots[0], 1));
+        if (UNLIKELY(first.state != KORB_NORMAL)) return first;
+    }
     const uint32_t na = VALUE_SLICE_LEN(a);
     if (na == 1 || first.value == KORB_NIL) return first;
     slots[0] = first.value;                                  /* receiver for the recursive dig */
