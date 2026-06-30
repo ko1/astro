@@ -618,10 +618,41 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return r;
 }
 /* gsub/sub with a literal String pattern + String|Hash replacement (no regex/block). */
-static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place) {
+static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(pv)))                 /* regex pattern → deferred (astrogre) */
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub supports only a String pattern");
+    if (block != NULL) {                              /* gsub(pat) { |match| ... } — block yields the replacement */
+        const KorbString *ps = VAL2STR(pv);
+        const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
+        const KorbString *s0 = VAL2STR(VALUE_REF_GET(self));
+        const uint32_t sn = s0->len; char *const src = malloc(sn ? sn : 1); memcpy(src, s0->buf->data, sn);  /* stable across block GC */
+        char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+        uint32_t i = 0; bool replaced = false;
+        while (i < sn) {
+            if (pn > 0 && i + pn <= sn && memcmp(src + i, pat, pn) == 0 && (global || !replaced)) {
+                RESULT mr = korb_str_new(c, slots, src + i, pn);   /* the match (src/pat/ms libc-stable) */
+                if (UNLIKELY(mr.state != KORB_NORMAL)) { free(pat); free(src); fclose(ms); free(buf); return mr; }
+                slots[0] = mr.value;
+                RESULT yr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+                if (UNLIKELY(yr.state != KORB_NORMAL)) { free(pat); free(src); fclose(ms); free(buf); return yr; }
+                slots[0] = yr.value;
+                if (KORB_STRING_P(slots[0])) { const KorbString *r = VAL2STR(slots[0]); fwrite(r->buf->data, 1, r->len, ms); }
+                else korb_fprint_to_s(c, ms, slots[0]);
+                i += pn; replaced = true;
+            } else { fputc(src[i], ms); i++; }
+        }
+        free(pat); free(src); fclose(ms);
+        RESULT nr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+        free(buf);
+        if (!in_place) return nr;
+        if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+        slots[0] = nr.value;
+        const KorbString *res = VAL2STR(slots[0]); const uint32_t w = res->len;
+        KorbString *s2 = korb_str_ensure(c, slots + 1, self, w); res = VAL2STR(slots[0]);
+        memcpy(s2->buf->data, res->buf->data, w); s2->len = w; s2->buf->data[w] = '\0';
+        return RESULT_OK(replaced ? VALUE_REF_GET(self) : KORB_NIL);
+    }
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub without a replacement (Enumerator) is not supported");
     VALUE rv = VALUE_SLICE_GET(a, 1);
@@ -671,10 +702,10 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     s2->len = w; s2->buf->data[w] = '\0';
     return RESULT_OK(replaced ? VALUE_REF_GET(self) : KORB_NIL);
 }
-static RESULT korb_m_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_str_gsub_into(c, slots, self, a, true, false); }
-static RESULT korb_m_str_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_str_gsub_into(c, slots, self, a, false, false); }
-static RESULT korb_m_str_gsub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_gsub_into(c, slots, self, a, true, true); }
-static RESULT korb_m_str_sub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_gsub_into(c, slots, self, a, false, true); }
+static RESULT korb_m_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_str_gsub_into(c, slots, self, a, true, false, block, def_env, cself); }
+static RESULT korb_m_str_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)    { return korb_str_gsub_into(c, slots, self, a, false, false, block, def_env, cself); }
+static RESULT korb_m_str_gsub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_str_gsub_into(c, slots, self, a, true, true, block, def_env, cself); }
+static RESULT korb_m_str_sub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)  { return korb_str_gsub_into(c, slots, self, a, false, true, block, def_env, cself); }
 static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));

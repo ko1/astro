@@ -6099,10 +6099,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "tr", korb_m_str_tr, 2);
     korb_def_cmethod(c, KORB_C_STRING, "tr_s", korb_m_str_tr_s, 2);
     korb_def_cmethod(c, KORB_C_STRING, "tr_s!", korb_m_str_tr_s_bang, 2);
-    korb_def_cmethod(c, KORB_C_STRING, "gsub", korb_m_str_gsub, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "sub", korb_m_str_sub, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "gsub!", korb_m_str_gsub_b, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "sub!", korb_m_str_sub_b, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "gsub", korb_m_str_gsub, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "sub", korb_m_str_sub, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "gsub!", korb_m_str_gsub_b, -1);
+    korb_def_cmethod_blk(c, KORB_C_STRING, "sub!", korb_m_str_sub_b, -1);
     korb_def_cmethod(c, KORB_C_STRING, "rpartition", korb_m_str_rpartition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "partition", korb_m_str_partition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "to_f", korb_m_str_to_f, 0);
