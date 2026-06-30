@@ -474,9 +474,10 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_HASH_PATTERN_NODE)) {
         const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
-        if (!hp->constant && !hp->rest) {
+        if (!hp->constant) {
             bool ok = true;
             p->kind = 3; p->n = (uint32_t)hp->elements.size;
+            p->npost = 0; p->bind_off = INT32_MIN;        /* rest mode: 0=none, 1=**rest, 2=**nil */
             p->keys  = calloc(p->n ? p->n : 1, sizeof(VALUE));
             p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
             for (uint32_t i = 0; i < p->n; i++) {
@@ -502,6 +503,20 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
                     bp->bind_off = li - tc->chain;
                     bake_add(tc, &bp->bind_off);
                     p->elems[i] = bp;
+                }
+            }
+            if (ok && hp->rest) {                         /* `**rest` / `**nil` / `**` */
+                if (PM_NODE_TYPE_P(hp->rest, PM_ASSOC_SPLAT_NODE)) {
+                    p->npost = 1;                         /* **rest (or anonymous **): bind extra entries */
+                    const pm_assoc_splat_node_t *sp = (const pm_assoc_splat_node_t *)hp->rest;
+                    if (sp->value && PM_NODE_TYPE_P(sp->value, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                        const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)sp->value;
+                        if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, sp->value, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+                    }
+                } else if (PM_NODE_TYPE_P(hp->rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {
+                    p->npost = 2;                         /* **nil: forbid extra entries */
+                } else {
+                    ok = false;
                 }
             }
             if (ok) return p;

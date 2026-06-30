@@ -3904,6 +3904,22 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (r.value != KORB_TRUE) return RESULT_OK(KORB_FALSE);
         }
+        if (p->npost == 2) {                              /* **nil: forbid any unmatched entries */
+            if (VAL2HASH(cur[0])->len != p->n) return RESULT_OK(KORB_FALSE);
+        } else if (p->npost == 1 && p->bind_off != INT32_MIN) {   /* **rest: bind a Hash of the unmatched entries */
+            cur[1] = UNWRAP(korb_hash_new(c, cur + 1, 4));
+            VALUE_REF rh = VALUE_REF_AT(&cur[1]);
+            for (uint32_t i = 0; i < VAL2HASH(cur[0])->len; i++) {
+                const VALUE k = VAL2HASH(cur[0])->items->data[2 * i];
+                bool matched = false;
+                for (uint32_t j = 0; j < p->n; j++) if (k == p->keys[j]) { matched = true; break; }
+                if (matched) continue;
+                cur[2] = k;                               /* root key + value across hash_set GC */
+                cur[3] = VAL2HASH(cur[0])->items->data[2 * i + 1];
+                CHECK(korb_hash_set(c, cur + 4, rh, VALUE_REF_AT(&cur[2]), cur[3]));
+            }
+            base[p->bind_off] = VALUE_REF_GET(rh);
+        }
         return RESULT_OK(KORB_TRUE);
       }
       case 4: {                                          /* capture: inner pattern, then bind */
