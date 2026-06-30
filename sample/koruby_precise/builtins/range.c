@@ -1034,6 +1034,40 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
     if (block == NULL)                                /* → lazy ArithmeticSequence (recv = self range) */
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
+    {   /* Endless numeric range (no end): iterate from begin upward by a positive
+         * step forever — the block is expected to break.  Yields Float when either
+         * the begin or the step is a Float, else Integer (CRuby semantics). */
+        const KorbRange *const rng = SELF_RANGE;
+        if (rng->rend == KORB_NIL && rng->rbegin != KORB_NIL
+            && (FIXNUM_P(rng->rbegin) || KORB_FLOAT_P(rng->rbegin))) {
+            const bool flo = KORB_FLOAT_P(sv) || KORB_FLOAT_P(rng->rbegin);
+            if (flo) {
+                double dbeg, dstep;
+                if (!korb_num_to_d(rng->rbegin, &dbeg) || !korb_num_to_d(sv, &dstep))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
+                if (UNLIKELY(dstep == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+                if (dstep > 0) {
+                    for (long i = 0; ; i++) {         /* count-based: no float-error accumulation */
+                        slots[0] = UNWRAP(korb_float_new(c, slots + 1, dbeg + (double)i * dstep));
+                        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+                        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                    }
+                }
+            }
+            else if (FIXNUM_P(sv) && FIX2LONG(sv) > 0) {
+                const intptr_t st = FIX2LONG(sv);
+                for (intptr_t i = FIX2LONG(rng->rbegin); ; i += st) {
+                    VALUE iv = LONG2FIX(i);
+                    RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                }
+            }
+            else if (UNLIKELY(sv == LONG2FIX(0))) {
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+            }
+            /* non-positive / non-numeric step → fall through to the bounded paths below */
+        }
+    }
     {   /* Float step OR Float range bounds → iterate over doubles (count-based, like CRuby). */
         const KorbRange *const rng = SELF_RANGE;
         if ((KORB_FLOAT_P(sv) || KORB_FLOAT_P(rng->rbegin) || KORB_FLOAT_P(rng->rend))
