@@ -73,11 +73,20 @@ static RESULT korb_m_ary_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_FLOAT_P(e)) any_float = true; else if (!FIXNUM_P(e)) all_num = false;
     }
     if (all_num) {                                   /* numeric fast path */
-        if (any_float) {
-            double acc; korb_num_to_d(init, &acc);
+        if (any_float) {                             /* Kahan-Babuska-Neumaier compensated sum (CRuby) */
+            double sum; korb_num_to_d(init, &sum);
+            double comp = 0.0;
             const KorbArray *ar = SELF_ARY;
-            for (uint32_t i = 0; i < ar->len; i++) { double d; korb_num_to_d(ar->items->data[i], &d); acc += d; }
-            return korb_float_new(c, slots, acc);
+            for (uint32_t i = 0; i < ar->len; i++) {
+                double x; korb_num_to_d(ar->items->data[i], &x);
+                const double t = sum + x;
+                if (t - t == 0.0) {                  /* t finite → compensate; non-finite (Inf/NaN) → skip (Inf-Inf=NaN) */
+                    const double as = sum < 0 ? -sum : sum, ax = x < 0 ? -x : x;
+                    comp += (as >= ax) ? ((sum - t) + x) : ((x - t) + sum);
+                }
+                sum = t;
+            }
+            return korb_float_new(c, slots, sum + comp);
         }
         intptr_t acc = FIX2LONG(init);
         for (uint32_t i = 0; i < ary->len; i++) acc += FIX2LONG(ary->items->data[i]);
