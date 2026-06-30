@@ -1021,6 +1021,11 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 
 /* Exception#message / to_s — the stored message, or the class name if none. */
+static RESULT korb_m_exc_cause(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->cause : KORB_NIL);
+}
 static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbException *e = VAL2EXC(VALUE_REF_GET(self));

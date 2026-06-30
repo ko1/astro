@@ -4261,6 +4261,8 @@ korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
     e->etype = etype;
     e->line = line;
     ARO_STORE(c, e, &e->msg, VALUE_REF_GET(msg));
+    const VALUE cause_v = korb_errinfo_top(c);                /* $! at raise time → #cause */
+    if (cause_v != KORB_NIL && cause_v != (VALUE)e) ARO_STORE(c, e, &e->cause, cause_v);
     return RESULT_RAISE_((VALUE)e);
 }
 
@@ -6712,6 +6714,7 @@ korb_register_core_methods(CTX *c)
 
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace", korb_m_lit_nil, 0);          /* not tracked as an array (fresh = nil) */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "cause", korb_m_exc_cause, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message_via_to_s, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "to_s", korb_m_exc_message, 0);
