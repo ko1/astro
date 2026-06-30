@@ -472,6 +472,29 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
             }
             return p;
         }
+    } else if (PM_NODE_TYPE_P(pat, PM_FIND_PATTERN_NODE)) {        /* `[*pre, mid..., *post]` find pattern */
+        const pm_find_pattern_node_t *fp = (const pm_find_pattern_node_t *)pat;
+        if (!fp->constant) {
+            p->kind = 8; p->n = (uint32_t)fp->requireds.size;
+            p->elems = calloc(p->n ? p->n : 1, sizeof(struct korb_pat *));
+            for (uint32_t i = 0; i < p->n; i++) p->elems[i] = build_pattern_desc(tc, fp->requireds.nodes[i]);
+            p->bind_off = INT32_MIN;                              /* leading `*pre` slot (or anonymous) */
+            if (fp->left && fp->left->expression && PM_NODE_TYPE_P(fp->left->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)fp->left->expression;
+                if (lt->depth == 0) { p->bind_off = (int32_t)lvar_index(tc, fp->left->expression, lt->name) - tc->chain; bake_add(tc, &p->bind_off); }
+            }
+            int32_t right_off = INT32_MIN;                        /* trailing `*post` slot (npost holds it) */
+            if (fp->right && PM_NODE_TYPE_P(fp->right, PM_SPLAT_NODE)) {
+                const pm_splat_node_t *rsp = (const pm_splat_node_t *)fp->right;
+                if (rsp->expression && PM_NODE_TYPE_P(rsp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                    const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)rsp->expression;
+                    if (lt->depth == 0) right_off = (int32_t)lvar_index(tc, rsp->expression, lt->name) - tc->chain;
+                }
+            }
+            p->npost = (uint32_t)right_off;
+            if (right_off != INT32_MIN) bake_add(tc, (int32_t *)&p->npost);
+            return p;
+        }
     } else if (PM_NODE_TYPE_P(pat, PM_HASH_PATTERN_NODE)) {
         const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
         if (!hp->constant) {

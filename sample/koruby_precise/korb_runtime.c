@@ -3922,6 +3922,46 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         }
         return RESULT_OK(KORB_TRUE);
       }
+      case 8: {                                          /* find pattern [*left, mid..., *right] */
+        if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
+            cur[0] = VALUE_REF_GET(subjref);
+        } else {
+            const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
+            if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dc)) return RESULT_OK(KORB_FALSE);
+            cur[0] = VALUE_REF_GET(subjref);
+            RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            if (!KORB_ARRAY_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            cur[0] = dr.value;
+        }
+        const uint32_t len = VAL2ARY(cur[0])->len;
+        const int32_t right_off = (int32_t)p->npost;
+        for (uint32_t s = 0; p->n <= len && s <= len - p->n; s++) {   /* try the mid run at each position */
+            bool all = true;
+            for (uint32_t i = 0; i < p->n; i++) {
+                cur[1] = VAL2ARY(cur[0])->items->data[s + i];
+                RESULT r = korb_pat_match(c, base, cur + 2, VALUE_REF_AT(&cur[1]), p->elems[i]);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (r.value != KORB_TRUE) { all = false; break; }
+            }
+            if (!all) continue;
+            if (p->bind_off != INT32_MIN) {                /* bind *left = [0..s) */
+                cur[1] = UNWRAP(korb_ary_new(c, cur + 1, s));
+                VALUE_REF lh = VALUE_REF_AT(&cur[1]);
+                for (uint32_t i = 0; i < s; i++) { cur[2] = VAL2ARY(cur[0])->items->data[i]; CHECK(korb_ary_push_val(c, cur + 3, lh, cur[2])); }
+                base[p->bind_off] = VALUE_REF_GET(lh);
+            }
+            if (right_off != INT32_MIN) {                  /* bind *right = [s+n..len) */
+                const uint32_t rstart = s + p->n;
+                cur[1] = UNWRAP(korb_ary_new(c, cur + 1, len - rstart));
+                VALUE_REF rh = VALUE_REF_AT(&cur[1]);
+                for (uint32_t i = rstart; i < len; i++) { cur[2] = VAL2ARY(cur[0])->items->data[i]; CHECK(korb_ary_push_val(c, cur + 3, rh, cur[2])); }
+                base[right_off] = VALUE_REF_GET(rh);
+            }
+            return RESULT_OK(KORB_TRUE);
+        }
+        return RESULT_OK(KORB_FALSE);
+      }
       case 4: {                                          /* capture: inner pattern, then bind */
         RESULT r = korb_pat_match(c, base, cur, subjref, p->elems[0]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
