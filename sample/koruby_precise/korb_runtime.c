@@ -1803,6 +1803,35 @@ static RESULT korb_m_struct_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+static RESULT korb_m_struct_each_pair(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    if (block == NULL) {                                          /* no block → Enumerator over [member, value] pairs */
+        slots[0] = STRUCT_MEMBERS(self);                         /* members (rooted) */
+        const uint32_t n = VAL2ARY(slots[0])->len;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));        /* pairs (rooted) */
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < n; i++) {
+            const VALUE msym = VAL2ARY(slots[0])->items->data[i];                       /* Symbol (immediate) */
+            slots[2] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));   /* value (rooted) */
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));    /* [member, value] */
+            VALUE_REF pair = VALUE_REF_AT(&slots[3]);
+            CHECK(korb_ary_push_val(c, slots + 4, pair, msym));
+            CHECK(korb_ary_push_val(c, slots + 4, pair, slots[2]));
+            CHECK(korb_ary_push_val(c, slots + 4, dst, VALUE_REF_GET(pair)));
+        }
+        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "each_pair"));
+        return korb_enum_new(c, slots + 3, VALUE_REF_GET(dst), slots[2]);
+    }
+    slots[1] = STRUCT_MEMBERS(self);
+    const uint32_t n = VAL2ARY(slots[1])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE msym = VAL2ARY(slots[1])->items->data[i];
+        VALUE argv[2] = { msym, korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym)) };
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_struct_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block == NULL) {
         slots[0] = UNWRAP(korb_m_struct_to_a(c, slots, self, a));
@@ -1913,6 +1942,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "eql?", korb_m_struct_eq, 1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "hash", korb_m_struct_hash, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each", korb_m_struct_each, 0);
+    korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each_pair", korb_m_struct_each_pair, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
     VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit;
