@@ -244,6 +244,18 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_obj_class(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a; return RESULT_OK(korb_class_obj_of(c, VALUE_REF_GET(self)));
 }
+/* Object#object_id / __id__.  Immediates match CRuby exactly; heap objects use an
+ * address-derived id (stable within a GC epoch — moving GC has no per-object id slot). */
+static RESULT korb_m_obj_object_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (FIXNUM_P(v))     return RESULT_OK(LONG2FIX(2 * FIX2LONG(v) + 1));
+    if (v == KORB_NIL)   return RESULT_OK(LONG2FIX(4));
+    if (v == KORB_FALSE) return RESULT_OK(LONG2FIX(0));
+    if (v == KORB_TRUE)  return RESULT_OK(LONG2FIX(20));
+    if (SYMBOL_P(v))     return RESULT_OK(LONG2FIX((intptr_t)(((uintptr_t)SYM2ID(v) << 8) | 0x1c)));   /* consistent per symbol */
+    return RESULT_OK(LONG2FIX((intptr_t)((uintptr_t)v >> 2)));
+}
 static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE target = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_CLASS_P(target))) return korb_raise(c, slots, KORB_E_TYPE, 0, "class or module required");

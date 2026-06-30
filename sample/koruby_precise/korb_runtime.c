@@ -6595,6 +6595,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "to_s", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "inspect", korb_m_obj_inspect, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "class", korb_m_obj_class, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "object_id", korb_m_obj_object_id, 0);
+    korb_def_cmethod(c, KORB_C_OBJECT, "__id__", korb_m_obj_object_id, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "is_a?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "kind_of?", korb_m_obj_is_a, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "extend", korb_m_obj_extend, -1);
