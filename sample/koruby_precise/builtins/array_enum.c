@@ -574,7 +574,8 @@ static RESULT korb_m_ary_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[1], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[2] = r.value;                              /* key */
-        int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(h)), slots[2]);
+        RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots + 4, h, slots[2], &ferr);   /* CTX-aware (custom eql?/hash key) */
+        if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
         if (idx < 0) {                                   /* new bucket array */
             slots[3] = UNWRAP(korb_ary_new(c, slots + 4, 4));
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
@@ -660,7 +661,8 @@ static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
         slots[1] = ary->items->data[i];                 /* elem (root) */
-        int32_t idx = korb_hash_find(VAL2HASH(VALUE_REF_GET(h)), slots[1]);
+        RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots + 2, h, slots[1], &ferr);   /* CTX-aware key */
+        if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
         intptr_t cnt = idx < 0 ? 0 : FIX2LONG(VAL2HASH(VALUE_REF_GET(h))->items->data[2*idx+1]);
         CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(cnt + 1)));
     }

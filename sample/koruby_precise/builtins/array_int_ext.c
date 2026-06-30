@@ -387,8 +387,9 @@ static RESULT korb_m_hash_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     uint32_t k = VALUE_SLICE_LEN(a);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, k)));
     for (uint32_t j = 0; j < k; j++) {
-        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
-        int32_t idx = korb_hash_find(h, VALUE_SLICE_GET(a, j));
+        RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, VALUE_SLICE_GET(a, j), &ferr);   /* CTX-aware key */
+        if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
+        const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));   /* re-read after possible eql? dispatch */
         CHECK(korb_ary_push_val(c, slots + 1, dst, idx < 0 ? h->default_val : h->items->data[2 * idx + 1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
