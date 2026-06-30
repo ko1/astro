@@ -97,6 +97,18 @@ static RESULT korb_m_ary_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                       (long)orig, ary->len ? -(long)ary->len : 0L, ary->len);
 }
 
+/* Continue digging through a non-Hash/Array value: cur.dig(remaining keys) if it
+ * defines #dig (e.g. a Struct or a user object), else TypeError. */
+static RESULT korb_dig_dispatch(CTX *c, VALUE *slots, VALUE cur, VALUE_SLICE a, uint32_t k) {
+    const uint32_t dig_id = korb_intern(c->vm, "dig", 3);
+    if (LIKELY(korb_responds_to(c, cur, dig_id))) {
+        const uint32_t rest = VALUE_SLICE_LEN(a) - k;
+        slots[0] = cur;                                   /* receiver at base[-(rest+1)] */
+        for (uint32_t j = 0; j < rest; j++) slots[1 + j] = VALUE_SLICE_GET(a, k + j);   /* args at base[-rest..-1] */
+        return korb_send_impl(c, slots + rest + 1, dig_id, 0, rest, NULL, NULL, KORB_NIL);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
+}
 /* dig: recursive index into nested Array/Hash */
 static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
@@ -114,7 +126,7 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             int32_t idx = korb_hash_find(VAL2HASH(cur), key);
             cur = idx < 0 ? KORB_NIL : VAL2HASH(cur)->items->data[2 * idx + 1];
         } else {
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
+            return korb_dig_dispatch(c, slots, cur, a, k);   /* user object → cur.dig(rest...), else TypeError */
         }
     }
     return RESULT_OK(cur);
@@ -384,9 +396,22 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
         VALUE key = VALUE_SLICE_GET(a, k);
         if (cur == KORB_NIL) return RESULT_OK(KORB_NIL);
-        if (KORB_HASH_P(cur)) { int32_t idx = korb_hash_find(VAL2HASH(cur), key); cur = idx < 0 ? KORB_NIL : VAL2HASH(cur)->items->data[2 * idx + 1]; }
+        if (KORB_HASH_P(cur)) {
+            int32_t idx = korb_hash_find(VAL2HASH(cur), key);
+            if (idx >= 0) cur = VAL2HASH(cur)->items->data[2 * idx + 1];
+            else {                                            /* miss → Hash's default (value or proc), as #[] would */
+                KorbHash *const hc = VAL2HASH(cur);
+                if (hc->default_proc != KORB_NIL) {
+                    slots[0] = hc->default_proc; slots[1] = cur; slots[2] = key;   /* default_proc.call(hash, key) */
+                    RESULT r = korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, KORB_NIL);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                    cur = r.value;
+                }
+                else cur = hc->default_val;
+            }
+        }
         else if (KORB_ARRAY_P(cur)) { intptr_t i; if (UNLIKELY(!korb_to_index(key, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key)); KorbArray *ar = VAL2ARY(cur); if (i < 0) i += ar->len; cur = (i < 0 || (uint32_t)i >= ar->len) ? KORB_NIL : ar->items->data[i]; }
-        else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
+        else return korb_dig_dispatch(c, slots, cur, a, k);   /* user object → cur.dig(rest...), else TypeError */
     }
     return RESULT_OK(cur);
 }
