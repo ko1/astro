@@ -524,7 +524,7 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         p->elems[1] = build_pattern_desc(tc, ap->right);
         return p;
     } else if (PM_NODE_TYPE_P(pat, PM_PINNED_VARIABLE_NODE)) {      /* `^var` → var === subject */
-        p->kind = 1;
+        p->kind = 7;   /* pin: value_node is a frame-local read → must EVAL in the match frame (base), not cur */
         p->value_node = transduce(tc, (const pm_node_t *)((const pm_pinned_variable_node_t *)pat)->variable);
         return p;
     } else if (PM_NODE_TYPE_P(pat, PM_PINNED_EXPRESSION_NODE)) {    /* `^(expr)` */

@@ -3852,6 +3852,14 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         if (UNLIKELY(pv.state != KORB_NORMAL)) return pv;
         return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
       }
+      case 7: {                                          /* pin `^var`: EVAL in the match frame (base) so the
+                                                          * pinned local resolves (its EP is base[-2], not cur[-2]),
+                                                          * then === subject.  value_node is a simple read → no
+                                                          * scratch write, so the subject at base[0] survives. */
+        RESULT pv = EVAL(c, p->value_node, base);
+        if (UNLIKELY(pv.state != KORB_NORMAL)) return pv;
+        return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
+      }
       case 2: {                                          /* array pattern [e0..en) — Array, else #deconstruct'd to one */
         if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
