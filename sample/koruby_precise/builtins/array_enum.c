@@ -1401,6 +1401,10 @@ static RESULT korb_num_binop(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     }
     if (KORB_INTEGER_P(l) && KORB_INTEGER_P(r))          /* Bignum operand(s) → exact integer arith */
         return korb_int_arith(c, slots, l, r, op, 0);
+    /* exact Complex/Rational — the operator slow-paths do this; the method-dispatch
+     * path (Integer#+(rat) via send/sum/reduce(:+)) must match, not coerce to Float. */
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(r)) return korb_cpx_arith(c, slots, l, r, op);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(r)) return korb_rat_arith(c, slots, l, r, op);
     return korb_num_arith(c, slots, l, r, op, 0);
 }
 static RESULT korb_m_num_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_num_binop(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
