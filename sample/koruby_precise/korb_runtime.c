@@ -6605,10 +6605,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "method", korb_m_obj_method, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "freeze", korb_m_obj_freeze, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "frozen?", korb_m_obj_frozen_q, 0);
-    korb_def_cmethod(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_METHOD, "call", korb_m_meth_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "to_proc", korb_m_meth_to_proc, 0);
-    korb_def_cmethod(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
-    korb_def_cmethod(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_METHOD, "[]", korb_m_meth_call, -1);
+    korb_def_cmethod_blk(c, KORB_C_METHOD, "===", korb_m_meth_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "call", korb_m_proc_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "[]", korb_m_proc_call, -1);
     korb_def_cmethod_blk(c, KORB_C_PROC, "()", korb_m_proc_call, -1);
