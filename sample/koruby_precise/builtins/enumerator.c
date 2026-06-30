@@ -128,6 +128,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
     /* per-op state for stateful ops: drop/take counter, drop_while "still dropping"
      * flag.  Indexed by op position; bounded so we can use a C-stack array. */
     intptr_t op_state[64];
+    bool has_terminator = false;   /* a take/take_while op bounds an otherwise-infinite source */
     { const KorbArray *ops0 = VAL2ARY(SELF_ENUM->ops);
       uint32_t nop = ops0->len < 64 ? ops0->len : 64;
       for (uint32_t oi = 0; oi < nop; oi++) {
@@ -136,6 +137,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
           if (!strcmp(opn, "drop") || !strcmp(opn, "take")) op_state[oi] = FIX2LONG(pair->items->data[1]);
           else if (!strcmp(opn, "drop_while")) op_state[oi] = 1;            /* 1 = still dropping */
           else op_state[oi] = 0;
+          if (!strcmp(opn, "take") || !strcmp(opn, "take_while")) has_terminator = true;
       } }
     /* source enumeration index/value lives in slots[1] (the candidate value). */
     intptr_t produced = 0;
@@ -144,8 +146,9 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
     #define LAZY_FEED(cand_expr) do {                                                      \
         slots[1] = (cand_expr);                                                            \
         bool keep = true;                                                                  \
-        const KorbArray *ops = VAL2ARY(SELF_ENUM->ops);                                    \
-        for (uint32_t oi = 0; oi < ops->len && keep; oi++) {                               \
+        for (uint32_t oi = 0; keep; oi++) {                                                \
+            const KorbArray *ops = VAL2ARY(SELF_ENUM->ops);   /* re-read: op dispatch GCs */ \
+            if (oi >= ops->len) break;                                                     \
             const KorbArray *pair = VAL2ARY(ops->items->data[oi]);                         \
             uint32_t opid = SYM2ID(pair->items->data[0]);                                  \
             const char *opn = korb_sym_name(c->vm, opid);                                  \
@@ -183,7 +186,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
             intptr_t end = inf ? 0 : FIX2LONG(ev);
             for (;; i++) {
                 if (!inf) { if (excl ? (i >= end) : (i > end)) break; }
-                else if (limit < 0) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy.force on an infinite range");
+                else if (limit < 0 && !has_terminator) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "lazy.force on an infinite range");
                 LAZY_FEED(LONG2FIX(i));
             }
         } else if (KORB_ARRAY_P(src)) {
