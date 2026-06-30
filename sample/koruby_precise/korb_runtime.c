@@ -6818,6 +6818,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inherited", korb_m_lit_nil, 1);   /* default no-op hook (so user inherited can call super) */
+    korb_def_cmethod(c, KORB_C_CLASS, "method_added", korb_m_lit_nil, 1);   /* default no-op (so user method_added can call super) */
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
