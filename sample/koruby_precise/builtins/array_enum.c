@@ -1088,6 +1088,19 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
     uint32_t n = VAL2ARY(VALUE_REF_GET(src))->len;
     for (uint32_t i = 0; i < n; i++) {
         VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
+        if (depth != 0 && !KORB_ARRAY_P(e) && KORB_OBJECT_P(e)) {        /* non-Array element with #to_ary → flatten its result */
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            if (korb_responds_to(c, e, to_ary)) {
+                slots[0] = e;
+                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                if (ar.value != KORB_NIL) {                  /* nil → not coercible: leave the element as a leaf (rb_check_array_type) */
+                    if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
+                        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)", korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(ar.value));
+                    e = ar.value;
+                }
+            }
+        }
         if (KORB_ARRAY_P(e) && depth != 0) {
             const KorbArray *const g = VAL2ARY(VALUE_REF_GET(guard));
             for (uint32_t j = 0; j < g->len; j++)
@@ -1105,7 +1118,15 @@ static RESULT korb_ary_flatten_depth(CTX *c, VALUE *slots, VALUE_REF dst, VALUE_
 static RESULT korb_m_ary_flatten(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int depth = -1;
     intptr_t d;
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &d)) depth = (int)d;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* depth arg → #to_int, else TypeError */
+        VALUE dv = VALUE_SLICE_GET(a, 0);
+        if (!korb_to_index(dv, &d)) {
+            RESULT cr = korb_coerce_to_int(c, slots, &dv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(dv, &d)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        depth = (int)d;
+    }
     uint32_t n = SELF_ARY->len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
