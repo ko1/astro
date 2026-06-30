@@ -264,6 +264,7 @@ static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(o)) {                             /* Integer#remainder(Float) → Float, truncated */
         double f = korb_float_val(o), s; korb_num_to_d(VALUE_REF_GET(self), &s);
+        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         return korb_float_new(c, slots, fmod(s, f));   /* C fmod = truncated remainder (sign of dividend) */
     }
     if (KORB_RATIONAL_P(o)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), o, 3);

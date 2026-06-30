@@ -216,7 +216,7 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (UNLIKELY(!FIXNUM_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
         intptr_t mod = FIX2LONG(mv);
         if (UNLIKELY(mod == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        if (UNLIKELY(exp < 0)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "int.pow(n, m): n must be positive");
+        if (UNLIKELY(exp < 0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
         intptr_t am = mod < 0 ? -mod : mod;
         __int128 bb = (((__int128)(base % am)) + am) % am, result = 1 % am;
         for (intptr_t e = exp; e > 0; e >>= 1) {

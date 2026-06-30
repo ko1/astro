@@ -385,6 +385,12 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             CHECK(korb_hash_set(c, slots + 5, dst, VALUE_REF_AT(&slots[2]), slots[3]));
         }
     }
+    {   /* retain the receiver's default value / default_proc (CRuby semantics) */
+        KorbHash *const dh = VAL2HASH(VALUE_REF_GET(dst));
+        const KorbHash *const sh = VAL2HASH(VALUE_REF_GET(self));
+        ARO_STORE(c, dh, &dh->default_val,  sh->default_val);
+        ARO_STORE(c, dh, &dh->default_proc, sh->default_proc);
+    }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Hash#update / merge! — like merge but mutates self in place, returns self. */
