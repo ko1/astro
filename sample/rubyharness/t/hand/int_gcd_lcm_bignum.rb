@@ -1,0 +1,18 @@
+# Integer#gcd/#lcm/#gcdlcm with Bignum operands + Fixnum-overflow promotion. vs ruby.
+big = 99 * (10**30)
+p 99.gcd(big)
+p big.gcd(99)
+p big.gcd(big * 7)
+p 6.lcm(10**30)
+p (10**30).lcm(6)
+p (3 * 10**18).lcm(2 * 10**18)
+p 12.gcdlcm(8)
+p (10**30).gcdlcm(6)
+p 6.gcdlcm(10**30)
+# Fixnum corners (min-Fixnum gcd promotes to Bignum; lcm overflow promotes)
+m = 2 ** (1.size * 8 - 2)
+p (-m).gcd(-m)
+p (m - 1).gcd(m - 1)
+p (10**9).lcm(10**9 + 1)
+p 0.gcd(5); p 5.lcm(0)
+begin; 5.gcd(2.0); rescue => e; p e.class; end

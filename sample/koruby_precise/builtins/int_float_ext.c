@@ -18,15 +18,15 @@ static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_nobits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_m_int_bits(c, slots, self, a, 0); }
 static RESULT korb_m_int_anybits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_int_bits(c, slots, self, a, 1); }
 static RESULT korb_m_int_allbits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_int_bits(c, slots, self, a, 2); }
+/* korb_m_int_gcd / korb_m_int_lcm are defined earlier in the TU (integer.c). */
 static RESULT korb_m_int_gcdlcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
-    intptr_t x = FIX2LONG(VALUE_REF_GET(self)), y = FIX2LONG(o);
-    intptr_t g = korb_int_gcd(x, y), l = (x == 0 || y == 0) ? 0 : (x / g) * y;
-    if (l < 0) l = -l;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 2)));
-    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(g)));
-    CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(l)));
+    if (UNLIKELY(!KORB_INTEGER_P(VALUE_SLICE_GET(a, 0)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion");
+    RESULT gr = korb_m_int_gcd(c, slots, self, a); if (UNLIKELY(gr.state != KORB_NORMAL)) return gr; slots[0] = gr.value;
+    RESULT lr = korb_m_int_lcm(c, slots + 1, self, a); if (UNLIKELY(lr.state != KORB_NORMAL)) return lr; slots[1] = lr.value;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, dst, slots[1]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* cos(pi*x) / sin(pi*x) — exact 0/±1 at half-integers (matches CRuby's accurate

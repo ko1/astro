@@ -307,21 +307,54 @@ static RESULT korb_m_int_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 
 static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
-    return RESULT_OK(LONG2FIX(korb_int_gcd(SELF_INT, FIX2LONG(bv))));
+    const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
+        intptr_t g = korb_int_gcd(FIX2LONG(sv), FIX2LONG(bv));
+        if (LIKELY(FIXABLE(g))) return RESULT_OK(LONG2FIX(g));   /* non-fixable only when both are the min Fixnum (g == 2^62) */
+#ifndef KORB_HAVE_GMP
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
+    }
+#ifdef KORB_HAVE_GMP
+    {   /* Bignum operand or non-fixable Fixnum gcd → GMP (always non-negative) */
+        mpz_t za, zb, zr; korb_to_mpz(sv, za); korb_to_mpz(bv, zb); mpz_init(zr);
+        mpz_gcd(zr, za, zb);
+        RESULT r = korb_big_from_mpz(c, slots, zr);
+        mpz_clear(za); mpz_clear(zb); mpz_clear(zr);
+        return r;
+    }
+#else
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
 }
 
 static RESULT korb_m_int_lcm(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
-    intptr_t av = SELF_INT, b = FIX2LONG(bv);
-    if (av == 0 || b == 0) return RESULT_OK(LONG2FIX(0));
-    intptr_t g = korb_int_gcd(av, b);
-    intptr_t l = (av / g) * b;
-    if (l < 0) l = -l;
-    if (UNLIKELY(!FIXABLE(l))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
-    return RESULT_OK(LONG2FIX(l));
+    const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (FIXNUM_P(sv) && FIXNUM_P(bv)) {
+        intptr_t av = FIX2LONG(sv), b = FIX2LONG(bv);
+        if (av == 0 || b == 0) return RESULT_OK(LONG2FIX(0));
+        intptr_t g = korb_int_gcd(av, b), l;
+        if (LIKELY(!__builtin_mul_overflow(av / g, b, &l))) {
+            if (l < 0) l = -l;
+            if (LIKELY(FIXABLE(l))) return RESULT_OK(LONG2FIX(l));
+        }
+#ifndef KORB_HAVE_GMP
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
+    }
+#ifdef KORB_HAVE_GMP
+    {   /* Bignum operand or Fixnum overflow → GMP lcm (non-negative; 0 if either is 0) */
+        mpz_t za, zb, zr; korb_to_mpz(sv, za); korb_to_mpz(bv, zb); mpz_init(zr);
+        mpz_lcm(zr, za, zb);
+        RESULT r = korb_big_from_mpz(c, slots, zr);
+        mpz_clear(za); mpz_clear(zb); mpz_clear(zr);
+        return r;
+    }
+#else
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
 }
 
 static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
