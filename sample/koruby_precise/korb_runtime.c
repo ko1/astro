@@ -4203,6 +4203,10 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
             return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
         }
     }
+    if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l)) && KORB_OBJECT_P(r)) {
+        bool h; RESULT cr = korb_try_coerce(c, slots, l, r, korb_cmp_op_name[op], line, &h);   /* a, b = r.coerce(l); a OP b */
+        if (h) return cr;
+    }
     if (KORB_INTEGER_P(l) || KORB_FLOAT_P(l) || KORB_RATIONAL_P(l) || KORB_STRING_P(l) || SYMBOL_P(l)) {
         char rdesc[64];                                  /* numeric/String/Symbol vs incomparable → ArgumentError */
         korb_cmperr_operand(r, rdesc, sizeof(rdesc));
@@ -4250,6 +4254,7 @@ RESULT korb_try_coerce(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
     slots[0] = rhs; slots[1] = l;                            /* recv=rhs, arg=l for #coerce */
     RESULT cr = korb_send_impl(c, slots + 2, coerce_id, line, 1, NULL, NULL, KORB_NIL);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    if (cr.value == KORB_NIL) { *handled = false; return RESULT_OK(KORB_NIL); }   /* nil → not coercible: let the caller raise its own TypeError/ArgumentError */
     if (UNLIKELY(!KORB_ARRAY_P(cr.value) || VAL2ARY(cr.value)->len != 2))
         return korb_raise(c, slots, KORB_E_TYPE, line, "coerce must return [x, y]");
     slots[0] = cr.value;
