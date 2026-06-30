@@ -6,6 +6,12 @@ module Enumerable
   # user block forward the raw values so block arity destructures them.  For a
   # single-value each, `a.size == 1` so behaviour is unchanged.
   def __each_el; each { |*a| yield(a.size <= 1 ? a[0] : a) }; end
+  # rb_to_int: an Integer as-is, else #to_int, else TypeError (not NoMethodError).
+  def __as_int(n)
+    return n if n.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
+    n.to_int
+  end
   def map(&blk); return to_enum(:map) unless blk; r = []; each { |*a| r << blk.call(*a) }; r; end
   alias collect map
   def select(&blk); return to_a.select unless blk; r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << e if blk.call(*a) }; r; end
@@ -52,15 +58,15 @@ module Enumerable
   def slice_when; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_before(*pat); blk = block_given?; r = []; cur = nil; __each_el { |x| t = blk ? yield(x) : (pat[0] === x); if t && cur; r << cur; cur = [x]; elsif cur; cur << x; else; cur = [x]; end }; r << cur if cur; r; end
   def slice_after(*pat); blk = block_given?; r = []; cur = []; __each_el { |x| cur << x; t = blk ? yield(x) : (pat[0] === x); if t; r << cur; cur = []; end }; r << cur unless cur.empty?; r; end
-  def take(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
-  def drop(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
+  def take(n); n = __as_int(n); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
+  def drop(n); n = __as_int(n); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while(&blk); return to_enum(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
   def drop_while(&blk); return to_enum(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(*ar); r << e unless dropping }; r; end
   def minmax; [min, max]; end
   def minmax_by; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
   def find_index(*v, &blk); return to_enum(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
-  def each_slice(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid slice size" unless n > 0; r = []; s = []; __each_el { |x| s << x; if s.size == n; r << s; s = []; end }; r << s unless s.empty?; if block_given?; r.each { |sl| yield sl }; nil; else; r.each; end; end
-  def each_cons(n); n = n.to_int unless n.is_a?(Integer); raise ArgumentError, "invalid size" unless n > 0; r = []; buf = []; __each_el { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r.each; end; end
+  def each_slice(n); n = __as_int(n); raise ArgumentError, "invalid slice size" unless n > 0; r = []; s = []; __each_el { |x| s << x; if s.size == n; r << s; s = []; end }; r << s unless s.empty?; if block_given?; r.each { |sl| yield sl }; nil; else; r.each; end; end
+  def each_cons(n); n = __as_int(n); raise ArgumentError, "invalid size" unless n > 0; r = []; buf = []; __each_el { |x| buf << x; if buf.size == n; r << buf.dup; buf.shift; end }; if block_given?; r.each { |cc| yield cc }; nil; else; r.each; end; end
   def zip(*others); os = others.map { |o| o.to_a }; r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }; if block_given?; r.each { |row| yield row }; nil; else; r; end; end
   def filter_map(&blk); return to_enum(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
