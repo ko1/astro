@@ -965,31 +965,40 @@ static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-    (void)c;(void)slots;(void)a;
-    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    KorbArrayItems *it = ary->items;
-    uint32_t w = 0;
-    for (uint32_t i = 0; i < ary->len; i++) {
-        bool seen = false;
-        for (uint32_t j = 0; j < w; j++) if (korb_value_eq(it->data[j], it->data[i])) { seen = true; break; }
-        if (!seen) { if (w != i) ARO_STORE(c, it, &it->data[w], it->data[i]); w++; }
-    }
-    if (w == ary->len) return RESULT_OK(KORB_NIL);   /* unchanged */
-    ary->len = w;
+    const uint32_t before = SELF_ARY->len;
+    const RESULT ur = korb_m_ary_uniq(c, slots, self, a);   /* CTX-aware (dispatches eql? for user objects) */
+    if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;
+    slots[0] = ur.value;                                    /* the deduped array (rooted) */
+    const uint32_t after = VAL2ARY(slots[0])->len;
+    if (after == before) return RESULT_OK(KORB_NIL);        /* no dups removed */
+    KorbArray *const ary = SELF_ARY;                        /* re-read after uniq's allocs */
+    const KorbArray *const u = VAL2ARY(slots[0]);
+    for (uint32_t i = 0; i < after; i++) ARO_STORE(c, ary->items, &ary->items->data[i], u->items->data[i]);
+    ary->len = after;
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    uint32_t n = SELF_ARY->len;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
-    for (uint32_t i = 0; i < n; i++) {
-        VALUE e = SELF_ARY->items->data[i];
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, SELF_ARY->len)));
+    const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
+    for (uint32_t i = 0; i < SELF_ARY->len; i++) {
+        slots[0] = SELF_ARY->items->data[i];             /* e, rooted across eql? dispatch / push */
         const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
         bool seen = false;
-        for (uint32_t j = 0; j < d->len; j++) if (korb_value_eql(d->items->data[j], e)) { seen = true; break; }
-        if (!seen) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+        for (uint32_t j = 0; j < d->len; j++) {
+            const VALUE existing = d->items->data[j];
+            if (KORB_OBJECT_P(existing) || KORB_OBJECT_P(slots[0])) {   /* user eql? → dispatch (stored.eql?(e)) */
+                slots[1] = existing; slots[2] = existing; slots[3] = slots[0];
+                const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (KORB_TRUTHY(r.value)) { seen = true; break; }
+                d = VAL2ARY(VALUE_REF_GET(dst));         /* re-read after dispatch GC */
+            } else if (korb_value_eql(existing, slots[0])) { seen = true; break; }
+        }
+        if (!seen) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
