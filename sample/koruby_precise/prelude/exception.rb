@@ -10,6 +10,9 @@ class Exception
     highlight ? "\e[1m#{m} (\e[1;4m#{cn}\e[m\e[1m)\e[m" : "#{m} (#{cn})"
   end
   def full_message(**opts); "#{message} (#{self.class})"; end
+  # no arg → self; with a message → a new exception of the same class (CRuby clones + replaces).
+  def exception(*args); args.empty? ? self : self.class.new(*args); end
+  def self.exception(*args); new(*args); end   # Class-level Exception.exception(msg) == new(msg)
   # Equal iff same object, or same class + message + backtrace.
   def ==(other)
     return true if equal?(other)
