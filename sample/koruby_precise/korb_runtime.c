@@ -3098,9 +3098,19 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     VALUE cls = korb_const_get(c->vm, name_sym);
     if (!KORB_CLASS_P(cls)) {
-        cls = UNWRAP(korb_class_new(c, slots, name_sym, superclass));
-        if (is_module) VAL2CLASS(cls)->is_module = 1;
-        korb_const_define(c, name_sym, cls);    /* now rooted in the const table */
+        slots[0] = superclass;                   /* root super across korb_class_new's GC */
+        slots[1] = UNWRAP(korb_class_new(c, slots + 2, name_sym, slots[0]));   /* cls (rooted) */
+        if (is_module) VAL2CLASS(slots[1])->is_module = 1;
+        korb_const_define(c, name_sym, slots[1]);    /* now rooted in the const table */
+        if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
+            const uint32_t inh = korb_intern(c->vm, "inherited", 9);
+            if (korb_responds_to(c, slots[0], inh)) {
+                slots[2] = slots[0]; slots[3] = slots[1];   /* recv = super, arg0 = new class */
+                RESULT hr = korb_send_impl(c, slots + 4, inh, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            }
+        }
+        cls = slots[1];                          /* the (possibly forwarded) new class */
     }
     slots[0] = cls;                              /* root for the body run + capture */
     VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
@@ -3161,12 +3171,19 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         KorbClass *k = VAL2CLASS(VALUE_REF_GET(kref));   /* re-read after GC */
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->prepended, arr);
     }
+    const uint32_t prepended_mid = korb_intern(c->vm, "prepended", 9);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
-        VALUE mod = VALUE_SLICE_GET(mods, i);
-        if (UNLIKELY(!KORB_CLASS_P(mod)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mod));
+        if (UNLIKELY(!KORB_CLASS_P(VALUE_SLICE_GET(mods, i))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(VALUE_SLICE_GET(mods, i)));
         slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;   /* the array (rooted) */
-        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), mod));
+        slots[2] = VALUE_SLICE_GET(mods, i);                    /* mod (rooted across push + hook) */
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
+        if (UNLIKELY(korb_responds_to(c, slots[2], prepended_mid))) {   /* fire Module#prepended(base) hook */
+            slots[3] = slots[2];                               /* recv = mod */
+            slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
+            RESULT hr = korb_send_impl(c, slots + 5, prepended_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        }
     }
     c->vm->method_serial++;                      /* MRO changed → flush method caches */
     return RESULT_OK(VALUE_REF_GET(kref));
