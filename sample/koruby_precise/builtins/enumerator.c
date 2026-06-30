@@ -19,19 +19,60 @@ korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc)
  * not terminate — only finite generators are supported. */
 static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t ac = VALUE_SLICE_LEN(a);
-    const uint32_t csym = korb_intern(c->vm, "@__c", 4);
-    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), csym);     /* collector (rooted across allocs) */
+    const uint32_t csym = korb_intern(c->vm, "@__c", 4);   /* @__c = [collector, limit] pair */
+    slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);     /* the pair (rooted) */
+    slots[0] = VAL2ARY(slots[1])->items->data[0];              /* collector (rooted in slots[0]) */
+    const VALUE limv = VAL2ARY(slots[1])->items->data[1];     /* limit (fixnum, immediate) */
     VALUE v;
     if (ac == 1) v = VALUE_SLICE_GET(a, 0);
     else if (ac == 0) v = KORB_NIL;
     else {                                                      /* y.yield(a, b) → [a, b] */
-        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, ac));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, ac));
         for (uint32_t i = 0; i < ac; i++)
-            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_GET(a, i)));
-        v = slots[1];
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_SLICE_GET(a, i)));
+        v = slots[2];
     }
     CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), v));
+    /* bounded generator: stop once `limit` values collected (StopIteration is the
+     * natural signal — an enclosing `loop` swallows it, else gen_run catches it). */
+    if (FIXNUM_P(limv) && FIX2LONG(limv) >= 0 && VAL2ARY(slots[0])->len >= (uint32_t)FIX2LONG(limv))
+        return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
     return RESULT_OK(VALUE_REF_GET(self));
+}
+/* A deferred generator enumerator: stores the block as a proc in `source`, mode 3.
+ * Terminals re-run the proc (bounded by a limit via the yielder) — so infinite
+ * generators work for first/take/next without eager materialization. */
+static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc) {
+    slots[0] = proc;
+    KorbEnumerator *e = korb_alloc(c, slots + 1, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    e->mode = 3;
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
+    return RESULT_OK((VALUE)e);
+}
+/* Run the generator proc, collecting up to `limit` values (limit < 0 = unbounded,
+ * finite only).  Returns the collector Array. */
+static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit) {
+    struct korb_vm *const vm = c->vm;
+    if (vm->yielder_class == KORB_NIL) {                        /* lazily build Enumerator::Yielder (a GC root) */
+        slots[0] = UNWRAP(korb_class_new(c, slots, 0, korb_builtin_class_obj(vm, KORB_C_OBJECT)));
+        korb_class_def_cfn(c, slots[0], "yield", korb_m_yielder_push, -1);
+        korb_class_def_cfn(c, slots[0], "<<",    korb_m_yielder_push, -1);
+        vm->yielder_class = slots[0];
+    }
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));              /* collector (returned) */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));         /* @__c pair = [collector, limit] (one ivar) */
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(limit)));
+    slots[2] = UNWRAP(korb_obj_new(c, slots + 2, vm->yielder_class));
+    CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[2]), korb_intern(vm, "@__c", 4), slots[1]));
+    if (limit == 0) return RESULT_OK(slots[0]);                /* take(0): no run */
+    slots[3] = SELF_ENUM->source;                             /* the generator proc */
+    slots[4] = slots[2];                                      /* arg0 = yielder */
+    RESULT br = korb_send_impl(c, slots + 5, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, KORB_NIL);
+    if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION)
+        return RESULT_OK(slots[0]);                            /* hit the bound (or natural end) → collector */
+    if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+    return RESULT_OK(slots[0]);                                /* finished naturally (finite) */
 }
 /* ---- lazy / cycle enumerators (deferred, possibly-infinite source) -------- */
 /* A lazy enumerator carries a `source` (Array/Range) + a chain of deferred `ops`
@@ -78,7 +119,9 @@ static RESULT korb_call1(CTX *c, VALUE *slots, VALUE proc, VALUE v) {
 /* Drive a lazy/cycle enum: produce values, apply ops, push up to `limit` (or all
  * if limit<0) into a fresh Array.  `self` rooted.  `sink` (non-null) yields each
  * instead of collecting (for lazy#each). */
+static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit);   /* fwd */
 static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit) {
+    if (SELF_ENUM->mode == 3) return korb_enum_gen_run(c, slots, self, limit);   /* deferred generator */
     slots[0] = UNWRAP(korb_ary_new(c, slots, limit > 0 ? (uint32_t)limit : 8));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);                     /* result (rooted) */
     const uint8_t mode = SELF_ENUM->mode;
@@ -224,8 +267,10 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* A lazy chain op (select/map/reject/filter_map/take_while): on a lazy enum,
  * reify the block to a Proc and append the op; on an eager enum, just collect. */
+static RESULT korb_enum_force_gen(CTX *c, VALUE *slots, VALUE_REF self);   /* fwd */
 static RESULT korb_lazy_op(CTX *c, VALUE *slots, VALUE_REF self, const char *op, bool is_map,
                            NODE *block, VALUE *def_env, VALUE *cself) {
+    { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* mode-3 gen → eager */
     if (SELF_ENUM->mode != 0) {                                  /* lazy: defer */
         slots[0] = UNWRAP(korb_make_proc(c, slots, block, def_env, KORB_CSELF_VAL(cself), 0));
         return korb_lazy_chain(c, slots + 1, self, op, slots[0]);
@@ -262,9 +307,24 @@ static RESULT korb_m_enum_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)a; return korb_lazy_op(c, slots, self, "drop_while", false, block, def_env, cself);
 }
 /* lazy drop(n) / take(n): chain a counted op (lazy); eager → slice the values. */
+/* For a mode-3 generator: materialize it (finite only) into a mode-0 values enum
+ * in place, so the eager (mode-0) method paths work.  No-op for other modes. */
+static RESULT korb_enum_force_gen(CTX *c, VALUE *slots, VALUE_REF self) {
+    if (SELF_ENUM->mode != 3) return RESULT_OK(KORB_NIL);
+    RESULT vr = korb_enum_gen_run(c, slots, self, -1);   /* finite materialize (infinite → hang, as expected) */
+    if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
+    slots[0] = vr.value;
+    ARO_STORE(c, SELF_ENUM, (VALUE *)(uintptr_t)&SELF_ENUM->values, slots[0]);
+    SELF_ENUM->mode = 0; SELF_ENUM->cursor = 0;
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_lazy_count_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *op) {
     intptr_t n; if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     if (n < 0) n = 0;
+    if (SELF_ENUM->mode == 3) {                          /* generator: take = bounded, drop = materialize */
+        if (!strcmp(op, "take")) return korb_enum_gen_run(c, slots, self, n);
+        RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    }
     if (SELF_ENUM->mode != 0) { slots[0] = LONG2FIX(n); return korb_lazy_chain(c, slots + 1, self, op, slots[0]); }
     const bool is_take = !strcmp(op, "take");                    /* eager: slice values into a plain Array */
     const KorbArray *v = VAL2ARY(SELF_ENUM->values);
@@ -359,8 +419,20 @@ static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(slots[0]);
 }
+/* mode-3 generator next/peek: re-run bounded to cursor+1, return the value there. */
+static RESULT korb_enum_gen_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool advance) {
+    const uint32_t cur = SELF_ENUM->cursor;
+    RESULT vr = korb_enum_gen_run(c, slots, self, (intptr_t)cur + 1);
+    if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
+    slots[0] = vr.value;
+    if (cur >= VAL2ARY(slots[0])->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
+    const VALUE v = VAL2ARY(slots[0])->items->data[cur];
+    if (advance) SELF_ENUM->cursor = cur + 1;
+    return RESULT_OK(v);
+}
 static RESULT korb_m_enum_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (SELF_ENUM->mode == 3) return korb_enum_gen_at_cursor(c, slots, self, true);
     KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
@@ -368,6 +440,7 @@ static RESULT korb_m_enum_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_enum_peek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (SELF_ENUM->mode == 3) return korb_enum_gen_at_cursor(c, slots, self, false);
     const KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
     if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
