@@ -35,6 +35,23 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
     korb_aseq_params(as, &beginv, &limv, &stepv, &excl);
     if (limv == KORB_NIL)
         return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot convert endless arithmetic sequence to an array");
+    /* Non-numeric (e.g. String) range stepped by a positive Integer: materialize
+     * the whole range via #succ (Range#to_a), then stride by the step.  Numeric
+     * ranges fall through to the scalar paths below. */
+    if (KORB_RANGE_P(as->recv) && !FIXNUM_P(beginv) && !KORB_FLOAT_P(beginv)
+        && FIXNUM_P(stepv) && FIX2LONG(stepv) > 0) {
+        const uintptr_t st = (uintptr_t)FIX2LONG(stepv);
+        slots[0] = VAL2ASEQ(VALUE_REF_GET(self))->recv;            /* root the range across to_a's alloc */
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0)));
+        VALUE_REF full = VALUE_REF_AT(&slots[0]);
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
+        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+        for (uintptr_t i = 0; i < VAL2ARY(VALUE_REF_GET(full))->len; i += st) {
+            VALUE ev = VAL2ARY(VALUE_REF_GET(full))->items->data[i];   /* push_val roots ev on its grow path */
+            CHECK(korb_ary_push_val(c, slots + 2, dst, ev));
+        }
+        return RESULT_OK(VALUE_REF_GET(dst));
+    }
     const bool use_float = KORB_FLOAT_P(beginv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
     /* Extract all scalars BEFORE allocating — under STRESS the array alloc GCs and
      * would move the Float operands (beginv/limv/stepv) out from under us. */

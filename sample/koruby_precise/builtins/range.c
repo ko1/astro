@@ -1032,8 +1032,13 @@ static RESULT korb_m_range_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, uint8_t is_pct) {
     uint8_t na = VALUE_SLICE_LEN(a) >= 1 ? 1 : 0;
     VALUE sv = na ? VALUE_SLICE_GET(a, 0) : LONG2FIX(1);
-    if (block == NULL)                                /* → lazy ArithmeticSequence (recv = self range) */
+    if (block == NULL) {                              /* → lazy ArithmeticSequence (recv = self range) */
+        if (UNLIKELY((FIXNUM_P(sv) && sv == LONG2FIX(0)) || (KORB_FLOAT_P(sv) && korb_float_val(sv) == 0.0)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
+    }
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL))     /* iterating a beginless range is undefined */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "#step iteration for beginless ranges is meaningless");
     {   /* Endless numeric range (no end): iterate from begin upward by a positive
          * step forever — the block is expected to break.  Yields Float when either
          * the begin or the step is a Float, else Integer (CRuby semantics). */
