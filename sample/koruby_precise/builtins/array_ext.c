@@ -122,14 +122,17 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             size_t back = star ? 0 : (size_t)cnt;
             if (back > olen) { errtype = KORB_E_ARGUMENT; errmsg = "X outside of string"; break; }
             olen -= back;
-        } else if (d == 'w') {                            /* BER-compressed integer */
-            if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
-            VALUE e = ary->items->data[ai++];
-            uintptr_t v = FIXNUM_P(e) ? (uintptr_t)FIX2LONG(e) : 0;
-            uint8_t tmp[12]; int n = 0;
-            tmp[n++] = (uint8_t)(v & 0x7f); v >>= 7;
-            while (v) { tmp[n++] = (uint8_t)((v & 0x7f) | 0x80); v >>= 7; }
-            while (n) PK_PUT(tmp[--n]);                   /* big-endian, high bit on all but last */
+        } else if (d == 'w') {                            /* BER-compressed integer (star/count → all/n) */
+            uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
+            for (uint32_t rr = 0; rr < emit; rr++) {
+                if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
+                VALUE e = ary->items->data[ai++];
+                uintptr_t v = FIXNUM_P(e) ? (uintptr_t)FIX2LONG(e) : 0;
+                uint8_t tmp[12]; int n = 0;
+                tmp[n++] = (uint8_t)(v & 0x7f); v >>= 7;
+                while (v) { tmp[n++] = (uint8_t)((v & 0x7f) | 0x80); v >>= 7; }
+                while (n) PK_PUT(tmp[--n]);                /* big-endian, high bit on all but last */
+            }
         } else if (d == 'P' || d == 'p') {                /* pointer: 1-based side-table index (0 = nil) */
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
             VALUE e = ary->items->data[ai++];
