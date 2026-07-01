@@ -1871,3 +1871,53 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   STRESS 監査時は除外候補(baruby の test_p1 flake 相当)。
 - `make test STRESS=1` の env を BARUBY_GC_* に修正済(commit af223556)。それまで
   標準コマンドは黙って stress していなかった。
+
+## 2026-07-01 structural (VALUE tag 再編 + 名前空間 + inspect/ivar)
+6 件を master に直接投入 (user 許可下、他作業者無し)。golden 90090→92447、method 86977/0 維持、全 STRESS+PURGE clean・corpus で vs ruby 一致。
+
+- **✅ lazy-on-無限generator hang** (85d96aa6): `Enumerator.new{loop}.lazy.select.first(n)` が
+  korb_lazy_op の force_gen で無限 materialize → hang。**mode 4 = lazy generator** を
+  mode 3 = plain generator (eager 維持) と分離。`gen.lazy` → proc source + ops chain の
+  mode-4。terminal は ops-aware yielder が各 yield 値に deferred ops (select/map/reject/
+  filter_map/take/take_while/drop/drop_while/compact) を per-run op_state 付きで適用し
+  filtered limit で StopIteration。Fiber 不要。plain generator の map/select は eager 維持
+  (CRuby は .lazy だけ defer)。
+- **✅ VALUE 即値タグ再編** (3c7b3f5a): 旧 layout (nil=0/false=2/true=4/symbol&7==6/
+  flonum&7∈{2,4}+110→100remap) は満杯で Qundef 用の空き無し。新 low-nibble taxonomy:
+  Fixnum=`&1`, Flonum=`&3==2` (CRuby純正2bit tag, remap撤廃), nil=0,
+  Special=`&0xF==4` (false=4/true=20/**KORB_UNDEF=36** + 拡張余地), Symbol=`&0xF==12`,
+  heap=`&7==0 && \!=0`。**GC edge filter (AROH_IS_GC_OBJECT) 無変更**が決定的。
+  tools/tag_value_test.c で codec 検証 (7167 flonum round-trip + single-category partition)。
+  罠: 2^-255 が +0.0 magic に衝突 → encode に guard。
+- **✅ ivar-nil** (b8c9f0d0): `@x=nil` → `instance_variable_defined?` false だった。
+  **membership 判定に** (object=shape korb_shape_index、class/exc=side hash) →
+  **ivar_get hot path 無変更でゼロ課税**。remove_instance_variable は**真の削除** (object は
+  shape を root=shape1 から remaining ivars replay + 値配列 compact、class/exc は
+  side hash shift-delete)。sentinel を slot に入れない (user 指摘: read 毎 check は無駄)。
+- **✅ container 内 user #inspect** (6405b91f): `p [pt]`/`[pt].inspect`/`.to_s`/`"#{[pt]}"` が
+  custom #inspect を無視して `#<Class>` だった。inspect/to_s formatter chain に optional
+  rooted slots を threading (NULL で旧挙動維持、opt-in entry だけ real slots)。plain-object
+  element が (overridable) #inspect を dispatch。method dispatch は callee に fresh frame を
+  与えるので slot offset は 1 container nesting 内でしか伸びない (depth cap 48)。
+- **✅ namespaced class name (lexical M::C)** (8be50091): KorbClass に GC-scan される
+  `enclosing` edge。node_class/node_module に self_off operand (baked) 追加 →
+  korb_class_body が現在 self を受けて enclosing に。qualified name を Class#name/#to_s/
+  #inspect・object #inspect (`#<M::C>`)・NoMethodError で使用。罠: node_class の self_off は
+  staged super child のぶん `-1-chain-1`。
+- **✅ respond_to?(:send/:__send__/:public_send)** (d452333a): special-dispatch で
+  MRO walk が漏らしてた。`new` special-case に追加。
+
+### 残 structural (sizable, focused session 推奨)
+- **Kernel-private builtin の reflection**: `puts`/`p`/`require`/`Integer()` 等が
+  private_instance_methods に出ない、`respond_to?(:puts,true)`=false。builtin は global
+  table (vm->methods) で class table に無い。根治は builtin に visibility flag +
+  dispatch で explicit-receiver 拒否 + reflection が global table 列挙 = 両方 golden risk。
+- **const namespace / `class M::C` (path 形式)**: flat const table。lexical (`module M;class C`)
+  は上で対応済、path 形式は bare name のまま。
+- **Array#join の element to_s**: `[obj].join` が obj.to_s を dispatch せず `#<Class>`。
+  korb_join_rec が no-GC + raw-pointer cycle detection なので、to_s dispatch (GC) を
+  入れるには header-flag ベースの cycle detection + RESULT 伝播への GC-safe 再設計要
+  (spare bit 0x400 有り)。
+- **deferred-Enumerator**: `find`/`group_by`/`partition` の no-block `.with_index` 等の method 再呼出。
+- **object default #inspect の ivars**: `#<M::C @x=1>` の ivar 表示。address は moving GC で
+  不安定なので ruby と完全一致は原理的に不可 (name は qualified 済)。
