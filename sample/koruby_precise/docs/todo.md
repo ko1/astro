@@ -1931,3 +1931,15 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   出てた。korb_fprint_class_qname に統一。
 - 残 structural (更新): Kernel-private-builtin reflection、const namespace (Module#constants /
   `class M::C` path)、deferred-Enumerator、object default #inspect の ivars。
+
+### 2026-07-01 続き2 (Module#constants — cref アプローチ)
+- **✅ Module#constants** (d58f687e): const table を owner-tagged 化。koruby に runtime cref は
+  無いが **lexical nesting は parse 時に既知**(Module.nesting が baked してるのと同じ情報)なので、
+  node_const_set に **enclosing module の const 名を baked**(`tc->frame->class_name_sym`)、runtime で
+  live module に解決 → owner に。nested class/module は korb_class_body の既存 `enclosing` から。
+  const_owners[] parallel array (AROH_VISIT_ROOTS で root-scan)。$-global / @-cvar は除外。
+  **これで self_off を node_const_set(global 変数書込と共用、7 nesting site)に通す risk を回避**
+  = owner 名は parse-time 定数、frame offset 不要。own-constants のみ (inherit / M::C path は follow-up)。
+  (user の "cref がないの?" 指摘が解法の鍵だった)
+- 残: `class M::C` path 形式 (owner 追跡はできたので次点で可能かも)、Kernel-private-builtin
+  reflection、deferred-Enumerator、regex (astrorge 待ち skip)。
