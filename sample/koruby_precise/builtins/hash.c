@@ -47,6 +47,13 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
         const KorbComplex *cx = VAL2CPX(v);
         return korb_deep_hash_d(cx->re, depth + 1) * 31u + korb_deep_hash_d(cx->im, depth + 1);
     }
+    if (KORB_RANGE_P(v)) {                             /* == begin/end + exclude_end */
+        const KorbRange *r = VAL2RANGE(v);
+        uint64_t h = 0x9e3779b1ULL + (r->exclude_end ? 1u : 0u);
+        h = h * 31u + korb_deep_hash_d(r->rbegin, depth + 1);
+        h = h * 31u + korb_deep_hash_d(r->rend, depth + 1);
+        return h;
+    }
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) {
         mpz_t z; korb_to_mpz(v, z);
