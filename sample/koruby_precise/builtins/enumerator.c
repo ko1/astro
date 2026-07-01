@@ -154,6 +154,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
             const char *opn = korb_sym_name(c->vm, opid);                                  \
             if (!strcmp(opn, "drop")) { if (oi < 64 && op_state[oi] > 0) { op_state[oi]--; keep = false; } continue; } \
             if (!strcmp(opn, "take")) { if (oi >= 64 || op_state[oi] <= 0) { keep = false; goto lazy_done; } op_state[oi]--; continue; } \
+            if (!strcmp(opn, "compact")) { if (slots[1] == KORB_NIL) keep = false; continue; }  /* no-block: drop nils */ \
             slots[2] = pair->items->data[1];                                               \
             RESULT cr = korb_call1(c, slots + 3, slots[2], slots[1]);                      \
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;                              \
@@ -329,6 +330,12 @@ static RESULT korb_m_enum_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_lazy_op(c, slots, self, "take_while", false, block, def_env, cself);
+}
+static RESULT korb_m_enum_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (SELF_ENUM->mode == 0)                     /* only Enumerator::Lazy has #compact */
+        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'compact' for an instance of Enumerator");
+    return korb_lazy_chain(c, slots, self, "compact", KORB_NIL);   /* no-block: drop nils */
 }
 static RESULT korb_m_enum_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_lazy_op(c, slots, self, "drop_while", false, block, def_env, cself);

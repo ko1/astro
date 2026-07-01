@@ -7377,6 +7377,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "reject", korb_m_enum_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter_map", korb_m_enum_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "take_while", korb_m_enum_take_while, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "compact", korb_m_enum_compact, 0);   /* Enumerator::Lazy#compact */
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_slice", korb_m_enum_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_cons", korb_m_enum_each_cons, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "group_by", korb_m_enum_group_by, 0);
