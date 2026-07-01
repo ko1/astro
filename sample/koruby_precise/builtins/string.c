@@ -546,9 +546,12 @@ static RESULT korb_m_str_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo, hi;
-    if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(min..max) */
+    if (VALUE_SLICE_LEN(a) == 1) {
+        if (UNLIKELY(!KORB_RANGE_P(VALUE_SLICE_GET(a, 0))))            /* clamp(x) single non-Range → TypeError */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)", korb_type_name(VALUE_SLICE_GET(a, 0)));
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0)); lo = r->rbegin; hi = r->rend;
-    } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
+    } else if (VALUE_SLICE_LEN(a) == 2) { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
+    else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2)", (unsigned)VALUE_SLICE_LEN(a));
     VALUE s = VALUE_REF_GET(self);
     if (lo != KORB_NIL) {                              /* nil bound = unbounded that side */
         if (UNLIKELY(!KORB_STRING_P(lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
