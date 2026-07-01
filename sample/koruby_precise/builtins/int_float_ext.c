@@ -75,6 +75,11 @@ static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
         vlo = r->rbegin; vhi = r->rend;
     } else { vlo = VALUE_SLICE_GET(a, 0); vhi = VALUE_SLICE_GET(a, 1); }
+    if (vlo != KORB_NIL && vhi != KORB_NIL) {          /* CRuby: min must be <= max */
+        double al, ah;
+        if (korb_num_to_d(vlo, &al) && korb_num_to_d(vhi, &ah) && al > ah)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
+    }
     if (vlo != KORB_NIL) {
         if (UNLIKELY(!korb_num_to_d(vlo, &lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
         if (s < lo) return RESULT_OK(vlo);

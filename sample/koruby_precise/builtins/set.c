@@ -706,9 +706,31 @@ static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other,
     RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, KORB_NIL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (r.value == KORB_NIL) { *out = 2; return RESULT_OK(KORB_NIL); }
-    if (UNLIKELY(!FIXNUM_P(r.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "comparison failed");
-    intptr_t v = FIX2LONG(r.value);
-    *out = v < 0 ? -1 : v > 0 ? 1 : 0;
+    /* rb_cmpint: Fixnum/Bignum/Float compare by sign; any other value by
+     * dispatching > 0 / < 0.  (A NaN Float has neither sign → 0.) */
+    if (FIXNUM_P(r.value)) {
+        const intptr_t v = FIX2LONG(r.value);
+        *out = v < 0 ? -1 : v > 0 ? 1 : 0;
+        return RESULT_OK(KORB_TRUE);
+    }
+    double d;
+    if (korb_num_to_d(r.value, &d)) {
+        *out = d < 0.0 ? -1 : d > 0.0 ? 1 : 0;
+        return RESULT_OK(KORB_TRUE);
+    }
+    /* general object: (val > 0) ? 1 : (val < 0) ? -1 : 0.  Re-stage the receiver
+     * before each dispatch (slots[0]) with the literal 0 arg at slots[1]. */
+    slots[2] = r.value;                                   /* park across dispatch */
+    slots[0] = slots[2]; slots[1] = LONG2FIX(0);
+    RESULT g = korb_send_impl(c, slots + 2, korb_intern(c->vm, ">", 1), 0, 1,
+                              NULL, NULL, KORB_NIL);
+    if (UNLIKELY(g.state != KORB_NORMAL)) return g;
+    if (g.value != KORB_NIL && g.value != KORB_FALSE) { *out = 1; return RESULT_OK(KORB_TRUE); }
+    slots[0] = slots[2]; slots[1] = LONG2FIX(0);
+    RESULT l = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<", 1), 0, 1,
+                              NULL, NULL, KORB_NIL);
+    if (UNLIKELY(l.state != KORB_NORMAL)) return l;
+    *out = (l.value != KORB_NIL && l.value != KORB_FALSE) ? -1 : 0;
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_cmpbl_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
@@ -749,7 +771,7 @@ static RESULT korb_m_cmpbl_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (slots[0] != KORB_NIL && slots[1] != KORB_NIL) {  /* both bounds present → min must be <= max */
         int clh; RESULT rb = korb_comparable_cmp(c, slots + 2, slots[0], slots[1], &clh);
         if (UNLIKELY(rb.state != KORB_NORMAL)) return rb;
-        if (clh == 2 || clh > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be smaller than max argument");
+        if (clh == 2 || clh > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
     }
     int cl; RESULT r = korb_comparable_cmp(c, slots + 2, VALUE_REF_GET(self), slots[0], &cl);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;

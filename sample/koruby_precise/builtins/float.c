@@ -257,6 +257,12 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
         lo = r->rbegin; hi = r->rend;
     } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
+    if (lo != KORB_NIL && hi != KORB_NIL) {            /* CRuby: min must be <= max */
+        bool bad;
+        if (FIXNUM_P(lo) && FIXNUM_P(hi)) bad = FIX2LONG(lo) > FIX2LONG(hi);
+        else { double al, ah; bad = korb_num_to_d(lo, &al) && korb_num_to_d(hi, &ah) && al > ah; }
+        if (UNLIKELY(bad)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
+    }
     intptr_t n = SELF_INT;
     double lod, hid;
     if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
