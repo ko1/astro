@@ -282,6 +282,13 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     (void)a;
     const VALUE v = VALUE_REF_GET(self);
     if (KORB_ENUM_P(v) && VAL2ENUM(v)->mode != 0) return RESULT_OK(v);
+    if (KORB_HASH_P(v)) {                                        /* lazy over the [k,v] pairs (the driver iterates Arrays) */
+        slots[0] = v;
+        RESULT ta = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+        slots[0] = ta.value;
+        return korb_lazy_new(c, slots + 1, slots[0], 1);
+    }
     slots[0] = (KORB_ENUM_P(v)) ? VAL2ENUM(v)->values : v;       /* eager enum → its values */
     return korb_lazy_new(c, slots + 1, slots[0], 1);
 }
