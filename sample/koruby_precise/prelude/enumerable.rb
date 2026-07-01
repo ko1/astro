@@ -53,7 +53,7 @@ module Enumerable
   def cycle(n = nil, &blk); n.nil? ? to_a.cycle(&blk) : to_a.cycle(n, &blk); end   # delegate to Array#cycle (no-block Enumerator + break both handled there)
   def each_with_object(o); return to_enum(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index; return to_enum(:each_with_index) unless block_given?; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
-  def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(*ar); a << e; else; b << e; end }; [a, b]; end
+  def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
   def group_by; return to_enum(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
   def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
   def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if k.nil? || k == :_separator; f = true; next; end; if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
@@ -64,7 +64,7 @@ module Enumerable
   def take(n); n = __as_int(n); raise ArgumentError, "attempt to take negative size" if n < 0; r = []; __each_el { |x| break if r.size >= n; r << x }; r; end
   def drop(n); n = __as_int(n); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while(&blk); return to_enum(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
-  def drop_while(&blk); return to_enum(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(*ar); r << e unless dropping }; r; end
+  def drop_while(&blk); return to_enum(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
   def minmax; [min, max]; end
   def minmax_by; return to_enum(:minmax_by) unless block_given?; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
   def find_index(*v, &blk); return to_enum(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
