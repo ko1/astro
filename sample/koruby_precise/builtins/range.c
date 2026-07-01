@@ -50,25 +50,45 @@ static RESULT korb_m_range_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
 }
 
+/* Ordered compare a <=> b for Range#cover?: the GC-free fast path (numeric/
+ * string), falling back to dispatching #<=> for anything else (custom
+ * Comparable, Bignum, ...).  *out = -1/0/1, or 2 when incomparable. */
+static RESULT korb_range_cmp(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out) {
+    const int fast = korb_cmp_values(a, b);
+    if (fast != 2) { *out = fast; return RESULT_OK(KORB_NIL); }
+    return korb_comparable_cmp(c, slots, a, b, out);   /* dispatch a.<=>(b) */
+}
 static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;
     const KorbRange *r = SELF_RANGE;
-    VALUE x = VALUE_SLICE_GET(a, 0);
-    if (KORB_RANGE_P(x)) {                       /* cover?(other_range): self contains the whole range */
-        const KorbRange *o = VAL2RANGE(x);
-        int bc = korb_cmp_values(r->rbegin, o->rbegin);    /* self.begin <=> other.begin */
-        int ec = korb_cmp_values(o->rend, r->rend);        /* other.end <=> self.end */
+    const bool excl = r->exclude_end;
+    slots[0] = r->rbegin; slots[1] = r->rend; slots[2] = VALUE_SLICE_GET(a, 0);   /* root across dispatch */
+    if (KORB_RANGE_P(slots[2])) {                /* cover?(other_range): self contains the whole range */
+        const KorbRange *o = VAL2RANGE(slots[2]);
+        const bool o_excl = o->exclude_end;
+        slots[3] = o->rbegin; slots[4] = o->rend;
+        int bc, ec;
+        RESULT c1 = korb_range_cmp(c, slots + 5, slots[0], slots[3], &bc);   /* self.begin <=> other.begin */
+        if (UNLIKELY(c1.state != KORB_NORMAL)) return c1;
+        RESULT c2 = korb_range_cmp(c, slots + 5, slots[4], slots[1], &ec);   /* other.end <=> self.end */
+        if (UNLIKELY(c2.state != KORB_NORMAL)) return c2;
         if (bc == 2 || ec == 2) return RESULT_OK(KORB_FALSE);
-        bool lo_ok = bc <= 0;
-        bool hi_ok = (r->exclude_end && !o->exclude_end) ? (ec < 0) : (ec <= 0);
+        const bool lo_ok = bc <= 0;
+        const bool hi_ok = (excl && !o_excl) ? (ec < 0) : (ec <= 0);
         return RESULT_OK((lo_ok && hi_ok) ? KORB_TRUE : KORB_FALSE);
     }
     /* nil begin/end = unbounded on that side (beginless/endless range). */
-    int lc = (r->rbegin == KORB_NIL) ? -1 : korb_cmp_values(r->rbegin, x);   /* begin <=> x */
-    int uc = (r->rend   == KORB_NIL) ? -1 : korb_cmp_values(x, r->rend);     /* x <=> end */
+    int lc = -1, uc = -1;
+    if (slots[0] != KORB_NIL) {
+        RESULT cl = korb_range_cmp(c, slots + 3, slots[0], slots[2], &lc);   /* begin <=> x */
+        if (UNLIKELY(cl.state != KORB_NORMAL)) return cl;
+    }
+    if (slots[1] != KORB_NIL) {
+        RESULT cu = korb_range_cmp(c, slots + 3, slots[2], slots[1], &uc);   /* x <=> end */
+        if (UNLIKELY(cu.state != KORB_NORMAL)) return cu;
+    }
     if (lc == 2 || uc == 2) return RESULT_OK(KORB_FALSE);
-    bool lower = (lc <= 0);
-    bool upper = (r->rend == KORB_NIL) ? true : (r->exclude_end ? (uc < 0) : (uc <= 0));
+    const bool lower = (lc <= 0);
+    const bool upper = (slots[1] == KORB_NIL) ? true : (excl ? (uc < 0) : (uc <= 0));
     return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
 }
 

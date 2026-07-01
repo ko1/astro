@@ -6888,7 +6888,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "include?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "member?", korb_m_range_include, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "cover?", korb_m_range_cover, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "===", korb_m_range_include, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "===", korb_m_range_cover, 1);   /* CRuby: Range#=== uses #cover?, not succ-based #include? */
     korb_def_cmethod_blk(c, KORB_C_RANGE, "min", korb_m_range_min_cmp, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "max", korb_m_range_max_cmp, -1);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "sum", korb_m_range_sum, -1);
