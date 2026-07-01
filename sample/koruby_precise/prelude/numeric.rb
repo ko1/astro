@@ -26,6 +26,11 @@ class Numeric
   end
   def fdiv(other); self.to_f.fdiv(other); end
   def quo(other); self.to_r.quo(other); end
+  # Rounding fallbacks: CRuby's Numeric converts to Float and delegates.
+  def floor(ndigits = 0); to_f.floor(ndigits); end
+  def ceil(ndigits = 0); to_f.ceil(ndigits); end
+  def round(ndigits = 0); to_f.round(ndigits); end
+  def truncate(ndigits = 0); to_f.truncate(ndigits); end
 end
 
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
