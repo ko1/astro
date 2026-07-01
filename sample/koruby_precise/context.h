@@ -633,9 +633,12 @@ struct korb_vm {
     bool basic_op_redefined;
 
     /* constants (class names): parallel name→value arrays.  `const_vals` holds
-     * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS. */
+     * GC objects (classes) and is root-scanned by AROH_VISIT_ROOTS.
+     * `const_owners` is the lexically-defining module/class (nil = top-level),
+     * for Module#constants; also root-scanned (owners are classes). */
     uint32_t *const_names;
     VALUE    *const_vals;
+    VALUE    *const_owners;
     uint32_t  const_cnt, const_capa;
     /* boxed Float-literal pool: non-flonum literals (2.0/-2.0/out-of-range) are
      * boxed once and reused (deduped by bit value) instead of heap-boxed on every
@@ -839,9 +842,10 @@ struct CTX_struct {
     for (VALUE *_p = (c)->slots - 2; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
-    /* constants (class values) are roots too */                            \
+    /* constants (class values) + their defining-module owners are roots too */ \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_owners[_ci]);   \
     }                                                                        \
     /* boxed Float-literal pool: forward each box so cached entries stay live */ \
     for (uint32_t _fi = 0; _fi < (c)->vm->flit_cnt; _fi++) {                 \

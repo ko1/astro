@@ -1061,10 +1061,14 @@ node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id, int32_t 
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
 // root-scanned), returns the value.
 NODE_DEF
-node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, VALUE val@child)
+node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name, VALUE val@child)
 {
     (void)n; (void)slots;
-    korb_const_define(c, name_sym, val);
+    /* owner_name = the lexically-enclosing module's const name, baked at parse
+     * time (0 = top-level / global var).  Resolve it to the live module for
+     * Module#constants; only real classes/modules count as an owner. */
+    const VALUE owner = owner_name ? korb_const_get(c->vm, owner_name) : KORB_NIL;
+    korb_const_define_owned(c, name_sym, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);
     return RESULT_OK(val);
 }
 

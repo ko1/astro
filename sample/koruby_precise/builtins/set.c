@@ -538,6 +538,22 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (VAL2CLASS(VALUE_REF_GET(self))->name_sym == 0) return korb_str_new(c, slots, "#<Class>", 8);
     return korb_class_qname_str(c, slots, VALUE_REF_GET(self));
 }
+/* Module#constants — the constant names defined directly in this module/class
+ * (owner-tagged in the VM const table).  Globals ($) and cvars (@) share the
+ * table and are excluded.  (inherit arg / ancestor constants not modelled.) */
+static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    struct korb_vm *const vm = c->vm;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < vm->const_cnt; i++) {
+        if (vm->const_owners[i] != VALUE_REF_GET(self)) continue;   /* re-read self: push may GC (owners are root-updated) */
+        const char *const nm = korb_sym_name(vm, vm->const_names[i]);
+        if (nm[0] == '$' || nm[0] == '@') continue;
+        CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(vm->const_names[i])));
+    }
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
 /* Module#ancestors — self, its included modules (most-recent first), then the
  * superclass chain (each followed by its modules).  Singleton classes skipped. */
 static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

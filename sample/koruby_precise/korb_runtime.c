@@ -2679,7 +2679,7 @@ korb_const_index(const struct korb_vm *vm, uint32_t name_sym)
 }
 
 void
-korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
+korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
 {
     struct korb_vm *const vm = c->vm;
     /* Ruby: assigning an anonymous class/module to a constant names it after
@@ -2687,17 +2687,28 @@ korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
     if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0)
         VAL2CLASS(val)->name_sym = name_sym;
     for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == name_sym) { vm->const_vals[i] = val; return; }
+        if (vm->const_names[i] == name_sym) {
+            vm->const_vals[i] = val;
+            if (owner != KORB_NIL) vm->const_owners[i] = owner;   /* keep first-known owner otherwise */
+            return;
+        }
     if (vm->const_cnt == vm->const_capa) {
         uint32_t nc = vm->const_capa ? vm->const_capa * 2 : 16;
-        vm->const_names = realloc(vm->const_names, sizeof(uint32_t) * nc);
-        vm->const_vals  = realloc(vm->const_vals,  sizeof(VALUE) * nc);
-        if (!vm->const_names || !vm->const_vals) { fprintf(stderr, "koruby_precise: oom (consts)\n"); abort(); }
+        vm->const_names  = realloc(vm->const_names,  sizeof(uint32_t) * nc);
+        vm->const_vals   = realloc(vm->const_vals,   sizeof(VALUE) * nc);
+        vm->const_owners = realloc(vm->const_owners, sizeof(VALUE) * nc);
+        if (!vm->const_names || !vm->const_vals || !vm->const_owners) { fprintf(stderr, "koruby_precise: oom (consts)\n"); abort(); }
         vm->const_capa = nc;
     }
     vm->const_names[vm->const_cnt] = name_sym;
-    vm->const_vals[vm->const_cnt] = val;     /* root cell (scanned); no WB needed */
+    vm->const_vals[vm->const_cnt] = val;      /* root cell (scanned); no WB needed */
+    vm->const_owners[vm->const_cnt] = owner;
     vm->const_cnt++;
+}
+void
+korb_const_define(CTX *c, uint32_t name_sym, VALUE val)
+{
+    korb_const_define_owned(c, name_sym, val, KORB_NIL);   /* top-level / builtin (no lexical owner) */
 }
 
 /* find mid in k->methods, or append a fresh entry.  Entries are individually
@@ -3273,7 +3284,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         const VALUE encl = VALUE_REF_GET(encl_ref);   /* re-read after korb_class_new's GC */
         if (encl != KORB_NIL && KORB_CLASS_P(encl))    /* lexical enclosing module/class → M::C names */
             ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, encl);
-        korb_const_define(c, name_sym, slots[1]);    /* now rooted in the const table */
+        korb_const_define_owned(c, name_sym, slots[1], VALUE_REF_GET(encl_ref));   /* owner = lexical module → Module#constants */
         if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
             if (korb_responds_to(c, slots[0], inh)) {
@@ -7194,6 +7205,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "constants", korb_m_mod_constants, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "ancestors", korb_m_class_ancestors, 0);
@@ -7276,6 +7288,7 @@ korb_register_core_methods(CTX *c)
     #define MOD_CFN(nm, fn, ar)     korb_class_def_cfn(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     #define MOD_CFN_BLK(nm, fn, ar) korb_class_def_cfn_blk(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     MOD_CFN("name", korb_m_class_name, 0);
+    MOD_CFN("constants", korb_m_mod_constants, -1);
     MOD_CFN("to_s", korb_m_class_to_s, 0);
     MOD_CFN("inspect", korb_m_class_to_s, 0);
     MOD_CFN("ancestors", korb_m_class_ancestors, 0);

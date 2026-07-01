@@ -187,6 +187,7 @@ RESULT korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
 RESULT korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, uint32_t soft);
 RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_id, VALUE val);
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
+void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner);   /* owner = defining module (nil = top-level) — for Module#constants */
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
 /* `$!` stack (per-CTX, GC-visited): push the exception on entering a rescue
  * body, pop on exit; top == `$!`.  See node_rescue / node_errinfo. */

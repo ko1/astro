@@ -1734,7 +1734,7 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
         NODE *v; uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (v = mw_index_get(tc, src_tmp, idx, aref, line)));
-        return ALLOC_node_const_set(name, v);
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
     }
     if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
@@ -2757,7 +2757,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, gw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_const_set(name, val);
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
       }
       case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {     /* `$x op= v` */
         const pm_global_variable_operator_write_node_t *gw =
@@ -2771,21 +2771,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                        (lhs = ALLOC_node_const(name), rhs = transduce(tc, gw->value)));
             alloc_binop(op, lhs, rhs, line);
         }));
-        return ALLOC_node_const_set(name, binop);
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, binop);
       }
       case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {          /* `$x ||= v` (globals live in the const table) */
         const pm_global_variable_or_write_node_t *gw = (const pm_global_variable_or_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, gw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_or(ALLOC_node_const(name), ALLOC_node_const_set(name, val));
+        return ALLOC_node_or(ALLOC_node_const(name), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
       }
       case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
         const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, gw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_and(ALLOC_node_const(name), ALLOC_node_const_set(name, val));
+        return ALLOC_node_and(ALLOC_node_const(name), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
       }
 
       case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
@@ -2794,7 +2794,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
-        return ALLOC_node_const_set(name, val);
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
       }
       case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name */
         const pm_constant_path_write_node_t *cpw = (const pm_constant_path_write_node_t *)node;
@@ -2802,7 +2802,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
-        return ALLOC_node_const_set(name, val);
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
       }
 
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
