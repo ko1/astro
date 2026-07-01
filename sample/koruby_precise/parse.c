@@ -1673,12 +1673,21 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
 static NODE *
 transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 {
-    /* `class A::B` — koruby's const table is flat, so the namespace path is
-     * ignored and the rightmost name (cn->name) is defined globally. */
+    /* `class A::B` — koruby's const table is flat, so the value is still stored
+     * under the rightmost name (cn->name); but the path's parent (A) is baked as
+     * the enclosing namespace so A::B.name / A.constants work. */
     if (!PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_READ_NODE) &&
         !PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE))
         return kp_unsupported(tc, (const pm_node_t *)cn, "dynamic class name");
     uint32_t name_sym = kp_intern_cid(tc, cn->name);
+    uint32_t path_owner = 0;                         /* `class M::C` → M (the path parent's rightmost name) */
+    if (PM_NODE_TYPE_P(cn->constant_path, PM_CONSTANT_PATH_NODE)) {
+        const pm_node_t *const parent = ((const pm_constant_path_node_t *)cn->constant_path)->parent;
+        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
+        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);
+    }
 
     /* superclass expression (evaluated in the ENCLOSING scope) → node_class's
      * staged child; nil when absent. */
@@ -1699,7 +1708,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
+    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, path_owner, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
     bake_add(tc, &_ncls->u.node_class.self_off);
     return _ncls;
 }
@@ -1766,6 +1775,14 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         !PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE))
         return kp_unsupported(tc, (const pm_node_t *)mn, "dynamic module name");
     uint32_t name_sym = kp_intern_cid(tc, mn->name);
+    uint32_t path_owner = 0;                         /* `module M::Inner` → M (path parent's rightmost name) */
+    if (PM_NODE_TYPE_P(mn->constant_path, PM_CONSTANT_PATH_NODE)) {
+        const pm_node_t *const parent = ((const pm_constant_path_node_t *)mn->constant_path)->parent;
+        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
+        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);
+    }
     push_frame(tc, &mn->locals);
     tc->frame->class_name_sym = name_sym;       /* for Module.nesting */
     NODE *body;
@@ -1779,7 +1796,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("module", entry, true);
-    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain);   /* self_off = enclosing self (base[-1]) */
+    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain, path_owner);   /* self_off = enclosing self (base[-1]) */
     bake_add(tc, &_nmod->u.node_module.self_off);
     return _nmod;
 }

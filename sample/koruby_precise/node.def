@@ -910,10 +910,13 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint
 // `class Name ... end` — create/find the class + run its body with self=class.
 // @noinline: body is a per-process node_entry pointer (not bakeable).
 NODE_DEF @noinline
-node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off, VALUE_REF super@child)
+node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off, uint32_t path_owner, VALUE_REF super@child)
 {
     (void)n; (void)body_dispatcher;
-    return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, slots[self_off]);   /* slots[self_off] = lexical self (enclosing module → M::C) */
+    /* enclosing = the path's parent module (`class M::C`, baked const name) if
+     * present, else the lexical self (`module M; class C`). */
+    VALUE enclosing = path_owner ? korb_const_get(c->vm, path_owner) : slots[self_off];
+    return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, enclosing);
 }
 
 // `class << recv ... end` — run the body with self = recv's singleton class.
@@ -929,10 +932,12 @@ node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
 // `module Name ... end` — like node_class but creates a module (no superclass,
 // not instantiable; mixed into classes via `include`).
 NODE_DEF @noinline
-node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off)
+node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off, uint32_t path_owner)
 {
     (void)n; (void)body_dispatcher;
-    return korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, slots[self_off]);   /* slots[self_off] = lexical self (enclosing module) */
+    /* enclosing = the path's parent (`module M::Inner`) if present, else lexical self. */
+    VALUE enclosing = path_owner ? korb_const_get(c->vm, path_owner) : slots[self_off];
+    return korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, enclosing);
 }
 
 // attr_reader/writer/accessor — defines getters/setters on self (the class).
