@@ -408,9 +408,18 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
         if (!PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE))
             return kp_unsupported(tc, (const pm_node_t *)rc, "rescue => non-local target");
         const pm_local_variable_target_node_t *ref = (const pm_local_variable_target_node_t *)rc->reference;
-        uint32_t idx = lvar_index(tc, rc->reference, ref->name);
-        resc_var = (int32_t)idx - tc->chain;     /* frame-size fixup via bake_add below */
-        flags |= 1u;
+        if (ref->depth == 0) {                   /* `=> e` binds a current-frame slot */
+            uint32_t idx = lvar_index(tc, rc->reference, ref->name);
+            resc_var = (int32_t)idx - tc->chain; /* frame-size fixup via bake_add below */
+            flags |= 1u;
+        } else {
+            /* `=> e` where e is an ENCLOSING local (e.g. a block reusing an outer
+             * name): node_rescue pushes $! before running the body, so bind via
+             * `e = $!` prepended to the body using the depth-aware lvar_write.
+             * flags bit 0 stays 0 (no frame-slot binding). */
+            NODE *assign = lvar_write(tc, rc->reference, ref->name, ref->depth, ALLOC_node_errinfo());
+            body = ALLOC_node_seq(assign, body);
+        }
     }
 
     /* bare `rescue` catches StandardError; otherwise one node_rescue per listed
