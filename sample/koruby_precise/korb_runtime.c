@@ -8660,9 +8660,12 @@ korb_ctx_new(void)
             {"RUBY_PLATFORM", "x86_64-linux"}, {"RUBY_ENGINE_VERSION", "4.0.2"},
             {"RUBY_DESCRIPTION", "ruby 4.0.2 (koruby/ASTro) [x86_64-linux]"},
             {"RUBY_COPYRIGHT", "ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto"},
+            {"RUBY_RELEASE_DATE", "2026-01-01"}, {"RUBY_REVISION", "0000000000000000000000000000000000000000"},
         };
         for (size_t i = 0; i < sizeof(rc) / sizeof(rc[0]); i++) {
             const VALUE s = korb_str_new(c, c->slots, rc[i][1], (uint32_t)strlen(rc[i][1])).value;
+            /* CRuby freezes every RUBY_* string constant. */
+            ((AroObjectHeader *)(uintptr_t)s)->flags |= KORB_FL_FROZEN;
             korb_const_define(c, korb_intern(c->vm, rc[i][0], (uint32_t)strlen(rc[i][0])), s);
         }
         korb_const_define(c, korb_intern(c->vm, "RUBY_PATCHLEVEL", 15), LONG2FIX(0));
