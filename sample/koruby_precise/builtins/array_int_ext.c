@@ -927,13 +927,14 @@ static RESULT korb_m_hash_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* select(keep=1)/reject(keep=0) → new Hash */
 static RESULT korb_hash_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Hash#select/reject without a block is not supported");
-    uint32_t np = korb_entry_params_cnt(block);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
         VALUE k = h->items->data[2*i], v = h->items->data[2*i+1];
-        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, np, k, v);
+        /* CRuby Hash#select/reject yield |key, value| as TWO values (a 1-param
+         * block gets the key), unlike each/map which gather the [k,v] pair. */
+        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, 2, k, v);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) {
             /* re-read BOTH key and value fresh from self: the block ran (and may
