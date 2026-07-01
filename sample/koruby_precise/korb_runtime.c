@@ -1653,6 +1653,10 @@ static void korb_class_def_cfn_blk(CTX *c, VALUE klass, const char *name, korb_m
 /* Struct instance methods — read the receiver's class `members` + the matching
  * @ivars.  `members` is rooted in slots[1]; korb_ivar_get does not allocate. */
 #define STRUCT_MEMBERS(selfref) VAL2CLASS(VAL2OBJ(VALUE_REF_GET(selfref))->klass)->members
+static RESULT korb_m_struct_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK(LONG2FIX(VAL2ARY(STRUCT_MEMBERS(self))->len));   /* Struct#size/length = member count */
+}
 static RESULT korb_m_struct_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = STRUCT_MEMBERS(self);                            /* members (rooted, below the alloc scratch) */
@@ -2012,6 +2016,8 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_ary", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "size", korb_m_struct_size, 0);
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "length", korb_m_struct_size, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values_at", korb_m_struct_values_at, -1);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "dig", korb_m_struct_dig, -1);
