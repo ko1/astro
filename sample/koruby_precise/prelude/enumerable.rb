@@ -35,7 +35,7 @@ module Enumerable
   # reduce/inject: (sym) | (init, sym) | { block } | (init) { block }.
   def reduce(*args); if block_given?; if args.size >= 1; acc = args[0]; f = false; else; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = yield(acc, x); end }; acc; else; if args.size >= 2; acc = args[0]; op = args[1]; f = false; else; op = args[0]; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = acc.send(op, x); end }; acc; end; end
   alias inject reduce
-  def sum(init = 0, &blk); s = init; if blk; each { |*a| s = s + blk.call(*a) }; else; __each_el { |x| s = s + x }; end; s; end
+  def sum(init = 0, &blk); s = init; if blk; each { |*a| s = s + blk.call(a.size <= 1 ? a[0] : a) }; else; __each_el { |x| s = s + x }; end; s; end
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
   # Running min/max (not sort-based): honours a degenerate comparator block that
   # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
