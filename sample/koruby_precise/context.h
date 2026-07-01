@@ -619,9 +619,13 @@ struct korb_bt_entry {       /* one unwind frame for the uncaught-exception repo
 typedef struct KorbMT { uint32_t mt[624]; uint32_t mti; } KorbMT;
 
 struct korb_vm {
-    /* symbol intern table: id -> name (libc strings, never freed) */
+    /* symbol intern table: id -> name (libc strings, never freed).  `sym_lens`
+     * caches each name's length; `sym_hash` is an open-addressing index
+     * (slot -> id+1, 0 = empty) for O(1) intern instead of a linear strlen scan. */
     const char **sym_names;
-    uint32_t sym_cnt, sym_capa;
+    uint32_t *sym_lens;
+    uint32_t *sym_hash;
+    uint32_t sym_cnt, sym_capa, sym_hash_cap;
 
     /* global function table (no-receiver calls: puts, p, user `def foo`) */
     struct korb_method **methods;

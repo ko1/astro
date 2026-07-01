@@ -4665,24 +4665,62 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
  * Symbols (interned names; immediates — libc table, never GC-scanned).
  * ------------------------------------------------------------------------- */
 
+static inline uint32_t korb_str_hash(const char *s, size_t len)
+{
+    uint32_t h = 2166136261u;                         /* FNV-1a */
+    for (size_t i = 0; i < len; i++) { h ^= (uint8_t)s[i]; h *= 16777619u; }
+    return h ? h : 1u;
+}
+/* insert id into the open-addressing index (caller ensures capacity + no dup). */
+static void korb_sym_hash_put(struct korb_vm *vm, uint32_t id)
+{
+    const uint32_t mask = vm->sym_hash_cap - 1;
+    const uint32_t h = korb_str_hash(vm->sym_names[id], vm->sym_lens[id]);
+    uint32_t slot = h & mask;
+    while (vm->sym_hash[slot]) slot = (slot + 1) & mask;
+    vm->sym_hash[slot] = id + 1;
+}
 uint32_t
 korb_intern(struct korb_vm *vm, const char *name, size_t len)
 {
-    for (uint32_t i = 0; i < vm->sym_cnt; i++) {
-        if (strlen(vm->sym_names[i]) == len && memcmp(vm->sym_names[i], name, len) == 0)
-            return i;
+    if (UNLIKELY(vm->sym_hash_cap == 0)) {            /* lazy init */
+        vm->sym_hash_cap = 1024;
+        vm->sym_hash = calloc(vm->sym_hash_cap, sizeof(uint32_t));
+        if (!vm->sym_hash) { fprintf(stderr, "koruby_precise: oom (sym hash)\n"); abort(); }
+        for (uint32_t i = 0; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);   /* index any pre-existing */
+    }
+    const uint32_t h = korb_str_hash(name, len);
+    uint32_t mask = vm->sym_hash_cap - 1;
+    for (uint32_t slot = h & mask; ; slot = (slot + 1) & mask) {   /* find-or-miss */
+        const uint32_t e = vm->sym_hash[slot];
+        if (e == 0) break;                            /* empty slot → not interned */
+        const uint32_t id = e - 1;
+        if (vm->sym_lens[id] == len && memcmp(vm->sym_names[id], name, len) == 0)
+            return id;
     }
     if (vm->sym_cnt == vm->sym_capa) {
         vm->sym_capa = vm->sym_capa ? vm->sym_capa * 2 : 64;
         vm->sym_names = realloc(vm->sym_names, sizeof(char *) * vm->sym_capa);
-        if (!vm->sym_names) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
+        vm->sym_lens  = realloc(vm->sym_lens,  sizeof(uint32_t) * vm->sym_capa);
+        if (!vm->sym_names || !vm->sym_lens) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
     }
     char *copy = malloc(len + 1);
     if (!copy) { fprintf(stderr, "koruby_precise: out of memory (symbols)\n"); abort(); }
     memcpy(copy, name, len);
     copy[len] = '\0';
-    vm->sym_names[vm->sym_cnt] = copy;
-    return vm->sym_cnt++;
+    const uint32_t id = vm->sym_cnt++;
+    vm->sym_names[id] = copy;
+    vm->sym_lens[id] = (uint32_t)len;
+    if ((vm->sym_cnt * 4u) >= (vm->sym_hash_cap * 3u)) {   /* grow index past 0.75 load, then re-index all */
+        vm->sym_hash_cap *= 2;
+        vm->sym_hash = realloc(vm->sym_hash, sizeof(uint32_t) * vm->sym_hash_cap);
+        if (!vm->sym_hash) { fprintf(stderr, "koruby_precise: oom (sym hash)\n"); abort(); }
+        memset(vm->sym_hash, 0, sizeof(uint32_t) * vm->sym_hash_cap);
+        for (uint32_t i = 0; i < vm->sym_cnt; i++) korb_sym_hash_put(vm, i);
+    } else {
+        korb_sym_hash_put(vm, id);
+    }
+    return id;
 }
 
 const char *
