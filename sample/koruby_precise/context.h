@@ -214,6 +214,10 @@ enum korb_obj_type {
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
 #define KORB_FL_HASH_NOINDEX 0x200u
 
+/* bit 10 (Array, transient): array is on the current Array#join recursion path.
+ * GC-safe cycle detection (survives moves) so join can dispatch element #to_s. */
+#define KORB_FL_JOIN_VISITING 0x400u
+
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
     AroObjectHeader head;        /* KORB_OBJ_STR_BUF */

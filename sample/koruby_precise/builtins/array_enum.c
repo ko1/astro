@@ -754,24 +754,43 @@ static RESULT korb_m_ary_tally(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(VALUE_REF_GET(h));
 }
-
-/* recursively join leaves of nested arrays with `sep` (no koruby alloc; all reads). */
-#define KORB_JOIN_MAX_DEPTH 4096
-/* anc = the arrays on the current recursion path; a repeat (or overflow) means a
- * recursive array → false (caller raises ArgumentError) instead of a SEGV.  This
- * recursion is GC-free, so the raw KorbArray pointers stay valid. */
-static bool korb_join_rec(CTX *c, FILE *ms, const KorbArray *ary, const KorbString *sep, bool *first, const KorbArray **anc, int depth) {
-    if (UNLIKELY(depth >= KORB_JOIN_MAX_DEPTH)) return false;
-    for (int j = 0; j < depth; j++) if (anc[j] == ary) return false;
-    anc[depth] = ary;
-    for (uint32_t i = 0; i < ary->len; i++) {
-        VALUE e = ary->items->data[i];
-        if (KORB_ARRAY_P(e)) { if (!korb_join_rec(c, ms, VAL2ARY(e), sep, first, anc, depth + 1)) return false; continue; }
-        if (!*first && sep) fwrite(sep->buf->data, 1, sep->len, ms);
-        korb_fprint_to_s(c, ms, e);
+/* Join `aref`'s array into `ms`, recursing into nested arrays, with each non-array
+ * element rendered via #to_s — dispatched for user objects (which can GC), so the
+ * array is re-read each step and cycle detection uses the KORB_FL_JOIN_VISITING
+ * header flag (survives GC moves) rather than raw pointers.  Returns RAISE on a
+ * recursive-array cycle or a propagated #to_s error.  `sepref` roots the (String
+ * or nil) separator; `slots` is a fresh rooted region. */
+static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALUE_REF sepref, bool *first) {
+    if (((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags & KORB_FL_JOIN_VISITING)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array join");
+    ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags |= KORB_FL_JOIN_VISITING;
+    RESULT rr = RESULT_OK(KORB_NIL);
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(aref))->len; i++) {
+        const VALUE e = VAL2ARY(VALUE_REF_GET(aref))->items->data[i];   /* re-read: a prior #to_s may have moved the array */
+        if (KORB_ARRAY_P(e)) {
+            slots[0] = e;
+            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
+            continue;
+        }
+        if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
+            const KorbString *const sep = VAL2STR(VALUE_REF_GET(sepref));
+            fwrite(sep->buf->data, 1, sep->len, ms);
+        }
+        if (KORB_OBJECT_P(e)) {                                         /* user object → its #to_s (may GC) */
+            slots[0] = e;
+            RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(tr.state != KORB_NORMAL)) { rr = tr; goto done; }
+            if (LIKELY(KORB_STRING_P(tr.value))) fwrite(VAL2STR(tr.value)->buf->data, 1, VAL2STR(tr.value)->len, ms);
+            else korb_fprint_to_s(c, ms, tr.value);
+        } else {
+            korb_fprint_to_s(c, ms, e);                                /* immediates / builtins: no GC */
+        }
         *first = false;
     }
-    return true;
+  done:
+    ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags &= ~(uint32_t)KORB_FL_JOIN_VISITING;   /* re-read (may have moved) */
+    return rr;
 }
 static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (SELF_ARY->len == 0) return korb_str_new(c, slots, "", 0);   /* [].join(anything) → "" (sep not validated) */
@@ -794,16 +813,14 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    const KorbArray *ary = SELF_ARY;                                /* re-read after possible to_str dispatch */
-    const KorbString *sep = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;
+    slots[1] = VALUE_REF_GET(self);                                 /* root the array across element #to_s GC */
     bool first = true;
-    const KorbArray **const anc = malloc(sizeof(*anc) * KORB_JOIN_MAX_DEPTH);   /* ancestor-path scratch (cycle detection) */
-    if (!anc) { fprintf(stderr, "koruby_precise: malloc failed\n"); abort(); }
-    const bool ok = korb_join_rec(c, ms, ary, sep, &first, anc, 0);   /* recurse into nested arrays (no GC) */
-    free(anc);
+    /* slots[0] = separator (String|nil), slots[1] = self; join drives from slots+2.
+     * The memstream buffer is C heap, unaffected by GC during #to_s dispatch. */
+    RESULT jr = korb_join_rec(c, slots + 2, ms, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[0]), &first);
     fclose(ms);
-    if (UNLIKELY(!ok)) { free(buf); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array join"); }
-    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    if (UNLIKELY(jr.state != KORB_NORMAL)) { free(buf); return jr; }
+    RESULT r = korb_str_new(c, slots + 2, buf ? buf : "", (uint32_t)sz);
     free(buf);
     return r;
 }
