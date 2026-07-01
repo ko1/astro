@@ -185,7 +185,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             fprintf(ms, spec, (long)v);
             break;
           }
-          case 'f': case 'e': case 'E': case 'g': case 'G': {
+          case 'f': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {   /* a/A = hex float (C printf) */
             double v; if (!korb_num_to_d(arg, &v)) { err = true; errmsg = "expected a number"; break; }
             if (UNLIKELY(isinf(v) || isnan(v))) {
                 /* CRuby renders non-finite floats as "Inf"/"NaN" (fixed casing,
