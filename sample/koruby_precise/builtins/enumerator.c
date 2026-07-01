@@ -212,7 +212,14 @@ static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (SELF_ENUM->mode != 0) return korb_lazy_drive(c, slots, self, -1);   /* lazy: force (finite only) */
     return RESULT_OK(SELF_ENUM->values);
 }
-static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_ENUM->values)->len)); }
+static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const KorbEnumerator *const e = SELF_ENUM;
+    /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
+     * returns nil when the size is unknown (no size given to Enumerator.new). */
+    if (e->mode != 0 || !KORB_ARRAY_P(e->values)) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX(VAL2ARY(e->values)->len));
+}
 static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     VALUE d = SELF_ENUM->desc;
