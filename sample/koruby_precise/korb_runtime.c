@@ -6684,8 +6684,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_entry", korb_m_ary_each, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort_by", korb_m_ary_sort_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sort_by!", korb_m_ary_sort_by_bang, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "min_by", korb_m_ary_min_by, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "max_by", korb_m_ary_max_by, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "min_by", korb_m_ary_min_by, -1);   /* -1: optional count arg */
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "max_by", korb_m_ary_max_by, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "minmax_by", korb_m_ary_minmax_by, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter_map", korb_m_ary_filter_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "flat_map", korb_m_ary_flat_map, 0);

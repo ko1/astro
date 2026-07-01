@@ -540,8 +540,37 @@ static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *blo
     }
     return RESULT_OK(slots[0]);
 }
-static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; if (block == NULL) return korb_ary_to_enum(c, slots, self, "min_by"); return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1); }
-static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; if (block == NULL) return korb_ary_to_enum(c, slots, self, "max_by"); return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1); }
+/* min_by(n)/max_by(n): sort by the block key (ascending), then take the first n
+ * (min) or the last n reversed (max).  `want_max` picks the end + reversal. */
+static RESULT korb_ary_minmax_by_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE nv, NODE *block, VALUE *def_env, VALUE *cself, bool want_max) {
+    intptr_t n;
+    if (UNLIKELY(!korb_to_index(nv, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(nv));
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative size (%ld)", (long)n);
+    RESULT sr = korb_m_ary_sort_by(c, slots, self, VALUE_SLICE_MAKE(NULL, 0), block, def_env, cself);   /* ascending by key */
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[0] = sr.value;                                 /* sorted copy (rooted) */
+    const uint32_t len = VAL2ARY(slots[0])->len;
+    uint32_t take = (n < (intptr_t)len) ? (uint32_t)n : len;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, take));
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < take; i++) {
+        const KorbArray *const s = VAL2ARY(slots[0]);    /* re-read after push (GC) */
+        const VALUE e = want_max ? s->items->data[len - 1 - i]   /* last n, largest first */
+                                 : s->items->data[i];            /* first n, smallest first */
+        CHECK(korb_ary_push_val(c, slots + 2, dst, e));
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
+static RESULT korb_m_ary_min_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_ary_to_enum(c, slots, self, "min_by");
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) return korb_ary_minmax_by_n(c, slots, self, VALUE_SLICE_GET(a, 0), block, def_env, cself, false);
+    return korb_ary_minmax_by(c, slots, self, block, def_env, cself, -1);
+}
+static RESULT korb_m_ary_max_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_ary_to_enum(c, slots, self, "max_by");
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) return korb_ary_minmax_by_n(c, slots, self, VALUE_SLICE_GET(a, 0), block, def_env, cself, true);
+    return korb_ary_minmax_by(c, slots, self, block, def_env, cself,  1);
+}
 static RESULT korb_m_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return korb_ary_to_enum(c, slots, self, "minmax_by");
