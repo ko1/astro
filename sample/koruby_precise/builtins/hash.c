@@ -39,6 +39,14 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
         for (uint32_t i = 0; i < a->len; i++) h ^= korb_deep_hash_d(a->items->data[i], depth + 1);
         return h;
     }
+    if (KORB_RATIONAL_P(v)) {                          /* reduced num/den → equal Rationals hash alike */
+        const KorbRational *rt = VAL2RAT(v);
+        return korb_deep_hash_d(rt->num, depth + 1) * 31u + korb_deep_hash_d(rt->den, depth + 1);
+    }
+    if (KORB_COMPLEX_P(v)) {
+        const KorbComplex *cx = VAL2CPX(v);
+        return korb_deep_hash_d(cx->re, depth + 1) * 31u + korb_deep_hash_d(cx->im, depth + 1);
+    }
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) {
         mpz_t z; korb_to_mpz(v, z);
