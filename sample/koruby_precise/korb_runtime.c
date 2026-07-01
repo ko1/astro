@@ -1522,6 +1522,81 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+/* instance_variable_defined? — membership, NOT value: an ivar set to nil is still
+ * defined.  Objects consult their shape (no cost to the hot ivar_get path);
+ * class/exc consult their side hash (which already distinguishes nil-set from
+ * unset).  Returns false for immediates / other builtins. */
+static bool
+korb_ivar_defined(CTX *c, VALUE self, VALUE name_sym)
+{
+    if (KORB_OBJECT_P(self))
+        return korb_shape_index(c->vm, VAL2OBJ(self)->shape_id, SYM2ID(name_sym)) >= 0;
+    if (KORB_CLASS_P(self)) {
+        const VALUE h = VAL2CLASS(self)->class_ivars;
+        return h != KORB_NIL && korb_hash_find(VAL2HASH(h), name_sym) >= 0;
+    }
+    if (KORB_EXC_P(self)) {
+        const VALUE h = VAL2EXC(self)->ivars;
+        return h != KORB_NIL && korb_hash_find(VAL2HASH(h), name_sym) >= 0;
+    }
+    return false;
+}
+
+/* remove_instance_variable core.  Objects: rebuild the shape without `name_sym`
+ * (replay root→ remaining ivars in order) and compact the values array, so the
+ * ivar truly leaves the shape — no sentinel, no per-read check.  Class/exc:
+ * shift-delete from the side hash.  Returns the removed value; *found=false if
+ * the ivar was not set.  No GC point (shape ops are libc; compaction is stores),
+ * so `self` stays put. */
+static VALUE
+korb_ivar_remove(CTX *c, VALUE self, VALUE name_sym, bool *found)
+{
+    struct korb_vm *const vm = c->vm;
+    const uint32_t sym = SYM2ID(name_sym);
+    if (KORB_OBJECT_P(self)) {
+        KorbObject *const o = VAL2OBJ(self);
+        const int32_t idx = korb_shape_index(vm, o->shape_id, sym);
+        if (idx < 0) { *found = false; return KORB_NIL; }
+        *found = true;
+        const VALUE old = o->ivars->data[idx];
+        const uint32_t n = vm->shapes[o->shape_id].ivar_count;
+        uint32_t *const syms = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));   /* libc, no GC */
+        if (UNLIKELY(!syms)) { fprintf(stderr, "koruby_precise: oom (ivar remove)\n"); abort(); }
+        for (uint32_t sid = o->shape_id; sid; ) {                  /* leaf→root: place each sym at its index */
+            const struct korb_shape *const s = &vm->shapes[sid];
+            if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym;
+            sid = s->parent;
+        }
+        uint32_t ns = 1;                                          /* rebuild from the root shape (id 1; see korb_obj_new), skipping idx */
+        for (uint32_t i = 0; i < n; i++)
+            if (i != (uint32_t)idx) ns = korb_shape_transition(vm, ns, syms[i]);
+        free(syms);
+        for (uint32_t i = (uint32_t)idx; i + 1 < n; i++)          /* compact values (store-only, no GC) */
+            ARO_STORE(c, o->ivars, &o->ivars->data[i], o->ivars->data[i + 1]);
+        o->shape_id = ns;
+        return old;
+    }
+    const VALUE h = KORB_CLASS_P(self) ? VAL2CLASS(self)->class_ivars
+                  : KORB_EXC_P(self)   ? VAL2EXC(self)->ivars
+                  : KORB_NIL;
+    if (h == KORB_NIL) { *found = false; return KORB_NIL; }
+    const int32_t idx = korb_hash_find(VAL2HASH(h), name_sym);
+    if (idx < 0) { *found = false; return KORB_NIL; }
+    *found = true;
+    KorbHash *const hh = VAL2HASH(h);
+    KorbArrayItems *const it = hh->items;
+    const VALUE old = it->data[2 * idx + 1];
+    for (uint32_t i = (uint32_t)idx; i + 1 < hh->len; i++) {      /* shift to keep order */
+        ARO_STORE(c, it, &it->data[2 * i],     it->data[2 * (i + 1)]);
+        ARO_STORE(c, it, &it->data[2 * i + 1], it->data[2 * (i + 1) + 1]);
+    }
+    hh->len--;
+    ARO_STORE(c, it, &it->data[2 * hh->len], KORB_NIL);
+    ARO_STORE(c, it, &it->data[2 * hh->len + 1], KORB_NIL);
+    KORB_HASH_DROP_INDEX(hh);
+    return old;
+}
+
 /* korb_bt_append / korb_close_ret are declared in node.h (de-static'd so the
  * inlined korb_invoke_simple in the SDs can reach them on cold paths). */
 
