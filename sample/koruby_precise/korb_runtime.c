@@ -3651,6 +3651,10 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
      * MRO walk misses it — every non-module class still responds to it. */
     if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module)
         return true;
+    /* send / __send__ / public_send are also special-dispatched (not registered);
+     * every object responds to them. */
+    if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send)
+        return true;
     const VALUE start = korb_dispatch_class(c, self);
     return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
 }
