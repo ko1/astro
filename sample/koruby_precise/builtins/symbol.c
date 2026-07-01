@@ -430,7 +430,10 @@ static RESULT korb_m_meth_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     /* bound methods must share the receiver object; unbound ones only need the
      * same underlying definition (extracting from different subclasses is equal). */
     if (!m1->unbound && m1->recv != m2->recv) return RESULT_OK(KORB_FALSE);
-    if (m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
+    /* same owner + name is trivially the same method; cross-owner unbound
+     * (e.g. a subclass that overrides) must fall through to resolve the actual
+     * definition so an override compares unequal. */
+    if (m1->recv == m2->recv && m1->mid == m2->mid) return RESULT_OK(KORB_TRUE);
     const struct korb_method *const e1 = korb_meth_resolve(c, m1);
     const struct korb_method *const e2 = korb_meth_resolve(c, m2);
     if (e1 == NULL || e2 == NULL) return RESULT_OK(e1 == e2 ? KORB_TRUE : KORB_FALSE);

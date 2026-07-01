@@ -3548,7 +3548,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "Method", KORB_C_METHOD }, { "Fiber", KORB_C_FIBER },
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
         { "MatchData", KORB_C_MATCHDATA }, { "Binding", KORB_C_BINDING },
-        { "Random", KORB_C_RANDOM },
+        { "Random", KORB_C_RANDOM }, { "UnboundMethod", KORB_C_UNBOUND_METHOD },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -5430,7 +5430,8 @@ korb_class_of(VALUE v)
           case KORB_OBJ_BIGNUM: return KORB_C_INTEGER;
           case KORB_OBJ_SET: return KORB_C_SET;
           case KORB_OBJ_REGEXP: return KORB_C_REGEXP;
-          case KORB_OBJ_METHOD: return KORB_C_METHOD;
+          case KORB_OBJ_METHOD:
+            return VAL2METH(v)->unbound ? KORB_C_UNBOUND_METHOD : KORB_C_METHOD;
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
           case KORB_OBJ_PROC:   return KORB_C_PROC;
           case KORB_OBJ_MATCHDATA: return KORB_C_MATCHDATA;
@@ -5458,6 +5459,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_SET: return "Set";
       case KORB_C_REGEXP: return "Regexp";
       case KORB_C_METHOD: return "Method";
+      case KORB_C_UNBOUND_METHOD: return "UnboundMethod";
       case KORB_C_FIBER:  return "Fiber";
       case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
@@ -6947,6 +6949,17 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
+    /* UnboundMethod: same reflection surface as Method minus call/receiver;
+     * the shared korb_m_meth_* fns already branch on the ->unbound flag. */
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "name", korb_m_meth_name, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "original_name", korb_m_meth_original_name, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "arity", korb_m_meth_arity, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "owner", korb_m_meth_owner, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "==", korb_m_meth_eq, 1);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "eql?", korb_m_meth_eq, 1);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind", korb_m_meth_bind, 1);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
