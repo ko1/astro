@@ -754,11 +754,13 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     ARO_STORE(c, dst, (VALUE *)(uintptr_t)&dst->default_proc, dp);
     return RESULT_OK(VALUE_REF_GET(self));
 }
+static RESULT korb_hash_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *cself, uint32_t np, VALUE k, VALUE v);   /* fwd (defined below) */
 /* Hash#drop_while { |k,v| } — drop leading pairs while the block is true, return
  * the remaining pairs as an Array of [k,v]. */
 static RESULT korb_m_hash_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block given");
+    const uint32_t np = korb_entry_params_cnt(block);            /* gather the [k,v] pair for a 1-param block */
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                 /* result pairs (rooted) */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     bool dropping = true;
@@ -768,8 +770,7 @@ static RESULT korb_m_hash_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         slots[1] = h->items->data[2 * i];                        /* k */
         slots[2] = h->items->data[2 * i + 1];                    /* v */
         if (dropping) {
-            VALUE argv[2] = { slots[1], slots[2] };
-            RESULT r = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
+            RESULT r = korb_hash_yield(c, slots + 3, block, def_env, cself, np, slots[1], slots[2]);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) continue;                  /* still dropping */
             dropping = false;
