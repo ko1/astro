@@ -3729,6 +3729,24 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
 RESULT
 korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude_end)
 {
+    /* CRuby: two non-nil bounds must be comparable (begin <=> end != nil).
+     * Skip the dispatch for trivially-comparable same-family bounds (the common
+     * literal case: integer/float/string/symbol ranges). */
+    {
+        const VALUE bv = VALUE_REF_GET(bref);
+        const bool trivial =
+            (KORB_INTEGER_P(bv) || KORB_FLOAT_P(bv)) ? (KORB_INTEGER_P(end) || KORB_FLOAT_P(end)) :
+            KORB_STRING_P(bv) ? KORB_STRING_P(end) :
+            SYMBOL_P(bv)      ? SYMBOL_P(end) : false;
+        if (bv != KORB_NIL && end != KORB_NIL && !trivial) {
+            slots[0] = bv; slots[1] = end;
+            RESULT cr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value == KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "bad value for range");
+            bref = VALUE_REF_AT(&slots[0]); end = slots[1];   /* re-read after dispatch (GC) */
+            slots += 2;                                       /* consume the begin/end staging cells (bref points into them) */
+        }
+    }
     VALUE_REF eref = SLOTS_PUSH(slots, end);          /* root end across the alloc */
     KorbRange *r = korb_alloc(c, slots, sizeof(KorbRange), KORB_OBJ_RANGE);
     r->exclude_end = exclude_end;
