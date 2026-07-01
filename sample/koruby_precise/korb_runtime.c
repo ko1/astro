@@ -7910,7 +7910,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_CLASS:
-        fputs(korb_sym_name(c->vm, VAL2CLASS(v)->name_sym), fp);       /* class name */
+        if (!korb_fprint_class_qname(c, fp, v)) fputs("#<Class>", fp);   /* qualified name (M::C); anonymous → placeholder */
         return;
       case KORB_OBJ_FLOAT: {
         char fb[40];
