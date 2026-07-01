@@ -416,7 +416,7 @@ static RESULT korb_m_int_coerce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (FIXNUM_P(o) || KORB_BIGNUM_P(o)) {                /* Integer → [other, self] */
         slots[0] = o; slots[1] = VALUE_REF_GET(self);
-    } else {                                              /* else → [Float(other), Float(self)] */
+    } else {                                              /* else (incl. Rational) → [Float(other), Float(self)] */
         double od;
         if (korb_num_to_d(o, &od)) {                     /* Float/Rational → its double */
             slots[0] = UNWRAP(korb_float_new(c, slots, od));

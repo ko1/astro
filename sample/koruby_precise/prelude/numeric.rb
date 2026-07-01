@@ -39,6 +39,16 @@ end
 class Rational
   def negative?; numerator < 0; end
   def positive?; numerator > 0; end
+  def real?; true; end
+  # coerce keeps exactness: Integer/Rational -> Rational, Float -> Float.
+  def coerce(other)
+    case other
+    when Integer  then [Rational(other, 1), self]
+    when Rational then [other, self]
+    when Float    then [other, to_f]
+    else [Float(other), Float(self)]
+    end
+  end
 end
 
 # Complex: predicates/conversions valid only when the imaginary part is zero.
