@@ -380,6 +380,7 @@ typedef struct KorbException {
     VALUE ARO_GC_EDGE exc_class;  /* user exception Class (raise MyError) | nil → builtin etype class */
     VALUE ARO_GC_EDGE cause; /* the in-flight exception ($!) at raise time, or nil */
     VALUE ARO_GC_EDGE ivars; /* instance variables side-hash {sym→val} | nil (custom Exception subclass data) */
+    VALUE ARO_GC_EDGE backtrace; /* Array<String> captured when first rescued/set, or nil (never raised) */
 } KorbException;
 
 /* Array: a header + a separately-allocated growable VALUE[] payload, so push
@@ -913,6 +914,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->exc_class);               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->cause);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->ivars);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_e->backtrace);                \
         break;                                                               \
       }                                                                      \
       case KORB_OBJ_ARRAY: {                                                 \

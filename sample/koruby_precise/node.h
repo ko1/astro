@@ -144,6 +144,7 @@ RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);
 
 /* Array (korb_runtime.c) */
 RESULT korb_ary_new(CTX *c, VALUE *slots, uint32_t capa);
+RESULT korb_capture_backtrace(CTX *c, VALUE *slots);   /* snapshot vm->bt into exc at slots[0] */
 RESULT korb_ary_push_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE elem);
 void   korb_ary_store_at(CTX *c, VALUE ary, uint32_t i, VALUE val);   /* in-range ary[i]=val (WB) */
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* index of key in pair array, or -1 (Hash#[] fast path) */

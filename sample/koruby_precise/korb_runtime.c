@@ -4581,6 +4581,42 @@ korb_bt_append(struct korb_vm *vm, uint32_t line, const char *name)
     vm->bt_cnt++;
 }
 
+/* Snapshot the current unwind backtrace (vm->bt) into the exception parked at
+ * slots[0], unless it already has one — CRuby captures the backtrace once (at
+ * the raise site) and preserves it across re-raise.  The frames mirror
+ * korb_report_uncaught: bt[0..n-1] (innermost first) then the trailing
+ * '<main>' frame at e->line.  slots[1..2] stage the array + each string. */
+RESULT
+korb_capture_backtrace(CTX *c, VALUE *slots)
+{
+    if (!KORB_EXC_P(slots[0])) return RESULT_OK(KORB_NIL);
+    if (VAL2EXC(slots[0])->backtrace != KORB_NIL) return RESULT_OK(KORB_NIL);
+    struct korb_vm *const vm = c->vm;
+    const char *const file = vm->script_name ? vm->script_name : "?";
+    const uint32_t n = vm->bt_cnt;
+    /* CRuby never shows the Kernel#raise / #fail entry point in the backtrace;
+     * it appears as the innermost recorded frame (line 0) — elide it. */
+    uint32_t start = 0;
+    if (n > 0 && vm->bt[0].line == 0 && vm->bt[0].name &&
+        (strcmp(vm->bt[0].name, "raise") == 0 || strcmp(vm->bt[0].name, "fail") == 0))
+        start = 1;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n - start + 1));
+    char buf[600];
+    for (uint32_t i = start; i < n; i++) {
+        const int len = snprintf(buf, sizeof buf, "%s:%u:in '%s'",
+                                 file, vm->bt[i].line, vm->bt[i].name);
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
+        UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    const int mlen = snprintf(buf, sizeof buf, "%s:%u:in '<main>'",
+                              file, VAL2EXC(slots[0])->line);
+    slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)mlen));
+    UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
+    KorbException *const e = VAL2EXC(slots[0]);
+    ARO_STORE(c, e, &e->backtrace, slots[1]);
+    return RESULT_OK(KORB_NIL);
+}
+
 RESULT
 korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
            const char *fmt, ...)
@@ -7105,7 +7141,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FALSE,  "frozen?", korb_m_true_lit2, 0);
 
     /* Exception */
-    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace", korb_m_lit_nil, 0);          /* not tracked as an array (fresh = nil) */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace", korb_m_exc_backtrace, 0);    /* nil until first raised/rescued */
+    korb_def_cmethod(c, KORB_C_EXCEPTION, "set_backtrace", korb_m_exc_set_backtrace, -1);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "cause", korb_m_exc_cause, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "message", korb_m_exc_message_via_to_s, 0);

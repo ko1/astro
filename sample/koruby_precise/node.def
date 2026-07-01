@@ -707,6 +707,9 @@ node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, 
     RESULT cr = EVAL(c, match, slots + 1);             /* rescue class (exception stays at slots[0]) */
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     if (korb_exc_matches(c, slots[0], cr.value)) {
+        /* capture the unwind backtrace into the exception before user code can
+         * observe it via `e.backtrace` / `$!.backtrace` (once; re-raise keeps it) */
+        UNWRAP(korb_capture_backtrace(c, slots));
         if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
         /* push the exception onto the per-CTX `$!` stack for the body; pop on
          * exit (nesting + restore-to-outer fall out of push/pop, top == $!). */
