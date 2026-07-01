@@ -499,6 +499,9 @@ static RESULT korb_m_num_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (!korb_num_to_d(sv, &d)) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
     /* slots[0]=magnitude (abs, class-preserving), slots[1]=angle, slots[2]=result array */
     if (FIXNUM_P(sv)) { intptr_t n = FIX2LONG(sv); slots[0] = LONG2FIX(n < 0 ? -n : n); }
+#ifdef KORB_HAVE_GMP
+    else if (KORB_BIGNUM_P(sv)) { slots[0] = (d < 0) ? UNWRAP(korb_big_neg(c, slots, sv)) : sv; }   /* exact |self| */
+#endif
     else { slots[0] = UNWRAP(korb_float_new(c, slots, fabs(d))); }
     slots[1] = d < 0 ? UNWRAP(korb_float_new(c, slots + 1, 3.141592653589793)) : LONG2FIX(0);
     slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
