@@ -266,6 +266,7 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* slice!: remove and return element (single index) or subarray (range/start,len). */
 static RESULT korb_m_ary_slice_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* CRuby raises FrozenError upfront */
     VALUE iv = VALUE_SLICE_GET(a, 0);
     intptr_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     intptr_t start, dellen; bool subseq_form = false;
