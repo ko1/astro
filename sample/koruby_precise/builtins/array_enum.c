@@ -162,7 +162,7 @@ static RESULT korb_ary_minmax_blk(CTX *c, VALUE *slots, VALUE_REF self, int want
     return RESULT_OK(slots[0]);
 }
 /* min(n)/max(n): the n smallest (want=-1) / largest (want=1), sorted accordingly. */
-static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, intptr_t n) {
+static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, intptr_t n, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
     if (n == 0) return korb_ary_new(c, slots, 0);          /* max(0)/min(0) → [] (no comparison) */
     uint32_t len = SELF_ARY->len;
@@ -178,7 +178,14 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
         while (j > 0) {
             const VALUE left = VAL2ARY(VALUE_REF_GET(tmp))->items->data[j-1];
             int cmp;
-            if (UNLIKELY(KORB_OBJECT_P(left) || KORB_OBJECT_P(slots[1]))) {
+            if (block != NULL) {                             /* min(n)/max(n) { |a,b| ... } — block is the comparator */
+                VALUE cmpargs[2] = { left, slots[1] };
+                RESULT cr = korb_block_yield(c, slots + 2, block, def_env, cmpargs, 2, cself);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (UNLIKELY(cr.value == KORB_NIL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of %s with %s failed", korb_type_name(left), korb_type_name(slots[1]));
+                const intptr_t cv = FIX2LONG(cr.value);
+                cmp = cv < 0 ? -1 : cv > 0 ? 1 : 0;
+            } else if (UNLIKELY(KORB_OBJECT_P(left) || KORB_OBJECT_P(slots[1]))) {
                 CHECK(korb_cmp_spaceship(c, slots + 2, left, slots[1], &cmp));
             } else {
                 cmp = korb_cmp_full(c, left, slots[1]);
@@ -203,14 +210,14 @@ static RESULT korb_ary_minmax_n(CTX *c, VALUE *slots, VALUE_REF self, int want, 
 static RESULT korb_m_ary_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                              NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t n;
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, -1, n);
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, -1, n, block, def_env, cself);
     if (block != NULL) return korb_ary_minmax_blk(c, slots, self, -1, block, def_env, cself);
     return korb_ary_minmax(c, slots, self, -1);
 }
 static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                              NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t n;
-    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n);
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) return korb_ary_minmax_n(c, slots, self, 1, n, block, def_env, cself);
     if (block != NULL) return korb_ary_minmax_blk(c, slots, self, 1, block, def_env, cself);
     return korb_ary_minmax(c, slots, self,  1);
 }

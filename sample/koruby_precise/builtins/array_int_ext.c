@@ -1266,7 +1266,7 @@ static RESULT korb_m_hash_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     intptr_t n;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) {  /* max(n) → n largest pairs */
         slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
-        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), 1, n);
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), 1, n, NULL, NULL, NULL);
     }
     return korb_hash_minmax(c, slots, self,  1);
 }
@@ -1274,7 +1274,7 @@ static RESULT korb_m_hash_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     intptr_t n;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL && korb_to_index(VALUE_SLICE_GET(a, 0), &n)) {  /* min(n) → n smallest pairs */
         slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));
-        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), -1, n);
+        return korb_ary_minmax_n(c, slots + 1, VALUE_REF_AT(&slots[0]), -1, n, NULL, NULL, NULL);
     }
     return korb_hash_minmax(c, slots, self, -1);
 }
