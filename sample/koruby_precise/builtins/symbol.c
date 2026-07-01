@@ -73,7 +73,15 @@ static RESULT korb_m_obj_frozen_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (!AROH_IS_GC_OBJECT(v)) return RESULT_OK(KORB_TRUE);   /* immediates are frozen */
     return RESULT_OK((((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)) ? LONG2FIX(0) : KORB_NIL); }
+static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    /* CRuby Object#<=>: 0 if self == other (dispatched, so a custom #== counts), else nil. */
+    const VALUE s = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
+    if (s == o) return RESULT_OK(LONG2FIX(0));                 /* identical */
+    slots[0] = s; slots[1] = o;
+    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK((r.value != KORB_NIL && r.value != KORB_FALSE) ? LONG2FIX(0) : KORB_NIL);
+}
 /* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
 static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
     if (SYMBOL_P(name)) { *out = name; return true; }
