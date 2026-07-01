@@ -2677,6 +2677,15 @@ korb_const_index(const struct korb_vm *vm, uint32_t name_sym)
         if (vm->const_names[i] == name_sym) return i;
     return UINT32_MAX;
 }
+/* index of the constant named `name_sym` owned by `owner` (nil = top-level), or
+ * UINT32_MAX.  For owner-aware scoped reads (M::X) and class find-or-create. */
+uint32_t
+korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VALUE owner)
+{
+    for (uint32_t i = 0; i < vm->const_cnt; i++)
+        if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) return i;
+    return UINT32_MAX;
+}
 
 void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
@@ -2686,10 +2695,12 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
      * that constant (the first such assignment wins). */
     if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0)
         VAL2CLASS(val)->name_sym = name_sym;
+    /* keyed by (name, owner): reassigning the same constant in the same namespace
+     * updates in place, but M::C and a top-level C get distinct entries so both
+     * coexist (a bare read still finds the first match by name — hot path). */
     for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == name_sym) {
+        if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) {
             vm->const_vals[i] = val;
-            if (owner != KORB_NIL) vm->const_owners[i] = owner;   /* keep first-known owner otherwise */
             return;
         }
     if (vm->const_cnt == vm->const_capa) {
@@ -3276,15 +3287,20 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     if (superclass == KORB_NIL && !is_module)
         superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     VALUE_REF encl_ref = SLOTS_PUSH(slots, enclosing);   /* root the lexical namespace below; slots advances past it */
-    VALUE cls = korb_const_get(c->vm, name_sym);
+    /* find-or-create owner-aware: reopen the class/module of the SAME namespace
+     * (M::C reopens M::C, not a top-level C). */
+    const VALUE find_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
+    const uint32_t fidx = korb_const_index_owned(c->vm, name_sym, find_owner);
+    VALUE cls = (fidx != UINT32_MAX) ? c->vm->const_vals[fidx] : KORB_NIL;
     if (!KORB_CLASS_P(cls)) {
         slots[0] = superclass;                   /* root super across korb_class_new's GC */
         slots[1] = UNWRAP(korb_class_new(c, slots + 2, name_sym, slots[0]));   /* cls (rooted) */
         if (is_module) VAL2CLASS(slots[1])->is_module = 1;
         const VALUE encl = VALUE_REF_GET(encl_ref);   /* re-read after korb_class_new's GC */
-        if (encl != KORB_NIL && KORB_CLASS_P(encl))    /* lexical enclosing module/class → M::C names */
-            ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, encl);
-        korb_const_define_owned(c, name_sym, slots[1], VALUE_REF_GET(encl_ref));   /* owner = lexical module → Module#constants */
+        const VALUE owner = KORB_CLASS_P(encl) ? encl : KORB_NIL;   /* normalize (top-level self=main → nil) so it matches find_owner */
+        if (owner != KORB_NIL)                         /* lexical enclosing module/class → M::C names */
+            ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, owner);
+        korb_const_define_owned(c, name_sym, slots[1], owner);   /* owner = lexical module (nil top-level) → Module#constants + reopen */
         if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
             if (korb_responds_to(c, slots[0], inh)) {

@@ -1014,17 +1014,32 @@ node_errinfo(CTX *c, NODE *n, VALUE *slots)
 // is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
 // re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
 NODE_DEF
-node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, struct korb_constcache *cache@ref)
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name, struct korb_constcache *cache@ref)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(cache->idx_plus1 != 0))
+    if (LIKELY(cache->idx_plus1 != 0))               /* per-node cache (name+owner fixed → stable idx) */
         return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
-    const uint32_t idx = korb_const_index(vm, name_sym);
+    uint32_t idx;
+    if (owner_name != 0) {                            /* scoped `M::X` or bare read in a namespace */
+        /* owner_name = the innermost enclosing module (bare) or the path parent
+         * (M::X); walk its lexical `enclosing` chain, then fall back to flat
+         * (top-level + builtin consts like Math::PI, which have owner nil). */
+        idx = UINT32_MAX;
+        for (VALUE o = korb_const_get(vm, owner_name); KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
+            idx = korb_const_index_owned(vm, name_sym, o);
+            if (idx != UINT32_MAX) break;
+        }
+        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);
+    } else {                                          /* top-level bare read — flat first-match (hot path unchanged) */
+        idx = korb_const_index(vm, name_sym);
+    }
     if (UNLIKELY(idx == UINT32_MAX || vm->const_vals[idx] == KORB_NIL)) {
         /* global variables ($x) share this table but are nil (not NameError) when
          * unset; constants raise.  The interned name keeps the leading '$'. */
-        if (korb_sym_name(vm, name_sym)[0] == '$') return RESULT_OK(KORB_NIL);
+        if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') return RESULT_OK(KORB_NIL);
+        if (owner_name != 0)
+            return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
         return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
     }
     cache->idx_plus1 = idx + 1;

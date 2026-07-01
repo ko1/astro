@@ -173,6 +173,14 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     tc->chain = 0;
 }
 
+/* the innermost lexically-enclosing class/module const name (0 = top-level) —
+ * the cref for owner-aware bare constant reads (walk the frame chain). */
+static uint32_t kp_cref_owner(struct kp_ctx *tc) {
+    for (struct kp_frame *f = tc->frame; f; f = f->prev)
+        if (f->class_name_sym != 0) return f->class_name_sym;
+    return 0;
+}
+
 /* Register `cell` to be fixed up by `+= frame_size` when frame `f` pops — for a
  * yield-in-block trio index baked relative to the (ancestor) method frame's
  * size (the block trio sits at method node[frame_size-5..-3]). */
@@ -425,7 +433,7 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
     /* bare `rescue` catches StandardError; otherwise one node_rescue per listed
      * class.  Build classes back-to-front so the first listed is tried first. */
     if (rc->exceptions.size == 0) {
-        NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13));
+        NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13), 0);
         NODE *nd = ALLOC_node_rescue(cls, body, next, resc_var, flags);
         if (flags & 1u) bake_add(tc, &nd->u.node_rescue.resc_var);
         return nd;
@@ -2749,17 +2757,22 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_module(tc, (const pm_module_node_t *)node);
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
-        return ALLOC_node_const(kp_intern_cid(tc, cr->name));
+        return ALLOC_node_const(kp_intern_cid(tc, cr->name), kp_cref_owner(tc));
       }
-      case PM_CONSTANT_PATH_NODE: {       /* `A::B` — koruby's const table is flat,
-                                           * so resolve the rightmost name; the
-                                           * namespace parent is a pure path. */
+      case PM_CONSTANT_PATH_NODE: {       /* `A::B` — resolve B owned by the parent
+                                           * namespace A (the parent's rightmost name,
+                                           * resolved at runtime); so M::C finds M's C. */
         const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)node;
         if (cp->parent != NULL &&
             !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE) &&
             !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_PATH_NODE))
             return kp_unsupported(tc, node, "constant path with a non-namespace parent");
-        return ALLOC_node_const(kp_intern_cid(tc, cp->name));
+        uint32_t path_owner = 0;
+        if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)cp->parent)->name);
+        else if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_PATH_NODE))
+            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)cp->parent)->name);
+        return ALLOC_node_const(kp_intern_cid(tc, cp->name), path_owner);
       }
 
       /* Global variables `$x` reuse the flat const table — the `$` in the name
@@ -2767,7 +2780,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_GLOBAL_VARIABLE_READ_NODE: {
         const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name);
         if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
-        return ALLOC_node_const(gn);
+        return ALLOC_node_const(gn, 0);
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
@@ -2785,7 +2798,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
             NODE *lhs, *rhs;
             WITH_CHAIN(tc, kind_node_plus.slot_count,
-                       (lhs = ALLOC_node_const(name), rhs = transduce(tc, gw->value)));
+                       (lhs = ALLOC_node_const(name, 0), rhs = transduce(tc, gw->value)));
             alloc_binop(op, lhs, rhs, line);
         }));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, binop);
@@ -2795,14 +2808,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, gw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_or(ALLOC_node_const(name), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
+        return ALLOC_node_or(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
       }
       case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
         const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, gw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_and(ALLOC_node_const(name), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
+        return ALLOC_node_and(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
       }
 
       case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
@@ -2825,7 +2838,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
         const pm_rescue_modifier_node_t *rm = (const pm_rescue_modifier_node_t *)node;
         NODE *body = transduce(tc, rm->expression);
-        NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13));
+        NODE *cls = ALLOC_node_const(korb_intern(tc->c->vm, "StandardError", 13), 0);
         NODE *resc = transduce(tc, rm->rescue_expression);
         NODE *rescues = ALLOC_node_rescue(cls, resc, ALLOC_node_reraise(), 0, 0u);  /* catch StandardError */
         return ALLOC_node_begin(body, rescues, lit_nil(), 1u);
