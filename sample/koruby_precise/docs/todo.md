@@ -1953,3 +1953,22 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
 - 残 const-namespace: **flat-table collision** (M::C と top-level C が同じエントリ) — const 格納の
   namespace 化が必要な最深部。他: Kernel-private-builtin reflection、deferred-Enumerator、
   regex (astrorge skip)。
+
+### 2026-07-01 続き4 (const flat-collision 解消 + intern O(1))
+- **✅ namespace-aware const resolution** (4c68952f): flat-table collision を解消。const table を
+  **(name, owner) キー化**で M::C と top-level C を別エントリに。resolution は owner タグ + class の
+  **`enclosing` chain**(= parse 時に既知の "cref")で lexical に:
+  - const_define が (name,owner) キー、class find-or-create が同 namespace を reopen (M::C は M::C を、
+    top C じゃなく)。
+  - node_const に baked `owner_name`(bare=innermost enclosing module を parser の frame chain から / 
+    M::X=path parent)。cache miss 時に owner の enclosing chain を walk して (name,owner) を試し、
+    無ければ flat first-match に fallback(top-level + builtin const like Math::PI は owner nil)。
+    bare TOP-LEVEL read は owner 0 = 元の flat path なので **hot cache-hit path は byte 同一(perf 中立)**。
+  - **これで const-namespace の最深部(flat-collision)も解決**。multi-level lexical resolution 検証済。
+  - 罠: top-level self=main は class でないので owner を nil に normalize(find と define で一致させる)、
+    builtin module const(Math::PI, owner nil)は scoped read で flat fallback 必須。
+- **✅ perf: O(1) symbol intern** (c71cfb6d): korb_intern が線形走査 + 各比較で strlen → perf-record で
+  __strlen_avx2 が symbol-heavy path の 61%。open-addressing hash index(FNV-1a)+ 長さ cache で O(1) 化。
+  混合 bench(fib+float+symbol+truthy)が **28.4B→7.0B instructions / ~4.2s→~0.66s(~4x)**。挙動不変。
+- **残 structural**: Kernel-private-builtin reflection(dispatch visibility)、deferred-Enumerator、
+  regex(astrorge skip)、object default #inspect の ivars(address 不可)。

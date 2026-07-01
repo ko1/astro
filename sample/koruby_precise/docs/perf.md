@@ -984,3 +984,11 @@ retained を copy しない」効果を出すワークロード。`KORUBY_GC_STA
 copy_gen は **GC 時間 3.7× 削減**(retained を一度も copy しない)。出力は CRuby 一致
 (60002883500)、STRESS+PURGE / AOT も green。`make GC=copy_gen` で再現。
 `KORUBY_GC_STATS=1` の出力に minor/major/gc_seconds/max_pause を追加。
+
+## 2026-07-01: O(1) symbol interning
+`korb_intern` は symbol table を線形走査し、比較ごとに `strlen(sym_names[i])` を呼んでいた。
+perf-record で symbol-heavy path の 61% が `__strlen_avx2`(動的 symbol `:"k#{i}"` / `.to_sym` /
+method 名解決が O(n)/call を払っていた)。**open-addressing hash index(FNV-1a, slot→id+1)+ 長さ
+cache(sym_lens[])** で O(1) 化(0.75 load で倍化 + 再挿入、遅延初期化で既存 symbol も index)。挙動不変。
+混合 bench(fib+float+symbol+truthy)で **28.4B→7.0B instructions / ~4.2s→~0.66s(約 4x)**。
+また VALUE 即値タグ再編(3c7b3f5a)で FLONUM_P が 4→2 ops、flonum の sign remap 撤廃 → float 判定が安価に。
