@@ -992,14 +992,14 @@ static RESULT korb_m_hash_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* in-place select!/filter!(keep_truthy=1) and reject!/delete_if(keep_truthy=0) */
 static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "in-place Hash filter without a block is not supported");
-    uint32_t np = korb_entry_params_cnt(block);
     uint32_t w = 0; bool changed = false;
     for (uint32_t r = 0; ; r++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (r >= h->len) break;
         slots[0] = h->items->data[2*r];                    /* root k,v across the yield */
         slots[1] = h->items->data[2*r+1];
-        RESULT res = korb_hash_yield(c, slots + 2, block, def_env, cself, np, slots[0], slots[1]);
+        /* select!/reject!/keep_if/delete_if yield |key, value| as TWO values */
+        RESULT res = korb_hash_yield(c, slots + 2, block, def_env, cself, 2, slots[0], slots[1]);
         if (UNLIKELY(res.state != KORB_NORMAL)) return res;
         if (KORB_TRUTHY(res.value) == keep_truthy) {
             KorbHash *h2 = VAL2HASH(VALUE_REF_GET(self));
