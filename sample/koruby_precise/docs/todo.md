@@ -1943,3 +1943,13 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   (user の "cref がないの?" 指摘が解法の鍵だった)
 - 残: `class M::C` path 形式 (owner 追跡はできたので次点で可能かも)、Kernel-private-builtin
   reflection、deferred-Enumerator、regex (astrorge 待ち skip)。
+
+### 2026-07-01 続き3 (class M::C path form)
+- **✅ `class M::C` / `module M::Inner` (const-path form) の qualified name** (6e1189d8):
+  Module#constants と同じ cref トリック。parser が path parent (M) の名を node_class/
+  node_module の `path_owner` operand に baked、runtime で live module に解決 → enclosing に
+  (lexical self の代わり)。M::C.name / M::Inner::E.name が qualified、M.constants にも載る。
+  値は flat table の rightmost 名で格納のまま (M::C vs top-level C の衝突は別 follow-up)。
+- 残 const-namespace: **flat-table collision** (M::C と top-level C が同じエントリ) — const 格納の
+  namespace 化が必要な最深部。他: Kernel-private-builtin reflection、deferred-Enumerator、
+  regex (astrorge skip)。
