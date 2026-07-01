@@ -33,6 +33,12 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
             h ^= korb_deep_hash_d(hh->items->data[2*i], depth + 1) * 31u + korb_deep_hash_d(hh->items->data[2*i+1], depth + 1);
         return h;
     }
+    if (KORB_SET_P(v)) {                              /* order-independent (xor of element hashes) */
+        const KorbArray *a = VAL2ARY(VAL2SET(v)->elems);
+        uint64_t h = 0x517cc1b7ULL + a->len;
+        for (uint32_t i = 0; i < a->len; i++) h ^= korb_deep_hash_d(a->items->data[i], depth + 1);
+        return h;
+    }
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) {
         mpz_t z; korb_to_mpz(v, z);
