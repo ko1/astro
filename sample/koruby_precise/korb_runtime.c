@@ -6356,6 +6356,12 @@ static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv,
 korb_register_core_methods(CTX *c)
 {
     /* Integer */
+    /* Integer#=== / Float#=== are aliases of #== (which resolves to Comparable#==);
+     * registering the same fn makes instance_method(:===) == instance_method(:==)
+     * and keeps case/when (`5 === x`) behaviourally identical. */
+    korb_def_cmethod(c, KORB_C_INTEGER, "===", korb_m_cmpbl_eq, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT,   "===", korb_m_cmpbl_eq, 1);
+    korb_def_cmethod(c, KORB_C_SYMBOL,  "===", korb_m_cmpbl_eq, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "abs", korb_m_int_abs, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "-@", korb_m_int_uminus, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "magnitude", korb_m_int_abs, 0);
