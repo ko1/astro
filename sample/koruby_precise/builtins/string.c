@@ -1451,10 +1451,11 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const KorbRange *r = VAL2RANGE(i0);
         const bool beginless = (r->rbegin == KORB_NIL);   /* s[..e] → from 0 */
         const bool endless   = (r->rend   == KORB_NIL);   /* s[b..] → to the end */
-        if (UNLIKELY((!beginless && !FIXNUM_P(r->rbegin)) || (!endless && !FIXNUM_P(r->rend))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        intptr_t b = beginless ? 0 : FIX2LONG(r->rbegin);
-        intptr_t e = endless ? (intptr_t)ncp : FIX2LONG(r->rend);
+        intptr_t b, e;                                     /* Float/to_int bounds coerce via korb_to_index */
+        if (beginless) b = 0;
+        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (endless) e = (intptr_t)ncp;
+        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (b < 0) b += ncp;
         if (!endless && e < 0) e += ncp;
         if (b < 0 || b > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
