@@ -7870,6 +7870,18 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         fputc(')', fp);
         return;
       }
+      case KORB_OBJ_EXCEPTION: {                         /* inspect: #<Class: message> (bare Class when empty) */
+        const KorbException *const e = VAL2EXC(v);
+        const char *const cn = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
+                                   ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
+                                   : korb_etype_name(e->etype);
+        const char *msg; size_t mlen;
+        if (e->msg != KORB_NIL && KORB_STRING_P(e->msg)) { msg = VAL2STR(e->msg)->buf->data; mlen = VAL2STR(e->msg)->len; }
+        else { msg = cn; mlen = strlen(cn); }            /* default message = class name */
+        if (mlen == 0) fputs(cn, fp);
+        else { fprintf(fp, "#<%s: ", cn); fwrite(msg, 1, mlen, fp); fputc('>', fp); }
+        return;
+      }
     }
     korb_fprint_to_s(c, fp, v);
 }
