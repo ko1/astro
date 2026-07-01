@@ -17,8 +17,8 @@ class Numeric
   def integer?; false; end
   def to_int; to_i; end
   def div(other); (self / other).floor; end
-  def modulo(other); self - other * self.div(other); end
-  def %(other); modulo(other); end
+  def %(other); self - other * self.div(other); end
+  alias modulo %                          # CRuby: #modulo is an alias of #%
   def divmod(other); q = self.div(other); [q, self - other * q]; end
   def remainder(other)
     z = self % other
