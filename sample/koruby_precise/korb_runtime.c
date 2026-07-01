@@ -5640,8 +5640,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 return gm->is_simple ? korb_invoke_simple(c, slots, gm, argc, line, mid, self, KORB_NIL)
                                      : korb_invoke_method(c, slots, gm, argc, line, mid, self, KORB_NIL, block, def_env, KORB_CSELF_VAL(captured_self));
         }
-        VALUE dc = KORB_NIL;                                                  /* else a real Kernel module method */
+        VALUE dc = KORB_NIL;                                                  /* else a Kernel-own or Module-level method */
         struct korb_method *m2 = korb_mcache_find(vm, self, mid, &dc);
+        if (!m2) {                                                            /* Module-level (ancestors/name/method_added/...): the metaclass, like korb_send_cached */
+            const VALUE meta = korb_dispatch_class(c, self);
+            dc = KORB_NIL;
+            if (KORB_CLASS_P(meta)) m2 = korb_class_find_method(meta, mid, &dc);
+        }
         if (m2) return korb_dispatch_method(c, slots, m2, mid, line, argc, dc, block, def_env, captured_self);
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
     }
@@ -7167,6 +7172,14 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("private_constant", korb_m_visibility_noop, -1);
     MOD_CFN("public_constant", korb_m_visibility_noop, -1);
     MOD_CFN("const_source_location", korb_m_lit_nil, -1);
+    /* default no-op callbacks so a module (Kernel, `module M`) responds to the
+     * hooks and user overrides can `super` (Class also has method_added/inherited). */
+    MOD_CFN("method_added", korb_m_lit_nil, 1);
+    MOD_CFN("method_removed", korb_m_lit_nil, 1);
+    MOD_CFN("method_undefined", korb_m_lit_nil, 1);
+    MOD_CFN("included", korb_m_lit_nil, 1);
+    MOD_CFN("prepended", korb_m_lit_nil, 1);
+    MOD_CFN("extended", korb_m_lit_nil, 1);
     MOD_CFN_BLK("define_method", korb_m_define_method, -1);
     MOD_CFN_BLK("class_eval", korb_m_obj_instance_eval, -1);
     MOD_CFN_BLK("module_eval", korb_m_obj_instance_eval, -1);
