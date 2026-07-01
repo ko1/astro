@@ -2585,6 +2585,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
         if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0);   /* "true" */
         if (PM_NODE_TYPE_P(v, PM_FALSE_NODE)) return ALLOC_node_defined(10, 0, 0);  /* "false" */
+        if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_AND_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_AND_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CONSTANT_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_AND_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_AND_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_INDEX_OPERATOR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_INDEX_OR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_MULTI_WRITE_NODE))
+            return ALLOC_node_defined(11, 0, 0);                        /* "assignment" (not evaluated) */
         return ALLOC_node_defined(5, 0, 0);                             /* literals / expr → "expression" */
       }
       case PM_YIELD_NODE: {
