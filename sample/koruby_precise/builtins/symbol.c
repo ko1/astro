@@ -312,6 +312,7 @@ static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
 }
+static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest);   /* fwd (defined below) */
 /* Proc#arity: #required positional, negated as -(req+1) when optional/rest make
  * it variable.  (Symbol#to_proc → -2, matching CRuby.) */
 static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -319,9 +320,15 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     if (p->iseq == NULL) return RESULT_OK(LONG2FIX(-2));   /* symbol proc */
     const NODE *e = p->iseq;
-    const bool variable = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
-    const uint32_t reqc = variable ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt;
-    return RESULT_OK(LONG2FIX(variable ? -((intptr_t)reqc + 1) : (intptr_t)reqc));
+    /* required positional + (required kw ? 1 : 0), negated for optional/rest
+     * positional.  A lambda also negates for keyword optionality (optional kw or
+     * kwrest) when there is no required kw; a plain proc never negates for
+     * keywords. */
+    bool kreq, kopt, kwrest; korb_kw_arity_flags(e->u.node_entry.kw_info, &kreq, &kopt, &kwrest);
+    const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
+    const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
+    const bool var = varpos || (p->is_lambda && (kopt || kwrest) && !kreq);
+    return RESULT_OK(LONG2FIX(var ? -((intptr_t)req + 1) : (intptr_t)req));
 }
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
  * never on the call/yield hot path).  A non-lambda proc reports a required
@@ -402,14 +409,14 @@ static intptr_t korb_method_arity(const struct korb_method *km) {
         bool kreq, kopt, kwrest; korb_kw_arity_flags(e->u.node_entry.kw_info, &kreq, &kopt, &kwrest);
         const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
         const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
-        const bool var = varpos || kwrest || (kopt && !kreq);
+        const bool var = varpos || ((kopt || kwrest) && !kreq);
         return var ? -((intptr_t)req + 1) : (intptr_t)req;
       }
       default: {                                               /* ISEQ */
         bool kreq, kopt, kwrest; korb_kw_arity_flags(km->kw_info, &kreq, &kopt, &kwrest);
         const bool varpos = (km->opt_defaults != NULL) || (km->rest_slot >= 0);
         const uint32_t req = km->req_cnt + km->post_cnt + (kreq ? 1u : 0u);
-        const bool var = varpos || kwrest || (kopt && !kreq);
+        const bool var = varpos || ((kopt || kwrest) && !kreq);
         return var ? -((intptr_t)req + 1) : (intptr_t)req;
       }
     }
