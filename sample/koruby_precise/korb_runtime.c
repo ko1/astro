@@ -3256,7 +3256,7 @@ korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos
  * inlines its own fast path). */
 
 RESULT
-korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module)
+korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE superclass, int is_module, VALUE enclosing)
 {
     if (superclass != KORB_NIL && !KORB_CLASS_P(superclass))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "superclass must be a Class (%s given)", korb_type_name(superclass));
@@ -3264,11 +3264,15 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
      * MRO reaches the universal Object methods (==, freeze, method, ...). */
     if (superclass == KORB_NIL && !is_module)
         superclass = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    VALUE_REF encl_ref = SLOTS_PUSH(slots, enclosing);   /* root the lexical namespace below; slots advances past it */
     VALUE cls = korb_const_get(c->vm, name_sym);
     if (!KORB_CLASS_P(cls)) {
         slots[0] = superclass;                   /* root super across korb_class_new's GC */
         slots[1] = UNWRAP(korb_class_new(c, slots + 2, name_sym, slots[0]));   /* cls (rooted) */
         if (is_module) VAL2CLASS(slots[1])->is_module = 1;
+        const VALUE encl = VALUE_REF_GET(encl_ref);   /* re-read after korb_class_new's GC */
+        if (encl != KORB_NIL && KORB_CLASS_P(encl))    /* lexical enclosing module/class → M::C names */
+            ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, encl);
         korb_const_define(c, name_sym, slots[1]);    /* now rooted in the const table */
         if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
@@ -3295,6 +3299,46 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv)
     const VALUE sing = UNWRAP(korb_obj_singleton(c, slots + 1, slots[0]));
     slots[0] = sing;                             /* self for the body = the singleton class */
     return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+}
+
+/* Write the fully-qualified class name ("M::Inner::E") to fp, walking the lexical
+ * `enclosing` chain outermost-first.  Returns false (writing nothing) for an
+ * anonymous class (name_sym 0); an anonymous link in the chain ends qualification.
+ * No GC (only reads interned names + writes fp). */
+static bool
+korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls)
+{
+    const KorbClass *const k = VAL2CLASS(cls);
+    if (k->name_sym == 0) return false;
+    if (k->enclosing != KORB_NIL && KORB_CLASS_P(k->enclosing) &&
+        korb_fprint_class_qname(c, fp, k->enclosing))
+        fputs("::", fp);
+    fputs(korb_sym_name(c->vm, k->name_sym), fp);
+    return true;
+}
+/* Build the qualified name as a fresh String (nil for anonymous).  For Class#name. */
+static RESULT
+korb_class_qname_str(CTX *c, VALUE *slots, VALUE cls)
+{
+    if (VAL2CLASS(cls)->name_sym == 0) return RESULT_OK(KORB_NIL);
+    char *buf = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    korb_fprint_class_qname(c, ms, cls);
+    fclose(ms);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+    free(buf);
+    return r;
+}
+/* Qualified name into a caller buffer (for error messages).  `cls` must be a class. */
+static void
+korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz)
+{
+    char *b = NULL; size_t sz = 0;
+    FILE *ms = open_memstream(&b, &sz);
+    if (ms) { korb_fprint_class_qname(c, ms, cls); fclose(ms); }
+    snprintf(out, outsz, "%s", b ? b : "");
+    free(b);
 }
 
 /* `include mod...` in a class/module body: append each module to klass->included
@@ -7856,7 +7900,9 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_OBJECT: {
         const KorbObject *o = VAL2OBJ(v);
         if (o->klass == KORB_NIL) { fputs("main", fp); return; }       /* top-level self */
-        fprintf(fp, "#<%s>", korb_sym_name(c->vm, VAL2CLASS(o->klass)->name_sym));
+        fputs("#<", fp);
+        if (!korb_fprint_class_qname(c, fp, o->klass)) fputs("Class", fp);   /* qualified (M::C); anonymous fallback */
+        fputc('>', fp);
         return;
       }
       case KORB_OBJ_CLASS:

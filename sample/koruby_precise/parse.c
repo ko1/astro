@@ -1699,7 +1699,9 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("class", entry, true);          /* its own AOT entry */
-    return ALLOC_node_class(name_sym, entry, super_node);
+    NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
+    bake_add(tc, &_ncls->u.node_class.self_off);
+    return _ncls;
 }
 
 /* Build `lget(t).[](i)` — index a synth-temp array; used by the general
@@ -1777,7 +1779,9 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
 
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("module", entry, true);
-    return ALLOC_node_module(name_sym, entry);
+    NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain);   /* self_off = enclosing self (base[-1]) */
+    bake_add(tc, &_nmod->u.node_module.self_off);
+    return _nmod;
 }
 
 /* Array literal `[e0, e1, ...]` → inside-out push chain (variadic @child is

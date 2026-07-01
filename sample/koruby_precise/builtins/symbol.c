@@ -43,7 +43,8 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     if (KORB_OBJECT_P(recv) && KORB_OBJ_TYPE(recv) == KORB_OBJ_OBJECT) {   /* user instance → real class name */
         const VALUE k = VAL2OBJ(recv)->klass;
         if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym) {
-            snprintf(buf, sizeof(buf), "an instance of %s", korb_sym_name(c->vm, VAL2CLASS(k)->name_sym));
+            char qn[160]; korb_class_qname_into(c, k, qn, sizeof(qn));
+            snprintf(buf, sizeof(buf), "an instance of %s", qn);
             tn = buf;
         }
     }
