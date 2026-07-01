@@ -913,9 +913,11 @@ korb_str_repeat_ref(CTX *c, VALUE *slots, VALUE_REF src, intptr_t cnt, uint32_t 
 
 static uint32_t korb_fmt_int(intptr_t n, int base, char *buf);   /* defined below */
 
+void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);   /* fwd: slots-aware inspect/to_s (container elements dispatch #inspect) */
+static void korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);
 /* String interpolation step: acc (a String) + to_s(part).  String parts take
- * the direct concat path; other values render through korb_fprint_to_s (which
- * does not allocate, so `part` stays put) into a transient buffer first. */
+ * the direct concat path; other values render through korb_fprint_to_s_s (whose
+ * container elements dispatch #inspect, which may GC — `part` is rooted). */
 RESULT
 korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
 {
@@ -956,7 +958,7 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
     size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    korb_fprint_to_s(c, ms, p);                          /* no GC inside */
+    korb_fprint_to_s_s(c, slots, ms, p);                 /* slots is past pref/aref (SLOTS_PUSH advanced it); containers dispatch element #inspect */
     fclose(ms);
     RESULT sr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
@@ -2167,7 +2169,7 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 /* Data#inspect → "#<data Name member=val, ...>" (anonymous → no Name). */
 /* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
-static void korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
+static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
@@ -2183,7 +2185,7 @@ static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, con
         fputs(i == 0 ? " " : ", ", ms);
         fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
         fputc('=', ms);
-        korb_fprint_inspect_d(c, ms, val, 1);                    /* _d → nested Struct/Data fields render in full */
+        korb_fprint_inspect_d(c, NULL, ms, val, 1);              /* _d → nested Struct/Data fields render in full (NULL: keep this loop GC-free) */
     }
     fputc('>', ms);
     fclose(ms);
@@ -7704,34 +7706,52 @@ korb_fprint_range(CTX *c, FILE *fp, VALUE v, bool insp)
  * cycle point; a depth cap reaches it a few levels deeper — both contain the
  * "[...]" / "{...}" / "Set[...]" substring the specs check, and neither loops). */
 #define KORB_PRINT_DEPTH_MAX 48
-static void korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth);
+static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);
+
+/* Render a plain user object via its (possibly overridden) #inspect.  Returns
+ * true if it dispatched and wrote the result; false if the caller should use the
+ * default "#<Class>" form.  `slots` must be a rooted region (>= 4 slots); NULL
+ * disables dispatch (the slots-less formatter callers keep the default).  The
+ * dispatch can GC, so callers re-read any container they are iterating. */
+static bool
+korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
+{
+    if (slots == NULL || !KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
+    slots[0] = v;                                                /* root across the dispatch */
+    RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
+    if (r.state != KORB_NORMAL || !KORB_STRING_P(r.value)) return false;   /* error / non-String → default */
+    fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, fp);
+    return true;
+}
 
 /* Array renders identically for to_s and inspect: "[1, 2, \"x\"]" — elements
- * always use inspect form. */
+ * always use inspect form.  `slots` (or NULL) threads through for element
+ * #inspect dispatch; the array is re-read each step (dispatch may move it). */
 static void
-korb_fprint_ary_d(CTX *c, FILE *fp, VALUE v, int depth)
+korb_fprint_ary_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
     if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) { fputs("[...]", fp); return; }
-    const KorbArray *a = VAL2ARY(v);
+    if (slots) slots[0] = v;                                     /* root the array across element dispatch */
     fputc('[', fp);
-    for (uint32_t i = 0; i < a->len; i++) {
+    for (uint32_t i = 0; i < (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->len; i++) {
         if (i) fputs(", ", fp);
-        korb_fprint_inspect_d(c, fp, a->items->data[i], depth + 1);
+        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->items->data[i], depth + 1);
     }
     fputc(']', fp);
 }
-static void korb_fprint_ary(CTX *c, FILE *fp, VALUE v) { korb_fprint_ary_d(c, fp, v, 0); }
+static void korb_fprint_ary(CTX *c, VALUE *slots, FILE *fp, VALUE v) { korb_fprint_ary_d(c, slots, fp, v, 0); }
 
 /* Hash inspect (== to_s), CRuby 4.0 form: symbol keys as `name: v` (quoted if
  * not a bare label), other keys as `k => v`. */
 static void
-korb_fprint_hash_d(CTX *c, FILE *fp, VALUE v, int depth)
+korb_fprint_hash_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
     if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) { fputs("{...}", fp); return; }
-    const KorbHash *h = VAL2HASH(v);
+    if (slots) slots[0] = v;                                     /* root the hash across k/v dispatch */
     fputc('{', fp);
-    for (uint32_t i = 0; i < h->len; i++) {
+    for (uint32_t i = 0; i < (slots ? VAL2HASH(slots[0]) : VAL2HASH(v))->len; i++) {
         if (i) fputs(", ", fp);
+        const KorbHash *h = slots ? VAL2HASH(slots[0]) : VAL2HASH(v);   /* re-read each step */
         VALUE k = h->items->data[2 * i];
         if (SYMBOL_P(k)) {
             const char *nm = korb_sym_name(c->vm, SYM2ID(k));
@@ -7739,36 +7759,41 @@ korb_fprint_hash_d(CTX *c, FILE *fp, VALUE v, int depth)
             else korb_fprint_quoted(fp, nm, (uint32_t)strlen(nm));
             fputs(": ", fp);
         } else {
-            korb_fprint_inspect_d(c, fp, k, depth + 1);
+            korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, k, depth + 1);
             fputs(" => ", fp);
         }
-        korb_fprint_inspect_d(c, fp, h->items->data[2 * i + 1], depth + 1);
+        h = slots ? VAL2HASH(slots[0]) : VAL2HASH(v);            /* re-read after key dispatch */
+        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, h->items->data[2 * i + 1], depth + 1);
     }
     fputc('}', fp);
 }
-static void korb_fprint_hash(CTX *c, FILE *fp, VALUE v) { korb_fprint_hash_d(c, fp, v, 0); }
+static void korb_fprint_hash(CTX *c, VALUE *slots, FILE *fp, VALUE v) { korb_fprint_hash_d(c, slots, fp, v, 0); }
 
 /* Set[a, b, c] (elements via inspect), depth-guarded like Array/Hash. */
 static void
-korb_fprint_set_d(CTX *c, FILE *fp, VALUE v, int depth)
+korb_fprint_set_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
     if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) { fputs("Set[...]", fp); return; }
-    const KorbArray *el = VAL2ARY(VAL2SET(v)->elems);
+    if (slots) slots[0] = v;
     fputs("Set[", fp);
-    for (uint32_t i = 0; i < el->len; i++) { if (i) fputs(", ", fp); korb_fprint_inspect_d(c, fp, el->items->data[i], depth + 1); }
+    for (uint32_t i = 0; i < (slots ? VAL2ARY(VAL2SET(slots[0])->elems) : VAL2ARY(VAL2SET(v)->elems))->len; i++) {
+        if (i) fputs(", ", fp);
+        const KorbArray *el = slots ? VAL2ARY(VAL2SET(slots[0])->elems) : VAL2ARY(VAL2SET(v)->elems);
+        korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, el->items->data[i], depth + 1);
+    }
     fputc(']', fp);
 }
 
 /* Element-rendering dispatcher: cycle-prone containers carry the depth; every
  * other value renders normally (it cannot contain a back-reference, so no loop). */
 static void
-korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth)
+korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
     if (AROH_IS_GC_OBJECT(v)) {
         switch (KORB_OBJ_TYPE(v)) {
-          case KORB_OBJ_ARRAY: korb_fprint_ary_d(c, fp, v, depth);  return;
-          case KORB_OBJ_HASH:  korb_fprint_hash_d(c, fp, v, depth); return;
-          case KORB_OBJ_SET:   korb_fprint_set_d(c, fp, v, depth);  return;
+          case KORB_OBJ_ARRAY: korb_fprint_ary_d(c, slots, fp, v, depth);  return;
+          case KORB_OBJ_HASH:  korb_fprint_hash_d(c, slots, fp, v, depth); return;
+          case KORB_OBJ_SET:   korb_fprint_set_d(c, slots, fp, v, depth);  return;
           case KORB_OBJ_OBJECT: {                                   /* Struct/Data element → "#<struct Name f=v, …>" */
             const VALUE klass = VAL2OBJ(v)->klass;
             if (klass != KORB_NIL && KORB_ARRAY_P(VAL2CLASS(klass)->members)) {
@@ -7782,21 +7807,23 @@ korb_fprint_inspect_d(CTX *c, FILE *fp, VALUE v, int depth)
                     fputs(i == 0 ? " " : ", ", fp);
                     fputs(korb_sym_name(c->vm, SYM2ID(msym)), fp);
                     fputc('=', fp);
-                    korb_fprint_inspect_d(c, fp, mval, depth + 1);
+                    korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, mval, depth + 1);
                 }
                 fputc('>', fp);
                 return;
             }
+            if (korb_fprint_user_inspect(c, slots, fp, v)) return;   /* plain object → its (overridable) #inspect */
             break;
           }
           default: break;
         }
     }
-    korb_fprint_inspect(c, fp, v);
+    korb_fprint_inspect_s(c, slots, fp, v);
 }
 
-void
-korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
+void korb_fprint_to_s(CTX *c, FILE *fp, VALUE v);   /* wrapper (slots-less → no element dispatch); defined below */
+static void
+korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
     if (FIXNUM_P(v))           { fprintf(fp, "%ld", (long)FIX2LONG(v)); return; }
     if (v == KORB_NIL)         { return; }                     /* "" */
@@ -7818,10 +7845,10 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_ARRAY:
-        korb_fprint_ary(c, fp, v);
+        korb_fprint_ary(c, slots, fp, v);
         return;
       case KORB_OBJ_HASH:
-        korb_fprint_hash(c, fp, v);
+        korb_fprint_hash(c, slots, fp, v);
         return;
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, fp, v, false);
@@ -7868,7 +7895,7 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_SET:                               /* Set[a, b, c] (elements via inspect) */
-        korb_fprint_set_d(c, fp, v, 0);
+        korb_fprint_set_d(c, slots, fp, v, 0);
         return;
       case KORB_OBJ_PROC: {                            /* #<Proc:0x.. (lambda)> (no source location) */
         const KorbProc *const p = VAL2PROC(v);
@@ -7885,9 +7912,10 @@ korb_fprint_to_s(CTX *c, FILE *fp, VALUE v)
     }
     fputs("#<Object>", fp);
 }
+void korb_fprint_to_s(CTX *c, FILE *fp, VALUE v) { korb_fprint_to_s_s(c, NULL, fp, v); }
 
 void
-korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
+korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
     if (FIXNUM_P(v))     { fprintf(fp, "%ld", (long)FIX2LONG(v)); return; }
     if (v == KORB_NIL)   { fputs("nil", fp); return; }
@@ -7969,8 +7997,9 @@ korb_fprint_inspect(CTX *c, FILE *fp, VALUE v)
         return;
       }
     }
-    korb_fprint_to_s(c, fp, v);
+    korb_fprint_to_s_s(c, slots, fp, v);
 }
+void korb_fprint_inspect(CTX *c, FILE *fp, VALUE v) { korb_fprint_inspect_s(c, NULL, fp, v); }
 
 /* ---------------------------------------------------------------------------
  * Builtins.
@@ -8253,7 +8282,7 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
             if (LIKELY(KORB_STRING_P(r.value))) fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, stdout);
             else korb_fprint_inspect(c, stdout, r.value);
         } else {
-            korb_fprint_inspect(c, stdout, v);
+            korb_fprint_inspect_s(c, slots, stdout, v);   /* containers dispatch element #inspect */
         }
         fputc('\n', stdout);
     }

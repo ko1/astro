@@ -226,7 +226,7 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    korb_fprint_to_s(c, ms, VALUE_REF_GET(self));   /* no GC inside */
+    korb_fprint_to_s_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect (may GC) */
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
@@ -237,7 +237,7 @@ static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
-    korb_fprint_inspect(c, ms, VALUE_REF_GET(self));
+    korb_fprint_inspect_s(c, slots, ms, VALUE_REF_GET(self));   /* containers dispatch element #inspect */
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
