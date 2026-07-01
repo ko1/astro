@@ -3901,6 +3901,16 @@ korb_value_eq(VALUE a, VALUE b)
         int cmp = korb_rat_cmp(a, b);
         if (cmp != 2) return cmp == 0;
     }
+#ifdef KORB_HAVE_GMP
+    /* Bignum (or a Fixnum too large for an exact double) vs Float: compare
+     * exactly — casting the integer to double would lose precision. */
+    if (KORB_FLOAT_P(a) ^ KORB_FLOAT_P(b)) {          /* exactly one is Float */
+        const VALUE iv = KORB_FLOAT_P(a) ? b : a;
+        if (KORB_BIGNUM_P(iv) ||
+            (FIXNUM_P(iv) && (FIX2LONG(iv) > (1LL << 53) || FIX2LONG(iv) < -(1LL << 53))))
+            return korb_big_flo_cmp(iv, korb_float_val(KORB_FLOAT_P(a) ? a : b)) == 0;
+    }
+#endif
     double da, db;              /* numeric ==: 1 == 1.0, 1.0 == 1.0 */
     if ((KORB_FLOAT_P(a) || KORB_FLOAT_P(b)) && korb_num_to_d(a, &da) && korb_num_to_d(b, &db))
         return da == db;
@@ -4214,6 +4224,18 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
             return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
         }
     }
+#ifdef KORB_HAVE_GMP
+    /* Bignum vs Float: compare exactly — casting the Bignum to double would lose
+     * precision (e.g. 2**64+39 <= (2**64+39).to_f is false, not true). */
+    if ((KORB_BIGNUM_P(l) && KORB_FLOAT_P(r)) || (KORB_FLOAT_P(l) && KORB_BIGNUM_P(r))) {
+        int cmp = KORB_BIGNUM_P(l) ? korb_big_flo_cmp(l, korb_float_val(r))
+                                   : korb_big_flo_cmp(r, korb_float_val(l));
+        if (cmp == 2) return RESULT_OK(KORB_FALSE);           /* NaN: <,<=,>,>= all false */
+        if (KORB_FLOAT_P(l)) cmp = -cmp;                       /* compared r(Bignum) vs l(Float) */
+        const bool t = op == 0 ? cmp < 0 : op == 1 ? cmp <= 0 : op == 2 ? cmp > 0 : cmp >= 0;
+        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    }
+#endif
     double ld, rd;
     if ((KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) && korb_num_to_d(l, &ld) && korb_num_to_d(r, &rd)) {
         bool t;

@@ -453,6 +453,12 @@ static RESULT korb_m_int_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, selfv, o, "<=>", 0, &h); if (h) return cr; }
         return RESULT_OK(KORB_NIL);                          /* incomparable → nil */
     }
+#ifdef KORB_HAVE_GMP
+    if (KORB_FLOAT_P(o)) {                                   /* Integer <=> Float: exact (no lossy cast) */
+        const int cmp = korb_big_flo_cmp(selfv, y);
+        return RESULT_OK(cmp == 2 ? KORB_NIL : LONG2FIX(cmp));
+    }
+#endif
     (void)korb_num_to_d(selfv, &x);
     return RESULT_OK(LONG2FIX((x > y) - (x < y)));
 }

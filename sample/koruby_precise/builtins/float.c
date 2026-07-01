@@ -44,7 +44,14 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "<=>", 0, &h); if (h) return cr; }
         return RESULT_OK(KORB_NIL);
     }
-    double s = SELF_FLT; return RESULT_OK(LONG2FIX((s > o) - (s < o)));
+    double s = SELF_FLT;
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(ov)) {                                 /* Float <=> Bignum: exact (invert Integer<=>Float) */
+        const int cmp = korb_big_flo_cmp(ov, s);
+        return RESULT_OK(cmp == 2 ? KORB_NIL : LONG2FIX(-cmp));
+    }
+#endif
+    return RESULT_OK(LONG2FIX((s > o) - (s < o)));
 }
 /* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */
 static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {

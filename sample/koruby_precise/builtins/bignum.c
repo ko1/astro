@@ -161,6 +161,19 @@ int korb_int_cmp(VALUE a, VALUE b) {
     mpz_clear(za); mpz_clear(zb);
     return r < 0 ? -1 : r > 0 ? 1 : 0;
 }
+/* Exact <=> of an Integer `bi` against a double `d` (no precision loss from
+ * casting a Bignum to double).  Returns -1/0/1, or 2 when d is NaN. */
+int korb_big_flo_cmp(VALUE bi, double d) {
+    if (d != d) return 2;                            /* NaN: incomparable */
+    if (isinf(d)) return d > 0 ? -1 : 1;
+    mpz_t z; korb_to_mpz(bi, z);
+    const double fl = floor(d);
+    mpz_t zd; mpz_init(zd); mpz_set_d(zd, fl);       /* fl integral → exact */
+    const int c = mpz_cmp(z, zd);
+    mpz_clear(zd); mpz_clear(z);
+    if (c != 0) return c > 0 ? 1 : -1;
+    return (d > fl) ? -1 : 0;                        /* bi == floor(d); a fractional d is larger */
+}
 /* unary minus of a Bignum (normalised). */
 RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v) {
     mpz_t z; korb_to_mpz(v, z); mpz_neg(z, z);

@@ -277,7 +277,20 @@ static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_and(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_bitop(c, slots, self, a, 0); }
 static RESULT korb_m_int_or (CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_bitop(c, slots, self, a, 1); }
 static RESULT korb_m_int_xor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_bitop(c, slots, self, a, 2); }
-static RESULT korb_m_int_inv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(~FIX2LONG(VALUE_REF_GET(self)))); }
+static RESULT korb_m_int_inv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (LIKELY(FIXNUM_P(v))) return RESULT_OK(LONG2FIX(~FIX2LONG(v)));
+#ifdef KORB_HAVE_GMP
+    mpz_t z; korb_to_mpz(v, z);          /* Bignum: ~z = -z-1 (two's complement) */
+    mpz_com(z, z);
+    const RESULT r = korb_big_from_mpz(c, slots, z);
+    mpz_clear(z);
+    return r;
+#else
+    return RESULT_OK(LONG2FIX(~FIX2LONG(v)));
+#endif
+}
 static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(o)) {                             /* Integer#remainder(Float) → Float, truncated */

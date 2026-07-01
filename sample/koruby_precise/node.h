@@ -136,6 +136,7 @@ RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op);  /* Fixn
 RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, intptr_t amount);
 RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v);
 int    korb_int_cmp(VALUE a, VALUE b);
+int    korb_big_flo_cmp(VALUE bi, double d);   /* exact Integer<=>double, 2 = NaN */
 double korb_big_to_d(VALUE v);
 #endif
 
