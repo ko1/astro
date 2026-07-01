@@ -57,4 +57,14 @@ class Complex
   def to_i; imaginary.zero? ? real.to_i : raise(RangeError, "can't convert #{self} into Integer"); end
   def to_f; imaginary.zero? ? real.to_f : raise(RangeError, "can't convert #{self} into Float"); end
   def to_r; imaginary.zero? ? real.to_r : raise(RangeError, "can't convert #{self} into Rational"); end
+  def finite?; real.finite? && imaginary.finite?; end
+  def infinite?; (real.infinite? || imaginary.infinite?) ? 1 : nil; end
+  def real?; false; end
+  def coerce(other)
+    case other
+    when Complex then [other, self]
+    when Numeric then [Complex(other, 0), self]
+    else raise TypeError, "#{other.class} can't be coerced into Complex"
+    end
+  end
 end
