@@ -762,6 +762,11 @@ static RESULT korb_m_cpx_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
     }
     if (UNLIKELY(!korb_polar_real_d(VALUE_SLICE_GET(a, 1), &ar))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    if (ar == 0.0 && !KORB_COMPLEX_P(VALUE_SLICE_GET(a, 0))) {       /* angle 0 → real keeps the magnitude's type, imag 0.0 */
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, 0.0));
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
     slots[0] = UNWRAP(korb_float_new(c, slots, ab * cos(ar)));
     slots[1] = UNWRAP(korb_float_new(c, slots + 1, ab * sin(ar)));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
