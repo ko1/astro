@@ -1921,3 +1921,13 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
 - **deferred-Enumerator**: `find`/`group_by`/`partition` の no-block `.with_index` 等の method 再呼出。
 - **object default #inspect の ivars**: `#<M::C @x=1>` の ivar 表示。address は moving GC で
   不安定なので ruby と完全一致は原理的に不可 (name は qualified 済)。
+
+### 2026-07-01 続き (join + class formatter)
+- **✅ Array#join の element to_s** (4f9780b3): 上の「残 structural」から解決。korb_join_rec を
+  RESULT 返し + KORB_FL_JOIN_VISITING header flag ベース cycle detection に再設計 (flag は
+  moving GC で一緒に動く) → user object element の #to_s を dispatch。
+- **✅ class の qualified name を formatter でも** (2e45cbc3): Class#name/#to_s は qualified
+  だったが C formatter の KORB_OBJ_CLASS case が bare → 補間/container/puts で "Sub" と
+  出てた。korb_fprint_class_qname に統一。
+- 残 structural (更新): Kernel-private-builtin reflection、const namespace (Module#constants /
+  `class M::C` path)、deferred-Enumerator、object default #inspect の ivars。
