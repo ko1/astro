@@ -57,8 +57,15 @@ typedef intptr_t VALUE;
 #define ARO_GC_VALUE_TYPEDEFED 1
 
 #define KORB_NIL       ((VALUE)0)
-#define KORB_FALSE     ((VALUE)2)
-#define KORB_TRUE      ((VALUE)4)
+/* Special singletons live in the low-nibble 0b0100 quadrant, with a variant
+ * selector in the upper bits — leaving room for Qundef-style sentinels beyond
+ * the false/true booleans.  (v & 0xF) == 4 tags the quadrant; (v >> 4) selects.
+ * All have (v & 7) == 4 ≠ 0, so the GC never mistakes one for a heap pointer. */
+#define KORB_SPECIAL(n)    ((VALUE)(((uintptr_t)(n) << 4) | 0x4u))
+#define KORB_SPECIAL_P(v)  (((uintptr_t)(v) & 0xFu) == 0x4u)
+#define KORB_FALSE     KORB_SPECIAL(0)   /* 0b000100 =  4 */
+#define KORB_TRUE      KORB_SPECIAL(1)   /* 0b010100 = 20 */
+#define KORB_UNDEF     KORB_SPECIAL(2)   /* 0b100100 = 36 — never a valid Ruby value (uninitialized / removed marker) */
 
 #define FIXNUM_P(v)    (((uintptr_t)(v) & 1u) != 0)
 #define LONG2FIX(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | 1u))
@@ -67,22 +74,21 @@ typedef intptr_t VALUE;
 #define FIXNUM_MIN     (INTPTR_MIN >> 1)
 #define FIXABLE(i)     ((i) >= FIXNUM_MIN && (i) <= FIXNUM_MAX)
 
-#define SYMBOL_P(v)    (((uintptr_t)(v) & 7u) == 6u)
-#define ID2SYM(id)     ((VALUE)(((uintptr_t)(id) << 3) | 6u))
-#define SYM2ID(v)      ((uint32_t)((uintptr_t)(v) >> 3))
+/* Symbol — low nibble 0b1100 (static-symbol id in the upper bits). */
+#define SYMBOL_P(v)    (((uintptr_t)(v) & 0xFu) == 0xCu)
+#define ID2SYM(id)     ((VALUE)(((uintptr_t)(id) << 4) | 0xCu))
+#define SYM2ID(v)      ((uint32_t)((uintptr_t)(v) >> 4))
 
 /* -----------------------------------------------------------------------------
- * Flonum — immediate Float, no heap box.  Lives in the low-3-bit quadrants
- * {010, 100} (the slots otherwise holding only the false=2 / true=4 singletons,
- * disambiguated by the > 4 guard).  CRuby's classic rotl-3 trick, but its 2-bit
- * tag (low2==10) collides with our Symbol (low3==110), so the sign quadrant is
- * remapped 110→100.  Representable: top-3 exponent bits ∈ {3,4} → |d| ∈ roughly
+ * Flonum — immediate Float, no heap box.  Now that Symbol has vacated the
+ * low-3-bit 110 quadrant, Flonum uses CRuby's clean 2-bit tag: low2 == 10
+ * (i.e. (v & 3) == 2), occupying quadrants {010, 110} with bit2 = sign — no
+ * remap needed.  Representable: top-3 exponent bits ∈ {3,4} → |d| ∈ roughly
  * [2^-255, 2^256), both signs (covers all ordinary floats); ±0.0 use a magic
- * constant; doubles that would encode to ≤4 (2.0, -2.0) and out-of-range
- * doubles heap-box.  Validated by an exhaustive round-trip test.
- * GC-safe: (flonum & 7) ∈ {2,4} ≠ 0, so the edge filter / AROH_IS_GC_OBJECT
+ * constant; out-of-range doubles heap-box.
+ * GC-safe: (flonum & 7) ∈ {2,6} ≠ 0, so the edge filter / AROH_IS_GC_OBJECT
  * never treat a flonum as a heap pointer. --------------------------------- */
-#define FLONUM_P(v)    ((((uintptr_t)(v) & 7u) == 2u || ((uintptr_t)(v) & 7u) == 4u) && (uintptr_t)(v) > 4u)
+#define FLONUM_P(v)    (((uintptr_t)(v) & 3u) == 2u)
 #define KORB_FLO_ZERO  ((VALUE)(intptr_t)0x8000000000000002ULL)
 
 static inline VALUE korb_d2flo(double d) {   /* 0 → not representable (caller heap-boxes) */
@@ -91,23 +97,21 @@ static inline VALUE korb_d2flo(double d) {   /* 0 → not representable (caller 
     unsigned top3 = (unsigned)((t.v >> 60) & 7u);
     if (top3 != 3u && top3 != 4u) return 0;
     uintptr_t e = ((t.v << 3 | t.v >> 61) & ~(uintptr_t)1u) | 2u;           /* rotl3, low2=10, bit2=sign */
-    if ((e & 7u) == 6u) e = (e & ~(uintptr_t)7u) | 4u;                      /* sign quadrant 110 → 100 */
-    if (e <= 4u) return 0;                                                  /* collides nil/false/true */
+    if (e == (uintptr_t)KORB_FLO_ZERO) return 0;                            /* the lone non-zero double colliding with the +0.0 magic → heap-box */
     return (VALUE)e;
 }
 static inline double korb_flo2d(VALUE fv) {
     uintptr_t v = (uintptr_t)fv;
     if (v == (uintptr_t)KORB_FLO_ZERO) return 0.0;
-    uintptr_t e = ((v & 7u) == 4u) ? ((v & ~(uintptr_t)7u) | 6u) : v;       /* restore CRuby form */
-    uintptr_t b63 = e >> 63;
+    uintptr_t b63 = (uintptr_t)v >> 63;
     union { double d; uintptr_t v; } t;
-    uintptr_t x = (2u - b63) | (e & ~(uintptr_t)3u);
+    uintptr_t x = (2u - b63) | ((uintptr_t)v & ~(uintptr_t)3u);
     t.v = (x >> 3) | (x << 61);                                            /* rotr3 */
     return t.d;
 }
 
-/* Falsy = nil (0) or false (2): one and + one compare. */
-#define KORB_TRUTHY(v)   (((uintptr_t)(v) | 2u) != 2u)
+/* Falsy = nil (0) or false (4): clearing bit2 maps both to 0. */
+#define KORB_TRUTHY(v)   (((uintptr_t)(v) & ~(uintptr_t)4u) != 0)
 
 /* Heap pointer test — also the GC contract macro (singletons / fixnums /
  * symbols have non-zero low bits or are 0, so they never look like heap
