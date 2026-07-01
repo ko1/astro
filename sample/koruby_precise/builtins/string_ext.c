@@ -532,11 +532,16 @@ static RESULT korb_m_sym_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return korb_num_between(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1));
 }
 static RESULT korb_m_sym_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
-    VALUE lo = VALUE_SLICE_GET(a, 0), hi = VALUE_SLICE_GET(a, 1);
+    VALUE lo, hi;
+    if (VALUE_SLICE_LEN(a) == 1) {
+        if (UNLIKELY(!KORB_RANGE_P(VALUE_SLICE_GET(a, 0))))            /* clamp(x) single non-Range → TypeError */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0)); lo = r->rbegin; hi = r->rend;
+    } else if (VALUE_SLICE_LEN(a) == 2) { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
+    else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2)", (unsigned)VALUE_SLICE_LEN(a));
     const char *s = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
-    if (SYMBOL_P(lo) && strcmp(s, korb_sym_name(c->vm, SYM2ID(lo))) < 0) return RESULT_OK(lo);
-    if (SYMBOL_P(hi) && strcmp(s, korb_sym_name(c->vm, SYM2ID(hi))) > 0) return RESULT_OK(hi);
+    if (lo != KORB_NIL && SYMBOL_P(lo) && strcmp(s, korb_sym_name(c->vm, SYM2ID(lo))) < 0) return RESULT_OK(lo);
+    if (hi != KORB_NIL && SYMBOL_P(hi) && strcmp(s, korb_sym_name(c->vm, SYM2ID(hi))) > 0) return RESULT_OK(hi);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_sym_upcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)a; return korb_sym_case(c, slots, self, 0); }

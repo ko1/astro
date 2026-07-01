@@ -6592,7 +6592,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp", korb_m_sym_casecmp, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "casecmp?", korb_m_sym_casecmp_p, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "between?", korb_m_sym_between, 2);
-    korb_def_cmethod(c, KORB_C_SYMBOL, "clamp", korb_m_sym_clamp, 2);
+    korb_def_cmethod(c, KORB_C_SYMBOL, "clamp", korb_m_sym_clamp, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "start_with?", korb_m_sym_start_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "end_with?", korb_m_sym_end_with, -1);
     korb_def_cmethod(c, KORB_C_SYMBOL, "name", korb_m_sym_to_s, 0);
