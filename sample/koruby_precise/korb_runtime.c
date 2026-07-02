@@ -6587,6 +6587,8 @@ static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv,
 #include "builtins/math.c"
 #include "builtins/file.c"
 #include "builtins/env.c"
+static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp);   /* defined below; io.c IO#puts uses it */
+#include "builtins/io.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
@@ -9001,6 +9003,7 @@ korb_ctx_new(void)
     korb_init_math(c, c->slots);
     korb_init_env(c, c->slots);
     korb_init_file(c, c->slots);
+    korb_init_io(c, c->slots);
     korb_init_time(c, c->slots);
     /* RUBY_* version constants (specs/guards reference these).  Values track the
      * CRuby the differential tests run against so version guards behave the same. */

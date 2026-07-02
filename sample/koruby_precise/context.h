@@ -627,6 +627,11 @@ struct korb_vm {
     uint32_t *sym_hash;
     uint32_t sym_cnt, sym_capa, sym_hash_cap;
 
+    /* IO fd table: an IO/File object holds its index in the @__io_fp ivar; the
+     * FILE* lives here (raw C pointers, not VALUEs → no GC scan/forward). */
+    FILE **io_fps;
+    uint32_t io_cnt, io_capa;
+
     /* global function table (no-receiver calls: puts, p, user `def foo`) */
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
