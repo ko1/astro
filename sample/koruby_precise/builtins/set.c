@@ -1126,8 +1126,14 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         const uint32_t cid = korb_intern(vm, p, clen);
         uint32_t idx = UINT32_MAX;
         if (KORB_CLASS_P(owner)) {
-            if (inherit) for (VALUE o = owner; KORB_CLASS_P(o) && idx == UINT32_MAX; o = VAL2CLASS(o)->superclass)
+            if (inherit) for (VALUE o = owner; KORB_CLASS_P(o) && idx == UINT32_MAX; o = VAL2CLASS(o)->superclass) {
                              idx = korb_const_index_owned(vm, cid, o);
+                             const VALUE inc = VAL2CLASS(o)->included;   /* also search included modules */
+                             if (idx == UINT32_MAX && inc != KORB_NIL)
+                                 for (int32_t j = (int32_t)VAL2ARY(inc)->len - 1; j >= 0 && idx == UINT32_MAX; j--)
+                                     if (KORB_CLASS_P(VAL2ARY(inc)->items->data[j]))
+                                         idx = korb_const_index_owned(vm, cid, VAL2ARY(inc)->items->data[j]);
+                         }
             else         idx = korb_const_index_owned(vm, cid, owner);
         }
         /* top-level fallback: for a leading `::`, or (with inherit) a first
