@@ -168,6 +168,15 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const size_t n = strftime(out, sizeof out, fmt, &tm);
     return korb_str_new(c, slots, out, (uint32_t)n);
 }
+/* asctime / ctime → the fixed C-locale "Www Mmm dd hh:mm:ss yyyy" form (day
+ * space-padded to width 2, no trailing newline).  ctime is the local-time view. */
+static RESULT korb_m_time_asctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    char out[64];
+    const size_t n = strftime(out, sizeof out, "%a %b %e %H:%M:%S %Y", &tm);
+    return korb_str_new(c, slots, out, (uint32_t)n);
+}
 static RESULT korb_m_time_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     char out[64];
@@ -273,6 +282,8 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "==",  korb_m_time_eq,    1);
     korb_class_def_cfn(c, t, "eql?", korb_m_time_eq,   1);
     korb_class_def_cfn(c, t, "strftime", korb_m_time_strftime, 1);
+    korb_class_def_cfn(c, t, "asctime",  korb_m_time_asctime, 0);
+    korb_class_def_cfn(c, t, "ctime",    korb_m_time_asctime, 0);
     korb_class_def_cfn(c, t, "to_s",     korb_m_time_to_s, 0);
     korb_class_def_cfn(c, t, "inspect",  korb_m_time_to_s, 0);
     /* Comparable derives < <= > >= between/clamp from Time#<=>. */
