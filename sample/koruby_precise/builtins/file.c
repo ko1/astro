@@ -230,6 +230,127 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return r;
 }
 
+/* slurp the whole file into a malloc'd buffer (caller frees); NULL on open fail. */
+static char *korb_file_slurp(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char *buf = NULL; size_t cap = 0, len = 0;
+    for (;;) {
+        if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); *out_len = 0; return NULL; } buf = nb; }
+        size_t got = fread(buf + len, 1, cap - len, f);
+        len += got;
+        if (got == 0) break;
+    }
+    fclose(f);
+    if (!buf) { buf = malloc(1); buf[0] = 0; }
+    *out_len = len;
+    return buf;
+}
+
+/* File.write(path, string, mode: "w") → byte count (mode: "a" appends). */
+static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    uint32_t n = VALUE_SLICE_LEN(a);
+    const char *mode = "wb";
+    if (n >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {   /* trailing kwarg: mode: */
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
+        const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "mode", 4)));
+        if (hx >= 0 && KORB_STRING_P(h->items->data[2 * hx + 1])) {
+            uint32_t ml; const char *m = korb_str_cstr_len(h->items->data[2 * hx + 1], &ml);
+            if (ml >= 1 && m[0] == 'a') mode = "ab";
+        }
+        n--;
+    }
+    const VALUE pv = VALUE_SLICE_GET(a, 0), sv = VALUE_SLICE_GET(a, 1);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    if (UNLIKELY(!KORB_STRING_P(sv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    uint32_t dlen; const char *data = korb_str_cstr_len(sv, &dlen);
+    FILE *f = fopen(path, mode);
+    if (!f) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    size_t w = fwrite(data, 1, dlen, f);
+    fclose(f);
+    return RESULT_OK(LONG2FIX((intptr_t)w));
+}
+
+/* split `buf` (len bytes) into line Strings (keeping the trailing '\n'), pushed
+ * onto the rooted array `arr`. */
+static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len) {
+    size_t start = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (buf[i] == '\n') {
+            slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(i - start + 1)));
+            CHECK(korb_ary_push_val(c, slots + 1, arr, slots[0]));
+            start = i + 1;
+        }
+    }
+    if (start < len) {   /* trailing line without newline */
+        slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(len - start)));
+        CHECK(korb_ary_push_val(c, slots + 1, arr, slots[0]));
+    }
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
+/* File.readlines(path) → array of line Strings. */
+static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    size_t len; char *buf = korb_file_slurp(path, &len);
+    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
+    RESULT r = korb_file_push_lines(c, slots + 1, VALUE_REF_AT(&slots[0]), buf, len);
+    free(buf);
+    return r;
+}
+
+/* File.foreach(path) { |line| ... } → yields each line; returns nil. */
+static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                  struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    if (block == NULL) return RESULT_OK(KORB_NIL);
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    size_t len; char *buf = korb_file_slurp(path, &len);
+    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    size_t start = 0;
+    RESULT rr = RESULT_OK(KORB_NIL);
+    for (size_t i = 0; i <= len; i++) {
+        if (i == len ? (start < len) : (buf[i] == '\n')) {
+            const size_t end = (i == len) ? len : i + 1;
+            slots[0] = korb_str_new(c, slots, buf + start, (uint32_t)(end - start)).value;
+            rr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            if (rr.state != KORB_NORMAL) break;
+            start = end;
+        }
+    }
+    free(buf);
+    if (rr.state != KORB_NORMAL) return rr;
+    return RESULT_OK(KORB_NIL);
+}
+
+/* File.delete(*paths) / File.unlink → number removed. */
+static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    intptr_t cnt = 0;
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        const VALUE pv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_STRING_P(pv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (unlink(path) != 0)   /* CRuby raises Errno::ENOENT; koruby has no Errno, so RuntimeError (still a StandardError) */
+            return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ apply2files - %s", path);
+        cnt++;
+    }
+    return RESULT_OK(LONG2FIX(cnt));
+}
+
 /* Dir.pwd → getcwd; Dir.exist?(path) → stat + S_ISDIR. */
 static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -260,6 +381,11 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "size",        korb_m_file_size,        1);
     korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size,        1);
     korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
+    korb_class_def_cfn(c, slots[1], "write",       korb_m_file_write,       -1);
+    korb_class_def_cfn(c, slots[1], "readlines",   korb_m_file_readlines,   -1);
+    korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);
+    korb_class_def_cfn(c, slots[1], "delete",      korb_m_file_delete,      -1);
+    korb_class_def_cfn(c, slots[1], "unlink",      korb_m_file_delete,      -1);
     /* Dir — pwd / exist?. */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3), KORB_NIL)).value;
     korb_const_define(c, korb_intern(vm, "Dir", 3), slots[2]);
