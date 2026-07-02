@@ -1985,3 +1985,20 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
 - 残 no-block Enumerator: partition/group_by/min_by/max_by/count.with_index(各 custom accumulation
   = partition→2配列, group_by→hash, min_by→track, count→int。稀)。他残: regex(astrorge skip)、
   object default #inspect の address(moving GC で不可)。
+
+### 2026-07-02 続き2 (method visibility enforcement)
+- **✅ private / protected の enforcement** (b6a68836): これまで tracking/reflection のみで
+  **enforce してなかった**(明示レシーバで private/protected を呼べてしまう)。node_send →
+  korb_send_cached の explicit-receiver 経路で enforce。caller self を node_send に baked self_off
+  で渡す(op-assign/[]/=== の synthetic send は INT32_MIN = check 無し)。
+  - private: 暗黙 self か `self.foo`(recv == caller self)のみ。protected: caller self が owner の
+    kind_of? のときのみ。send/__send__ は bypass、public_send は既に拒否。
+  - **fast path は byte 同一を維持**(user が「fastpath 遅くするな」と指摘): korb_send_cached が
+    private/protected を KORB_IC_INSTANCE cache から**除外**(visibility 変更は method_serial を
+    bump 済 → cache 自動 invalidate)ので node_send の inline fast path は public しか見ず check 不要。
+    20M explicit-send loop で 8.25B→8.27B instructions(誤差)。
+  - attr_reader/writer が body の cur_visibility を継承、private_class_method/public_class_method が
+    実際に singleton method の visibility を設定(no-op だった)。継承 private/module private/
+    protected across instances/self. 経由 private setter/private attr を網羅。
+  - **残**: block(recv.m{}) / splat(recv.m(*a)) / safe-nav(recv&.m) の explicit send は未 enforce
+    (korb_send_impl 経路で caller_self 無し。private + これらの組合せは稀)。
