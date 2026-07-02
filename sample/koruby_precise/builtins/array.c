@@ -370,21 +370,25 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_ARRAY_P(other)) return RESULT_OK(KORB_FALSE);
     if (VAL2ARY(VALUE_REF_GET(self))->len != VAL2ARY(other)->len) return RESULT_OK(KORB_FALSE);
+    if (VAL2ARY(VALUE_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive: CRuby assumes equal */
     slots[0] = VALUE_REF_GET(self); slots[1] = other;     /* root both across element == dispatch */
     const uint32_t n = VAL2ARY(slots[0])->len;
+    VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
+    VALUE result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = VAL2ARY(slots[0])->items->data[i], v2 = VAL2ARY(slots[1])->items->data[i];
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* dispatch == (recurses for nested) */
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (!KORB_TRUTHY(r.value)) return RESULT_OK(KORB_FALSE);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
+            if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eq(v, v2)) {
-            return RESULT_OK(KORB_FALSE);
+            result = KORB_FALSE; break;
         }
     }
-    return RESULT_OK(KORB_TRUE);
+    VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: dispatch may have moved self */
+    return RESULT_OK(result);
 }
 /* Array#eql? — same length, elements compared with #eql? (type-strict: 1 ≠ 1.0).
  * Object/array/hash elements dispatch #eql?; primitives use korb_value_eql. */
@@ -393,21 +397,26 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_ARRAY_P(other)) return RESULT_OK(KORB_FALSE);
     if (VAL2ARY(VALUE_REF_GET(self))->len != VAL2ARY(other)->len) return RESULT_OK(KORB_FALSE);
+    if (VAL2ARY(VALUE_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive */
     slots[0] = VALUE_REF_GET(self); slots[1] = other;
     const uint32_t mid_eql = korb_intern(c->vm, "eql?", 4);
     const uint32_t n = VAL2ARY(slots[0])->len;
+    VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
+    VALUE result = KORB_TRUE;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = VAL2ARY(slots[0])->items->data[i], v2 = VAL2ARY(slots[1])->items->data[i];
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {
             slots[2] = v; slots[3] = v2;
             RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, KORB_NIL);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (!KORB_TRUTHY(r.value)) return RESULT_OK(KORB_FALSE);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
+            if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eql(v, v2)) {
-            return RESULT_OK(KORB_FALSE);
+            result = KORB_FALSE; break;
         }
     }
+    VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;
+    if (result == KORB_FALSE) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
