@@ -6360,7 +6360,8 @@ korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
  * one-shot classification stays valid).  1 = plain user class (generic alloc +
  * initialize), 2 = special (Fiber / Struct factory / Struct subclass / a builtin
  * class or subclass / module) that needs korb_send_impl's bespoke handling. */
-static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
+static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
+    struct korb_vm *const vm = c->vm;
     KorbClass *const k = VAL2CLASS(cls);
     if (LIKELY(k->new_kind != 0)) return k->new_kind;
     const uint32_t cname = k->name_sym;
@@ -6378,6 +6379,12 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||
             base == KORB_C_PROC || base == KORB_C_FIBER) kind = 2;   /* subclass of Proc/Fiber → real payload */
+    }
+    if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
+        const VALUE sing = korb_dispatch_class(c, cls);
+        VALUE mdef = KORB_NIL;
+        if (KORB_CLASS_P(sing) && korb_class_find_method(sing, vm->mid_new, &mdef) != NULL)
+            kind = 2;
     }
     k->new_kind = kind;
     return kind;
@@ -6425,7 +6432,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         /* hot path: Klass.new of a plain user class → alloc + cached initialize,
          * skipping korb_send_impl's long mid_new special-case cascade and the
          * uncached korb_class_find_method(initialize) it does on every call. */
-        if (mid == vm->mid_new && KORB_CLASS_P(recv) && korb_class_new_kind(vm, recv) == 1) {
+        if (mid == vm->mid_new && KORB_CLASS_P(recv) && korb_class_new_kind(c, recv) == 1) {
             struct korb_method *init;
             VALUE idef;
             if (LIKELY(ic->kind == KORB_IC_NEW && ic->serial == vm->method_serial && ic->klass == recv)) {
