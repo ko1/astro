@@ -3407,7 +3407,7 @@ korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz)
  * in first (deeper), then the module itself, so the reverse-iterated list yields
  * [mod, mod's includes…] — i.e. C.ancestors gains mod before mod's ancestors. */
 static RESULT
-korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE mod)
+korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE mod)
 {
     if (UNLIKELY(!KORB_CLASS_P(mod))) return RESULT_OK(KORB_NIL);
     slots[0] = mod;                                          /* root mod across recursion/push */
@@ -3416,12 +3416,10 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE mod)
         slots[1] = VAL2CLASS(VALUE_REF_GET(mref))->included; /* root mod's include list */
         VALUE_REF list = VALUE_REF_AT(&slots[1]);
         for (uint32_t j = 0; j < VAL2ARY(VALUE_REF_GET(list))->len; j++)
-            CHECK(korb_include_collect(c, slots + 2, cref, VAL2ARY(VALUE_REF_GET(list))->items->data[j]));
+            CHECK(korb_include_collect(c, slots + 2, cref, dst, VAL2ARY(VALUE_REF_GET(list))->items->data[j]));
     }
-    if (!korb_class_has_ancestor(VALUE_REF_GET(cref), VALUE_REF_GET(mref))) {
-        slots[1] = VAL2CLASS(VALUE_REF_GET(cref))->included;
-        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_REF_GET(mref)));
-    }
+    if (!korb_class_has_ancestor(VALUE_REF_GET(cref), VALUE_REF_GET(mref)))
+        CHECK(korb_ary_push_val(c, slots + 1, dst, VALUE_REF_GET(mref)));
     return RESULT_OK(KORB_NIL);
 }
 /* `include mod...` in a class/module body: append each module to klass->included
@@ -3446,7 +3444,8 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))   /* mod already has us as an ancestor → cycle */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic include detected");
         slots[2] = VALUE_SLICE_GET(mods, i);                   /* mod (rooted across collect + hook) */
-        CHECK(korb_include_collect(c, slots + 3, kref, slots[2]));   /* mod + its transitive includes */
+        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;   /* destination list (rooted) */
+        CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));   /* mod + its transitive includes */
         if (UNLIKELY(korb_responds_to(c, slots[2], included_mid))) {   /* fire Module#included(base) hook (direct module only) */
             slots[3] = slots[2];                               /* recv = mod */
             slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
@@ -3475,9 +3474,11 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
-        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;   /* the array (rooted) */
-        slots[2] = VALUE_SLICE_GET(mods, i);                    /* mod (rooted across push + hook) */
-        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
+        if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic prepend detected");
+        slots[2] = VALUE_SLICE_GET(mods, i);                    /* mod (rooted across collect + hook) */
+        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;   /* destination list (rooted) */
+        CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));   /* mod + its transitive includes */
         if (UNLIKELY(korb_responds_to(c, slots[2], prepended_mid))) {   /* fire Module#prepended(base) hook */
             slots[3] = slots[2];                               /* recv = mod */
             slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
