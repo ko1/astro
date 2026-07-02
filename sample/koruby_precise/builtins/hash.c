@@ -21,16 +21,22 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
     }
     if (depth >= KORB_DEEP_HASH_MAX) return 0xC0FFEEULL;   /* recursion guard */
     if (KORB_ARRAY_P(v)) {
-        const KorbArray *a = VAL2ARY(v);
+        KorbArray *const a = VAL2ARY(v);
+        if (a->head.flags & KORB_FL_JOIN_VISITING) return 0xC0FFEEULL;   /* recursive → constant (no exponential blowup) */
+        a->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x345678ULL + a->len;
         for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash_d(a->items->data[i], depth + 1);
+        a->head.flags &= ~KORB_FL_JOIN_VISITING;         /* pure computation: no GC, `a` stays valid */
         return h;
     }
     if (KORB_HASH_P(v)) {                              /* order-independent (xor) */
-        const KorbHash *hh = VAL2HASH(v);
+        KorbHash *const hh = VAL2HASH(v);
+        if (hh->head.flags & KORB_FL_JOIN_VISITING) return 0xBEEFULL;   /* recursive hash */
+        hh->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x9e3779b9ULL + hh->len;
         for (uint32_t i = 0; i < hh->len; i++)
             h ^= korb_deep_hash_d(hh->items->data[2*i], depth + 1) * 31u + korb_deep_hash_d(hh->items->data[2*i+1], depth + 1);
+        hh->head.flags &= ~KORB_FL_JOIN_VISITING;
         return h;
     }
     if (KORB_SET_P(v)) {                              /* order-independent (xor of element hashes) */
