@@ -936,6 +936,10 @@ end
 def rm_r(*paths)
   paths.flatten.each { |p| File.delete(p) rescue nil }
 end
+def touch(file, mode = "w")
+  File.open(file, mode) { |f| yield f if block_given? }
+end
+def mkdir_p(path); Dir.mkdir(path) rescue nil; path; end
 
 # Shared spec inclusion — opening a Pandora's box by actually running
 # shared spec blocks adds a lot of failure modes (cross-file fixtures,
