@@ -301,6 +301,12 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (me != NULL && me->visibility != 0 && !include_priv) return RESULT_OK(KORB_FALSE);
         return RESULT_OK(KORB_TRUE);
     }
+    /* Kernel-private builtins (puts/print/require/... live in the global table,
+     * not a class method table) are private methods of every object. */
+    if (include_priv) {
+        const struct korb_method *const gm = korb_method_lookup(vm, mid);
+        if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN) return RESULT_OK(KORB_TRUE);
+    }
     /* respond_to_missing?(name, include_private) fallback (pairs with method_missing). */
     const uint32_t rtm = korb_intern(vm, "respond_to_missing?", 19);
     const VALUE dcls = korb_dispatch_class(c, sv);
@@ -642,6 +648,18 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
         if (!inherit && !is_sing) break;                           /* false: stop after the first non-singleton class */
         slots[1] = VAL2CLASS(slots[1])->superclass;
     }
+    /* Kernel-private builtins (puts/require/... in the global table) are private
+     * methods inherited via Kernel by every object/class. */
+    if (inherit && (vis_mask & (1u << 1))) {
+        for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
+            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
+            const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
+            bool dup = false;
+            const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
+            for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { dup = true; break; }
+            if (!dup) CHECK(korb_ary_push_val(c, slots + 3, result, sym));
+        }
+    }
     return RESULT_OK(VALUE_REF_GET(result));
 }
 /* Object#*: walk the object's dispatch class (singleton + class + …). */
@@ -876,7 +894,14 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
     const VALUE cls = VALUE_REF_GET(self);
     VALUE mdef = KORB_NIL;
     const struct korb_method *const me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
-    if (me == NULL) return RESULT_OK(KORB_FALSE);
+    if (me == NULL) {
+        /* Kernel-private builtins (global table) are private methods every class
+         * inherits via Kernel: private_method_defined? true, public/method false. */
+        const struct korb_method *const gm = korb_method_lookup(c->vm, mid);
+        if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN)
+            return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK(KORB_FALSE);
+    }
     const bool ok = (want < 0) ? (me->visibility != 1) : (me->visibility == want);
     return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
 }

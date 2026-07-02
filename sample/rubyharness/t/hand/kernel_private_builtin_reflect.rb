@@ -1,0 +1,18 @@
+# Kernel-private builtins (puts/print/require/... stored in the global builtin
+# table) reflect as private instance methods of every object. vs ruby.
+p Object.new.respond_to?(:puts, true)
+p Object.new.respond_to?(:puts)
+p Object.new.respond_to?(:require, true)
+p 5.respond_to?(:print, true)
+p "x".respond_to?(:sprintf, true)
+p Object.new.private_methods.include?(:puts)
+p Object.new.private_methods.include?(:require)
+p Kernel.private_instance_methods.include?(:puts)
+p Kernel.private_instance_methods.include?(:print)
+p Object.private_method_defined?(:puts)
+p Object.public_method_defined?(:puts)
+p Object.method_defined?(:puts)
+p 5.private_methods.include?(:puts)
+p Object.new.public_methods.include?(:puts)
+p Object.new.methods.include?(:puts)
+p Object.private_method_defined?(:definitely_nonexistent)
