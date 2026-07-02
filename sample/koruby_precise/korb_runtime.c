@@ -3394,8 +3394,9 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     }
     const uint32_t included_mid = korb_intern(c->vm, "included", 8);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
-        if (UNLIKELY(!KORB_CLASS_P(VALUE_SLICE_GET(mods, i))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(VALUE_SLICE_GET(mods, i)));
+        const VALUE mv = VALUE_SLICE_GET(mods, i);
+        if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
         slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;   /* the array (rooted) */
         slots[2] = VALUE_SLICE_GET(mods, i);                   /* mod (rooted across push + hook) */
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
@@ -3424,8 +3425,9 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     }
     const uint32_t prepended_mid = korb_intern(c->vm, "prepended", 9);
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
-        if (UNLIKELY(!KORB_CLASS_P(VALUE_SLICE_GET(mods, i))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(VALUE_SLICE_GET(mods, i)));
+        const VALUE mv = VALUE_SLICE_GET(mods, i);
+        if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
         slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;   /* the array (rooted) */
         slots[2] = VALUE_SLICE_GET(mods, i);                    /* mod (rooted across push + hook) */
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
