@@ -518,6 +518,117 @@ static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots)
 }
 static RESULT korb_m_dir_entries(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_dir_list(c, slots, a, true); }
 static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_dir_list(c, slots, a, false); }
+
+/* --- Dir instance objects (Dir.open / Dir.new / #read / #each / …) ---
+ * A Dir reads all its entries eagerly at open into an @__dir_entries array and
+ * keeps a cursor @__dir_pos; @__dir_path holds the path.  No live DIR* handle,
+ * so nothing to GC-scan and #close is a no-op. */
+static uint32_t korb_dir_ents_id(CTX *c) { return korb_intern(c->vm, "__dir_entries", 13); }
+static uint32_t korb_dir_pos_id(CTX *c)  { return korb_intern(c->vm, "__dir_pos", 9); }
+static uint32_t korb_dir_path_id(CTX *c) { return korb_intern(c->vm, "__dir_path", 10); }
+/* Build a Dir instance over `path` (rooted in the caller's slots on return). */
+static RESULT korb_dir_make(CTX *c, VALUE *slots, const char *path, uint32_t plen) {
+    DIR *d = opendir(path);
+    if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 16));            /* entries (rooted) */
+    { VALUE_REF arr = VALUE_REF_AT(&slots[0]); struct dirent *ent;
+      while ((ent = readdir(d)) != NULL) {
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
+        if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
+      } }
+    closedir(d);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 2, path, plen));   /* path (rooted) */
+    const VALUE dcls = korb_const_get(c->vm, korb_intern(c->vm, "Dir", 3));
+    slots[2] = UNWRAP(korb_obj_new(c, slots + 3, dcls));         /* the Dir (rooted) */
+    VALUE_REF obj = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_ents_id(c)), slots[0]));
+    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_path_id(c)), slots[1]));
+    CHECK(korb_ivar_set(c, slots + 3, obj, ID2SYM(korb_dir_pos_id(c)),  LONG2FIX(0)));
+    return RESULT_OK(VALUE_REF_GET(obj));
+}
+/* Dir.new(path) / Dir.open(path) [ { |dir| } ] */
+static RESULT korb_m_dir_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                              struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)self;
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    char pbuf[4096]; size_t pl = strlen(path); if (pl >= sizeof pbuf) pl = sizeof pbuf - 1;
+    memcpy(pbuf, path, pl); pbuf[pl] = '\0';                     /* path is a movable interior ptr */
+    slots[0] = UNWRAP(korb_dir_make(c, slots, pbuf, (uint32_t)pl));
+    VALUE_REF dir = VALUE_REF_AT(&slots[0]);
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(dir));
+    slots[1] = VALUE_REF_GET(dir);                               /* Dir.open(block) → block value, dir "closed" after */
+    RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+    return br;
+}
+static const KorbArray *korb_dir_ents(CTX *c, VALUE self) { const VALUE e = korb_ivar_get(c, self, ID2SYM(korb_dir_ents_id(c))); return KORB_ARRAY_P(e) ? VAL2ARY(e) : NULL; }
+/* Dir#read → next entry name (advancing the cursor), or nil at end. */
+static RESULT korb_m_dir_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const VALUE s = VALUE_REF_GET(self);
+    const KorbArray *ents = korb_dir_ents(c, s); if (!ents) return RESULT_OK(KORB_NIL);
+    const VALUE posv = korb_ivar_get(c, s, ID2SYM(korb_dir_pos_id(c)));
+    const intptr_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
+    if (pos < 0 || (uint32_t)pos >= ents->len) return RESULT_OK(KORB_NIL);
+    slots[0] = ents->items->data[pos];                          /* the entry (rooted) */
+    CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(pos + 1)));
+    return RESULT_OK(slots[0]);
+}
+/* Dir#each { |name| } → self (Enumerator over entries if no block). */
+static RESULT korb_m_dir_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                              struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)a; const VALUE s = VALUE_REF_GET(self);
+    const VALUE ev = korb_ivar_get(c, s, ID2SYM(korb_dir_ents_id(c)));
+    if (block == NULL) return korb_enum_new(c, slots, KORB_ARRAY_P(ev) ? ev : KORB_NIL, KORB_NIL);
+    slots[0] = KORB_ARRAY_P(ev) ? ev : KORB_NIL;                 /* root the entries array */
+    if (!KORB_ARRAY_P(slots[0])) return RESULT_OK(VALUE_REF_GET(self));
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        slots[1] = VAL2ARY(slots[0])->items->data[i];           /* re-read: yield may GC */
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_dir_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_path_id(c))));
+}
+static RESULT korb_m_dir_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; const VALUE p = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_dir_pos_id(c)));
+    return RESULT_OK(FIXNUM_P(p) ? p : LONG2FIX(0));
+}
+static RESULT korb_m_dir_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(0)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_dir_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE nv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), FIXNUM_P(nv) ? nv : LONG2FIX(0)));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_dir_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE nv = VALUE_SLICE_GET(a, 0);
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_dir_pos_id(c)), FIXNUM_P(nv) ? nv : LONG2FIX(0)));
+    return RESULT_OK(nv);
+}
+static RESULT korb_m_dir_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)self; (void)a; return RESULT_OK(KORB_NIL);   /* entries already read; no handle */
+}
+/* Dir#children / #each_child — entries excluding "." and "..". */
+static RESULT korb_m_dir_i_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbArray *ents = korb_dir_ents(c, VALUE_REF_GET(self));
+    const uint32_t n = ents ? ents->len : 0;                 /* read len BEFORE korb_ary_new GCs `ents` away */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    if (n == 0) return RESULT_OK(slots[0]);
+    VALUE_REF out = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < n; i++) {
+        const KorbArray *e = korb_dir_ents(c, VALUE_REF_GET(self));   /* re-read: push GCs */
+        const VALUE nm = e->items->data[i];
+        if (KORB_STRING_P(nm)) { const KorbString *s = VAL2STR(nm);
+            if ((s->len == 1 && s->buf->data[0] == '.') || (s->len == 2 && s->buf->data[0] == '.' && s->buf->data[1] == '.')) continue; }
+        slots[1] = nm; CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(out));
+}
 /* Push the glob(3) matches of one concrete pattern into `arr`. */
 static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat, int flags) {
     glob_t g; memset(&g, 0, sizeof g);
@@ -645,8 +756,10 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);
     korb_class_def_cfn(c, slots[1], "delete",      korb_m_file_delete,      -1);
     korb_class_def_cfn(c, slots[1], "unlink",      korb_m_file_delete,      -1);
-    /* Dir — pwd / exist?. */
-    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3), KORB_NIL)).value;
+    /* Dir — pwd / exist? + instance objects (Dir.open/new).  Superclass = Object
+     * so Dir instances inherit the universal methods (class, is_a?, …). */
+    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3),
+                               korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
     korb_const_define(c, korb_intern(vm, "Dir", 3), slots[2]);
     slots[3] = korb_obj_singleton(c, slots + 3, slots[2]).value;
     korb_class_def_cfn(c, slots[3], "pwd",     korb_m_dir_pwd,     0);
@@ -662,6 +775,20 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[3], "glob", korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
+    korb_class_def_cfn_blk(c, slots[3], "open", korb_m_dir_open,    -1);   /* Dir.open [ {|d|} ] */
+    korb_class_def_cfn_blk(c, slots[3], "new",  korb_m_dir_open,    -1);   /* Dir.new */
+    /* Dir instance methods (eager-entry cursor object). */
+    korb_class_def_cfn(c, slots[2], "read",       korb_m_dir_read,       0);
+    korb_class_def_cfn_blk(c, slots[2], "each",   korb_m_dir_each,       0);
+    korb_class_def_cfn(c, slots[2], "path",       korb_m_dir_path,       0);
+    korb_class_def_cfn(c, slots[2], "to_path",    korb_m_dir_path,       0);
+    korb_class_def_cfn(c, slots[2], "pos",        korb_m_dir_pos,        0);
+    korb_class_def_cfn(c, slots[2], "tell",       korb_m_dir_pos,        0);
+    korb_class_def_cfn(c, slots[2], "pos=",       korb_m_dir_pos_set,    1);
+    korb_class_def_cfn(c, slots[2], "seek",       korb_m_dir_seek,       1);
+    korb_class_def_cfn(c, slots[2], "rewind",     korb_m_dir_rewind,     0);
+    korb_class_def_cfn(c, slots[2], "close",      korb_m_dir_close,      0);
+    korb_class_def_cfn(c, slots[2], "children",   korb_m_dir_i_children, 0);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
      * koruby's const table is flat, so these resolve from File / File::Constants
      * / bare alike. */
