@@ -863,12 +863,12 @@ static RESULT korb_m_class_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* Module#const_set(name, value) — koruby's const table is flat (global), so this
  * defines/overwrites the named constant. Returns the value. */
 static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
     const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(id == UINT32_MAX))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     const VALUE val = VALUE_SLICE_GET(a, 1);
-    korb_const_define(c, id, val);              /* libc realloc only → no GC move of val */
+    const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
+    korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
     return RESULT_OK(val);
 }
 /* Module#remove_method(sym...) — drop the named method(s) from THIS class (a
@@ -980,6 +980,12 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             id = korb_intern(vm, s->buf->data, s->len);
         }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+        /* prefer the receiver's own namespace + ancestors (so M.const_get(:X)
+         * finds M::X over a colliding top-level X), then a flat fallback. */
+        for (VALUE o = VALUE_REF_GET(self); KORB_CLASS_P(o); o = VAL2CLASS(o)->superclass) {
+            const uint32_t idx = korb_const_index_owned(vm, id, o);
+            if (idx != UINT32_MAX) return RESULT_OK(vm->const_vals[idx]);
+        }
         for (uint32_t i = 0; i < vm->const_cnt; i++)
             if (vm->const_names[i] == id) return RESULT_OK(vm->const_vals[i]);
         return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, id));
@@ -1006,7 +1012,7 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 /* Module#const_defined?(sym|str) — flat table membership. */
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; (void)slots;
+    (void)slots;
     VALUE name = VALUE_SLICE_GET(a, 0);
     struct korb_vm *const vm = c->vm;
     uint32_t id;
@@ -1031,6 +1037,17 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         return RESULT_OK(KORB_TRUE);
     }
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    /* owner-aware: the receiver + (unless inherit=false) its ancestors, then a
+     * top-level fallback for inherited/Object constants. */
+    const bool inherit = !(VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) == KORB_FALSE);
+    const VALUE owner = VALUE_REF_GET(self);
+    if (KORB_CLASS_P(owner)) {
+        for (VALUE o = owner; KORB_CLASS_P(o); o = VAL2CLASS(o)->superclass) {
+            if (korb_const_index_owned(vm, id, o) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
+            if (!inherit) break;
+        }
+        if (!inherit) return RESULT_OK(KORB_FALSE);
+    }
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == id) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(KORB_FALSE);

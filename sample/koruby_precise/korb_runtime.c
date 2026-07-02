@@ -7387,7 +7387,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "caller_locations", korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
-    korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_writer", korb_m_class_attr_writer, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_accessor", korb_m_class_attr_accessor, -1);
@@ -7419,7 +7419,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("prepend", korb_m_class_prepend, -1);
     MOD_CFN("const_set", korb_m_class_const_set, 2);
     MOD_CFN("const_get", korb_m_class_const_get, -1);
-    MOD_CFN("const_defined?", korb_m_class_const_defined, 1);
+    MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
     MOD_CFN("remove_const", korb_m_class_remove_const, 1);
     MOD_CFN("remove_method", korb_m_class_remove_method, -1);
     MOD_CFN("undef_method", korb_m_class_undef_method, -1);
