@@ -2692,9 +2692,13 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
 {
     struct korb_vm *const vm = c->vm;
     /* Ruby: assigning an anonymous class/module to a constant names it after
-     * that constant (the first such assignment wins). */
-    if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0)
+     * that constant (the first such assignment wins) and nests it under the
+     * owning namespace so its qualified name is Owner::Name. */
+    if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0) {
         VAL2CLASS(val)->name_sym = name_sym;
+        if (KORB_CLASS_P(owner) && VAL2CLASS(val)->enclosing == KORB_NIL)
+            ARO_STORE(c, VAL2CLASS(val), (VALUE *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
+    }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
      * updates in place, but M::C and a top-level C get distinct entries so both
      * coexist (a bare read still finds the first match by name — hot path). */

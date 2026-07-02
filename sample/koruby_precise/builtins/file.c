@@ -7,6 +7,31 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <glob.h>
+#include <errno.h>
+
+/* map an errno to its Errno::* constant name (NULL → generic). */
+static const char *korb_errno_name(int e) {
+    switch (e) {
+      case ENOENT: return "ENOENT"; case EEXIST: return "EEXIST"; case EACCES: return "EACCES";
+      case ENOTDIR: return "ENOTDIR"; case EISDIR: return "EISDIR"; case ENOTEMPTY: return "ENOTEMPTY";
+      case EPERM: return "EPERM"; case EINVAL: return "EINVAL"; case EBADF: return "EBADF";
+      case ENAMETOOLONG: return "ENAMETOOLONG"; case ELOOP: return "ELOOP"; case EROFS: return "EROFS";
+      default: return NULL;
+    }
+}
+/* raise Errno::<errno> with CRuby's "<strerror> @ <func> - <path>" message; falls
+ * back to SystemCallError/RuntimeError if the Errno class is absent. */
+static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, const char *path) {
+    char msg[4096];
+    snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
+    const char *cn = korb_errno_name(e);
+    const VALUE cls = cn ? korb_const_get(c->vm, korb_intern(c->vm, cn, (uint32_t)strlen(cn))) : KORB_NIL;
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
 
 /* Normalize an absolute path in `src` (length n) into `dst`: collapse "//", drop
  * "." segments, resolve ".." by popping, keep a single leading "/".  Returns the
@@ -218,7 +243,7 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     FILE *f = fopen(path, "rb");
-    if (!f) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    if (!f) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     char *buf = NULL; size_t cap = 0, len = 0;
     for (;;) {
         if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path); } buf = nb; }
@@ -271,7 +296,7 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     uint32_t dlen; const char *data = korb_str_cstr_len(sv, &dlen);
     FILE *f = fopen(path, mode);
-    if (!f) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    if (!f) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     size_t w = fwrite(data, 1, dlen, f);
     fclose(f);
     return RESULT_OK(LONG2FIX((intptr_t)w));
@@ -303,7 +328,7 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     size_t len; char *buf = korb_file_slurp(path, &len);
-    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
     RESULT r = korb_file_push_lines(c, slots + 1, VALUE_REF_AT(&slots[0]), buf, len);
     free(buf);
@@ -320,7 +345,7 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (block == NULL) return RESULT_OK(KORB_NIL);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     size_t len; char *buf = korb_file_slurp(path, &len);
-    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     size_t start = 0;
     RESULT rr = RESULT_OK(KORB_NIL);
     for (size_t i = 0; i <= len; i++) {
@@ -347,7 +372,7 @@ static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
         uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
         if (unlink(path) != 0)   /* CRuby raises Errno::ENOENT; koruby has no Errno, so RuntimeError (still a StandardError) */
-            return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ apply2files - %s", path);
+            return korb_raise_errno(c, slots, errno, "apply2files", path);
         cnt++;
     }
     return RESULT_OK(LONG2FIX(cnt));
@@ -375,21 +400,21 @@ static RESULT korb_m_dir_mkdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     long mode = 0777;
     if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) mode = (long)FIX2LONG(VALUE_SLICE_GET(a, 1));
-    if (mkdir(path, (mode_t)mode) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "File exists @ dir_s_mkdir - %s", path);
+    if (mkdir(path, (mode_t)mode) != 0) return korb_raise_errno(c, slots, errno, "dir_s_mkdir", path);
     return RESULT_OK(LONG2FIX(0));
 }
 /* Dir.rmdir(path) → 0 (raises on failure). */
 static RESULT korb_m_dir_rmdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
-    if (rmdir(path) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_s_rmdir - %s", path);
+    if (rmdir(path) != 0) return korb_raise_errno(c, slots, errno, "dir_s_rmdir", path);
     return RESULT_OK(LONG2FIX(0));
 }
 /* Dir.entries(path) [with_dots] / Dir.children(path) [without]. */
 static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots) {
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     DIR *d = opendir(path);
-    if (!d) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_initialize - %s", path);
+    if (!d) return korb_raise_errno(c, slots, errno, "opendir", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     struct dirent *ent;
@@ -425,7 +450,7 @@ static RESULT korb_m_dir_chdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     char old[8192];
     if (block != NULL && !getcwd(old, sizeof old)) old[0] = '\0';
-    if (chdir(path) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_s_chdir - %s", path);
+    if (chdir(path) != 0) return korb_raise_errno(c, slots, errno, "chdir", path);
     if (block == NULL) return RESULT_OK(LONG2FIX(0));
     slots[0] = VALUE_SLICE_GET(a, 0);   /* block arg = the path String itself (no re-alloc — str_new from the arg's interior would use a moved pointer) */
     RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);

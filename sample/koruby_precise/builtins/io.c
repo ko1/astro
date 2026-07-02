@@ -1,3 +1,4 @@
+#include <errno.h>
 /* koruby_precise — io.c: a minimal IO/File-object layer over C stdio.
  * An IO/File instance stores its slot index (into vm->io_fps) in the @__io_fp
  * ivar; the FILE* is a raw C pointer kept off-heap, so no GC scanning is needed.
@@ -200,7 +201,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (ml > 0 && ml < sizeof(mode)) { memcpy(mode, m, ml); mode[ml] = '\0'; }
     }
     FILE *fp = fopen(path, mode);
-    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    if (!fp) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp));   /* self = the File class */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));

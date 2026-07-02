@@ -47,4 +47,8 @@ module Errno
   ERANGE = Class.new(SystemCallError); ENOTSUP = Class.new(SystemCallError)
   ECHILD = Class.new(SystemCallError); ESPIPE = Class.new(SystemCallError)
   ECONNRESET = Class.new(SystemCallError); ETIMEDOUT = Class.new(SystemCallError)
+  ENOTEMPTY = Class.new(SystemCallError); ENAMETOOLONG = Class.new(SystemCallError)
+  ELOOP = Class.new(SystemCallError); EROFS = Class.new(SystemCallError)
+  EXDEV = Class.new(SystemCallError); EMFILE = Class.new(SystemCallError)
+  ENOSPC = Class.new(SystemCallError); EDOM = Class.new(SystemCallError)
 end
