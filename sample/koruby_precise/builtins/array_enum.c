@@ -1280,7 +1280,13 @@ static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, false); }
 
 static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#find");
+    (void)a;
+    if (UNLIKELY(block == NULL)) {   /* no block → op-4 (find: early-stop) Enumerator; .each/.with_index drives it */
+        slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "find"));
+        RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
+        if (er.state == KORB_NORMAL) VAL2ENUM(er.value)->op = 4;
+        return er;
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;

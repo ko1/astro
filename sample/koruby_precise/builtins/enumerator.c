@@ -349,9 +349,10 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                     CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
                 }
             }
+            else if (op == 4) { if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]); }   /* find/detect: first match, early-stop */
             else if (KORB_TRUTHY(r.value) == (op == 1)) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
         }
-        return RESULT_OK(VALUE_REF_GET(dst));
+        return (op == 4) ? RESULT_OK(KORB_NIL) : RESULT_OK(VALUE_REF_GET(dst));   /* find: nil if no match */
     }
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
@@ -545,6 +546,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                     CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
                 }
             }
+            else if (opc == 4) { if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[2]); }   /* find/detect: return the first match, early-stop */
             else if (KORB_TRUTHY(r.value) == (opc == 1)) CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));   /* select/reject: keep value */
         } else {                                       /* build [value, idx] pair */
             slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
@@ -553,6 +555,7 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
             CHECK(korb_ary_push_val(c, slots + 4, dst, slots[3]));
         }
     }
+    if (block != NULL && opc == 4) return RESULT_OK(KORB_NIL);   /* find with no match */
     if (block == NULL) return korb_enum_new(c, slots + 2, VALUE_REF_GET(dst), KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(dst));
 }
