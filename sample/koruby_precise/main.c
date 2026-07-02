@@ -26,7 +26,7 @@ struct koruby_option OPTION;
 #define KORUBY_PRELUDE_DIR  KORUBY_SRC_DIR "/prelude"
 static const char *const KORUBY_PRELUDE_FILES[] = {
     "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb", "numeric.rb",
-    "stringio.rb",
+    "stringio.rb", "marshal.rb",
 };
 
 static void
