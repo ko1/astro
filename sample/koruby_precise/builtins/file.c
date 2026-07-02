@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <fnmatch.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <glob.h>
 
 /* Normalize an absolute path in `src` (length n) into `dst`: collapse "//", drop
  * "." segments, resolve ".." by popping, keep a single leading "/".  Returns the
@@ -361,6 +363,75 @@ static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_dir_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; return korb_m_file_stat_pred(c, slots, a, 2);
 }
+/* the sole String path arg as a NUL-terminated cstr (TypeError otherwise). */
+static const char *korb_path_arg(CTX *c, VALUE *slots, VALUE_SLICE a, RESULT *err) {
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) { *err = korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv)); return NULL; }
+    err->state = KORB_NORMAL; uint32_t plen; return korb_str_cstr_len(pv, &plen);
+}
+/* Dir.mkdir(path[, mode]) → 0 (raises on failure). */
+static RESULT korb_m_dir_mkdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    long mode = 0777;
+    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) mode = (long)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (mkdir(path, (mode_t)mode) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "File exists @ dir_s_mkdir - %s", path);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* Dir.rmdir(path) → 0 (raises on failure). */
+static RESULT korb_m_dir_rmdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    if (rmdir(path) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_s_rmdir - %s", path);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* Dir.entries(path) [with_dots] / Dir.children(path) [without]. */
+static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots) {
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    DIR *d = opendir(path);
+    if (!d) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_initialize - %s", path);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (!with_dots && (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)) continue;
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name)));
+        if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
+    }
+    closedir(d);
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+static RESULT korb_m_dir_entries(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_dir_list(c, slots, a, true); }
+static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_dir_list(c, slots, a, false); }
+/* Dir.glob(pattern) / Dir[pattern] → matched paths (POSIX glob). */
+static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    RESULT err; const char *pat = korb_path_arg(c, slots, a, &err); if (!pat) return err;
+    glob_t g; memset(&g, 0, sizeof g);
+    glob(pat, GLOB_BRACE | GLOB_TILDE, NULL, &g);
+    slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(g.gl_pathc ? g.gl_pathc : 1)));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, g.gl_pathv[i], (uint32_t)strlen(g.gl_pathv[i])));
+        if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
+    }
+    globfree(&g);
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+/* Dir.chdir(path) [ { ... } ] — with a block, restores the old cwd after. */
+static RESULT korb_m_dir_chdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                               struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)self;
+    RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
+    char old[8192];
+    if (block != NULL && !getcwd(old, sizeof old)) old[0] = '\0';
+    if (chdir(path) != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ dir_s_chdir - %s", path);
+    if (block == NULL) return RESULT_OK(LONG2FIX(0));
+    slots[0] = VALUE_SLICE_GET(a, 0);   /* block arg = the path String itself (no re-alloc — str_new from the arg's interior would use a moved pointer) */
+    RESULT br = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+    if (old[0]) { int rc = chdir(old); (void)rc; }
+    return br;
+}
 
 void korb_init_file(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
@@ -394,6 +465,15 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[3], "getwd",   korb_m_dir_pwd,     0);
     korb_class_def_cfn(c, slots[3], "exist?",  korb_m_dir_exist_p, 1);
     korb_class_def_cfn(c, slots[3], "exists?", korb_m_dir_exist_p, 1);
+    korb_class_def_cfn(c, slots[3], "mkdir",    korb_m_dir_mkdir,    -1);
+    korb_class_def_cfn(c, slots[3], "rmdir",    korb_m_dir_rmdir,    1);
+    korb_class_def_cfn(c, slots[3], "delete",   korb_m_dir_rmdir,    1);
+    korb_class_def_cfn(c, slots[3], "unlink",   korb_m_dir_rmdir,    1);
+    korb_class_def_cfn(c, slots[3], "entries",  korb_m_dir_entries,  1);
+    korb_class_def_cfn(c, slots[3], "children", korb_m_dir_children, 1);
+    korb_class_def_cfn(c, slots[3], "glob",     korb_m_dir_glob,     -1);
+    korb_class_def_cfn(c, slots[3], "[]",       korb_m_dir_glob,     -1);
+    korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
      * koruby's const table is flat, so these resolve from File / File::Constants
      * / bare alike. */
