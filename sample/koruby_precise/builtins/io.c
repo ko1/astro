@@ -81,11 +81,21 @@ static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), fp));
     return RESULT_OK(KORB_NIL);
 }
-/* IO#read → the rest of the stream as a String. */
+/* IO#read([length]) → `length` bytes (nil at EOF), or the whole rest. */
 static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
     if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* bounded read */
+        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        if (n < 0) n = 0;
+        char *b = malloc((size_t)n + 1);
+        if (!b) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+        size_t got = fread(b, 1, (size_t)n, fp);
+        if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
+        RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
+        free(b);
+        return r;
+    }
     char *buf = NULL; size_t cap = 0, len = 0;
     for (;;) {
         if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } buf = nb; }
@@ -186,6 +196,71 @@ static RESULT korb_m_io_sync_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)c; (void)slots; (void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_TRUE);
 }
+/* IO#seek(offset, whence = SEEK_SET) → 0. */
+static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    const intptr_t off = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
+    fseek(fp, (long)off, whence);
+    return RESULT_OK(LONG2FIX(0));
+}
+static RESULT korb_m_io_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    return RESULT_OK(LONG2FIX(fp ? (intptr_t)ftell(fp) : 0));
+}
+static RESULT korb_m_io_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (fp && FIXNUM_P(VALUE_SLICE_GET(a, 0))) fseek(fp, (long)FIX2LONG(VALUE_SLICE_GET(a, 0)), SEEK_SET);
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+static RESULT korb_m_io_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (fp) rewind(fp);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* IO#each_char { |ch| } — yield each UTF-8 character (of the rest); no block → Enumerator. */
+static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                                  struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    RESULT collect = korb_m_io_read(c, slots, self, a);   /* slurp the rest */
+    if (UNLIKELY(collect.state != KORB_NORMAL)) return collect;
+    slots[0] = collect.value;                             /* the String (rooted) */
+    VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+    if (block == NULL) {                                  /* Enumerator over the characters */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 16));
+        VALUE_REF arr = VALUE_REF_AT(&slots[1]);
+        const KorbString *s = VAL2STR(VALUE_REF_GET(sref));
+        for (uint32_t i = 0; i < s->len; ) {
+            const unsigned char b = (unsigned char)s->buf->data[i];
+            uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+            if (i + cl > s->len) cl = 1;
+            char cbuf[8]; memcpy(cbuf, s->buf->data + i, cl);   /* copy before str_new's alloc moves `s` */
+            slots[2] = UNWRAP(korb_str_new(c, slots + 2, cbuf, cl));
+            CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
+            s = VAL2STR(VALUE_REF_GET(sref));            /* re-read: push GC'd */
+            i += cl;
+        }
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), KORB_NIL);
+    }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(sref));
+    for (uint32_t i = 0; i < s->len; ) {
+        const unsigned char b = (unsigned char)s->buf->data[i];
+        uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+        if (i + cl > s->len) cl = 1;
+        char cbuf[8]; memcpy(cbuf, s->buf->data + i, cl);   /* copy before str_new's alloc moves `s` */
+        slots[1] = korb_str_new(c, slots + 1, cbuf, cl).value;
+        RESULT yr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+        if (yr.state != KORB_NORMAL) return yr;
+        s = VAL2STR(VALUE_REF_GET(sref));                /* re-read after yield GC */
+        i += cl;
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 
 /* File.open(path, mode = "r") [ { |io| ... } ] — with a block, yields the IO and
  * closes it after (returning the block value); without, returns the IO. */
@@ -233,6 +308,12 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("close", close, 0);      IOM("closed?", closed_p, 0);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);
+    IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);
+    IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
+    IOB("each_char", each_char, 0);
+    korb_const_define(c, korb_intern(vm, "SEEK_SET", 8), LONG2FIX(SEEK_SET));
+    korb_const_define(c, korb_intern(vm, "SEEK_CUR", 8), LONG2FIX(SEEK_CUR));
+    korb_const_define(c, korb_intern(vm, "SEEK_END", 8), LONG2FIX(SEEK_END));
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods. */
