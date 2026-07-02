@@ -5120,6 +5120,25 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
       }
       case KORB_METHOD_DM: {   /* define_method: run the (env-pre-closed) Proc body with self = receiver */
         const KorbProc *const p = VAL2PROC(m->dm_proc);
+        /* a define_method'd method enforces arity like a method regardless of
+         * whether the source was a block, lambda or plain proc (CRuby converts
+         * proc arity to method arity).  Positional-only; skip when keywords are
+         * declared (a trailing kw Hash would skew the count). */
+        if (p->iseq != NULL && p->iseq != KORB_BLK_CPROC &&
+            p->iseq->head.kind == &kind_node_entry && p->iseq->u.node_entry.kw_info == NULL) {
+            const NODE *const e = p->iseq;
+            const uint32_t pc = e->u.node_entry.params_cnt;
+            const bool has_rest = e->u.node_entry.rest_slot >= 0;
+            const bool variable = (e->u.node_entry.opt_defaults != NULL) || has_rest;
+            const uint32_t req = variable ? e->u.node_entry.req_cnt : pc;
+            if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
+                char exp[32];
+                if (has_rest)       snprintf(exp, sizeof exp, "%u+", req);
+                else if (req == pc) snprintf(exp, sizeof exp, "%u", req);
+                else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
+                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %s)", argc, exp);
+            }
+        }
         RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                     &slots[-(intptr_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
         if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
