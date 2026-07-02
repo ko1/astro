@@ -1021,6 +1021,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
     NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot);
+    /* Proc#source_location: remember where this block was written. */
+    if (blk_body) korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, blk_body));
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -1653,6 +1655,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
     uint32_t mid = kp_intern_cid(tc, dn->name);
+    /* Method#source_location: remember the (file, line) of this def's body. */
+    korb_reg_srcloc(tc->c->vm, body, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)dn));
     /* full param list (names + kinds) for Method#parameters — cold-read only, like the block node_entry's. */
     void *pinfo = build_param_info(tc, dn->parameters ? (const pm_node_t *)dn->parameters : NULL);
     /* self at the def site (enclosing frame) = the default definee */

@@ -6711,6 +6711,7 @@ static RESULT korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args);
  * array*.c) but used by Integer#upto(∞) and zip's element pull. */
 static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);
+static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd (defined near require) */
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
@@ -7371,6 +7372,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_original_name, 0);
@@ -7383,6 +7385,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "source_location", korb_m_meth_source_location, 0);
     /* UnboundMethod: same reflection surface as Method minus call/receiver;
      * the shared korb_m_meth_* fns already branch on the ->unbound flag. */
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "name", korb_m_meth_name, 0);
@@ -7395,6 +7398,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "source_location", korb_m_meth_source_location, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
@@ -8375,6 +8379,44 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;
     return EVAL(c, ast, cur);
+}
+/* source_location: register a def/block body NODE → (file, line) at parse time. */
+void
+korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line)
+{
+    if (!node) return;
+    if (vm->srcloc_cnt == vm->srcloc_capa) {
+        vm->srcloc_capa = vm->srcloc_capa ? vm->srcloc_capa * 2 : 256;
+        vm->srclocs = realloc(vm->srclocs, sizeof(*vm->srclocs) * vm->srcloc_capa);
+        if (!vm->srclocs) abort();
+    }
+    vm->srclocs[vm->srcloc_cnt].node = node;
+    vm->srclocs[vm->srcloc_cnt].file_sym = file_sym;
+    vm->srclocs[vm->srcloc_cnt].line = line;
+    vm->srcloc_cnt++;
+}
+/* look up a body NODE's source location; false if never registered. */
+static bool
+korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
+{
+    if (!node) return false;
+    for (uint32_t i = vm->srcloc_cnt; i-- > 0; )   /* newest-first: a redefinition shadows */
+        if (vm->srclocs[i].node == node) { *file_sym = vm->srclocs[i].file_sym; *line = vm->srclocs[i].line; return true; }
+    return false;
+}
+/* [file, line] for a body NODE, or nil.  Result rooted by caller's slots. */
+static RESULT
+korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body)
+{
+    uint32_t fsym, line;
+    if (!korb_get_srcloc(c->vm, body, &fsym, &line)) return RESULT_OK(KORB_NIL);
+    const char *fname = korb_sym_name(c->vm, fsym);
+    slots[0] = UNWRAP(korb_str_new(c, slots, fname, (uint32_t)strlen(fname)));
+    slots[1] = LONG2FIX((intptr_t)line);
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(slots[2]);
 }
 /* remember an absolute path as loaded (libc side; no GC). */
 static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {

@@ -792,6 +792,10 @@ struct korb_vm {
      * (libc-side strings, no GC). */
     const char *cur_load_file;
     char **loaded_files; uint32_t loaded_cnt, loaded_capa;
+    /* source_location: def/block body NODE → (file symbol, line), populated at
+     * parse time.  Node ptrs are immortal (AST); no GC. */
+    struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;
+    uint32_t srcloc_cnt, srcloc_capa;
 };
 
 /* -----------------------------------------------------------------------------

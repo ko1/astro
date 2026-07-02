@@ -399,6 +399,7 @@ bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base
 
 /* symbols */
 uint32_t korb_intern(struct korb_vm *vm, const char *name, size_t len);
+void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line);
 const char *korb_sym_name(const struct korb_vm *vm, uint32_t id);
 
 /* printing (no GC allocation — writes directly to fp) */

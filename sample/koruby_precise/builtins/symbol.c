@@ -347,6 +347,12 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const bool negate = has_rest || (lam && optp > 0) || (lam && (kopt || kwrest) && !kreq);
     return RESULT_OK(LONG2FIX(negate ? -((intptr_t)req + 1) : (intptr_t)req));
 }
+/* Proc#source_location → [file, line] where the block was written, or nil. */
+static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
+    return korb_srcloc_result(c, slots, p->iseq);
+}
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
  * never on the call/yield hot path).  A non-lambda proc reports a required
  * positional as :opt (CRuby semantics); keyreq/rest/block keep their kind. */
@@ -442,6 +448,13 @@ static RESULT korb_m_meth_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)slots;(void)a;
     const struct korb_method *km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
     return RESULT_OK(LONG2FIX(km ? korb_method_arity(km) : -1));
+}
+/* Method/UnboundMethod#source_location → [file, line] of the def, or nil for a
+ * C-defined (builtin/attr) method. */
+static RESULT korb_m_meth_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const struct korb_method *const km = korb_meth_resolve(c, VAL2METH(VALUE_REF_GET(self)));
+    return korb_srcloc_result(c, slots, km ? km->body : NULL);
 }
 /* #original_name: the name at original definition, surviving aliases. */
 static RESULT korb_m_meth_original_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
