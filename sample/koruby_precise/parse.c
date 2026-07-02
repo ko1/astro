@@ -767,7 +767,10 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     }
     for (uint32_t i = 0; i < ps->optionals.size; i++)
         PI_ADD(1, ((const pm_optional_parameter_node_t *)ps->optionals.nodes[i])->name);
-    if (ps->rest) PI_ADD(2, PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) ? ((const pm_rest_parameter_node_t *)ps->rest)->name : 0);
+    if (ps->rest) {   /* anonymous `*` reports the name :* (Ruby 3.x), a named rest its name */
+        const pm_constant_id_t rn = PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) ? ((const pm_rest_parameter_node_t *)ps->rest)->name : 0;
+        pi->e[k].kind = 2; pi->e[k].name = rn ? kp_intern_cid(tc, rn) : korb_intern(tc->c->vm, "*", 1); k++;
+    }
     for (uint32_t i = 0; i < ps->posts.size; i++) {
         const pm_node_t *p = ps->posts.nodes[i];
         PI_ADD(0, PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE) ? ((const pm_required_parameter_node_t *)p)->name : 0);
@@ -777,9 +780,14 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
         if (PM_NODE_TYPE_P(p, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) PI_ADD(3, ((const pm_required_keyword_parameter_node_t *)p)->name);
         else PI_ADD(4, ((const pm_optional_keyword_parameter_node_t *)p)->name);
     }
-    if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE))
-        PI_ADD(5, ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name);
-    if (ps->block) PI_ADD(6, ((const pm_block_parameter_node_t *)ps->block)->name);
+    if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {   /* anonymous `**` → :** */
+        const pm_constant_id_t kn = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
+        pi->e[k].kind = 5; pi->e[k].name = kn ? kp_intern_cid(tc, kn) : korb_intern(tc->c->vm, "**", 2); k++;
+    }
+    if (ps->block) {   /* anonymous `&` → :& */
+        const pm_constant_id_t bn = ((const pm_block_parameter_node_t *)ps->block)->name;
+        pi->e[k].kind = 6; pi->e[k].name = bn ? kp_intern_cid(tc, bn) : korb_intern(tc->c->vm, "&", 1); k++;
+    }
     #undef PI_ADD
     pi->n = k;
     return pi;
