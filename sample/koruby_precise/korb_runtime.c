@@ -2780,8 +2780,15 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
         return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
     const struct korb_method *src = korb_class_find_method(klass, oldm, NULL);
     if (src == NULL) src = korb_method_lookup(c->vm, oldm);
+    if (src == NULL && KORB_CLASS_P(klass) && VAL2CLASS(klass)->is_module) {
+        /* Kernel/Object instance methods live on Object in koruby; a module
+         * (e.g. `module Kernel; alias_method ...`) aliasing one resolves it
+         * there (mirrors define_method's Method-form fallback). */
+        const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+        if (KORB_CLASS_P(objc)) src = korb_class_find_method(objc, oldm, NULL);
+    }
     if (UNLIKELY(src == NULL))
-        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for class '%s'",
+        return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, oldm), korb_type_name(klass));
     struct korb_method *dst = korb_class_method_slot(VAL2CLASS(klass), newm);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;   /* src may dangle if the slot array grows; snapshot first */
