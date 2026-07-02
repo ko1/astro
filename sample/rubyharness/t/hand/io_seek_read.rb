@@ -1,5 +1,6 @@
 # IO#read(n) / seek / pos / pos= / rewind / tell / each_char. vs ruby.
 D = "/tmp/kioc"
+Dir.mkdir(D) unless Dir.exist?(D)
 File.open("#{D}/s.txt", "w") { |f| f.write("0123456789abcdef") }
 File.open("#{D}/s.txt", "r") do |f|
   p f.read(4)
@@ -20,3 +21,4 @@ File.open("#{D}/s.txt") { |f| f.each_char { |ch| seen << ch } }
 p seen.length
 p File.open("#{D}/s.txt") { |f| f.read(3); f.read }
 File.delete("#{D}/s.txt")
+Dir.rmdir(D)

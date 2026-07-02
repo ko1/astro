@@ -217,6 +217,9 @@ enum korb_obj_type {
 /* bit 10 (Array, transient): array is on the current Array#join recursion path.
  * GC-safe cycle detection (survives moves) so join can dispatch element #to_s. */
 #define KORB_FL_JOIN_VISITING 0x400u
+/* bit 11 (transient): object is on the current Comparable#== path — breaks the
+ * Comparable#== → #<=> → Object#<=> → #== recursion for a Comparable with no #<=>. */
+#define KORB_FL_CMP_VISITING 0x800u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {

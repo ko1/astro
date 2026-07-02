@@ -804,7 +804,18 @@ static RESULT korb_m_cmpbl_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_cmpbl_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 1); }
 static RESULT korb_m_cmpbl_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 2); }
 static RESULT korb_m_cmpbl_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 3); }
-static RESULT korb_m_cmpbl_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cmpbl_rel(c, slots, self, a, 4); }
+static RESULT korb_m_cmpbl_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE s = VALUE_REF_GET(self);   /* guard the == → <=> → Object#<=> → == cycle for a Comparable with no own <=> */
+    if (AROH_IS_GC_OBJECT(s)) {
+        AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)s;
+        if (h->flags & KORB_FL_CMP_VISITING) return RESULT_OK(KORB_FALSE);   /* re-entrant → not comparable → false */
+        h->flags |= KORB_FL_CMP_VISITING;
+        RESULT r = korb_m_cmpbl_rel(c, slots, self, a, 4);
+        ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags &= ~KORB_FL_CMP_VISITING;   /* re-read: cmp may have moved self */
+        return r;
+    }
+    return korb_m_cmpbl_rel(c, slots, self, a, 4);
+}
 static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int c1; RESULT r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &c1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
