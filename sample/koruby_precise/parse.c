@@ -1549,9 +1549,9 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 return kp_unsupported(tc, p, "non-plain required parameter");
             }
             pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-            if (lvar_index(tc, p, cid) != i) {
-                kp_failf(tc, p, "koruby_precise: parameter '%s' is not locals[%u]",
-                         kp_cid_cstr(tc, cid), i);
+            if (lvar_index(tc, p, cid) != i) {   /* a repeated param name (e.g. `def m(_, _)`) shares a slot → unsupported (don't abort the file) */
+                pop_frame(tc);
+                return kp_unsupported(tc, p, "repeated/underscore parameter name");
             }
         }
         if (opt_cnt) {
@@ -1561,8 +1561,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 const pm_optional_parameter_node_t *op =
                     (const pm_optional_parameter_node_t *)dn->parameters->optionals.nodes[j];
                 if (lvar_index(tc, (const pm_node_t *)op, op->name) != req_cnt + j) {
-                    kp_failf(tc, (const pm_node_t *)op, "koruby_precise: optional '%s' is not locals[%u]",
-                             kp_cid_cstr(tc, op->name), req_cnt + j);
+                    pop_frame(tc); free(opt_defaults);
+                    return kp_unsupported(tc, (const pm_node_t *)op, "repeated/underscore parameter name");
                 }
                 /* default expr runs in method scope at the body cursor (chain 0) */
                 opt_defaults[j] = transduce(tc, op->value);
@@ -1596,8 +1596,10 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         const pm_node_t *p = ps->posts.nodes[i];
         if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-        if (lvar_index(tc, p, cid) != post_base + i)
-            kp_failf(tc, p, "koruby_precise: post '%s' is not locals[%u]", kp_cid_cstr(tc, cid), post_base + i);
+        if (lvar_index(tc, p, cid) != post_base + i) {
+            pop_frame(tc); free(opt_defaults);
+            return kp_unsupported(tc, p, "repeated/underscore parameter name");
+        }
     }
 
     /* keyword params (required `k:` / optional `k: default`) + keyword-rest `**kw`,
