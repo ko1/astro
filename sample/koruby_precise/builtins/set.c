@@ -555,6 +555,15 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
 /* Class#allocate — a bare instance with no #initialize call. */
 static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    /* Enumerator.allocate must produce a KorbEnumerator (not a generic object),
+     * else enumerator methods VAL2ENUM-cast a too-small object → heap corruption.
+     * A zeroed enumerator is mode 0 with a nil `values`; Enumerator#initialize
+     * (given a block) turns it into a generator. */
+    if (VALUE_REF_GET(self) == korb_builtin_class_obj(c->vm, KORB_C_ENUMERATOR)) {
+        KorbEnumerator *const e = korb_alloc(c, slots, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+        e->mode = 0;                                 /* uninitialized-but-safe: empty eager enumerator */
+        return RESULT_OK((VALUE)e);
+    }
     return korb_obj_new(c, slots, VALUE_REF_GET(self));
 }
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */

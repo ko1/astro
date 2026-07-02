@@ -354,6 +354,7 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
         return (op == 4) ? RESULT_OK(KORB_NIL) : RESULT_OK(VALUE_REF_GET(dst));   /* find: nil if no match */
     }
+    if (!KORB_ARRAY_P(SELF_ENUM->values)) return RESULT_OK(VALUE_REF_GET(self));   /* allocate'd but uninitialized → empty */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *v = VAL2ARY(SELF_ENUM->values);
         if (i >= v->len) break;
@@ -362,6 +363,23 @@ static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+/* Enumerator#initialize([size]) { |yielder| ... } — set up a deferred generator
+ * on an allocate'd enumerator.  koruby's Enumerator.new is special-cased in
+ * korb_send_impl, so this is reached via `allocate` + send(:initialize) or a
+ * subclass's generic .new.  (The size argument is accepted but not stored.) */
+static RESULT korb_m_enum_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    const VALUE ev = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_ENUM_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not an enumerator");
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Enumerator object without a block");
+    VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
+    slots[0] = ev;                                          /* root across make_proc alloc */
+    const VALUE proc = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0));
+    KorbEnumerator *const e = VAL2ENUM(slots[0]);           /* re-derive: make_proc may have moved it */
+    e->mode = 3; e->cursor = 0;
+    ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, proc);
+    return RESULT_OK(slots[0]);
 }
 /* map: collect block results over the materialized values; no block → self. */
 static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc);   /* fwd */
