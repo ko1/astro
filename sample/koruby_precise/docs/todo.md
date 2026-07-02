@@ -2002,3 +2002,11 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
     protected across instances/self. 経由 private setter/private attr を網羅。
   - **残**: block(recv.m{}) / splat(recv.m(*a)) / safe-nav(recv&.m) の explicit send は未 enforce
     (korb_send_impl 経路で caller_self 無し。private + これらの組合せは稀)。
+
+### 2026-07-02 続き3 (private も cache = KORB_IC_INSTANCE_VIS)
+- **✅ private/protected を cache** (cc59497c): 続き2 は private を IC から**除外**したので明示レシーバの
+  private 呼び出し(`self.foo` をループ等、正当なケース)が毎回 re-resolve で遅かった。専用 ic kind
+  **KORB_IC_INSTANCE_VIS** を追加: private/protected は cache(解決済)するが node_send の inline fast
+  path は KORB_IC_INSTANCE のみ match するので素通ししない → korb_send_cached の ic-hit VIS branch で
+  cached entry を guard→korb_invoke_simple。public fast path は byte 同一のまま。
+  20M self.priv loop で **12.57B→11.32B insn / 1.78→1.65s(~7%)**。(user 指摘「private も使う、ちゃんとやろう」)
