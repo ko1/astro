@@ -8469,6 +8469,21 @@ static bool korb_resolve_load(const char *base_dir, const char *name, char *out,
     if (!realpath(cand, out)) { if ((size_t)snprintf(out, outsz, "%s", cand) >= outsz) return false; }
     struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
 }
+/* Kernel#__dir__ → the directory of the current source file (realpath'd), or nil
+ * when there is no file (e.g. -e).  Uses the file being loaded / the main script. */
+static RESULT
+korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)args;
+    const char *f = c->vm->cur_load_file ? c->vm->cur_load_file : c->vm->script_name;
+    if (!f || strcmp(f, "-e") == 0 || strcmp(f, "-") == 0 || strcmp(f, "(eval)") == 0)
+        return RESULT_OK(KORB_NIL);
+    char real[4096];
+    if (!realpath(f, real)) { if ((size_t)snprintf(real, sizeof real, "%s", f) >= sizeof real) return RESULT_OK(KORB_NIL); }
+    char *slash = strrchr(real, '/');
+    if (slash) *slash = '\0'; else snprintf(real, sizeof real, ".");
+    return korb_str_new(c, slots, real, (uint32_t)strlen(real));
+}
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -9307,6 +9322,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "warn", korb_bi_warn, -1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
+    korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
     korb_builtin_define(c, "load", korb_bi_load, -1);

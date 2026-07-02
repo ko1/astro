@@ -355,6 +355,7 @@ main(int argc, char *argv[])
 
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
+    c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
     korb_define_argv(c, argc - i, &argv[i], src_name);   /* ARGV = remaining args; $0 = script */
 
     /* Parse the Enumerable prelude first (registers its method bodies in the

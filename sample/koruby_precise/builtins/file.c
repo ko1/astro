@@ -67,6 +67,29 @@ static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
 }
 
 /* File.expand_path(path, base = Dir.pwd) → an absolute, normalized path. */
+/* File.realpath(path[, dir]) — canonical absolute path with symlinks resolved;
+ * every component (incl. the last) must exist, else Errno::ENOENT. */
+static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    char joined[4096]; size_t jl;
+    if (plen > 0 && path[0] == '/') {                              /* absolute */
+        jl = plen < sizeof joined ? plen : sizeof joined - 1; memcpy(joined, path, jl); joined[jl] = '\0';
+    } else if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {   /* base dir given */
+        uint32_t dl; const char *d = korb_str_cstr_len(VALUE_SLICE_GET(a, 1), &dl);
+        char db[4096]; if (dl >= sizeof db) dl = sizeof db - 1; memcpy(db, d, dl); db[dl] = '\0';
+        char pb[4096]; if (plen >= sizeof pb) plen = sizeof pb - 1; memcpy(pb, path, plen); pb[plen] = '\0';
+        snprintf(joined, sizeof joined, "%s/%s", db, pb);
+    } else {                                                       /* relative to CWD */
+        jl = plen < sizeof joined ? plen : sizeof joined - 1; memcpy(joined, path, jl); joined[jl] = '\0';
+    }
+    char real[4096];
+    if (!realpath(joined, real)) return korb_raise_errno(c, slots, errno, "realpath", joined);
+    return korb_str_new(c, slots, real, (uint32_t)strlen(real));
+}
 static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -595,6 +618,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_const_define(c, korb_intern(vm, "File", 4), slots[0]);
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* class methods on File's singleton */
     korb_class_def_cfn(c, slots[1], "expand_path", korb_m_file_expand_path, -1);
+    korb_class_def_cfn(c, slots[1], "realpath", korb_m_file_realpath, -1);
+    korb_class_def_cfn(c, slots[1], "realdirpath", korb_m_file_realpath, -1);
     korb_class_def_cfn(c, slots[1], "join",        korb_m_file_join,        -1);
     korb_class_def_cfn(c, slots[1], "dirname",     korb_m_file_dirname,     -1);
     korb_class_def_cfn(c, slots[1], "basename",    korb_m_file_basename,    -1);
