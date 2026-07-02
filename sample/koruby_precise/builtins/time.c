@@ -8,6 +8,39 @@
 /* A Time stores @__t (Float epoch seconds) and @__utc (true = render in UTC). */
 static VALUE korb_time_t_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__t", 4)); }
 static VALUE korb_time_utc_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__utc", 6)); }
+static VALUE korb_time_off_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__off", 6)); }
+
+/* If this Time was built with an explicit numeric utc_offset, its value (seconds);
+ * false for a plain local/UTC time. */
+static bool korb_time_fixed_off(CTX *c, VALUE t, intptr_t *out) {
+    const VALUE v = korb_ivar_get(c, t, korb_time_off_sym(c->vm));
+    if (!FIXNUM_P(v)) return false;
+    *out = FIX2LONG(v); return true;
+}
+/* Parse a utc_offset argument → seconds: Integer/Float, "±HH[:MM[:SS]]" (colons
+ * optional), "UTC"/"Z". Returns false if not parseable here. */
+static bool korb_parse_tz_offset(VALUE v, intptr_t *out) {
+    if (FIXNUM_P(v))     { *out = FIX2LONG(v);                 return true; }
+    if (KORB_FLOAT_P(v)) { *out = (intptr_t)korb_float_val(v); return true; }
+    if (KORB_STRING_P(v)) {
+        const KorbString *const s = VAL2STR(v);
+        const char *const p = s->buf->data; const uint32_t n = s->len;
+        if ((n == 1 && p[0] == 'Z') || (n == 3 && !memcmp(p, "UTC", 3))) { *out = 0; return true; }
+        if (n >= 3 && (p[0] == '+' || p[0] == '-')) {
+            const int sign = (p[0] == '-') ? -1 : 1;
+            int hh = 0, mm = 0, ss = 0; uint32_t i = 1;
+            if (i + 2 > n || !isdigit((unsigned char)p[i]) || !isdigit((unsigned char)p[i+1])) return false;
+            hh = (p[i]-'0')*10 + (p[i+1]-'0'); i += 2;
+            if (i < n && p[i] == ':') i++;
+            if (i + 2 <= n && isdigit((unsigned char)p[i]) && isdigit((unsigned char)p[i+1])) { mm = (p[i]-'0')*10 + (p[i+1]-'0'); i += 2; }
+            if (i < n && p[i] == ':') i++;
+            if (i + 2 <= n && isdigit((unsigned char)p[i]) && isdigit((unsigned char)p[i+1])) { ss = (p[i]-'0')*10 + (p[i+1]-'0'); i += 2; }
+            *out = sign * (hh * 3600 + mm * 60 + ss);
+            return true;
+        }
+    }
+    return false;
+}
 
 static double korb_time_epoch(CTX *c, VALUE t) {
     const VALUE v = korb_ivar_get(c, t, korb_time_t_sym(c->vm));
@@ -29,6 +62,13 @@ static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool
 
 /* broken-down time for a Time value (UTC or local per its flag). */
 static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
+    intptr_t off;
+    if (korb_time_fixed_off(c, t, &off)) {          /* fixed-offset time: wall clock = UTC(epoch + off) */
+        const time_t s = (time_t)(korb_time_epoch(c, t) + off);
+        gmtime_r(&s, out);
+        out->tm_gmtoff = off; out->tm_isdst = 0;
+        return;
+    }
     const time_t s = (time_t)korb_time_epoch(c, t);
     if (korb_time_is_utc(c, t)) gmtime_r(&s, out); else localtime_r(&s, out);
 }
@@ -86,6 +126,38 @@ static RESULT korb_m_time_local(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 0) return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    /* Time.new(y,m,d,h,min,s, utc_offset): the 7th arg fixes the zone offset; the
+     * components are wall-clock in that offset, so epoch = timegm(components) - off. */
+    if (VALUE_SLICE_LEN(a) >= 7 && VALUE_SLICE_GET(a, 6) != KORB_NIL) {
+        VALUE offv = VALUE_SLICE_GET(a, 6);
+        intptr_t off;
+        if (!korb_parse_tz_offset(offv, &off)) {                 /* try #to_int */
+            if (KORB_OBJECT_P(offv) && korb_responds_to(c, offv, korb_intern(c->vm, "to_int", 6))) {
+                slots[0] = offv;
+                RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                if (!FIXNUM_P(ir.value)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                off = FIX2LONG(ir.value);
+            } else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+        }
+        if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
+        struct tm tm; memset(&tm, 0, sizeof tm);
+        intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
+        for (uint32_t i = 0; i < 6 && i < VALUE_SLICE_LEN(a); i++) {
+            const VALUE cv = VALUE_SLICE_GET(a, i);
+            if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
+            else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
+        }
+        if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
+            comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60)
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
+        tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5];
+        const double e = (double)timegm(&tm) - (double)off;
+        slots[0] = UNWRAP(korb_time_make(c, slots, VALUE_REF_GET(self), e, false));   /* the Time (rooted) */
+        (void)korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off));
+        return RESULT_OK(slots[0]);
+    }
     return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);   /* Time.new(y,m,...) → local */
 }
 
@@ -215,7 +287,10 @@ static RESULT korb_m_time_zone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return korb_str_new(c, slots, z, (uint32_t)strlen(z));
 }
 static RESULT korb_m_time_utc_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    (void)slots; (void)a;
+    intptr_t off;
+    if (korb_time_fixed_off(c, VALUE_REF_GET(self), &off)) return RESULT_OK(LONG2FIX(off));   /* explicit utc_offset */
+    struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     return RESULT_OK(LONG2FIX(korb_time_is_utc(c, VALUE_REF_GET(self)) ? 0 : (intptr_t)tm.tm_gmtoff));
 }
 static RESULT korb_m_time_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
