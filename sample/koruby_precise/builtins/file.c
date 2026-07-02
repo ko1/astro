@@ -235,7 +235,7 @@ static RESULT korb_m_file_file_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_stat_pred(c, slots, a, 2); }
 static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_m_file_stat_pred(c, slots, a, 3); }
 
-/* File.read(path) → the whole file as a String. */
+/* File.read(path[, length[, offset]]) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -244,6 +244,19 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     FILE *f = fopen(path, "rb");
     if (!f) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+    const bool has_len = VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1));
+    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)))   /* offset */
+        fseek(f, (long)FIX2LONG(VALUE_SLICE_GET(a, 2)), SEEK_SET);
+    if (has_len) {                                                    /* bounded read */
+        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 1)); if (n < 0) n = 0;
+        char *b = malloc((size_t)n + 1);
+        if (!b) { fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
+        size_t got = fread(b, 1, (size_t)n, f); fclose(f);
+        if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
+        RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
+        free(b);
+        return r;
+    }
     char *buf = NULL; size_t cap = 0, len = 0;
     for (;;) {
         if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path); } buf = nb; }
@@ -304,11 +317,13 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 
 /* split `buf` (len bytes) into line Strings (keeping the trailing '\n'), pushed
  * onto the rooted array `arr`. */
-static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len) {
+static RESULT korb_file_push_lines_c(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len, bool chomp) {
     size_t start = 0;
     for (size_t i = 0; i < len; i++) {
         if (buf[i] == '\n') {
-            slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(i - start + 1)));
+            size_t end = i + 1;
+            if (chomp) { end = i; if (end > start && buf[end - 1] == '\r') end--; }   /* drop \n (and \r\n) */
+            slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(end - start)));
             CHECK(korb_ary_push_val(c, slots + 1, arr, slots[0]));
             start = i + 1;
         }
@@ -319,6 +334,9 @@ static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const ch
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
+static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len) {
+    return korb_file_push_lines_c(c, slots, arr, buf, len, false);
+}
 
 /* File.readlines(path) → array of line Strings. */
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -327,10 +345,17 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(!KORB_STRING_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    bool chomp = false;   /* trailing `chomp: true` kwarg strips line terminators */
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "chomp", 5)));
+        if (hx >= 0) { const VALUE v = h->items->data[2 * hx + 1]; chomp = (v != KORB_NIL && v != KORB_FALSE); }
+    }
     size_t len; char *buf = korb_file_slurp(path, &len);
     if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-    RESULT r = korb_file_push_lines(c, slots + 1, VALUE_REF_AT(&slots[0]), buf, len);
+    RESULT r = korb_file_push_lines_c(c, slots + 1, VALUE_REF_AT(&slots[0]), buf, len, chomp);
     free(buf);
     return r;
 }
@@ -342,8 +367,16 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const VALUE pv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
-    if (block == NULL) return RESULT_OK(KORB_NIL);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    if (block == NULL) {                                             /* no block → an Enumerator of the lines */
+        size_t len2; char *buf2 = korb_file_slurp(path, &len2);
+        if (!buf2) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
+        RESULT lr = korb_file_push_lines(c, slots + 1, VALUE_REF_AT(&slots[0]), buf2, len2);
+        free(buf2);
+        if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
+        return korb_enum_new(c, slots + 1, slots[0], KORB_NIL);
+    }
     size_t len; char *buf = korb_file_slurp(path, &len);
     if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     size_t start = 0;
@@ -542,6 +575,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size,        1);
     korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
     korb_class_def_cfn(c, slots[1], "write",       korb_m_file_write,       -1);
+    korb_class_def_cfn(c, slots[1], "binread",     korb_m_file_read,        -1);   /* koruby I/O is already binary */
+    korb_class_def_cfn(c, slots[1], "binwrite",    korb_m_file_write,       -1);
     korb_class_def_cfn(c, slots[1], "readlines",   korb_m_file_readlines,   -1);
     korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);
     korb_class_def_cfn(c, slots[1], "delete",      korb_m_file_delete,      -1);

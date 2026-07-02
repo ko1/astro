@@ -196,6 +196,39 @@ static RESULT korb_m_io_sync_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)c; (void)slots; (void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_TRUE);
 }
+/* IO#getc → the next UTF-8 character, or nil at EOF. */
+static RESULT korb_m_io_getc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    int b0 = fgetc(fp);
+    if (b0 == EOF) return RESULT_OK(KORB_NIL);
+    char cbuf[8]; cbuf[0] = (char)b0;
+    const unsigned char u = (unsigned char)b0;
+    uint32_t cl = u < 0x80 ? 1 : u >= 0xF0 ? 4 : u >= 0xE0 ? 3 : u >= 0xC0 ? 2 : 1;
+    for (uint32_t k = 1; k < cl; k++) { int b = fgetc(fp); if (b == EOF) { cl = k; break; } cbuf[k] = (char)b; }
+    return korb_str_new(c, slots, cbuf, cl);
+}
+static RESULT korb_io_raise_eof(CTX *c, VALUE *slots) {
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "EOFError", 8));
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "end of file reached");
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+/* IO#readline — like gets but raises EOFError at end of file. */
+static RESULT korb_m_io_readline(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT r = korb_m_io_gets(c, slots, self, a);
+    if (r.state == KORB_NORMAL && r.value == KORB_NIL) return korb_io_raise_eof(c, slots);
+    return r;
+}
+/* IO#readchar — like getc but raises EOFError at end of file. */
+static RESULT korb_m_io_readchar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT r = korb_m_io_getc(c, slots, self, a);
+    if (r.state == KORB_NORMAL && r.value == KORB_NIL) return korb_io_raise_eof(c, slots);
+    return r;
+}
 /* IO#seek(offset, whence = SEEK_SET) → 0. */
 static RESULT korb_m_io_seek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
@@ -310,10 +343,19 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);
     IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
-    IOB("each_char", each_char, 0);
+    IOB("each_char", each_char, 0);   IOM("getc", getc, 0);
+    IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     korb_const_define(c, korb_intern(vm, "SEEK_SET", 8), LONG2FIX(SEEK_SET));
     korb_const_define(c, korb_intern(vm, "SEEK_CUR", 8), LONG2FIX(SEEK_CUR));
     korb_const_define(c, korb_intern(vm, "SEEK_END", 8), LONG2FIX(SEEK_END));
+    /* IO.read/write/readlines/foreach/binread/binwrite — the File class methods. */
+    const VALUE io_sing = korb_obj_singleton(c, slots + 1, io_cls).value;
+    korb_class_def_cfn(c, io_sing, "read",      korb_m_file_read,      -1);
+    korb_class_def_cfn(c, io_sing, "binread",   korb_m_file_read,      -1);
+    korb_class_def_cfn(c, io_sing, "write",     korb_m_file_write,     -1);
+    korb_class_def_cfn(c, io_sing, "binwrite",  korb_m_file_write,     -1);
+    korb_class_def_cfn(c, io_sing, "readlines", korb_m_file_readlines, -1);
+    korb_class_def_cfn_blk(c, io_sing, "foreach", korb_m_file_foreach, -1);
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods. */
