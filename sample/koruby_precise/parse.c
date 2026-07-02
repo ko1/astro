@@ -1029,8 +1029,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
     }
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
     NODE *entry = ALLOC_node_entry(body, bparams, frame_size, destructure_n, destructure_spec, cap_depth, cap_ns, rest_slot, opt_defaults, req_cnt, kw_info, build_param_info(tc, blk_params), blk_param_slot);
-    /* Proc#source_location: remember where this block was written. */
-    if (blk_body) korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, blk_body));
+    /* Proc#source_location is registered by the caller (which has the block/lambda
+     * node, so an empty `{ }` still gets a line). */
     /* node_entry is the dispatch root (yield → entry->head.dispatcher); its own
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
@@ -1040,7 +1040,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
 static NODE *
 transduce_block(struct kp_ctx *tc, const pm_block_node_t *blk)
 {
-    return transduce_block_parts(tc, &blk->locals, blk->parameters, blk->body);
+    NODE *e = transduce_block_parts(tc, &blk->locals, blk->parameters, blk->body);
+    korb_reg_srcloc(tc->c->vm, e, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)blk));
+    return e;
 }
 
 /* Call with a literal block.  Bakes def_env_off (caller frame base) and
@@ -2516,6 +2518,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_lambda_node_t *ln = (const pm_lambda_node_t *)node;
         NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
         if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
+        korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, node));   /* Proc#source_location */
         int32_t self_off = -1 - tc->chain;
         NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, 1u);
         bake_add(tc, &mk->u.node_make_proc.def_env_off);

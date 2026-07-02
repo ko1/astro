@@ -6713,6 +6713,7 @@ static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALU
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);
 static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd (defined near require) */
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);   /* fwd (arithseq.c) */
+static bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* fwd (near require) */
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
@@ -8217,9 +8218,14 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_SET:                               /* Set[a, b, c] (elements via inspect) */
         korb_fprint_set_d(c, slots, fp, v, 0);
         return;
-      case KORB_OBJ_PROC: {                            /* #<Proc:0x.. (lambda)> (no source location) */
+      case KORB_OBJ_PROC: {                            /* #<Proc:0x.. file:line (lambda)> */
         const KorbProc *const p = VAL2PROC(v);
-        fprintf(fp, "#<Proc:0x%012lx%s>", (unsigned long)(uintptr_t)v, p->is_lambda ? " (lambda)" : "");
+        const char *const lam = p->is_lambda ? " (lambda)" : "";
+        uint32_t fsym, line;
+        if (p->iseq && korb_get_srcloc(c->vm, p->iseq, &fsym, &line))
+            fprintf(fp, "#<Proc:0x%016lx %s:%u%s>", (unsigned long)(uintptr_t)v, korb_sym_name(c->vm, fsym), line, lam);
+        else
+            fprintf(fp, "#<Proc:0x%016lx%s>", (unsigned long)(uintptr_t)v, lam);
         return;
       }
       case KORB_OBJ_METHOD: {                          /* #<Method: Recv#name> / #<UnboundMethod: Owner#name> */
