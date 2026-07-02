@@ -500,7 +500,7 @@ static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_sym_case(CTX *c, VALUE *slots, VALUE_REF self, int op) {
     const char *nm = korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)));
     slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)strlen(nm)));
-    RESULT r = korb_str_transform(c, slots + 1, VALUE_REF_AT(&slots[0]), op);
+    RESULT r = korb_str_transform(c, slots + 1, VALUE_REF_AT(&slots[0]), op, false);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     slots[1] = r.value;   /* root the new string across the (alloc'ing) intern */
     const KorbString *rs = VAL2STR(slots[1]);
@@ -749,11 +749,12 @@ static RESULT korb_m_str_undump(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK((VALUE)r);
 }
 static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    { RESULT o = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(o.state != KORB_NORMAL)) return o; }
+    RESULT oo = korb_str_case_opts(c, slots, a, 3); if (UNLIKELY(oo.state != KORB_NORMAL)) return oo;
+    const bool ascii_only = FIX2LONG(oo.value) == 1;
     uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */
-    korb_case_transform(s->buf->data, r->buf->data, len, 3);   /* swapcase (ASCII + Latin-1) */
+    korb_case_transform(s->buf->data, r->buf->data, len, 3, ascii_only);   /* swapcase (ASCII + Latin-1) */
     return RESULT_OK((VALUE)r);
 }
 /* ljust(0)/rjust(1)/center(2) — char-width padding via a transient buffer */
