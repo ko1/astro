@@ -7978,14 +7978,17 @@ korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 static void
 korb_fprint_ary_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
+    if (UNLIKELY(VAL2ARY(v)->head.flags & KORB_FL_JOIN_VISITING)) { fputs("[...]", fp); return; }   /* recursive → [...] */
     if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) { fputs("[...]", fp); return; }
     if (slots) slots[0] = v;                                     /* root the array across element dispatch */
+    (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->head.flags |= KORB_FL_JOIN_VISITING;
     fputc('[', fp);
     for (uint32_t i = 0; i < (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->len; i++) {
         if (i) fputs(", ", fp);
         korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->items->data[i], depth + 1);
     }
     fputc(']', fp);
+    (slots ? VAL2ARY(slots[0]) : VAL2ARY(v))->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: element dispatch may have moved it */
 }
 static void korb_fprint_ary(CTX *c, VALUE *slots, FILE *fp, VALUE v) { korb_fprint_ary_d(c, slots, fp, v, 0); }
 
@@ -7994,8 +7997,10 @@ static void korb_fprint_ary(CTX *c, VALUE *slots, FILE *fp, VALUE v) { korb_fpri
 static void
 korb_fprint_hash_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
 {
+    if (UNLIKELY(VAL2HASH(v)->head.flags & KORB_FL_JOIN_VISITING)) { fputs("{...}", fp); return; }   /* recursive → {...} */
     if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) { fputs("{...}", fp); return; }
     if (slots) slots[0] = v;                                     /* root the hash across k/v dispatch */
+    (slots ? VAL2HASH(slots[0]) : VAL2HASH(v))->head.flags |= KORB_FL_JOIN_VISITING;
     fputc('{', fp);
     for (uint32_t i = 0; i < (slots ? VAL2HASH(slots[0]) : VAL2HASH(v))->len; i++) {
         if (i) fputs(", ", fp);
@@ -8014,6 +8019,7 @@ korb_fprint_hash_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
         korb_fprint_inspect_d(c, slots ? slots + 1 : NULL, fp, h->items->data[2 * i + 1], depth + 1);
     }
     fputc('}', fp);
+    (slots ? VAL2HASH(slots[0]) : VAL2HASH(v))->head.flags &= ~KORB_FL_JOIN_VISITING;
 }
 static void korb_fprint_hash(CTX *c, VALUE *slots, FILE *fp, VALUE v) { korb_fprint_hash_d(c, slots, fp, v, 0); }
 
