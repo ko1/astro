@@ -6198,6 +6198,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..%u)", argc, mm->len);
             }
+            if (!is_data) {                                /* too many positional values → ArgumentError */
+                const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                const bool kw = VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]);
+                if (UNLIKELY(!kw && argc > mm->len))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "struct size differs");
+            }
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
             slots[0] = obj;
             const bool kwinit = is_data
