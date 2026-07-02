@@ -2010,3 +2010,15 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   path は KORB_IC_INSTANCE のみ match するので素通ししない → korb_send_cached の ic-hit VIS branch で
   cached entry を guard→korb_invoke_simple。public fast path は byte 同一のまま。
   20M self.priv loop で **12.57B→11.32B insn / 1.78→1.65s(~7%)**。(user 指摘「private も使う、ちゃんとやろう」)
+
+### 2026-07-02 続き4 (stdlib: ENV / ARGV / File stat / Dir)
+- **✅ ENV** (36cde6b7): module 方式で getenv/setenv/environ backing。[]/[]=/store/key?/fetch(default/
+  block/KeyError)/keys/values/to_h/each/delete/size/empty?/value?/to_s。ENV.class は Object に override。
+  罠: ENV.delete が arg String の byte ptr を str_new(moving GC)後に unsetenv で使い STRESS crash →
+  stack buffer に copy。
+- **✅ ARGV / $0** (36cde6b7): main が post-script args から ARGV array + $0/$PROGRAM_NAME を構築
+  (korb_define_argv)。
+- **✅ File stat + read + Dir** (次 commit): File.exist?/file?/directory?/size/read(fopen)、Dir.pwd/exist?
+  (getcwd/stat)。path ptr は alloc 前に使うので GC 安全。
+- **残 stdlib**: File.open/write・IO オブジェクト(write-side)、String#unicode_normalize、Marshal、
+  Dir.glob/entries、Time の詳細。
