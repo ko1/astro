@@ -663,20 +663,24 @@ def ruby_version_is_not(v, &blk)
   return out_range unless blk
   blk.call if out_range
 end
-def ruby_bug(_id, _v); yield if block_given?; end
+# Run a guard block, swallowing any exception it raises.  A guard body run at
+# describe-eval time may contain a construct koruby can't do (e.g. a backtick
+# command) or an `it` whose setup raises; without this the exception aborts the
+# whole file.  (An `it` inside a guard that runs fine still registers normally.)
+def _ms_guard_run(blk); blk.call if blk; rescue Exception; nil; end
+def ruby_bug(_id, _v); _ms_guard_run(block_given? ? proc { yield } : nil); end
 def platform_is(*_opts, &blk); end
-def platform_is_not(*_opts, &blk); blk.call if blk; end
+def platform_is_not(*_opts, &blk); _ms_guard_run(blk); end
 # Byte-order guards: the host (x86_64) is little-endian.
-def little_endian(&blk); blk.call if blk; end
+def little_endian(&blk); _ms_guard_run(blk); end
 def big_endian(&blk); end
 # `not_supported_on(:ruby)` skips on ruby; skip everywhere else.  Treat
 # as "always run" since koruby isn't ruby — be slightly permissive.
-def not_supported_on(*_args, &blk); blk.call if blk; end
-def conflicts_with(*_args, &blk); blk.call if blk; end
-def quarantine!(*_opts); yield if block_given?; end
-def guard(*_opts, &blk); blk.call if blk; end
-def guard_not(*_opts, &blk); blk.call if blk; end
-def conflicts_with(*_opts, &blk); blk.call if blk; end
+def not_supported_on(*_args, &blk); _ms_guard_run(blk); end
+def quarantine!(*_opts); _ms_guard_run(block_given? ? proc { yield } : nil); end
+def guard(*_opts, &blk); _ms_guard_run(blk); end
+def guard_not(*_opts, &blk); _ms_guard_run(blk); end
+def conflicts_with(*_opts, &blk); _ms_guard_run(blk); end
 # Privilege guards: the sweep runs as a normal (non-root) user, so `as_user`
 # blocks run and `as_superuser` / `as_real_superuser` blocks are skipped.
 def as_user(&blk); blk.call if blk; end
