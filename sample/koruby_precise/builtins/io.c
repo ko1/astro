@@ -364,7 +364,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     /* reparent File under IO so File.open's instances inherit these methods. */
     const VALUE file_cls = korb_const_get(vm, korb_intern(vm, "File", 4));
     if (KORB_CLASS_P(file_cls)) {
-        VAL2CLASS(file_cls)->superclass = io_cls;
+        ARO_STORE(c, VAL2CLASS(file_cls), (VALUE *)(uintptr_t)&VAL2CLASS(file_cls)->superclass, io_cls);   /* GC edge: barriered write */
         vm->method_serial++;
         const VALUE fsing = korb_obj_singleton(c, slots + 1, file_cls).value;
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
