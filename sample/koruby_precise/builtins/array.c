@@ -141,6 +141,35 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (b + cnt > (intptr_t)n) cnt = (intptr_t)n - b;
         return korb_ary_subseq(c, slots, self, (uint32_t)b, (uint32_t)cnt);
     }
+    if (KORB_ARITHSEQ_P(i0)) {                             /* a[(b..e).step(s)] → strided subarray */
+        if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of Enumerator::ArithmeticSequence into Integer");
+        VALUE bv, ev, sv; bool excl;
+        korb_aseq_params(VAL2ASEQ(i0), &bv, &ev, &sv, &excl);
+        if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        const intptr_t s = FIX2LONG(sv);
+        if (UNLIKELY(s == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+        if (UNLIKELY((bv != KORB_NIL && !FIXNUM_P(bv)) || (ev != KORB_NIL && !FIXNUM_P(ev))))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        intptr_t b = (bv == KORB_NIL) ? 0 : FIX2LONG(bv);
+        if (b < 0) b += n;
+        if (UNLIKELY(b < 0 || b > (intptr_t)n))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of range", (long)(bv == KORB_NIL ? 0 : FIX2LONG(bv)));
+        intptr_t e; bool e_incl;
+        if (ev == KORB_NIL) { if (s > 0) { e = (intptr_t)n; e_incl = false; } else { e = 0; e_incl = true; } }
+        else {
+            e = FIX2LONG(ev); if (e < 0) e += n; e_incl = !excl;
+            if (UNLIKELY(e > (intptr_t)n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of range", (long)FIX2LONG(ev));
+        }
+        slots[0] = UNWRAP(korb_ary_new(c, slots, 8));       /* result (rooted) */
+        VALUE_REF out = VALUE_REF_AT(&slots[0]);
+        for (intptr_t idx = b; (s > 0) ? (e_incl ? idx <= e : idx < e) : (e_incl ? idx >= e : idx > e); idx += s) {
+            if (idx < 0 || idx >= (intptr_t)n) continue;
+            slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[idx];   /* re-read self: push GCs */
+            CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
+        }
+        return RESULT_OK(VALUE_REF_GET(out));
+    }
     intptr_t i;
     if (UNLIKELY(!korb_to_index(i0, &i))) {
         if (KORB_INTEGER_P(i0)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
