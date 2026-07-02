@@ -673,28 +673,13 @@ static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(slots[0]);
 }
+static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask);  /* fwd */
 /* Module#instance_methods(inherit=true) → public/protected method names (symbols).
  * Excludes the private `initialize`; dedups across the ancestor chain. */
 static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
-    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));       /* result (rooted) */
-    slots[1] = VALUE_REF_GET(self);                         /* current class (rooted) */
-    while (KORB_CLASS_P(slots[1])) {
-        const uint32_t mc = VAL2CLASS(slots[1])->method_cnt;   /* stable during read-only iteration */
-        for (uint32_t i = 0; i < mc; i++) {
-            const struct korb_method *m = VAL2CLASS(slots[1])->methods[i];   /* re-read class: push below GCs */
-            if (m->mid == c->vm->mid_initialize) continue;  /* initialize is private */
-            if (m->visibility == 1) continue;               /* exclude private methods */
-            const VALUE sym = ID2SYM(m->mid);
-            const KorbArray *r = VAL2ARY(slots[0]);         /* dedup (a lower override shadows) */
-            bool seen = false;
-            for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { seen = true; break; }
-            if (!seen) CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), sym));
-        }
-        if (!inherit) break;
-        slots[1] = VAL2CLASS(slots[1])->superclass;
-    }
-    return RESULT_OK(slots[0]);
+    /* public + protected (not private); walks prepended/included modules + the
+     * superclass chain via the shared collector. */
+    return korb_collect_methods_from(c, slots, VALUE_REF_GET(self), a, (1u << 0) | (1u << 2));
 }
 /* push the visibility-matching method names of `klass_ref`'s class into `result`
  * (with dedup).  vis_mask bit v set ⇒ include methods of visibility v.  Re-reads
@@ -729,6 +714,13 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     slots[2] = KORB_NIL;                                            /* module scratch (rooted; init so GC never scans garbage) */
     while (KORB_CLASS_P(slots[1])) {
         const bool is_sing = VAL2CLASS(slots[1])->is_singleton;
+        if (inherit && VAL2CLASS(slots[1])->prepended != KORB_NIL) {   /* prepended modules precede the class (ancestors → only with inherit) */
+            const uint32_t plen = VAL2ARY(VAL2CLASS(slots[1])->prepended)->len;
+            for (uint32_t j = plen; j-- > 0; ) {
+                slots[2] = VAL2ARY(VAL2CLASS(slots[1])->prepended)->items->data[j];   /* re-read (rooted class) */
+                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, mid_init));
+            }
+        }
         CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), vis_mask, mid_init));
         if (inherit && VAL2CLASS(slots[1])->included != KORB_NIL) { /* mixed-in modules */
             const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;

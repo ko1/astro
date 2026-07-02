@@ -3437,7 +3437,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->included, arr);
     }
     const uint32_t included_mid = korb_intern(c->vm, "included", 8);
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
+    for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
@@ -3462,6 +3462,8 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 RESULT
 korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
+    if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     slots[0] = klass;                            /* root klass across allocs */
     VALUE_REF kref = VALUE_REF_AT(&slots[0]);
     if (VAL2CLASS(klass)->prepended == KORB_NIL) {
@@ -3470,7 +3472,7 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->prepended, arr);
     }
     const uint32_t prepended_mid = korb_intern(c->vm, "prepended", 9);
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(mods); i++) {
+    for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
