@@ -6298,7 +6298,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         struct korb_method *init = korb_class_find_method(*recv_slot, init_mid, &init_def);
         if (init) {
             VALUE *base = slots - argc;
-            RESULT ir = korb_invoke_method(c, slots, init, argc, line, init_mid, obj, init_def, block, def_env, KORB_CSELF_VAL(captured_self));
+            base[-1] = obj;                    /* stage obj as self at the frame's bottom header */
+            /* korb_dispatch_method handles a CFUNC initialize (e.g. the default
+             * Object#initialize, or a builtin) as well as ISEQ; korb_invoke_method
+             * is ISEQ-only and would misread a CFUNC's locals_cnt (SIGBUS) — this
+             * is the `Klass.new(...) { block }` path, so a block may be present. */
+            RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
             return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
         }
