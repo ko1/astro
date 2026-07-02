@@ -2808,13 +2808,26 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE klass = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "define_method called on a non-class");
+    KORB_CHECK_FROZEN(c, slots, klass);                  /* def on a frozen module/class → FrozenError */
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     VALUE nv = VALUE_SLICE_GET(a, 0);
     uint32_t mid;
     if (SYMBOL_P(nv))            mid = SYM2ID(nv);
     else if (KORB_STRING_P(nv))  mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+    else {                                               /* coerce via #to_str (a String-like name) */
+        slots[0] = nv;
+        RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) {
+            if (sr.state == KORB_RAISE && KORB_EXC_P(sr.value) && VAL2EXC(sr.value)->etype == KORB_E_NOMETHOD)
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+            return sr;
+        }
+        if (UNLIKELY(!KORB_STRING_P(sr.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String", korb_type_name(nv));
+        mid = korb_intern(c->vm, VAL2STR(sr.value)->buf->data, VAL2STR(sr.value)->len);
+        klass = VALUE_REF_GET(self);                     /* to_str dispatch may have moved the class (self is rooted) */
+    }
     slots[0] = klass;                                    /* root class across allocs */
     if (block != NULL && def_env == KORB_BLK_FWD) {      /* `define_method(:x, &proc)` — block is a forwarded Proc: use it as-is */
         slots[1] = KORB_CSELF_VAL(cself);
