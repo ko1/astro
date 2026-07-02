@@ -102,6 +102,12 @@ def it(name, *_opts, &blk)
       $ms_error += 1
       puts "  ERR  #{$ms_current}: #{e.class}: #{e.message}"
     end
+  rescue Exception => e
+    # A non-StandardError exception (e.g. a fixture's `SpecificError < Exception`
+    # raised to prove lazy iteration stopped early) must not abort the whole
+    # file; real mspec catches Exception per example.  Record and keep running.
+    $ms_error += 1
+    puts "  ERR  #{$ms_current}: #{e.class}: #{e.message}"
   ensure
     if $ms_after_each
       $ms_after_each.each { |h| h.call rescue nil }
