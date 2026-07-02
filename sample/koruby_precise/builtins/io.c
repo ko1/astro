@@ -315,12 +315,15 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
-    /* ensure close (block value is the return; close even on raise) */
-    const VALUE iov = VALUE_REF_GET(io);
-    const VALUE idxv = korb_ivar_get(c, iov, ID2SYM(korb_io_fp_mid(c)));
-    if (FIXNUM_P(idxv)) { const intptr_t ix = FIX2LONG(idxv);
-        if (ix >= 3 && (uint32_t)ix < c->vm->io_cnt && c->vm->io_fps[ix]) { fclose(c->vm->io_fps[ix]); c->vm->io_fps[ix] = NULL; } }
-    return br;
+    /* ensure close via the object's #close (so a subclass override runs and is
+     * observable); the block value is the return, but a close error propagates
+     * when the block itself succeeded (CRuby's ensure semantics). */
+    slots[1] = br.value;                      /* root the block's value/exception across close's GC */
+    slots[2] = VALUE_REF_GET(io);             /* receiver for #close */
+    RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
+    if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }   /* block error wins (re-read moved value) */
+    if (cr.state != KORB_NORMAL) return cr;   /* else a genuine close error propagates */
+    return RESULT_OK(slots[1]);               /* success → the block's (possibly moved) value */
 }
 
 void korb_init_io(CTX *c, VALUE *slots) {
