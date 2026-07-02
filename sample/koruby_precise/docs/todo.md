@@ -2200,3 +2200,13 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   → `io.read` が "undefined method 'read' for an instance of Object"。**HEAD(改修前)でも再現**するので既存。
   io object は arena 側 + io_fps(libc)混在。[[project_koruby_precise_libc_arena_mix]] の未完分。
 - **最終 tally: pass 23405→25329(+1924)、whole-file 170→58、SEGV/TIMEOUT/KILL=0、golden 92769→93024**。
+
+### 2026-07-02 続き12 (io STRESS bug 根本原因特定 + 実 require/source_location/Dir へ)
+- **io STRESS bug 根本原因確定**: `BARUBY_GC_STRESS=1` 単独では **PASS**(実 moving GC は正しい)。
+  **STRESS+PURGE でのみ失敗** = 1024-plane mprotect hardening の cross-plane forward 問題。具体的には
+  io->klass=File は正しいが **File->superclass(=IO) が PURGE 下で失われ**(retired plane への参照が
+  forward_payload で NULL 化)、io.read が IO まで辿れず NoMethodError。**io 固有バグではなく shared
+  runtime/precise_gc の PURGE 限界**(全 sample 共通、[[project_koruby_precise_libc_arena_mix]] の Phase 3
+  = 全 container を arena migrate する抜本対応が必要 = 大物・要方針確認)。File→IO reparent の raw write は
+  ARO_STORE に修正済(barrier 正常化、ただし PURGE 失敗の原因ではない)。
+- 実 GC(STRESS)で io は正しいので **production correctness は OK**。PURGE は test hardening mode。
