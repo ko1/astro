@@ -2944,6 +2944,7 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
     m->attr_ivar = ivar_sym;
     m->body = NULL;
     m->bfn = NULL;
+    m->visibility = k->cur_visibility;   /* attr_reader/writer inside `private`/`protected` inherits it */
     c->vm->method_serial++;
 }
 
@@ -6386,9 +6387,30 @@ static uint8_t korb_class_new_kind(struct korb_vm *const vm, const VALUE cls) {
  * here with an inline-cached `initialize` (the hot Klass.new path), other class
  * receivers fall through.  Lookup misses don't fill the cache, so such sites
  * simply stay on the slow path.  Only normal sites cache. */
+/* Explicit-receiver visibility guard: a private method is callable only with an
+ * implicit self / `self.foo` (recv == caller's self); a protected method only
+ * when the caller's self is a kind of the method's owner.  Returns a RAISE on a
+ * violation, else NORMAL.  caller_self == KORB_UNDEF disables the check (internal
+ * C dispatch, operators). */
+static RESULT
+korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t mid,
+                    uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class)
+{
+    if (m->visibility == 1) {                          /* private */
+        if (recv != caller_self)
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "private method '%s' called for %s",
+                              korb_sym_name(c->vm, mid), korb_a_type_name(recv));
+    } else {                                           /* protected (visibility == 2) */
+        const VALUE owner = KORB_CLASS_P(def_class) ? def_class : korb_dispatch_class(c, recv);
+        if (!korb_class_has_ancestor(korb_dispatch_class(c, caller_self), owner))
+            return korb_raise(c, slots, KORB_E_NOMETHOD, line, "protected method '%s' called for %s",
+                              korb_sym_name(c->vm, mid), korb_a_type_name(recv));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-                 struct korb_inlcache *ic)
+                 struct korb_inlcache *ic, VALUE caller_self)
 {
     struct korb_vm *const vm = c->vm;
     const VALUE recv = slots[-(intptr_t)argc - 1];
@@ -6439,13 +6461,22 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
          * and [] keep their builtin special cases (Fiber.yield / Array[] etc.);
          * the send family and .new were handled above. */
         if (LIKELY(KORB_CLASS_P(recv) && mid != vm->mid_yield && mid != vm->mid_aref)) {
-            if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv))
+            if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == recv)) {
+                if (UNLIKELY(ic->m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
+                    const RESULT vr = korb_check_call_vis(c, slots, ic->m, mid, line, recv, caller_self, ic->def_class);
+                    if (vr.state != KORB_NORMAL) return vr;
+                }
                 return korb_dispatch_method(c, slots, ic->m, mid, line, argc, ic->def_class, NULL, NULL, NULL);
+            }
             const VALUE start_cls = korb_dispatch_class(c, recv);
             VALUE def_class = KORB_NIL;
             struct korb_method *const m =
                 KORB_CLASS_P(start_cls) ? korb_mcache_find(vm, start_cls, mid, &def_class) : NULL;
             if (LIKELY(m != NULL)) {
+                if (UNLIKELY(m->visibility != 0 && caller_self != KORB_UNDEF)) {   /* private_class_method guard */
+                    const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class);
+                    if (vr.state != KORB_NORMAL) return vr;
+                }
                 ic->serial = vm->method_serial; ic->klass = recv; ic->m = m;
                 ic->def_class = def_class; ic->kind = KORB_IC_SMETHOD;
                 return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
@@ -6467,7 +6498,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         klass = korb_dispatch_class(c, recv);
     }
     if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
-        struct korb_method *const m = ic->m;
+        struct korb_method *const m = ic->m;   /* only public methods reach the ic (private withheld below) → no visibility check */
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
         if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
@@ -6491,6 +6522,13 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
+    if (UNLIKELY(m->visibility != 0)) {   /* private/protected: enforce + WITHHOLD from the ic so node_send's fast path never invokes it unchecked */
+        if (caller_self != KORB_UNDEF) {
+            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class);
+            if (vr.state != KORB_NORMAL) return vr;
+        }
+        return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
+    }
     ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
     ic->kind = KORB_IC_INSTANCE;
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
@@ -7314,8 +7352,8 @@ korb_register_core_methods(CTX *c)
      * no-ops returning their argument (matches `private`/`public`). */
     korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_constant", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_visibility_noop, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_private_class_method, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_public_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_lit_nil, -1);   /* source location not tracked */
     /* autoload(:Const, "path") — koruby can't lazily load files, so it's a no-op
      * (the const stays undefined); autoload?(:Const) → nil.  Registered on both

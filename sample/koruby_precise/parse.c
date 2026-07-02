@@ -74,20 +74,22 @@ static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
  * common small-arity synthetic sends used throughout the parser (op-assign,
  * []/[]= desugar, case/when ===, ...).  The staging depth a caller must reserve
  * is the element count (recv + args). */
+/* synthetic sends target public methods ([]/===/+/...), so self_off = INT32_MIN
+ * disables the private/protected visibility guard (no caller-self needed). */
 static NODE *kp_send0(uint32_t mid, uint32_t line, NODE *recv) {
     NODE **argv = malloc(sizeof(NODE *)); if (!argv) abort();
     argv[0] = recv;
-    return ALLOC_node_send(mid, line, argv, 1);
+    return ALLOC_node_send(mid, line, INT32_MIN, argv, 1);
 }
 static NODE *kp_send1(uint32_t mid, uint32_t line, NODE *recv, NODE *a0) {
     NODE **argv = malloc(sizeof(NODE *) * 2); if (!argv) abort();
     argv[0] = recv; argv[1] = a0;
-    return ALLOC_node_send(mid, line, argv, 2);
+    return ALLOC_node_send(mid, line, INT32_MIN, argv, 2);
 }
 static NODE *kp_send2(uint32_t mid, uint32_t line, NODE *recv, NODE *a0, NODE *a1) {
     NODE **argv = malloc(sizeof(NODE *) * 3); if (!argv) abort();
     argv[0] = recv; argv[1] = a0; argv[2] = a1;
-    return ALLOC_node_send(mid, line, argv, 3);
+    return ALLOC_node_send(mid, line, INT32_MIN, argv, 3);
 }
 /* Staging depth a caller must reserve to build a kp_sendN node.  node_send is
  * @framehdr, so its dispatcher advances the cursor by (children + KORB_FRAME_HDR)
@@ -1481,6 +1483,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     {
         bool safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
         uint32_t cnt = 1u + (uint32_t)argc;
+        int32_t self_off = -1 - tc->chain - (int32_t)cnt - KORB_FRAME_HDR;   /* caller self at base[-1], from the +HDR-shifted cursor */
         NODE **argv = malloc(sizeof(NODE *) * cnt);
         if (!argv) abort();
         int32_t saved = tc->chain;
@@ -1489,8 +1492,10 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
-        return safe ? ALLOC_node_send_safe(mid, line, argv, cnt)
-                    : ALLOC_node_send(mid, line, argv, cnt);
+        if (safe) return ALLOC_node_send_safe(mid, line, argv, cnt);
+        NODE *call = ALLOC_node_send(mid, line, self_off, argv, cnt);
+        bake_add(tc, &call->u.node_send.self_off);    /* fixed up by the caller frame_size (base[-1] = self) */
+        return call;
     }
 }
 

@@ -459,6 +459,31 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
 static RESULT korb_m_public(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_set_visibility(c, slots, self, a, 0); }
+/* private_class_method / public_class_method :sym... — set the visibility of the
+ * named singleton (class) methods, which live on self's singleton class. */
+static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
+    (void)slots;
+    const VALUE selfv = VALUE_REF_GET(self);
+    const VALUE ret = VALUE_SLICE_LEN(a) == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (!KORB_CLASS_P(selfv)) return RESULT_OK(ret);
+    const VALUE sing = korb_dispatch_class(c, selfv);      /* singleton class holding `def self.x` methods */
+    if (!KORB_CLASS_P(sing)) return RESULT_OK(ret);
+    KorbClass *const k = VAL2CLASS(sing);
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    for (uint32_t i = 0; i < argc; i++) {
+        const VALUE arg = VALUE_SLICE_GET(a, i);
+        uint32_t mid;
+        if (SYMBOL_P(arg)) mid = SYM2ID(arg);
+        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
+        else continue;
+        for (uint32_t j = 0; j < k->method_cnt; j++)
+            if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+    }
+    c->vm->method_serial++;                                /* invalidate call caches */
+    return RESULT_OK(ret);
+}
+static RESULT korb_m_private_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_class_visibility(c, slots, self, a, 1); }
+static RESULT korb_m_public_class_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_set_class_visibility(c, slots, self, a, 0); }
 /* Kernel#throw(tag[, value]) — unwind (past rescue) to the matching catch.  With
  * no enclosing catch for the tag, raises a (rescuable) UncaughtThrowError. */
 static RESULT korb_m_throw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

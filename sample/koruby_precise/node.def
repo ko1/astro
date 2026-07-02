@@ -451,7 +451,7 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path */
     }
     slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached String#<< / bignum / user */
-    return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic);
+    return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic, KORB_UNDEF);   /* `<<` operator: public, no visibility check */
 }
 
 NODE_DEF
@@ -1223,7 +1223,7 @@ node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t li
 // gets only the count (argv_cnt).  Replaces the send0..3 family.  Per-call-site
 // inline cache via ic@ref.  Actual `*splat` still uses node_send_splat.
 NODE_DEF @framehdr
-node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **argv@children, struct korb_inlcache *ic@ref)
+node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const uint32_t argc = argv_cnt - 1;
@@ -1239,6 +1239,9 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **arg
         if (LIKELY(klass != KORB_NIL && ic->kind == KORB_IC_INSTANCE &&
                    ic->serial == c->vm->method_serial && ic->klass == klass)) {
             struct korb_method *const m = ic->m;
+            /* the ic caches only public methods as KORB_IC_INSTANCE (korb_send_cached
+             * withholds private/protected), so this hot path needs no visibility
+             * check — private/protected sites never satisfy the ic guard above. */
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))
                 return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
             if (m->kind == KORB_METHOD_ATTR_R) {             /* attr/struct reader: inline shape walk, no cross-module hop */
@@ -1248,7 +1251,11 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **arg
             }
         }
     }
-    return korb_send_cached(c, slots, mid, line, argc, ic);
+    /* self_off == INT32_MIN → a synthetic send (op-assign/[]/=== desugar): public,
+     * no visibility check.  Otherwise pass the caller's self (base[-1]) for the
+     * private (self.foo only) / protected (is_a? owner) guard. */
+    const VALUE caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
+    return korb_send_cached(c, slots, mid, line, argc, ic, caller_self);
 }
 
 // safe navigation `recv&.m(args)`: if recv is nil, yield nil without dispatch.
