@@ -468,6 +468,39 @@ static RESULT korb_m_file_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(LONG2FIX(cnt));
 }
 
+/* copy a String arg into a stack buffer (path args are movable interior ptrs). */
+static bool korb_file_pathbuf(VALUE v, char *buf, size_t bufsz) {
+    if (!KORB_STRING_P(v)) return false;
+    uint32_t l; const char *p = korb_str_cstr_len(v, &l);
+    if (l >= bufsz) l = (uint32_t)bufsz - 1;
+    memcpy(buf, p, l); buf[l] = '\0';
+    return true;
+}
+/* File.link(old, new) → 0 (hard link). */
+static RESULT korb_m_file_link(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; char ob[4096], nb[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), ob, sizeof ob) || !korb_file_pathbuf(VALUE_SLICE_GET(a, 1), nb, sizeof nb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    if (link(ob, nb) != 0) return korb_raise_errno(c, slots, errno, "link", ob);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* File.symlink(old, new) → 0 (symbolic link). */
+static RESULT korb_m_file_symlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; char ob[4096], nb[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), ob, sizeof ob) || !korb_file_pathbuf(VALUE_SLICE_GET(a, 1), nb, sizeof nb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    if (symlink(ob, nb) != 0) return korb_raise_errno(c, slots, errno, "symlink", ob);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* File.readlink(path) → the symlink's target. */
+static RESULT korb_m_file_readlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; char pb[4096], buf[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const ssize_t n = readlink(pb, buf, sizeof buf - 1);
+    if (n < 0) return korb_raise_errno(c, slots, errno, "readlink", pb);
+    return korb_str_new(c, slots, buf, (uint32_t)n);
+}
 /* Dir.pwd → getcwd; Dir.exist?(path) → stat + S_ISDIR. */
 static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -756,6 +789,9 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, slots[1], "foreach", korb_m_file_foreach,     -1);
     korb_class_def_cfn(c, slots[1], "delete",      korb_m_file_delete,      -1);
     korb_class_def_cfn(c, slots[1], "unlink",      korb_m_file_delete,      -1);
+    korb_class_def_cfn(c, slots[1], "link",        korb_m_file_link,         2);
+    korb_class_def_cfn(c, slots[1], "symlink",     korb_m_file_symlink,      2);
+    korb_class_def_cfn(c, slots[1], "readlink",    korb_m_file_readlink,     1);
     /* Dir — pwd / exist? + instance objects (Dir.open/new).  Superclass = Object
      * so Dir instances inherit the universal methods (class, is_a?, …). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3),
