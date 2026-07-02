@@ -983,7 +983,7 @@ end
 # each (eval, assert) pair sequentially in isolation.
 def evaluate(code, &blk)
   it("evaluate #{code.lines.first.strip}") do
-    eval(code)
+    eval(code, binding)   # eval in THIS scope so @ivars set by `code` are visible to the assertion block
     blk.call if blk
   end
 end
