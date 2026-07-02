@@ -2048,3 +2048,21 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
 - **prelude に Ruby で足せる stdlib は prelude/*.rb + main.c の KORUBY_PRELUDE_FILES に追加が最速**。
 - **残 stdlib**: Errno クラス階層(File系の raise を正確に)、IO.new/pipe/popen、Time 詳細、
   String#unicode_normalize、Comparable/Enumerable の細部、Set の残 method。
+
+### 2026-07-02 続き7 (rubyspec 系統的 sweep 開始; Errno/custom-new/Latin-case/const-reflection/Time)
+- rubyspec core sweep (tools/rubyspec_run.rb ~/ruby/src/master/spec/ruby/core): pass率 69.5%
+  (pass=12480 fail=2245 err=3244)。worst file から高ROI・非regex/encoding を選んで潰す方針。
+- **✅ Errno クラス階層 + qualified 名** (f6e67d77): File/Dir が errno→Errno::* を raise
+  (korb_errno_name/korb_raise_errno、strerror msg、exc_class tag)。`X = Class.new` の const 代入が
+  enclosing を設定→Ns::Anon が qualified 名に(const-namespace の enclosing chain 再利用)。
+- **✅ custom `def self.new`** (0b97b9f5): Klass.new が allocator で custom singleton new を shadow してた。
+  korb_class_new_kind が singleton の new を検出→kind 2(smethod path)。factory method + Time.new(parts)。
+  new_kind cache で hot path 不変。
+- **✅ Latin-1 Unicode case** (6566fa29): upcase/downcase/capitalize/swapcase(+bang)が ASCII のみ→
+  Latin-1 Supplement(À-Þ↔à-þ, ÿ↔Ÿ)対応の UTF-8 case transform。byte length 保存で in-place。
+  Greek/Cyrillic/Turkic/ß/ligature は table 必要で未対応。
+- **✅ Module#const_get/set/defined? owner-aware** (7d9e998b): flat table 無視してた→const_set が
+  receiver に nest、const_get/defined? が receiver+ancestors 優先(collision 解決)、defined?(name,false)。
+  罠: const_defined? の arity を 1→-1 に(inherit arg)。残: Integer.const_get(:MAX) が Float::MAX を拾う
+  (builtin const の owner が nil、要 owner 付与)。
+- **✅ Time** (b35fb306): sunday?..saturday? + Time#to_a。
