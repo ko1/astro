@@ -234,6 +234,40 @@ static RESULT korb_m_file_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_file_file_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)      { (void)self; return korb_m_file_stat_pred(c, slots, a, 1); }
 static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_stat_pred(c, slots, a, 2); }
 static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_m_file_stat_pred(c, slots, a, 3); }
+/* File.readable?/writable?/executable?(path) → access(2) with R_OK/W_OK/X_OK. */
+static RESULT korb_m_file_access(CTX *c, VALUE *slots, VALUE_SLICE a, int amode) {
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    return RESULT_OK(access(path, amode) == 0 ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_file_readable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_file_access(c, slots, a, R_OK); }
+static RESULT korb_m_file_writable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)self; return korb_m_file_access(c, slots, a, W_OK); }
+static RESULT korb_m_file_executable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_access(c, slots, a, X_OK); }
+/* File.chmod(mode, *paths) → chmod each; returns the number of files. */
+static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const mode_t m = (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    uint32_t n = 0;
+    for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
+        const VALUE pv = VALUE_SLICE_GET(a, i);
+        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+        if (chmod(path, m) != 0) return korb_raise_errno(c, slots, errno, "chmod", path);
+        n++;
+    }
+    return RESULT_OK(LONG2FIX(n));
+}
+/* File.umask([mask]) → sets and/or returns the process file-creation mask. */
+static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)self;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0)))
+        return RESULT_OK(LONG2FIX((intptr_t)umask((mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0)))));
+    const mode_t cur = umask(0); umask(cur);                  /* read current without changing it */
+    return RESULT_OK(LONG2FIX((intptr_t)cur));
+}
 
 /* File.read(path[, length[, offset]]) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -573,6 +607,11 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "directory?",  korb_m_file_directory_p, 1);
     korb_class_def_cfn(c, slots[1], "size",        korb_m_file_size,        1);
     korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size,        1);
+    korb_class_def_cfn(c, slots[1], "readable?",   korb_m_file_readable_p,  1);
+    korb_class_def_cfn(c, slots[1], "writable?",   korb_m_file_writable_p,  1);
+    korb_class_def_cfn(c, slots[1], "executable?", korb_m_file_executable_p, 1);
+    korb_class_def_cfn(c, slots[1], "chmod",       korb_m_file_chmod,       -1);
+    korb_class_def_cfn(c, slots[1], "umask",       korb_m_file_umask,       -1);
     korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
     korb_class_def_cfn(c, slots[1], "write",       korb_m_file_write,       -1);
     korb_class_def_cfn(c, slots[1], "binread",     korb_m_file_read,        -1);   /* koruby I/O is already binary */
