@@ -2093,3 +2093,37 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   隠れてただけ)。koruby の真の core coverage は ~79%。
 - 残: encoding(Unicode table)、real syscall(process/spawn, io/popen/pipe — fork/exec)、refinements、
   instance_eval/class_eval の String 版、niche reflection(BasicObject.instance_methods, Method#to_proc block)。
+
+### 2026-07-02 続き10 (whole-file SEGV 掃討 → core SEGV ゼロ; enumerator generator 化 + lazy to_enum)
+rubyspec core sweep 78.9%→現状 file-clean 843→854、whole-file-fail 170→93、SEGV(code=139) **全滅(0)**、
+pass 23405→24061。この session の commit:
+- **✅ Klass.new(...) { block } の SIGBUS** (25bb0f97): send_impl の mid_new block path が
+  korb_invoke_method(ISEQ専用) で CFUNC initialize(既定 Object#initialize)を呼び locals_cnt 誤読。
+  no-block hot path と同じく base[-1]=obj + korb_dispatch_method に。file/new_spec の File.new(f){raise} 修正。
+- **✅ puts 再帰配列 "[...]"** (efa2ba66): korb_puts_one_to が自己参照配列で stack overflow。
+  KORB_FL_JOIN_VISITING guard で "[...]\n"。io/puts_spec。
+- **✅ mspec_shim touch/mkdir_p** (76095808): file/io fixture helper 未定義 → whole-file abort。
+- **✅ Object#to_enum / enum_for を lazy 化** (06953f6a): eager に send(meth){} 実行してた →
+  raise/infinite で to_enum 構築時に死ぬ。Enumerator.new generator に。lazy/* ~12 file の abort 解消。
+  **副作用**: eager 前提の enum method が mode-3 generator で SEGV → 下記で対処。
+- **✅ Module#class_variable_get/set/defined? + class_variables** (1713d05d): korb_cvar_owner/set 上に実装。
+  basicobject/instance_exec/eval の abort 解消。
+- **✅ module 内 alias_method が Object/Kernel method 解決** (d00ed7c7): korb_do_alias が module receiver で
+  Object fallback。core/module/* 共有 fixture(classes.rb)の abort 全解消。missing は NameError に。
+- **✅ enumerator generator/lazy mode 対応** (fef02ebd): each_with_object/with_object(force_gen)、
+  next/peek/next_values/peek_values(mode!=0 で gen_run/lazy_drive 駆動)、Lazy#select/map/... no-block は
+  ArgumentError。each_with_object/next_values/peek_values/lazy{select,reject,take_while,drop_while} の SEGV 修正。
+- **✅ Enumerator.allocate + #initialize** (aabbd267): allocate が generic object → VAL2ENUM で heap 破壊。
+  allocate を Enumerator 用に KorbEnumerator 化 + #initialize(block→mode3 generator)。size 引数は未保存。
+  最後の core SEGV(enumerator/initialize_spec) 解消。
+- **✅ public/private/protected :sym が inherited method に効く** (9be52893): korb_set_visibility が直接
+  定義の method しか見てなかった → 継承/include の method に visibility-override entry を作る(owner 保持で super OK)。
+- **残 TODO(未着手)**:
+  - core/method/* (14 file) が fixtures/classes.rb の line 244 `alias_method :meow, :derp`(InheritedMethods::C、
+    include A/B の private derp を public 後 alias)で **NameError "undefined method 'derp' for class 'Object'"** で
+    whole-file abort。lines 115-133(MethodSpecs::A/B/BetweenBAndC/C<B) との**累積**で class C body の self が
+    Object 化する(単独 range では再現せず、"private meow" になる)。parser/class-scope の cumulative bug。要調査。
+  - alias_method :meow, :derp で meow の owner=C になり super が原 module 上でなく C 上から解決される
+    (visibility_inherited.rb の単純 case は通るが、multi-module + super('arg') で arity 不整合)。
+  - 他 code=1 abort: kernel/p(M0 non-local multi-assign)、exception/case_compare(constant path w/ non-namespace
+    parent)、kernel/eval(eval str + coerce)、marshal/dump・load(UserMarshal fixture)、dir/file の syscall 系。
