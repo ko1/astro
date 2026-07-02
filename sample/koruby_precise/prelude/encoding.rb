@@ -26,8 +26,12 @@ class Encoding
   CP50221 = Encoding.new("CP50221")
   ISO_8859_1 = Encoding.new("ISO-8859-1")
   Windows_1252 = Encoding.new("Windows-1252")
-  def self.default_external; UTF_8; end
-  def self.default_internal; nil; end
+  @@default_external = UTF_8
+  @@default_internal = nil
+  def self.default_external; @@default_external; end
+  def self.default_external=(e); @@default_external = e; end
+  def self.default_internal; @@default_internal; end
+  def self.default_internal=(e); @@default_internal = e; end
 end
 class Encoding
   class Converter; end
