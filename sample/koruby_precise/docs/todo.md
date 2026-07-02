@@ -2164,3 +2164,20 @@ pass 23405→24061。この session の commit:
 - **残 whole-file abort(大機能 or niche)**: thread/*(11、Thread/並行性)、string/encoding・encode(Unicode table)、
   marshal/dump・load(UserMarshal = String subclass の ivar)、dir/fileno(Dir instance object)、
   method/parameters(重複 `_` param の locals 割当)、exception/syntax_error(spec file 自体が意図的 invalid 構文)。
+
+### 2026-07-02 続き11 (20h autonomous: per-example 修正 + recursion/overflow hang 掃討)
+whole-file abort 掃討後、per-example 失敗と timeout/crash を修正。sweep 現状: pass **24659**、
+file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/crash 解消)。
+- shim: evaluate() を eval(code, binding) 化(@ivar が assertion block に見える)→ proc/arity 0→64 等 broad。
+- include/prepend が Class 引数を TypeError、bare module の private_instance_methods から Kernel builtin 除外。
+- define_method: name to_str coerce + FrozenError。Module#module_function 実装(named+no-arg mode、
+  private instance + public singleton copy)。const_get: inherit flag/scoped name/to_str/const_missing。
+- sprintf `*` 幅/精度の positional(`*N$`)+ 負幅→左詰め。String case の :ascii option。
+- Time#asctime/ctime、Time.new utc_offset(Integer/"±HH:MM:SS"/UTC/to_int、@__off 保存)→ time/new 12→27。
+- Method#super_method / UnboundMethod#super_method(MRO 上の次定義、fixed owner)→ 5→13。
+- **recursion/overflow hang 掃討(重要、code=124/137/139 を全滅)**:
+  - inspect(Array/Hash)自己参照 → KORB_FL_JOIN_VISITING で "[...]"/"{...}"(depth limit だと multi-ref で指数爆発)。
+  - deep_hash(Array/Hash)自己参照 → 同 flag。== / eql?(Array/Hash)自己参照 → 同 flag(SEGV だった)。
+  - Array#fill 巨大 len(fixnum_max)→ uint32 cap 超で ArgumentError、Bignum len → RangeError。
+  - Array#product 積数 overflow(101^11)→ 乗算時 cap 検出で RangeError。
+- 手法メモ: hang 追跡は shim の it() に `$stderr.puts $ms_current` 一時挿入で最後の test を特定。
