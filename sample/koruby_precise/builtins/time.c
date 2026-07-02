@@ -171,6 +171,31 @@ static RESULT korb_m_time_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return korb_str_new(c, slots, out, (uint32_t)n);
 }
 
+/* day-of-week predicates. */
+static RESULT korb_m_time_sunday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==0?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_monday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==1?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_tuesday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==2?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_wednesday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==3?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_thursday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==4?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_friday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==5?KORB_TRUE:KORB_FALSE); }
+static RESULT korb_m_time_saturday(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)slots;(void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm); return RESULT_OK(tm.tm_wday==6?KORB_TRUE:KORB_FALSE); }
+/* Time#to_a → [sec, min, hour, mday, mon, year, wday, yday, isdst, zone]. */
+static RESULT korb_m_time_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);   /* tm is a stable C struct across the allocs below */
+    const bool utc = korb_time_is_utc(c, VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 10));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    const intptr_t vals[8] = { tm.tm_sec, tm.tm_min, tm.tm_hour, tm.tm_mday, tm.tm_mon + 1,
+                               tm.tm_year + 1900, tm.tm_wday, tm.tm_yday + 1 };
+    for (int i = 0; i < 8; i++) CHECK(korb_ary_push_val(c, slots + 1, arr, LONG2FIX(vals[i])));
+    CHECK(korb_ary_push_val(c, slots + 1, arr, tm.tm_isdst > 0 ? KORB_TRUE : KORB_FALSE));
+    const char *zone = utc ? "UTC" : (tm.tm_zone ? tm.tm_zone : "");
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, zone, (uint32_t)strlen(zone)));
+    CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
 void korb_init_time(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Time", 4), korb_builtin_class_obj(vm, KORB_C_OBJECT))).value;
@@ -197,6 +222,14 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "wday",  korb_m_time_wday,  0);
     korb_class_def_cfn(c, t, "yday",  korb_m_time_yday,  0);
     korb_class_def_cfn(c, t, "usec",  korb_m_time_usec,  0);
+    korb_class_def_cfn(c, t, "to_a",  korb_m_time_to_a,  0);
+    korb_class_def_cfn(c, t, "sunday?",    korb_m_time_sunday,    0);
+    korb_class_def_cfn(c, t, "monday?",    korb_m_time_monday,    0);
+    korb_class_def_cfn(c, t, "tuesday?",   korb_m_time_tuesday,   0);
+    korb_class_def_cfn(c, t, "wednesday?", korb_m_time_wednesday, 0);
+    korb_class_def_cfn(c, t, "thursday?",  korb_m_time_thursday,  0);
+    korb_class_def_cfn(c, t, "friday?",    korb_m_time_friday,    0);
+    korb_class_def_cfn(c, t, "saturday?",  korb_m_time_saturday,  0);
     korb_class_def_cfn(c, t, "utc?",  korb_m_time_utc_q, 0);
     korb_class_def_cfn(c, t, "gmt?",  korb_m_time_utc_q, 0);
     korb_class_def_cfn(c, t, "getutc",   korb_m_time_getutc,   0);
