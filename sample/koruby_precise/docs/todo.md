@@ -2181,3 +2181,14 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   - Array#fill 巨大 len(fixnum_max)→ uint32 cap 超で ArgumentError、Bignum len → RangeError。
   - Array#product 積数 overflow(101^11)→ 乗算時 cap 検出で RangeError。
 - 手法メモ: hang 追跡は shim の it() に `$stderr.puts $ms_current` 一時挿入で最後の test を特定。
+
+### 2026-07-02 続き11 後半 (feature 拡充続き)
+- include/prepend の transitive(module の include を MRO flatten、cyclic 検出、const_get も included module 走査)。
+- Module#module_function、const_get(inherit/scoped/to_str/const_missing)、Method#super_method、File.chmod/umask/access。
+- **Encoding.default_external=/default_internal= setter**(cvar backing)→ 多数 file の encoding-default ERR 一掃(pass +500超)。
+- **define_method 済 method は arity 厳格化**(block/lambda/proc 全て method-arity、korb_dispatch_method DM case で check)→ 52→70。
+- **block/proc の optional + rest 併用**(`|a,b=1,*r|`)対応(parse rejection 撤去 + rest branch で front optional の default 適用)。
+- repeated `_` param は soft NotImplementedError 化(hard kp_failf 撤去)。
+- **最終 tally: pass 23405→25284(+1879)、whole-file 170→57、SEGV/TIMEOUT/KILL=0**。
+- 残 big bucket は変わらず: regex(astrorge)、encoding table、real syscall(process/thread/io popen/pipe)、
+  autoload/require、source_location、Dir instance object、marshal user-fixture。
