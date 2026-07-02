@@ -2034,3 +2034,17 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   rooted slot を毎回 re-read**。
 - **残 stdlib**: IO.new/pipe/select、Marshal、Dir.glob/entries/chdir、String#unicode_normalize、
   File.write の to_s coercion、Errno クラス階層。
+
+### 2026-07-02 続き6 (Dir/$$/StringIO/Marshal)
+- **✅ Dir.mkdir/rmdir/entries/children/glob/[]/chdir + $$** (462d0177): opendir/readdir/glob(3)/
+  mkdir/rmdir/chdir。GC罠: Dir.chdir が block-arg を path arg 内部ptrから str_new→alloc GC で stale。
+  arg String value を直接渡す。
+- **✅ StringIO** (7b4e462e): pure-Ruby prelude(prelude/stringio.rb)。write/print/puts/<</read/getc/
+  gets/each_line/readlines/string/pos/rewind/eof?/StringIO.open。
+- **✅ Marshal.dump/load** (1a342588): pure-Ruby prelude、CRuby format 4.8 互換。nil/true/false/Integer
+  (compact long)+Bignum('l')/Float/String/Symbol(+link)/Array/Hash。load は 'I' ivar wrapper skip。
+  **CRuby と双方向 cross-process interop 確認**、deep-copy round-trip(2**100 含む)。残: object link/
+  ivar/user marshal_dump、koruby の string dump は encoding ivar 無し。
+- **prelude に Ruby で足せる stdlib は prelude/*.rb + main.c の KORUBY_PRELUDE_FILES に追加が最速**。
+- **残 stdlib**: Errno クラス階層(File系の raise を正確に)、IO.new/pipe/popen、Time 詳細、
+  String#unicode_normalize、Comparable/Enumerable の細部、Set の残 method。
