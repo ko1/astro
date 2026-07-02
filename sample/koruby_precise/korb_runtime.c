@@ -3530,6 +3530,14 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return m->rfn(c, slots + 1, recv, args);
     }
+    if (m->kind == KORB_METHOD_DM) {              /* super into a define_method'd method → run its Proc body */
+        const KorbProc *const p = VAL2PROC(m->dm_proc);
+        slots[0] = self;                          /* captured_self = receiver (rooted scanned slot) */
+        RESULT r = korb_block_yield(c, slots + 1, p->iseq, (VALUE *)(uintptr_t)p->env,
+                                    &slots[-(intptr_t)argc], argc, &slots[0]);
+        if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
+        return r;
+    }
     /* restage [magic, EP, self, args] above the cursor so the callee frame has its
      * KORB_FRAME_HDR meta cells zeroed (base[-3]=magic, base[-2]=EP) with self at
      * base[-1]; super's args sit at slots[-argc..-1], self is separate. */
