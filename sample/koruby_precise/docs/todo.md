@@ -2192,3 +2192,11 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
 - **最終 tally: pass 23405→25284(+1879)、whole-file 170→57、SEGV/TIMEOUT/KILL=0**。
 - 残 big bucket は変わらず: regex(astrorge)、encoding table、real syscall(process/thread/io popen/pipe)、
   autoload/require、source_location、Dir instance object、marshal user-fixture。
+
+### 2026-07-02 続き11 追記 (arity + File.open + 既存 io STRESS bug 発見)
+- **Proc#arity** を param_info kind 集計で正確化(post/optional/proc-vs-lambda)→ proc/arity 83→122(0 fail)。
+- **File.open block** が #close 経由で閉じる(subclass override 尊重、block 値 return、close error 伝播)→ file/open 55→60。
+- **⚠ 既存バグ発見(要修正、Phase 3 libc/arena mix)**: File.open で作る io object が **STRESS+PURGE 下で klass stale 化**
+  → `io.read` が "undefined method 'read' for an instance of Object"。**HEAD(改修前)でも再現**するので既存。
+  io object は arena 側 + io_fps(libc)混在。[[project_koruby_precise_libc_arena_mix]] の未完分。
+- **最終 tally: pass 23405→25329(+1924)、whole-file 170→58、SEGV/TIMEOUT/KILL=0、golden 92769→93024**。
