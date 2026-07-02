@@ -3896,7 +3896,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         /* const-only (etype -1): exist with the right hierarchy for kind_of?/
          * ancestors/rescue-class checks; the runtime doesn't raise them itself. */
         { "LoadError",           -1,                "ScriptError" },
-        { "SyntaxError",         -1,                "ScriptError" },
+        { "SyntaxError",         KORB_E_SYNTAX,     "ScriptError" },
         { "NoMemoryError",       -1,                "Exception" },
         { "SecurityError",       -1,                "Exception" },
         { "SystemExit",          -1,                "Exception" },
@@ -8550,7 +8550,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(VAL2HASH(b0->extra)->items->data[2 * i]);
         NODE *entry = koruby_parse_binding_eval(c, s->buf->data, s->len, "(eval)", decl, declc);
         free(decl);
-        if (UNLIKELY(entry == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "syntax error in eval string");
+        if (UNLIKELY(entry == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
         const uint32_t L = koruby_toplevel_locals_cnt;
         const uint32_t ncnt = koruby_toplevel_local_cnt;
         const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
@@ -8583,7 +8583,8 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         #undef EVAL_BIND
         return RESULT_OK(fb[L]);
     }
-    NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)");   /* immortal AST; no GC */
+    NODE *ast = koruby_parse_source(c, s->buf->data, s->len, "(eval)", false);   /* immortal AST; no GC */
+    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
     VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */

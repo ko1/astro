@@ -364,13 +364,13 @@ main(int argc, char *argv[])
     size_t prelude_len = 0;
     char *prelude_src = OPTION.dump_ast ? NULL : load_prelude_source(&prelude_len);
     NODE *prelude_ast = OPTION.dump_ast ? NULL
-                      : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>");
+                      : koruby_parse_source(c, prelude_src, prelude_len, "<prelude>", true);
     uint32_t prelude_locals = koruby_toplevel_locals_cnt;
     /* Prelude method bodies registered so far form [0, g_prelude_repo_count);
      * they are baked into preload.so, not the program's code store. */
     g_prelude_repo_count = code_repo_count();
 
-    NODE *ast = koruby_parse_source(c, src, src_len, src_name);
+    NODE *ast = koruby_parse_source(c, src, src_len, src_name, true);
 
     if (OPTION.dump_ast) {
         DUMP(stdout, ast, true);

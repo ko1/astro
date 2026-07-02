@@ -2952,7 +2952,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 /* ---------------------------------------------------------------------- */
 
 NODE *
-koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname)
+koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
@@ -2963,7 +2963,13 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname)
     pm_node_t *root = pm_parse(&parser);
 
     if (parser.error_list.size > 0) {
-        /* CRuby-compatible exit path: SyntaxError → stderr + exit 1 */
+        if (!exit_on_error) {                        /* eval(str): return NULL so the caller raises SyntaxError */
+            pm_node_destroy(&parser, root);
+            pm_parser_free(&parser);
+            pm_options_free(&options);
+            return NULL;
+        }
+        /* main program: CRuby-compatible exit path — SyntaxError → stderr + exit 1 */
         for (const pm_diagnostic_t *d = (const pm_diagnostic_t *)parser.error_list.head;
              d != NULL; d = (const pm_diagnostic_t *)d->node.next) {
             int32_t line = pm_newline_list_line(&parser.newline_list,
