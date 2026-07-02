@@ -741,10 +741,7 @@ static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     uint32_t len = VAL2STR(VALUE_REF_GET(self))->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */
-    for (uint32_t i = 0; i < len; i++) {
-        unsigned char ch = (unsigned char)s->buf->data[i];
-        r->buf->data[i] = (char)(isupper(ch) ? tolower(ch) : islower(ch) ? toupper(ch) : ch);
-    }
+    korb_case_transform(s->buf->data, r->buf->data, len, 3);   /* swapcase (ASCII + Latin-1) */
     return RESULT_OK((VALUE)r);
 }
 /* ljust(0)/rjust(1)/center(2) — char-width padding via a transient buffer */
