@@ -4,6 +4,7 @@
  * / basename / extname).  Paths are byte strings; '/' is the only separator. */
 #include <unistd.h>
 #include <fnmatch.h>
+#include <sys/stat.h>
 
 /* Normalize an absolute path in `src` (length n) into `dst`: collapse "//", drop
  * "." segments, resolve ".." by popping, keep a single leading "/".  Returns the
@@ -186,6 +187,60 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(fnmatch(pbuf, sbuf, cf) == 0 ? KORB_TRUE : KORB_FALSE);
 }
 
+/* stat-based File predicates.  The path pointer is used before any allocation,
+ * so it stays valid (no moving-GC hazard). */
+static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kind) {
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    struct stat st;
+    if (stat(path, &st) != 0) return RESULT_OK(kind == 3 ? KORB_NIL : KORB_FALSE);
+    switch (kind) {
+      case 0: return RESULT_OK(KORB_TRUE);                                  /* exist? */
+      case 1: return RESULT_OK(S_ISREG(st.st_mode) ? KORB_TRUE : KORB_FALSE);/* file? */
+      case 2: return RESULT_OK(S_ISDIR(st.st_mode) ? KORB_TRUE : KORB_FALSE);/* directory? */
+      default: return RESULT_OK(LONG2FIX((intptr_t)st.st_size));            /* size */
+    }
+}
+static RESULT korb_m_file_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)self; return korb_m_file_stat_pred(c, slots, a, 0); }
+static RESULT korb_m_file_file_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)      { (void)self; return korb_m_file_stat_pred(c, slots, a, 1); }
+static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_stat_pred(c, slots, a, 2); }
+static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_m_file_stat_pred(c, slots, a, 3); }
+
+/* File.read(path) → the whole file as a String. */
+static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    FILE *f = fopen(path, "rb");
+    if (!f) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory @ rb_sysopen - %s", path);
+    char *buf = NULL; size_t cap = 0, len = 0;
+    for (;;) {
+        if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path); } buf = nb; }
+        size_t got = fread(buf + len, 1, cap - len, f);
+        len += got;
+        if (got == 0) break;
+    }
+    fclose(f);
+    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)len);
+    free(buf);
+    return r;
+}
+
+/* Dir.pwd → getcwd; Dir.exist?(path) → stat + S_ISDIR. */
+static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    char buf[8192];
+    if (!getcwd(buf, sizeof buf)) return RESULT_OK(KORB_NIL);
+    return korb_str_new(c, slots, buf, (uint32_t)strlen(buf));
+}
+static RESULT korb_m_dir_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_m_file_stat_pred(c, slots, a, 2);
+}
+
 void korb_init_file(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "File", 4), KORB_NIL)).value;
@@ -198,6 +253,21 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "extname",     korb_m_file_extname,     1);
     korb_class_def_cfn(c, slots[1], "fnmatch",     korb_m_file_fnmatch,     -1);
     korb_class_def_cfn(c, slots[1], "fnmatch?",    korb_m_file_fnmatch,     -1);
+    korb_class_def_cfn(c, slots[1], "exist?",      korb_m_file_exist_p,     1);
+    korb_class_def_cfn(c, slots[1], "exists?",     korb_m_file_exist_p,     1);
+    korb_class_def_cfn(c, slots[1], "file?",       korb_m_file_file_p,      1);
+    korb_class_def_cfn(c, slots[1], "directory?",  korb_m_file_directory_p, 1);
+    korb_class_def_cfn(c, slots[1], "size",        korb_m_file_size,        1);
+    korb_class_def_cfn(c, slots[1], "size?",       korb_m_file_size,        1);
+    korb_class_def_cfn(c, slots[1], "read",        korb_m_file_read,        -1);
+    /* Dir — pwd / exist?. */
+    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3), KORB_NIL)).value;
+    korb_const_define(c, korb_intern(vm, "Dir", 3), slots[2]);
+    slots[3] = korb_obj_singleton(c, slots + 3, slots[2]).value;
+    korb_class_def_cfn(c, slots[3], "pwd",     korb_m_dir_pwd,     0);
+    korb_class_def_cfn(c, slots[3], "getwd",   korb_m_dir_pwd,     0);
+    korb_class_def_cfn(c, slots[3], "exist?",  korb_m_dir_exist_p, 1);
+    korb_class_def_cfn(c, slots[3], "exists?", korb_m_dir_exist_p, 1);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
      * koruby's const table is flat, so these resolve from File / File::Constants
      * / bare alike. */
