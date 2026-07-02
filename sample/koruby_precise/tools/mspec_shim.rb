@@ -677,6 +677,11 @@ def quarantine!(*_opts); yield if block_given?; end
 def guard(*_opts, &blk); blk.call if blk; end
 def guard_not(*_opts, &blk); blk.call if blk; end
 def conflicts_with(*_opts, &blk); blk.call if blk; end
+# Privilege guards: the sweep runs as a normal (non-root) user, so `as_user`
+# blocks run and `as_superuser` / `as_real_superuser` blocks are skipped.
+def as_user(&blk); blk.call if blk; end
+def as_superuser(*_opts, &_blk); end
+def as_real_superuser(*_opts, &_blk); end
 
 # CRuby-specific guards that just yield
 def with_feature(*_opts, &blk); blk.call if blk; end
