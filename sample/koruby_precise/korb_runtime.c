@@ -6497,8 +6497,13 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
     } else {
         klass = korb_dispatch_class(c, recv);
     }
-    if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
-        struct korb_method *const m = ic->m;   /* only public methods reach the ic (private withheld below) → no visibility check */
+    if (LIKELY((ic->kind == KORB_IC_INSTANCE || ic->kind == KORB_IC_INSTANCE_VIS) &&
+               ic->serial == vm->method_serial && ic->klass == klass)) {
+        struct korb_method *const m = ic->m;
+        if (UNLIKELY(ic->kind == KORB_IC_INSTANCE_VIS && caller_self != KORB_UNDEF)) {   /* cached private/protected — guard the cached entry (no re-lookup) */
+            const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, ic->def_class);
+            if (vr.state != KORB_NORMAL) return vr;
+        }
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple))   /* hot path: inlines invoke_simple, skips dispatch_method PLT */
             return korb_invoke_simple(c, slots, m, argc, line, mid, recv, ic->def_class);
         if (m->kind == KORB_METHOD_ATTR_R)                          /* attr/struct reader: inline ivar load, skip dispatch_method PLT */
@@ -6522,14 +6527,15 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
         KORB_CLASS_P(klass) ? korb_mcache_find(vm, klass, mid, &def_class) : NULL;
     if (UNLIKELY(m == NULL))   /* NoMethodError (rare) — let korb_send_impl format/raise */
         return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
-    if (UNLIKELY(m->visibility != 0)) {   /* private/protected: enforce + WITHHOLD from the ic so node_send's fast path never invokes it unchecked */
+    ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
+    if (UNLIKELY(m->visibility != 0)) {   /* private/protected: cache as _VIS (resolved) — node_send's inline fast path won't match it, so it always routes here to be guarded */
+        ic->kind = KORB_IC_INSTANCE_VIS;
         if (caller_self != KORB_UNDEF) {
             const RESULT vr = korb_check_call_vis(c, slots, m, mid, line, recv, caller_self, def_class);
             if (vr.state != KORB_NORMAL) return vr;
         }
         return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
     }
-    ic->serial = vm->method_serial; ic->klass = klass; ic->m = m; ic->def_class = def_class;
     ic->kind = KORB_IC_INSTANCE;
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, NULL, NULL, NULL);
 }

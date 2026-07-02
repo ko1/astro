@@ -82,7 +82,11 @@ struct korb_constcache {
 /* kind discriminates which fill path wrote the cache, so a call site whose
  * receiver flips between an instance and a class (same mid resolving to both an
  * instance method and a class/singleton method) never reads a stale entry. */
-enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2 };
+/* KORB_IC_INSTANCE_VIS caches a private/protected instance method: like
+ * KORB_IC_INSTANCE (resolved, no re-lookup) but node_send's inline fast path
+ * deliberately does NOT match it, so the call always routes through
+ * korb_send_cached which runs the visibility guard on the cached entry. */
+enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3 };
 struct korb_inlcache {
     uint64_t serial;
     VALUE    klass;
