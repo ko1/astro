@@ -2022,3 +2022,15 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   (getcwd/stat)。path ptr は alloc 前に使うので GC 安全。
 - **残 stdlib**: File.open/write・IO オブジェクト(write-side)、String#unicode_normalize、Marshal、
   Dir.glob/entries、Time の詳細。
+
+### 2026-07-02 続き5 (IO/File objects — write-side完成)
+- **✅ File.write/readlines/foreach/delete** (7281b8b2): class method、String content。
+- **✅ IO オブジェクト層** (689fdbe6): vm->io_fps[] table に FILE* を持ち、instance の @__io_fp ivar が
+  index(FILE* は off-heap raw ptr → GC scan 不要、ivar は Fixnum)。IO class(< Object)に write/print/
+  puts/<</read/gets/readlines/each_line(getline、no-block→Enumerator)/close/flush/eof?。File < IO に
+  reparent、File.open(path,mode){|io|…} で yield+auto-close。$stdin/$stdout/$stderr + STDIN/STDOUT/STDERR
+  を fd slot 0/1/2 に bind。**GC罠: korb_init_io が IO class を C local に cache→korb_obj_singleton/
+  obj_new が動かして 2個目以降の std-stream が stale klass(STRESS で $stdout.class が Object 化)→
+  rooted slot を毎回 re-read**。
+- **残 stdlib**: IO.new/pipe/select、Marshal、Dir.glob/entries/chdir、String#unicode_normalize、
+  File.write の to_s coercion、Errno クラス階層。
