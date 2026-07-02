@@ -354,6 +354,7 @@ main(int argc, char *argv[])
 
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
+    korb_define_argv(c, argc - i, &argv[i], src_name);   /* ARGV = remaining args; $0 = script */
 
     /* Parse the Enumerable prelude first (registers its method bodies in the
      * code repo so AOT bakes/swaps them too); run it after the AOT swap below.

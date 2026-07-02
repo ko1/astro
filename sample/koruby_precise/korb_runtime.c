@@ -6586,6 +6586,7 @@ static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv,
 #include "builtins/set.c"
 #include "builtins/math.c"
 #include "builtins/file.c"
+#include "builtins/env.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
@@ -8998,6 +8999,7 @@ korb_ctx_new(void)
     korb_init_builtin_classes(c, c->slots);
     korb_init_exception_classes(c, c->slots);
     korb_init_math(c, c->slots);
+    korb_init_env(c, c->slots);
     korb_init_file(c, c->slots);
     korb_init_time(c, c->slots);
     /* RUBY_* version constants (specs/guards reference these).  Values track the

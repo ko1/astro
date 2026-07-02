@@ -397,6 +397,7 @@ void korb_fprint_inspect(CTX *c, FILE *fp, VALUE v);
 
 /* CTX lifecycle (korb_runtime.c) */
 CTX *korb_ctx_new(void);
+void korb_define_argv(CTX *c, int n, char *const *args, const char *prog);   /* top-level ARGV + $0 */
 void korb_ctx_free(CTX *c);
 
 /* parser entry (parse.c).  `fname` is used for diagnostics only; the
