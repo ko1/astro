@@ -697,8 +697,12 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
         slots[1] = VAL2CLASS(slots[1])->superclass;
     }
     /* Kernel-private builtins (puts/require/... in the global table) are private
-     * methods inherited via Kernel by every object/class. */
-    if (inherit && (vis_mask & (1u << 1))) {
+     * methods of Kernel, inherited by every object/class — but NOT by a bare
+     * module (its ancestors are just itself + its own includes, not Kernel).
+     * Kernel itself is the exception: it owns them. */
+    const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module &&
+                                start_class != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+    if (inherit && (vis_mask & (1u << 1)) && !is_bare_module) {
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
             if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
             const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
