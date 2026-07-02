@@ -428,19 +428,83 @@ static RESULT korb_dir_list(CTX *c, VALUE *slots, VALUE_SLICE a, bool with_dots)
 }
 static RESULT korb_m_dir_entries(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_dir_list(c, slots, a, true); }
 static RESULT korb_m_dir_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_dir_list(c, slots, a, false); }
-/* Dir.glob(pattern) / Dir[pattern] → matched paths (POSIX glob). */
-static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self;
-    RESULT err; const char *pat = korb_path_arg(c, slots, a, &err); if (!pat) return err;
+/* Push the glob(3) matches of one concrete pattern into `arr`. */
+static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat, int flags) {
     glob_t g; memset(&g, 0, sizeof g);
-    glob(pat, GLOB_BRACE | GLOB_TILDE, NULL, &g);
-    slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)(g.gl_pathc ? g.gl_pathc : 1)));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    glob(pat, flags, NULL, &g);
     for (size_t i = 0; i < g.gl_pathc; i++) {
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, g.gl_pathv[i], (uint32_t)strlen(g.gl_pathv[i])));
-        if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
+        slots[0] = UNWRAP(korb_str_new(c, slots, g.gl_pathv[i], (uint32_t)strlen(g.gl_pathv[i])));
+        if (korb_ary_push_val(c, slots + 1, arr, slots[0]).state != KORB_NORMAL) break;
     }
     globfree(&g);
+    return RESULT_OK(KORB_NIL);
+}
+/* Glob one pattern into `arr`, expanding a recursive double-star segment (which
+ * glob(3) does not support) by trying prefix + N intermediate wildcard dirs +
+ * suffix, for N = 0..24. */
+static RESULT korb_glob_one(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat) {
+    const int flags = GLOB_BRACE | GLOB_TILDE;
+    const char *ss = strstr(pat, "**");
+    if (!ss) return korb_glob_push(c, slots, arr, pat, flags);
+    /* split into the prefix before the double-star and the suffix after it. */
+    char prefix[4096], suffix[4096];
+    size_t plen = (size_t)(ss - pat);
+    while (plen > 0 && pat[plen - 1] == '/') plen--;                 /* trim the '/' before ** */
+    if (plen >= sizeof prefix) plen = sizeof prefix - 1;
+    memcpy(prefix, pat, plen); prefix[plen] = '\0';
+    const char *suf = ss + 2;                                        /* after "**" */
+    while (*suf == '/') suf++;                                       /* skip the slash after the stars */
+    snprintf(suffix, sizeof suffix, "%s", suf);
+    for (int depth = 0; depth <= 24; depth++) {                      /* ** matches 0..24 directory levels */
+        char pbuf[8192]; int n = 0;
+        n += snprintf(pbuf + n, sizeof pbuf - n, "%s", prefix[0] ? prefix : ".");
+        for (int d = 0; d < depth; d++) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/*");
+        if (suffix[0]) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/%s", suffix);
+        CHECK(korb_glob_push(c, slots, arr, pbuf, flags));
+        /* stop once no directory exists at this depth (nothing deeper to match). */
+        char dbuf[8192]; int m = 0;
+        m += snprintf(dbuf + m, sizeof dbuf - (size_t)m, "%s", prefix[0] ? prefix : ".");
+        for (int d = 0; d <= depth; d++) m += snprintf(dbuf + m, sizeof dbuf - (size_t)m, "/*");
+        glob_t gd; memset(&gd, 0, sizeof gd);
+        glob(dbuf, flags | GLOB_ONLYDIR, NULL, &gd);
+        const size_t dirs = gd.gl_pathc; globfree(&gd);
+        if (dirs == 0) break;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* Dir.glob(pattern | [patterns]) [ { |path| } ] / Dir[pattern] → matched paths.
+ * Supports `**` recursion, brace/tilde expansion, and multiple patterns. */
+static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                              struct Node *block, VALUE *def_env, VALUE *captured_self) {
+    (void)self;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    const VALUE p0 = VALUE_SLICE_GET(a, 0);
+    if (KORB_ARRAY_P(p0)) {                                          /* array of patterns */
+        slots[1] = p0;                                              /* root the pattern array */
+        const uint32_t np = VAL2ARY(slots[1])->len;
+        for (uint32_t i = 0; i < np; i++) {
+            const VALUE pv = VAL2ARY(slots[1])->items->data[i];
+            if (!KORB_STRING_P(pv)) continue;
+            uint32_t pl; char pbuf[8192]; const char *ps = korb_str_cstr_len(pv, &pl);
+            if (pl >= sizeof pbuf) continue;
+            memcpy(pbuf, ps, pl); pbuf[pl] = '\0';                   /* copy: korb_glob_one allocs */
+            CHECK(korb_glob_one(c, slots + 2, arr, pbuf));
+        }
+    } else {
+        if (UNLIKELY(!KORB_STRING_P(p0)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(p0));
+        uint32_t pl; char pbuf[8192]; const char *ps = korb_str_cstr_len(p0, &pl);
+        if (pl < sizeof pbuf) { memcpy(pbuf, ps, pl); pbuf[pl] = '\0'; CHECK(korb_glob_one(c, slots + 2, arr, pbuf)); }
+    }
+    if (block != NULL) {                                            /* yield each, return nil */
+        const uint32_t n = VAL2ARY(VALUE_REF_GET(arr))->len;
+        for (uint32_t i = 0; i < n; i++) {
+            slots[1] = VAL2ARY(VALUE_REF_GET(arr))->items->data[i];
+            CHECK(korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self));
+        }
+        return RESULT_OK(KORB_NIL);
+    }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 /* Dir.chdir(path) [ { ... } ] — with a block, restores the old cwd after. */
@@ -496,8 +560,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[3], "unlink",   korb_m_dir_rmdir,    1);
     korb_class_def_cfn(c, slots[3], "entries",  korb_m_dir_entries,  1);
     korb_class_def_cfn(c, slots[3], "children", korb_m_dir_children, 1);
-    korb_class_def_cfn(c, slots[3], "glob",     korb_m_dir_glob,     -1);
-    korb_class_def_cfn(c, slots[3], "[]",       korb_m_dir_glob,     -1);
+    korb_class_def_cfn_blk(c, slots[3], "glob", korb_m_dir_glob, -1);
+    korb_class_def_cfn_blk(c, slots[3], "[]",   korb_m_dir_glob, -1);
     korb_class_def_cfn_blk(c, slots[3], "chdir", korb_m_dir_chdir,   -1);
     /* File::Constants module + open/seek/fnmatch/lock flags (Linux values).
      * koruby's const table is flat, so these resolve from File / File::Constants
