@@ -73,6 +73,14 @@ struct korb_ivcache {
  * each read, so reassignment and GC-forwarding are both seen). */
 struct korb_constcache {
     uint32_t idx_plus1;
+    /* Bare (lexical) const reads only: the enclosing class/module names,
+     * outermost→innermost (immortal, parse-baked; NULL for explicit paths /
+     * top-level).  Resolving this chain owner-scoped yields the UNIQUE innermost
+     * cref class even when a same-named class exists in another namespace (a flat
+     * name lookup would pick the wrong one).  Cold-path only — idx_plus1 caches
+     * the result. */
+    const uint32_t *owner_chain;
+    uint32_t chain_len;
 };
 
 /* Per-call-site monomorphic method cache — embedded in send nodes via @ref.

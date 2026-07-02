@@ -2769,7 +2769,24 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return transduce_module(tc, (const pm_module_node_t *)node);
       case PM_CONSTANT_READ_NODE: {
         const pm_constant_read_node_t *cr = (const pm_constant_read_node_t *)node;
-        return ALLOC_node_const(kp_intern_cid(tc, cr->name), kp_cref_owner(tc));
+        NODE *cn = ALLOC_node_const(kp_intern_cid(tc, cr->name), kp_cref_owner(tc));
+        /* Bake the full enclosing chain (outermost→innermost) so the read
+         * resolves the UNIQUE lexical cref class, not a same-named one picked by
+         * a flat lookup (e.g. M::C vs M::Inner::C). */
+        uint32_t depth = 0;
+        for (struct kp_frame *f = tc->frame; f; f = f->prev)
+            if (f->class_name_sym != 0) depth++;
+        if (depth > 0) {
+            uint32_t *chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
+            if (chain) {
+                uint32_t i = depth;                                /* fill innermost→outermost; store outermost at [0] */
+                for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
+                    if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
+                cn->u.node_const.cache.owner_chain = chain;
+                cn->u.node_const.cache.chain_len = depth;
+            }
+        }
+        return cn;
       }
       case PM_CONSTANT_PATH_NODE: {       /* `A::B` — resolve B owned by the parent
                                            * namespace A (the parent's rightmost name,

@@ -1026,7 +1026,20 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
          * (M::X); walk its lexical `enclosing` chain, then fall back to flat
          * (top-level + builtin consts like Math::PI, which have owner nil). */
         idx = UINT32_MAX;
-        for (VALUE o = korb_const_get(vm, owner_name); KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
+        /* A baked enclosing chain (bare lexical read) resolves owner-scoped to the
+         * UNIQUE innermost cref class, so a same-named class in another namespace
+         * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
+        VALUE cref = KORB_NIL;
+        if (cache->owner_chain != NULL) {
+            const uint32_t j0 = korb_const_index_owned(vm, cache->owner_chain[0], KORB_NIL);   /* outermost = top-level */
+            cref = (j0 != UINT32_MAX) ? vm->const_vals[j0] : KORB_NIL;
+            for (uint32_t i = 1; KORB_CLASS_P(cref) && i < cache->chain_len; i++) {
+                const uint32_t j = korb_const_index_owned(vm, cache->owner_chain[i], cref);
+                cref = (j != UINT32_MAX) ? vm->const_vals[j] : KORB_NIL;
+            }
+        }
+        if (!KORB_CLASS_P(cref)) cref = korb_const_get(vm, owner_name);   /* no chain / unresolved → flat seed (prior behaviour) */
+        for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
             idx = korb_const_index_owned(vm, name_sym, o);
             if (idx != UINT32_MAX) break;
         }
