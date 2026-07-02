@@ -2130,3 +2130,22 @@ pass 23405→24061。この session の commit:
     (visibility_inherited.rb の単純 case は通るが、multi-module + super('arg') で arity 不整合)。
   - 他 code=1 abort: kernel/p(M0 non-local multi-assign)、exception/case_compare(constant path w/ non-namespace
     parent)、kernel/eval(eval str + coerce)、marshal/dump・load(UserMarshal fixture)、dir/file の syscall 系。
+
+### 2026-07-02 続き10 追記 (Enumerator::Lazy + shim resilience + parser gaps)
+続き10 の後半。commit 追加:
+- **✅ Enumerator::Lazy class** (6bce2258): lazy-mode enum(1/4)の class として報告(korb_class_obj_of +
+  korb_dispatch_class)。const 定義で lazy/* の "uninitialized constant Enumerator::Lazy" abort 解消。
+- **✅ mspec_shim it() が Exception を rescue** (1acb43cb): `SpecificError < Exception`(lazy 早期停止証明用)が
+  `rescue => e`(StandardError)を escape して whole-file abort → Exception rescue で継続。
+- **✅ `expr::CONST`** (d1a17bb3): 非定数 parent の constant path を `(expr).const_get(:CONST)` に desugar。
+  exception/case_compare unblock。(残: Integer::MAX が Float::MAX を拾う const_get flat-fallback bug は別件)
+- **✅ global multi-assign** (f7d327de): `$/, $\, $, = a,b,c` を general desugar + mw_assign_target に
+  GLOBAL_VARIABLE_TARGET 追加。kernel/p unblock。
+- **✅ mspec_shim as_user/as_superuser** (1984af40): privilege guard 未定義 → abort。非 root なので as_user は
+  実行、as_superuser は skip。dir/{chroot,mkdir}・file/{lchown,ftype} unblock。
+- **セッション累計**: rubyspec core whole-file-fail **170→85**、SEGV **全滅維持(0)**、pass 23405→24169(+764)。
+- **残 code=1 abort(fixture-resolution 依存 or feature gap)**: method/*(14, const-resolution 大物)、
+  marshal/{dump,load}(UserMarshal fixture)、kernel/eval(eval str SyntaxError 化)、exception/syntax_error
+  (eval syntax→ArgumentError で SyntaxError でない)、dir/fileno(Dir instance object)、module/constants
+  (ConstantSpecs fixture)、file/ftype(FileSpecs fixture)。※ 個別 fixture は runner resolve_requires 依存で
+  手動 cat 再現と挙動が違うことがある(sweep が正)。
