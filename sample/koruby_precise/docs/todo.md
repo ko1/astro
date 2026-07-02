@@ -1972,3 +1972,16 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   混合 bench(fib+float+symbol+truthy)が **28.4B→7.0B instructions / ~4.2s→~0.66s(~4x)**。挙動不変。
 - **残 structural**: Kernel-private-builtin reflection(dispatch visibility)、deferred-Enumerator、
   regex(astrorge skip)、object default #inspect の ivars(address 不可)。
+
+### 2026-07-02 (deferred-Enumerator find + Kernel-private reflection)
+- **✅ Array#find/#detect の no-block Enumerator** (792a93e7): op-tag 方式(op 4 = find)。
+  .each/.with_index が early-stop で最初の match を返す(no match → nil)。naive eager materialize
+  でなく driver 側で early-stop するので正しい。map/each/select/reject/flat_map は既に op-tag で動作。
+- **✅ Kernel-private builtin の reflection** (ca8c89c7): puts/print/require/Integer() 等は global
+  builtin table に有り class table に無いので respond_to?(:puts,true) / private_method_defined? /
+  Kernel.private_instance_methods / obj.private_methods が漏らしてた。reflection が global table
+  (kind==BUILTIN)を Kernel-private として参照(respond_to? は include_private のみ、defined? は
+  private=true/public/method=false、listing は inherit 時に append)。**dispatch は不変(reflection のみ)**。
+- 残 no-block Enumerator: partition/group_by/min_by/max_by/count.with_index(各 custom accumulation
+  = partition→2配列, group_by→hash, min_by→track, count→int。稀)。他残: regex(astrorge skip)、
+  object default #inspect の address(moving GC で不可)。
