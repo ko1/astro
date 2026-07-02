@@ -774,6 +774,8 @@ class MSpecMock
   # stubbed value must win (mirrors to_s/hash/== above).  Conversion methods
   # (to_int/to_str/...) are NOT on Object — method_missing handles their stubs.
   def <=>(o); e = @recv[:<=>]; e ? e.__return_value : super; end
+  def ===(o); e = @recv[:===]; e ? e.__return_value : super; end
+  def =~(o); e = @recv[:=~]; e ? e.__return_value : super; end
   def inspect; e = @recv[:inspect]; e ? e.__return_value : "#<mock(#{@name})>"; end
   def eql?(o); e = @recv[:eql?]; e ? e.__return_value : super; end
   # Conversion methods: defining them makes the runtime's respond_to?/coercion
@@ -827,7 +829,7 @@ class MSpecMockExpectation
       raise (@raise.is_a?(Class) ? @raise.new : @raise)
     end
     if @ret_seq
-      v = @ret_seq[@ret_idx] || @ret_seq.last
+      v = @ret_idx < @ret_seq.size ? @ret_seq[@ret_idx] : @ret_seq.last   # falsy values must pass through
       @ret_idx += 1
       v
     else
