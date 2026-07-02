@@ -8192,10 +8192,19 @@ static RESULT
 korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
 {
     if (KORB_ARRAY_P(v)) {
+        if (VAL2ARY(v)->head.flags & KORB_FL_JOIN_VISITING) {   /* recursive array → CRuby prints "[...]" */
+            fputs("[...]\n", fp);
+            return RESULT_OK(KORB_NIL);
+        }
         slots[0] = v;                                   /* root across to_s GC in recursion */
-        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
-            CHECK(korb_puts_one_to(c, slots + 1, VAL2ARY(slots[0])->items->data[i], fp));
-        return RESULT_OK(KORB_NIL);
+        VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
+        RESULT r = RESULT_OK(KORB_NIL);
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+            r = korb_puts_one_to(c, slots + 1, VAL2ARY(slots[0])->items->data[i], fp);
+            if (UNLIKELY(r.state != KORB_NORMAL)) break;
+        }
+        VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: source may have moved */
+        return r;
     }
     if (KORB_OBJECT_P(v)) {                             /* user object → its to_s (user or default) */
         slots[0] = v;
