@@ -2066,3 +2066,18 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   罠: const_defined? の arity を 1→-1 に(inherit arg)。残: Integer.const_get(:MAX) が Float::MAX を拾う
   (builtin const の owner が nil、要 owner 付与)。
 - **✅ Time** (b35fb306): sunday?..saturday? + Time#to_a。
+
+### 2026-07-02 続き8 (IO/Dir/File 拡充; rubyspec sweep 継続)
+- rubyspec core sweep 69.5%→69.7%(file-clean 806→818)。残 big bucket は encoding(Unicode table)、
+  real syscall(process/spawn, io/popen/pipe/pread — fork/exec 必要)、refinements(module/refine/using)、
+  const_source_location、Unicode case table。個別 method の穴は減少。
+- **✅ IO#read(n) + seek/pos/pos=/tell/rewind/each_char/getc** (89966ba1): read が length 無視→n bytes。
+  fseek/ftell。SEEK_SET/CUR/END 定数。罠: each_char が str の内部ptr から str_new(alloc GC で source
+  移動)→ stack buffer に copy(STRESS crash)。
+- **✅ Dir.glob ** 再帰 / 配列 pattern / block** (be3a8a68): glob(3) は ** 非対応→prefix+N*wildcard+suffix
+  展開(N=0..24)。array pattern、block yield。罠: C コメント内の `*` `/` が comment を閉じる。
+- **✅ IO.read/write/readlines/foreach class method + File 拡充** (e73b244e): IO.* を File impl に委譲、
+  File.binread/binwrite、File.read(path,len,offset)、File.foreach no-block→Enumerator、readlines(chomp:)、
+  IO#getc/readline/readchar(EOFError)。
+- **手法の学び**: commit gate は CORPUS_MATCH を**別 call で確認してから** commit(const_defined? arity で
+  一度 failing test を commit してしまい amend で修正)。
