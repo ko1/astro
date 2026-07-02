@@ -449,8 +449,22 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             if (SYMBOL_P(arg)) mid = SYM2ID(arg);
             else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
             else continue;
+            bool found = false;
             for (uint32_t j = 0; j < k->method_cnt; j++)
-                if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+                if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; found = true; break; }
+            if (!found) {
+                /* `public :m` for an inherited/included method: CRuby adds a
+                 * visibility-override entry on this class. Copy the ancestor
+                 * definition into a local slot with the new visibility, keeping
+                 * the original owner so `super` still resolves above it. */
+                VALUE adef = KORB_NIL;
+                const struct korb_method *src = korb_class_find_method(selfv, mid, &adef);
+                if (src != NULL) {
+                    struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
+                    const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
+                    *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
+                }
+            }
         }
         c->vm->method_serial++;
         return RESULT_OK(argc == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
