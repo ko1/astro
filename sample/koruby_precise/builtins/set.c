@@ -882,6 +882,63 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
     return RESULT_OK(val);
 }
+/* Module#class_variable_get(name) — name is :@@x / "@@x" (koruby keys cvars by
+ * the full @@-prefixed symbol); searches self + ancestors, NameError if absent. */
+static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(id == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE cls = VALUE_REF_GET(self);
+    int32_t idx = -1;
+    const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;
+    if (owner == KORB_NIL)
+        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
+                          korb_sym_name(c->vm, id), korb_type_name(cls));
+    return RESULT_OK(VAL2HASH(VAL2CLASS(owner)->cvars)->items->data[2 * idx + 1]);
+}
+/* Module#class_variable_set(name, val) — set on the defining ancestor if one
+ * exists, else on the receiver (matches CRuby's rb_cvar_set). */
+static RESULT korb_m_class_cvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(id == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    return korb_cvar_set(c, slots, cls, KORB_NIL, id, VALUE_SLICE_GET(a, 1));   /* self is a class → cref = self */
+}
+/* Module#class_variable_defined?(name) → true if defined on self or an ancestor. */
+static RESULT korb_m_class_cvar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(id == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE cls = VALUE_REF_GET(self);
+    int32_t idx = -1;
+    const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;
+    return RESULT_OK(owner != KORB_NIL ? KORB_TRUE : KORB_FALSE);
+}
+/* Module#class_variables(inherit = true) → symbols of the class variables of
+ * self (and ancestors unless inherit is false), each listed once. */
+static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const bool inherit = (VALUE_SLICE_LEN(a) < 1) || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* result (rooted at slots[0]) */
+    slots[1] = VALUE_REF_GET(self);                      /* current class (rooted; push may move it) */
+    while (KORB_CLASS_P(slots[1])) {
+        /* re-derive the cvars hash from the rooted class each iteration: a push
+         * below may GC/move both the class and its hash. len never shrinks, so a
+         * plain index walk is stable; keys are immediate Symbols (no rooting). */
+        for (uint32_t i = 0; VAL2CLASS(slots[1])->cvars != KORB_NIL && i < VAL2HASH(VAL2CLASS(slots[1])->cvars)->len; i++) {
+            const VALUE key = VAL2HASH(VAL2CLASS(slots[1])->cvars)->items->data[2 * i];
+            bool dup = false;                            /* de-dup across ancestors */
+            for (uint32_t j = 0; j < VAL2ARY(slots[0])->len; j++)
+                if (VAL2ARY(slots[0])->items->data[j] == key) { dup = true; break; }
+            if (!dup) CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), key));
+        }
+        if (!inherit) break;
+        slots[1] = VAL2CLASS(slots[1])->superclass;
+    }
+    return RESULT_OK(slots[0]);
+}
 /* Module#remove_method(sym...) — drop the named method(s) from THIS class (a
  * sentinel mid retires the slot; lookup then falls through to ancestors). Raises
  * NameError if a name isn't defined on the class itself. */
