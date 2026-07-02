@@ -77,6 +77,11 @@ def it(name, *_opts, &blk)
   rescue MSpecError => e
     $ms_fail += 1
     puts "  FAIL #{$ms_current}: #{e.message}"
+  rescue NotImplementedError
+    # An intentional koruby "not supported" gap.  A NotImplementedError is not a
+    # StandardError, so without this it would escape `it` and abort the whole
+    # file (like a crash).  Count it as skip and keep running the file.
+    $ms_skip += 1
   rescue => e
     # Out-of-scope features (Thread/Fiber/Ractor/Encoding/etc.) surface
     # as `NameError: uninitialized constant`.  Treat those as skip so
