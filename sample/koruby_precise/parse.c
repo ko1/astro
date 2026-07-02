@@ -1758,6 +1758,12 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         WITH_CHAIN(tc, sc, (v = mw_index_get(tc, src_tmp, idx, aref, line)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
     }
+    if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {   /* $g = ... (globals reuse the const table, $-prefixed name) */
+        uint32_t name = kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name);
+        NODE *v; uint32_t sc = kind_node_const_set.slot_count;
+        WITH_CHAIN(tc, sc, (v = mw_index_get(tc, src_tmp, idx, aref, line)));
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
+    }
     if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
         uint32_t setter = kp_intern_cid(tc, ct->name);
@@ -2203,7 +2209,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                            PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
                     all_local = false;
                 } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
-                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` → general desugar */
+                           PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / recv.x= → general desugar */
                     all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
