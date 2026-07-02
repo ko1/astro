@@ -2150,3 +2150,17 @@ pass 23405→24061。この session の commit:
   (eval syntax→ArgumentError で SyntaxError でない)、dir/fileno(Dir instance object)、module/constants
   (ConstantSpecs fixture)、file/ftype(FileSpecs fixture)。※ 個別 fixture は runner resolve_requires 依存で
   手動 cat 再現と挙動が違うことがある(sweep が正)。
+
+### 2026-07-02 続き10 追記2 (const-resolution 大物解決 + super/eval/shim)
+- **✅ 定数解決 architectural bug 解決** (c5c3847a): constcache に enclosing 全 chain を焼き cold path で
+  unique cref 解決。method/* 13 file unblock。詳細は上の該当項目参照。golden 無回帰。
+- **✅ super into define_method** (f2d17d6d): korb_super に KORB_METHOD_DM case。module/prepend の SIGBUS 解消。
+- **✅ eval SyntaxError 化** (b0844a67): KORB_E_SYNTAX etype 追加、koruby_parse_source に exit_on_error flag。
+  plain eval が process exit してた/binding eval が ArgumentError → SyntaxError(<ScriptError)に。kernel/eval unblock。
+- **✅ shim guard block が Exception を swallow** (最新): platform_is_not 等の guard body 内の未対応構文
+  (backtick 等)が file を落とさない。file/ftype・file/stat/ftype unblock。
+- **セッション最終 tally**: rubyspec core whole-file-fail **170→60**、**SEGV 全滅維持(0)**、
+  pass 23405→24369(**+964**)、file-clean 843→868。
+- **残 whole-file abort(大機能 or niche)**: thread/*(11、Thread/並行性)、string/encoding・encode(Unicode table)、
+  marshal/dump・load(UserMarshal = String subclass の ivar)、dir/fileno(Dir instance object)、
+  method/parameters(重複 `_` param の locals 割当)、exception/syntax_error(spec file 自体が意図的 invalid 構文)。
