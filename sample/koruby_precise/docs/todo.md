@@ -2119,10 +2119,13 @@ pass 23405→24061。この session の commit:
 - **✅ public/private/protected :sym が inherited method に効く** (9be52893): korb_set_visibility が直接
   定義の method しか見てなかった → 継承/include の method に visibility-override entry を作る(owner 保持で super OK)。
 - **残 TODO(未着手)**:
-  - core/method/* (14 file) が fixtures/classes.rb の line 244 `alias_method :meow, :derp`(InheritedMethods::C、
-    include A/B の private derp を public 後 alias)で **NameError "undefined method 'derp' for class 'Object'"** で
-    whole-file abort。lines 115-133(MethodSpecs::A/B/BetweenBAndC/C<B) との**累積**で class C body の self が
-    Object 化する(単独 range では再現せず、"private meow" になる)。parser/class-scope の cumulative bug。要調査。
+  - **core/method/* (14 file) whole-file abort = 定数解決の architectural bug**(要方針確認の大物)。
+    再現最小: `module M; class C<B; end; module Inner; module A; ...; end; class C; include A; end; end; end`
+    → Inner::C 内の bare `A` が **M::Inner::A でなく M::A に解決**(同名 class C が2つあると壊れる)。
+    真因: bare const read は enclosing を**名前(name_sym)**で焼き、EVAL_node_const が `korb_const_get(vm, owner_name)`
+    で**フラット先勝ち**検索 → 同名 nested class があると最初に定義された方(M::C)を拾い、その enclosing 鎖(M)を歩く。
+    node_const に実際の cref class identity を渡す必要(method body では self≠cref なので self_off 不可)。
+    parser が enclosing を unique identity で焼く設計変更が要る。着手前に方針確認。
   - alias_method :meow, :derp で meow の owner=C になり super が原 module 上でなく C 上から解決される
     (visibility_inherited.rb の単純 case は通るが、multi-module + super('arg') で arity 不整合)。
   - 他 code=1 abort: kernel/p(M0 non-local multi-assign)、exception/case_compare(constant path w/ non-namespace
