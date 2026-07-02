@@ -320,15 +320,32 @@ static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
     if (p->iseq == NULL) return RESULT_OK(LONG2FIX(-2));   /* symbol proc */
     const NODE *e = p->iseq;
-    /* required positional + (required kw ? 1 : 0), negated for optional/rest
-     * positional.  A lambda also negates for keyword optionality (optional kw or
-     * kwrest) when there is no required kw; a plain proc never negates for
-     * keywords. */
-    bool kreq, kopt, kwrest; korb_kw_arity_flags(e->u.node_entry.kw_info, &kreq, &kopt, &kwrest);
-    const bool varpos = (e->u.node_entry.opt_defaults != NULL) || (e->u.node_entry.rest_slot >= 0);
-    const uint32_t req = (varpos ? e->u.node_entry.req_cnt : e->u.node_entry.params_cnt) + (kreq ? 1u : 0u);
-    const bool var = varpos || (p->is_lambda && (kopt || kwrest) && !kreq);
-    return RESULT_OK(LONG2FIX(var ? -((intptr_t)req + 1) : (intptr_t)req));
+    const bool lam = p->is_lambda;
+    /* Count param kinds from the full param list (0=req 1=opt 2=rest 3=keyreq
+     * 4=key 5=keyrest 6=block).  Required positionals = leading + post (both req).
+     * Mandatory = required positionals + (any required kw ? 1 : 0).  The result is
+     * negated when there is a rest, an optional positional in a *lambda*, or (for
+     * a lambda) optional-only keyword args. A plain proc never negates for its
+     * optionals/keywords. */
+    const struct korb_param_info *const pi = (const struct korb_param_info *)e->u.node_entry.param_info;
+    if (pi == NULL) {                                     /* no params → 0 */
+        return RESULT_OK(LONG2FIX(0));
+    }
+    uint32_t reqp = 0, optp = 0; bool has_rest = false, kreq = false, kopt = false, kwrest = false;
+    for (uint32_t i = 0; i < pi->n; i++) {
+        switch (pi->e[i].kind) {
+          case 0: reqp++; break;
+          case 1: optp++; break;
+          case 2: has_rest = true; break;
+          case 3: kreq = true; break;
+          case 4: kopt = true; break;
+          case 5: kwrest = true; break;
+          default: break;                                 /* block param: ignored */
+        }
+    }
+    const uint32_t req = reqp + (kreq ? 1u : 0u);
+    const bool negate = has_rest || (lam && optp > 0) || (lam && (kopt || kwrest) && !kreq);
+    return RESULT_OK(LONG2FIX(negate ? -((intptr_t)req + 1) : (intptr_t)req));
 }
 /* Proc#parameters — [[kind, name], ...] from the parse-time param_info (cold;
  * never on the call/yield hot path).  A non-lambda proc reports a required
