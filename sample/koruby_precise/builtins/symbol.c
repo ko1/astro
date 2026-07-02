@@ -469,9 +469,45 @@ static RESULT korb_m_meth_owner(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)slots;(void)a;
     const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
     if (m->unbound) return RESULT_OK(m->recv);                      /* unbound: recv is the owner */
+    if (m->owner != KORB_NIL) return RESULT_OK(m->owner);           /* fixed owner (e.g. from super_method) */
     const struct korb_method *km = korb_meth_resolve(c, m);
     if (km && km->owner != KORB_NIL) return RESULT_OK(km->owner);   /* defining class/module */
     return RESULT_OK(korb_builtin_class_obj(c->vm, KORB_C_OBJECT)); /* global fn → Object */
+}
+/* Method#super_method → a Method for the definition above this one in the
+ * receiver's MRO (fixed super-owner), or nil if there's no super. */
+static int korb_linearize_mro(VALUE klass, VALUE *buf, int max);   /* fwd (korb_runtime.c) */
+static RESULT korb_m_meth_super_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));
+    const struct korb_method *const km = korb_meth_resolve(c, m);
+    const VALUE cur_owner = (m->owner != KORB_NIL) ? m->owner : (km ? km->owner : KORB_NIL);
+    if (!KORB_CLASS_P(cur_owner)) return RESULT_OK(KORB_NIL);
+    const VALUE start = m->unbound ? m->recv : korb_dispatch_class(c, m->recv);
+    const uint32_t mid = m->mid;
+    const uint8_t unbound = m->unbound;
+    const VALUE recv = m->recv;
+    VALUE mro[256];
+    const int n = korb_linearize_mro(start, mro, 256);
+    int di = -1;
+    for (int i = 0; i < n; i++) if (mro[i] == cur_owner) { di = i; break; }
+    if (di < 0) return RESULT_OK(KORB_NIL);
+    for (int i = di + 1; i < n; i++) {
+        if (!KORB_CLASS_P(mro[i])) continue;
+        const KorbClass *const mk = VAL2CLASS(mro[i]);
+        bool has = false;
+        for (uint32_t q = 0; q < mk->method_cnt; q++)
+            if (mk->methods[q]->mid == mid && mk->methods[q]->mid != UINT32_MAX) { has = true; break; }
+        if (!has) continue;
+        slots[0] = mro[i];                                          /* root super-owner across the alloc */
+        if (unbound)                                                /* unbound: recv IS the owner class */
+            return korb_unbound_new(c, slots + 1, slots[0], mid);
+        RESULT r = korb_method_new(c, slots + 1, recv, mid);        /* bound: keep recv, fix the super-owner */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        ARO_STORE(c, VAL2METH(r.value), (VALUE *)(uintptr_t)&VAL2METH(r.value)->owner, slots[0]);
+        return r;
+    }
+    return RESULT_OK(KORB_NIL);
 }
 /* push a [kind] (or [kind, name]) param descriptor onto the result array `res`. */
 static RESULT korb_param_push(CTX *c, VALUE *slots, VALUE_REF res, const char *kind) {

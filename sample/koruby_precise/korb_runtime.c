@@ -7317,6 +7317,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "original_name", korb_m_meth_original_name, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "arity", korb_m_meth_arity, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "owner", korb_m_meth_owner, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "super_method", korb_m_meth_super_method, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "==", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "eql?", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "unbind", korb_m_meth_unbind, 0);
@@ -7329,6 +7330,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "original_name", korb_m_meth_original_name, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "arity", korb_m_meth_arity, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "owner", korb_m_meth_owner, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "super_method", korb_m_meth_super_method, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "==", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "eql?", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind", korb_m_meth_bind, 1);
