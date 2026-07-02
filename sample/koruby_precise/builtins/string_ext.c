@@ -138,18 +138,30 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             else i = save;                                 /* plain width digits → reparse below */
         }
         while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
-        if (i < flen && fmt[i] == '*') {                   /* dynamic width from next arg */
-            i++; const VALUE wv = (ai < argn) ? args[ai++] : KORB_NIL;
-            if (!FIXNUM_P(wv)) { err = true; errmsg = "width too big"; break; }
-            si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)FIX2LONG(wv));
+        if (i < flen && fmt[i] == '*') {                   /* dynamic width: `*` (next arg) or `*N$` (positional) */
+            i++;
+            VALUE wv;
+            { int wnum = 0; bool wany = false; const uint32_t sv = i;
+              while (i < flen && isdigit((unsigned char)fmt[i])) { wnum = wnum * 10 + (fmt[i]-'0'); wany = true; i++; }
+              if (wany && i < flen && fmt[i] == '$') { i++; wv = ((uint32_t)(wnum-1) < argn) ? args[wnum-1] : KORB_NIL; }
+              else { i = sv; wv = (ai < argn) ? args[ai++] : KORB_NIL; } }
+            intptr_t w;
+            if (!korb_to_index(wv, &w)) { err = true; errmsg = "width too big"; break; }   /* to_int coercion */
+            if (w < 0) { if (si < 70) spec[si++] = '-'; w = -w; }                           /* negative width → left-justify */
+            si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)w);
         } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
         if (i < flen && fmt[i] == '.') {
             i++;
-            if (i < flen && fmt[i] == '*') {               /* dynamic precision from next arg */
-                i++; const VALUE pv = (ai < argn) ? args[ai++] : KORB_NIL;
-                if (!FIXNUM_P(pv)) { err = true; errmsg = "precision too big"; break; }
-                const long pl = (long)FIX2LONG(pv);
-                if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", pl);   /* negative precision → ignored (CRuby) */
+            if (i < flen && fmt[i] == '*') {               /* dynamic precision: `*` or `*N$` */
+                i++;
+                VALUE pv;
+                { int pnum = 0; bool pany = false; const uint32_t sv = i;
+                  while (i < flen && isdigit((unsigned char)fmt[i])) { pnum = pnum * 10 + (fmt[i]-'0'); pany = true; i++; }
+                  if (pany && i < flen && fmt[i] == '$') { i++; pv = ((uint32_t)(pnum-1) < argn) ? args[pnum-1] : KORB_NIL; }
+                  else { i = sv; pv = (ai < argn) ? args[ai++] : KORB_NIL; } }
+                intptr_t pl;
+                if (!korb_to_index(pv, &pl)) { err = true; errmsg = "precision too big"; break; }
+                if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", (long)pl);   /* negative precision → ignored (CRuby) */
             } else {
                 if (si < 70) spec[si++] = '.';
                 while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
