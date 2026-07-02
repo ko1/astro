@@ -26,11 +26,16 @@ module Warning
   def self.warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end
 end
 class Object
+  # Lazy: the underlying `meth` runs only when the returned Enumerator is
+  # driven, so `obj.to_enum.lazy...first(n)` never over-iterates and a `meth`
+  # that raises does so at iteration time, not at to_enum time (matches CRuby).
   def to_enum(meth = :each, *args)
-    a = []; send(meth, *args) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
+    this = self
+    Enumerator.new { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
   def enum_for(meth = :each, *args)
-    a = []; send(meth, *args) { |*vs| a << (vs.size <= 1 ? vs[0] : vs) }; a.each
+    this = self
+    Enumerator.new { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
 end
 # Minimal Errno: just enough that Errno::X constant references resolve (as
