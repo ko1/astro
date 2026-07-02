@@ -691,6 +691,9 @@ struct korb_vm {
     /* Enumerator::Yielder class (block arg of Enumerator.new); KORB_NIL until
      * the enum init runs.  A GC root (forwarded in AROH_VISIT_ROOTS). */
     VALUE     yielder_class;
+    /* Enumerator::Lazy class (reported as the class of lazy-mode enumerators);
+     * set once at init.  A GC root (forwarded in AROH_VISIT_ROOTS). */
+    VALUE     lazy_class;
 
     /* per-core-class built-in method tables (receiver dispatch x.foo).
      * Each a flat {mid, fn, arity} list. */
@@ -890,6 +893,8 @@ struct CTX_struct {
      * as part of the slot range above — no separate registry. */               \
     /* Enumerator::Yielder class object (KORB_NIL before enum init). */        \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
+    /* Enumerator::Lazy class object. */                                       \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->lazy_class);               \
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \

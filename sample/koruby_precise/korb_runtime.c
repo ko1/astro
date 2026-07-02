@@ -3630,6 +3630,10 @@ korb_class_obj_of(CTX *c, VALUE self)
     }
     if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module)    /* a Module object → Module (not Class) */
         return korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
+    if (KORB_ENUM_P(self)) {                                 /* lazy-mode enumerators → Enumerator::Lazy */
+        const uint8_t m = VAL2ENUM(self)->mode;
+        if ((m == 1 || m == 4) && KORB_CLASS_P(c->vm->lazy_class)) return c->vm->lazy_class;
+    }
     return korb_const_get(c->vm, c->vm->class_name[korb_class_of(self)]);
 }
 
@@ -3678,6 +3682,10 @@ korb_dispatch_class(CTX *c, VALUE self)
             const VALUE k = korb_const_get(vm, vm->exc_name[et]);
             if (KORB_CLASS_P(k)) return k;
         }
+    }
+    if (KORB_ENUM_P(self)) {                          /* lazy-mode enumerators report Enumerator::Lazy */
+        const uint8_t m = VAL2ENUM(self)->mode;
+        if ((m == 1 || m == 4) && KORB_CLASS_P(vm->lazy_class)) return vm->lazy_class;
     }
     return korb_builtin_class_obj(vm, korb_class_of(self));
 }
@@ -3743,6 +3751,18 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
      * the rightmost "ArithmeticSequence", which is how flat const-paths resolve). */
     { VALUE as = korb_const_get(vm, vm->class_name[KORB_C_ARITHSEQ]);
       if (KORB_CLASS_P(as)) VAL2CLASS(as)->name_sym = korb_intern(vm, "Enumerator::ArithmeticSequence", 30); }
+    /* Enumerator::Lazy — a subclass of Enumerator; koruby's lazy enumerators are
+     * KORB_OBJ_ENUMERATOR (mode 1/4) and dispatch reports this class for them.
+     * Nested const under Enumerator so `Enumerator::Lazy` resolves. */
+    { const VALUE ec = korb_const_get(vm, vm->class_name[KORB_C_ENUMERATOR]);
+      if (KORB_CLASS_P(ec)) {
+          const uint32_t lazy_sym = korb_intern(vm, "Lazy", 4);
+          slots[0] = ec;                                            /* root super across class_new GC */
+          slots[1] = korb_class_new(c, slots + 2, lazy_sym, slots[0]).value;
+          ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, slots[0]);
+          korb_const_define_owned(c, lazy_sym, slots[1], slots[0]);   /* name_sym stays "Lazy"; enclosing → qname "Enumerator::Lazy" */
+          vm->lazy_class = slots[1];
+      } }
 
     /* BasicObject = Object's superclass; Kernel = a module mixed into Object.
      * Wiring both makes ancestors / is_a? / superclass reflect the real MRO tail. */
