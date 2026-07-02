@@ -509,6 +509,7 @@ static RESULT korb_m_ary_sort_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* sort_by!: sort in place by block key (sort_by then copy back into self). */
 static RESULT korb_m_ary_sort_by_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* CRuby raises FrozenError upfront, even on an empty array */
     RESULT sr = korb_m_ary_sort_by(c, slots, self, a, block, def_env, cself);   /* sorted copy at slots[0] */
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     slots[0] = sr.value;                                  /* root the sorted array */

@@ -198,6 +198,7 @@ static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VAL
 /* delete_if/reject!(keep_when_false) and keep_if/select!(keep_when_true), in-place */
 static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "in-place filter without a block is not supported");
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* CRuby raises FrozenError upfront, even on an empty array */
     uint32_t w = 0; bool changed = false;
     for (uint32_t r = 0; ; r++) {
         KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
