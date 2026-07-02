@@ -5611,9 +5611,11 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
             for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
         }
         for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_rest_slot(block) >= 0) {     /* |front..., *rest[, post...]| */
+    } else if (korb_entry_rest_slot(block) >= 0) {     /* |front..., *rest[, post...]| (front may include optionals) */
         const uint32_t np = korb_entry_params_cnt(block);
         const uint32_t rs = (uint32_t)korb_entry_rest_slot(block);
+        const uint32_t reqc = korb_entry_req_cnt(block);
+        struct Node **const opts = korb_entry_opt_defaults(block);          /* front optionals' defaults (NULL if none) */
         const uint32_t npost = (np > rs + 1) ? (np - rs - 1) : 0;
         const bool splat = (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));   /* auto-splat one Array */
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
@@ -5624,12 +5626,22 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         for (uint32_t i = 0; i < srcn; i++)
             stage[i] = splat ? VAL2ARY(argv[0])->items->data[i] : argv[i];
         const uint32_t surplus = (srcn > rs + npost) ? (srcn - rs - npost) : 0;
-        for (uint32_t i = 0; i < rs; i++) bf[1 + i] = (i < srcn) ? stage[i] : KORB_NIL;   /* front */
         VALUE *const rcur = stage + srcn;                                    /* alloc above the staged source */
         rcur[0] = UNWRAP(korb_ary_new(c, rcur, surplus ? surplus : 4));
         VALUE_REF rarr = VALUE_REF_AT(&rcur[0]);
         for (uint32_t i = 0; i < surplus; i++)
             CHECK(korb_ary_push_val(c, rcur + 1, rarr, stage[rs + i]));      /* stage rooted below rcur */
+        /* front (req + opt): provided arg, else an optional's default (evaluated
+         * after the rest array so rcur+1 scratch is free; rest array stays rooted
+         * at rcur[0]), else nil for a missing required (block-lenient). */
+        for (uint32_t i = 0; i < rs; i++) {
+            if (i < srcn) bf[1 + i] = stage[i];
+            else if (opts != NULL && i >= reqc) {
+                RESULT dr = EVAL(c, opts[i - reqc], rcur + 1);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                bf[1 + i] = dr.value;
+            } else bf[1 + i] = KORB_NIL;
+        }
         bf[1 + rs] = VALUE_REF_GET(rarr);
         for (uint32_t j = 0; j < npost; j++)                                 /* trailing post params */
             bf[1 + rs + 1 + j] = (rs + surplus + j < srcn) ? stage[rs + surplus + j] : KORB_NIL;

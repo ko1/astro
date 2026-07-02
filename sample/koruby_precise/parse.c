@@ -859,9 +859,6 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
                 }
             }
-            if (ps->optionals.size && ps->rest) {
-                pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "block optional + rest params combined");
-            }
             if (ps->rest || ps->optionals.size || ps->posts.size) {
                 /* general positional block params: req..., opt..., *rest, post...
                  * (plain, non-destructured — block params are runtime metadata;
