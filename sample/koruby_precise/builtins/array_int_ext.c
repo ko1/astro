@@ -375,6 +375,8 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         VALUE pos1 = VALUE_SLICE_LEN(a) > base + 1 ? VALUE_SLICE_GET(a, base + 1) : KORB_NIL;
         if (pos1 != KORB_NIL) {
+            if (UNLIKELY(KORB_BIGNUM_P(pos1)))           /* a Bignum length can't fit → RangeError (CRuby) */
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
             if (UNLIKELY(!korb_to_index(pos1, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos1));
             have_len = true;
         }
@@ -382,6 +384,11 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (!have_len) len = n - beg;                    /* default: to end of array */
     }
     if (len < 0) len = 0;
+    /* a fill region that would grow the array past what its uint32 index can hold
+     * (koruby cap) is refused rather than looped to exhaustion. */
+    if (UNLIKELY(beg > 0 && len > INTPTR_MAX - beg)) len = INTPTR_MAX;
+    if (UNLIKELY(beg + len > (intptr_t)0x7fffffff))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument too big");
     slots[0] = v;                                        /* root value across any grow */
     for (intptr_t i = beg; i < beg + len; i++) {
         if (i < 0) continue;
