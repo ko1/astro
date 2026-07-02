@@ -939,7 +939,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                             return kp_unsupported(tc, p, "destructuring block parameter");
                         }
                         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                        if (lvar_index(tc, p, cid) != i) {
+                        if (lvar_index(tc, p, cid) != i && kp_cid_cstr(tc, cid)[0] != '_') {   /* `_`-repeat: legal, binds positionally */
                             kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]",
                                      kp_cid_cstr(tc, cid), i);
                         }
@@ -956,7 +956,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
                             spec[i] = 0;
                             pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                            if (lvar_index(tc, p, cid) != loc)
+                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_')
                                 kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]", kp_cid_cstr(tc, cid), loc);
                             loc++;
                         } else if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
@@ -1548,9 +1548,10 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
                 return kp_unsupported(tc, p, "non-plain required parameter");
             }
             pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-            if (lvar_index(tc, p, cid) != i) {   /* a repeated param name (e.g. `def m(_, _)`) shares a slot → unsupported (don't abort the file) */
-                pop_frame(tc);
-                return kp_unsupported(tc, p, "repeated/underscore parameter name");
+            if (lvar_index(tc, p, cid) != i) {   /* name resolves to an earlier slot: a repeated param */
+                /* Ruby permits repeated `_`-prefixed params (`def m(_, _)`); each occupies
+                 * its own positional slot (frame has them), name reads hit the first. */
+                if (kp_cid_cstr(tc, cid)[0] != '_') { pop_frame(tc); return kp_unsupported(tc, p, "repeated parameter name"); }
             }
         }
         if (opt_cnt) {
@@ -1559,9 +1560,10 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
             for (uint32_t j = 0; j < opt_cnt; j++) {
                 const pm_optional_parameter_node_t *op =
                     (const pm_optional_parameter_node_t *)dn->parameters->optionals.nodes[j];
-                if (lvar_index(tc, (const pm_node_t *)op, op->name) != req_cnt + j) {
+                if (lvar_index(tc, (const pm_node_t *)op, op->name) != req_cnt + j
+                    && kp_cid_cstr(tc, op->name)[0] != '_') {   /* non-`_` repeat: unsupported (see required-param note) */
                     pop_frame(tc); free(opt_defaults);
-                    return kp_unsupported(tc, (const pm_node_t *)op, "repeated/underscore parameter name");
+                    return kp_unsupported(tc, (const pm_node_t *)op, "repeated parameter name");
                 }
                 /* default expr runs in method scope at the body cursor (chain 0) */
                 opt_defaults[j] = transduce(tc, op->value);
@@ -1595,9 +1597,10 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         const pm_node_t *p = ps->posts.nodes[i];
         if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-        if (lvar_index(tc, p, cid) != post_base + i) {
+        if (lvar_index(tc, p, cid) != post_base + i
+            && kp_cid_cstr(tc, cid)[0] != '_') {   /* non-`_` repeat: unsupported (see required-param note) */
             pop_frame(tc); free(opt_defaults);
-            return kp_unsupported(tc, p, "repeated/underscore parameter name");
+            return kp_unsupported(tc, p, "repeated parameter name");
         }
     }
 
