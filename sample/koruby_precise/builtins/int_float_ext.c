@@ -464,7 +464,15 @@ static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     #define ARR_J(j) ((j) == 0 ? VAL2ARY(VALUE_REF_GET(self)) : VAL2ARY(VALUE_SLICE_GET(a, (j) - 1)))
     uint32_t lens[16];
     uint64_t total = 1;
-    for (uint32_t j = 0; j < k; j++) { lens[j] = ARR_J(j)->len; total *= lens[j]; }
+    for (uint32_t j = 0; j < k; j++) {
+        lens[j] = ARR_J(j)->len;
+        /* CRuby raises RangeError when the number of products can't fit; koruby
+         * array sizes are uint32, so cap at INT32_MAX (also avoids uint64 overflow
+         * silently wrapping and then looping to exhaustion). */
+        if (lens[j] != 0 && total > (uint64_t)0x7fffffff / lens[j])
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "too big to product");
+        total *= lens[j];
+    }
     /* with a block: yield each combination, return self (no result array) */
     if (block != NULL) {
         if (total == 0) return RESULT_OK(VALUE_REF_GET(self));
