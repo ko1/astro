@@ -68,6 +68,10 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
         if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
         else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
     }
+    /* CRuby raises ArgumentError for out-of-range components (no mktime rollover). */
+    if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
+        comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
     tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
     tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5];
     tm.tm_isdst = -1;
@@ -196,6 +200,23 @@ static RESULT korb_m_time_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 
+static RESULT korb_m_time_zone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    const char *z = korb_time_is_utc(c, VALUE_REF_GET(self)) ? "UTC" : (tm.tm_zone ? tm.tm_zone : "");
+    return korb_str_new(c, slots, z, (uint32_t)strlen(z));
+}
+static RESULT korb_m_time_utc_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    return RESULT_OK(LONG2FIX(korb_time_is_utc(c, VALUE_REF_GET(self)) ? 0 : (intptr_t)tm.tm_gmtoff));
+}
+static RESULT korb_m_time_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
+    const int nd = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    const double scale = pow(10.0, nd);
+    const double r = round(e * scale) / scale;
+    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), r, korb_time_is_utc(c, VALUE_REF_GET(self)));
+}
+
 void korb_init_time(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Time", 4), korb_builtin_class_obj(vm, KORB_C_OBJECT))).value;
@@ -223,6 +244,14 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "yday",  korb_m_time_yday,  0);
     korb_class_def_cfn(c, t, "usec",  korb_m_time_usec,  0);
     korb_class_def_cfn(c, t, "to_a",  korb_m_time_to_a,  0);
+    korb_class_def_cfn(c, t, "zone",       korb_m_time_zone,       0);
+    korb_class_def_cfn(c, t, "utc_offset", korb_m_time_utc_offset, 0);
+    korb_class_def_cfn(c, t, "gmt_offset", korb_m_time_utc_offset, 0);
+    korb_class_def_cfn(c, t, "gmtoff",     korb_m_time_utc_offset, 0);
+    korb_class_def_cfn(c, t, "getutc",     korb_m_time_getutc,     0);
+    korb_class_def_cfn(c, t, "getgm",      korb_m_time_getutc,     0);
+    korb_class_def_cfn(c, t, "getlocal",   korb_m_time_getlocal,   -1);
+    korb_class_def_cfn(c, t, "round",      korb_m_time_round,      -1);
     korb_class_def_cfn(c, t, "sunday?",    korb_m_time_sunday,    0);
     korb_class_def_cfn(c, t, "monday?",    korb_m_time_monday,    0);
     korb_class_def_cfn(c, t, "tuesday?",   korb_m_time_tuesday,   0);
@@ -242,6 +271,7 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "-",   korb_m_time_minus, 1);
     korb_class_def_cfn(c, t, "<=>", korb_m_time_cmp,   1);
     korb_class_def_cfn(c, t, "==",  korb_m_time_eq,    1);
+    korb_class_def_cfn(c, t, "eql?", korb_m_time_eq,   1);
     korb_class_def_cfn(c, t, "strftime", korb_m_time_strftime, 1);
     korb_class_def_cfn(c, t, "to_s",     korb_m_time_to_s, 0);
     korb_class_def_cfn(c, t, "inspect",  korb_m_time_to_s, 0);
