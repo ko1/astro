@@ -1138,13 +1138,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return nb;
     }
 
-    /* bare `module_function` — promote subsequent defs to module (singleton)
-     * methods too.  (The `module_function :sym` arg form stays a runtime no-op.) */
-    if (argc == 0 && cn->block == NULL &&
-        strcmp(kp_cid_cstr(tc, cn->name), "module_function") == 0) {
-        tc->frame->module_function_mode = true;
-        return lit_nil();
-    }
+    /* bare `module_function` is a normal runtime call (korb_m_module_function
+     * sets cur_visibility mode 3: subsequent defs become private instance methods
+     * with a public module-singleton copy).  No parse-time interception. */
 
     /* attr_reader/writer/accessor :sym... → node_attr (defines getters/setters
      * on self = the enclosing class). */

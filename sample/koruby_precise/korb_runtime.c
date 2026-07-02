@@ -2920,6 +2920,7 @@ korb_check_basic_op_redef(CTX *c, VALUE klass, uint32_t mid)
 }
 
 extern const struct NodeKind kind_node_ivar_get;   /* auto-attr detection */
+static VALUE korb_klass_override_get(const struct korb_vm *vm, VALUE obj);   /* fwd (singleton lookup, no alloc) */
 
 void
 korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
@@ -2930,7 +2931,7 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     KorbClass *const k = VAL2CLASS(klass);
     struct korb_method *m = korb_class_method_slot(k, mid);
     m->kind = KORB_METHOD_ISEQ;
-    m->visibility = k->cur_visibility;   /* inherit the class body's current default (private/protected) */
+    m->visibility = (k->cur_visibility == 3) ? 1 : k->cur_visibility;   /* mode 3 = module_function: private instance method */
     m->owner = klass;        /* super's def_class + __method__ source (frame fs-2) */
     m->uses_block = (uint8_t)uses_block;
     m->params_cnt = (int32_t)params_cnt;
@@ -2953,6 +2954,14 @@ korb_class_def_method(CTX *c, VALUE klass, uint32_t mid, NODE *body,
     if (params_cnt == 0 && !uses_block && body && body->head.kind == &kind_node_ivar_get) {
         m->kind = KORB_METHOD_ATTR_R;
         m->attr_ivar = body->u.node_ivar_get.name;
+    }
+    if (UNLIKELY(k->cur_visibility == 3)) {   /* module_function mode: public copy on the module's (pre-created) singleton */
+        const VALUE sing = korb_klass_override_get(c->vm, klass);
+        if (KORB_CLASS_P(sing)) {
+            const struct korb_method src = *m;    /* snapshot: the singleton slot-array grow can't touch k's array, but be safe */
+            struct korb_method *sm = korb_class_method_slot(VAL2CLASS(sing), mid);   /* libc alloc, no GC */
+            *sm = src; sm->mid = mid; sm->owner = sing; sm->visibility = 0;
+        }
     }
     c->vm->method_serial++;
 }
@@ -7412,7 +7421,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "private", korb_m_private, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public", korb_m_public, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "protected", korb_m_protected, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "module_function", korb_m_module_function, -1);
     /* top-level `private`/`public`/... (self = main, an Object) are also no-ops. */
     korb_def_cmethod(c, KORB_C_OBJECT, "private", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "public", korb_m_visibility_noop, -1);
@@ -7498,7 +7507,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("private", korb_m_private, -1);
     MOD_CFN("public", korb_m_public, -1);
     MOD_CFN("protected", korb_m_protected, -1);
-    MOD_CFN("module_function", korb_m_visibility_noop, -1);
+    MOD_CFN("module_function", korb_m_module_function, -1);
     MOD_CFN("private_constant", korb_m_visibility_noop, -1);
     MOD_CFN("public_constant", korb_m_visibility_noop, -1);
     MOD_CFN("const_source_location", korb_m_lit_nil, -1);

@@ -473,6 +473,46 @@ static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
 static RESULT korb_m_public(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_set_visibility(c, slots, self, a, 0); }
+/* Module#module_function([name...]).  No args: switch the body's default so
+ * subsequent defs become module functions (visibility mode 3, honoured by the
+ * def path).  With names: for each, copy the instance method to the module's
+ * singleton (public, so Mod.name works) and make the instance method private —
+ * an independent copy, not a redirect.  Returns the name (1 arg) / names array. */
+static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE mod = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(mod)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "module_function must be called for modules");
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (argc == 0) {
+        slots[0] = mod;
+        (void)UNWRAP(korb_obj_singleton(c, slots + 1, slots[0]));   /* create the singleton now so the (slots-less) def path can copy into it without allocating */
+        VAL2CLASS(slots[0])->cur_visibility = 3;
+        return RESULT_OK(KORB_NIL);
+    }
+    slots[0] = mod;                                            /* root module across singleton alloc */
+    slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, slots[0]));   /* module's singleton (rooted) */
+    for (uint32_t i = 0; i < argc; i++) {
+        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, i));
+        if (UNLIKELY(mid == UINT32_MAX))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+        VALUE mdef = KORB_NIL;
+        const struct korb_method *src = korb_class_find_method(slots[0], mid, &mdef);
+        if (UNLIKELY(src == NULL))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for module '%s'",
+                              korb_sym_name(c->vm, mid), korb_type_name(slots[0]));
+        const struct korb_method tmp = *src;                  /* snapshot before any slot-array grow */
+        struct korb_method *sm = korb_class_method_slot(VAL2CLASS(slots[1]), mid);   /* singleton = public copy */
+        *sm = tmp; sm->mid = mid; sm->owner = slots[1]; sm->visibility = 0;
+        struct korb_method *im = korb_class_method_slot(VAL2CLASS(slots[0]), mid);   /* module instance method = private copy */
+        *im = tmp; im->mid = mid; im->owner = slots[0]; im->visibility = 1;
+    }
+    c->vm->method_serial++;
+    if (argc == 1) return RESULT_OK(VALUE_SLICE_GET(a, 0));
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, argc));
+    for (uint32_t i = 0; i < argc; i++)
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_SLICE_GET(a, i)));
+    return RESULT_OK(slots[2]);
+}
 /* private_class_method / public_class_method :sym... — set the visibility of the
  * named singleton (class) methods, which live on self's singleton class. */
 static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
@@ -679,6 +719,10 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
     const uint32_t mid_init = c->vm->mid_initialize;
+    /* Compute the "bare module" test up front, while start_class is still fresh —
+     * the collection loop below allocs (GC), after which start_class is stale. */
+    const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module &&
+                                start_class != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
     slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
@@ -699,9 +743,8 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     /* Kernel-private builtins (puts/require/... in the global table) are private
      * methods of Kernel, inherited by every object/class — but NOT by a bare
      * module (its ancestors are just itself + its own includes, not Kernel).
-     * Kernel itself is the exception: it owns them. */
-    const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module &&
-                                start_class != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+     * Kernel itself is the exception: it owns them. (is_bare_module computed at
+     * function entry — start_class is stale here after the loop's GCs.) */
     if (inherit && (vis_mask & (1u << 1)) && !is_bare_module) {
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
             if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
