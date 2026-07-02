@@ -787,6 +787,11 @@ struct korb_vm {
     bool    fmt_busy;
 
     const char *script_name; /* for error messages */
+    /* require/require_relative: the file currently being loaded (for
+     * require_relative's base dir) and the set of already-loaded absolute paths
+     * (libc-side strings, no GC). */
+    const char *cur_load_file;
+    char **loaded_files; uint32_t loaded_cnt, loaded_capa;
 };
 
 /* -----------------------------------------------------------------------------

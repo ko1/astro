@@ -3947,7 +3947,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "SystemStackError",    KORB_E_SYSSTACK,   "Exception" },
         /* const-only (etype -1): exist with the right hierarchy for kind_of?/
          * ancestors/rescue-class checks; the runtime doesn't raise them itself. */
-        { "LoadError",           -1,                "ScriptError" },
+        { "LoadError",           KORB_E_LOADERR,    "ScriptError" },
         { "SyntaxError",         KORB_E_SYNTAX,     "ScriptError" },
         { "NoMemoryError",       -1,                "Exception" },
         { "SecurityError",       -1,                "Exception" },
@@ -8359,15 +8359,140 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
 }
 static RESULT korb_puts_one(CTX *c, VALUE *slots, VALUE v) { return korb_puts_one_to(c, slots, v, stdout); }
 
-/* require / require_relative / load: no-op returning true.  koruby has the
- * common stdlib (Set, etc.) built in and no real file loader, so a require of a
- * supported feature just succeeds; code needing an unsupported one fails later
- * on the missing feature, not here. */
+/* Evaluate `src` as a top-level program (fresh `main` self, shared globals /
+ * constants / methods), like Kernel#eval with no binding.  Used by require/load. */
+static RESULT
+korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char *fname)
+{
+    NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
+    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in %s", fname);
+    const uint32_t locals = koruby_toplevel_locals_cnt;
+    slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
+    VALUE *const fb = slots + 3;
+    VALUE *const cur = fb + locals;
+    memset(fb, 0, (size_t)locals * sizeof(VALUE));
+    RESULT mr = korb_obj_new(c, cur, KORB_NIL);        /* fresh `main` self */
+    if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+    fb[-1] = mr.value;
+    return EVAL(c, ast, cur);
+}
+/* remember an absolute path as loaded (libc side; no GC). */
+static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {
+    for (uint32_t i = 0; i < vm->loaded_cnt; i++)
+        if (strcmp(vm->loaded_files[i], abspath) == 0) return false;   /* already loaded */
+    if (vm->loaded_cnt == vm->loaded_capa) {
+        vm->loaded_capa = vm->loaded_capa ? vm->loaded_capa * 2 : 16;
+        vm->loaded_files = realloc(vm->loaded_files, sizeof(char *) * vm->loaded_capa);
+        if (!vm->loaded_files) abort();
+    }
+    vm->loaded_files[vm->loaded_cnt++] = strdup(abspath);
+    return true;
+}
+/* Load `abspath` (read + eval at top level), tracking it as a required feature.
+ * dedup: if true (require), a second require of the same path returns false. */
+static RESULT
+korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out)
+{
+    struct korb_vm *const vm = c->vm;
+    if (dedup) {
+        for (uint32_t i = 0; i < vm->loaded_cnt; i++)
+            if (strcmp(vm->loaded_files[i], abspath) == 0) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
+    }
+    FILE *fp = fopen(abspath, "rb");
+    if (!fp) return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", abspath);
+    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+    if (sz < 0) sz = 0;
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(fp); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
+    size_t got = fread(buf, 1, (size_t)sz, fp); fclose(fp); buf[got] = '\0';
+    /* record before eval so a circular require returns false rather than reloading. */
+    if (dedup) korb_mark_loaded(vm, abspath);
+    const char *const saved = vm->cur_load_file;
+    char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
+    vm->cur_load_file = abscopy;
+    RESULT r = korb_eval_toplevel(c, slots, buf, got, abscopy);
+    vm->cur_load_file = saved;
+    free(buf);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    *out = KORB_TRUE;
+    return RESULT_OK(KORB_TRUE);
+}
+/* Resolve `name` (adding ".rb" if absent) against `base_dir` into `out` (abs),
+ * returning true if the file exists. */
+static bool korb_resolve_load(const char *base_dir, const char *name, char *out, size_t outsz) {
+    char cand[4096];
+    const bool has_rb = (strlen(name) >= 3 && strcmp(name + strlen(name) - 3, ".rb") == 0);
+    if (name[0] == '/') snprintf(cand, sizeof cand, "%s%s", name, has_rb ? "" : ".rb");
+    else                snprintf(cand, sizeof cand, "%s/%s%s", base_dir, name, has_rb ? "" : ".rb");
+    if (!realpath(cand, out)) { if ((size_t)snprintf(out, outsz, "%s", cand) >= outsz) return false; }
+    struct stat st; return stat(out, &st) == 0 && S_ISREG(st.st_mode);
+}
+/* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)c; (void)slots; (void)args;
-    return RESULT_OK(KORB_TRUE);
+    const VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv))) {
+        if (KORB_OBJECT_P(nv) && korb_responds_to(c, nv, korb_intern(c->vm, "to_path", 7))) {
+            slots[0] = nv;
+            RESULT pr = korb_send(c, slots + 1, korb_intern(c->vm, "to_path", 7), 0, 0);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+            if (KORB_STRING_P(pr.value)) { slots[0] = pr.value; return korb_bi_require(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1)); }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+    }
+    char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
+    if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
+    memcpy(namebuf, VAL2STR(nv)->buf->data, nl); namebuf[nl] = '\0';
+    char abspath[4096];
+    if (korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
+        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
+    }
+    /* Not on disk.  A handful of stdlib features are built into koruby (no .rb
+     * on disk): a require of one of those succeeds as a no-op.  Any other
+     * missing feature is a LoadError, matching CRuby. */
+    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", NULL };
+    const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
+    for (uint32_t i = 0; builtin_features[i]; i++)
+        if (strcmp(stem, builtin_features[i]) == 0)                   /* built-in: load-once contract by feature name */
+            return RESULT_OK(korb_mark_loaded(c->vm, stem) ? KORB_TRUE : KORB_FALSE);
+    return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", namebuf);
+}
+/* require_relative(name): resolve against the current file's directory. */
+static RESULT
+korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+    char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
+    if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
+    memcpy(namebuf, VAL2STR(nv)->buf->data, nl); namebuf[nl] = '\0';
+    /* base = dirname of the current load file (or the main script). */
+    const char *base = c->vm->cur_load_file ? c->vm->cur_load_file : (c->vm->script_name ? c->vm->script_name : ".");
+    char basedir[4096]; snprintf(basedir, sizeof basedir, "%s", base);
+    char *slash = strrchr(basedir, '/'); if (slash) *slash = '\0'; else snprintf(basedir, sizeof basedir, ".");
+    char abspath[4096];
+    if (korb_resolve_load(basedir, namebuf, abspath, sizeof abspath)) {
+        VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
+    }
+    return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", namebuf);
+}
+/* load(name): always (re)load; returns true. */
+static RESULT
+korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+    char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
+    if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
+    memcpy(namebuf, VAL2STR(nv)->buf->data, nl); namebuf[nl] = '\0';
+    char abspath[4096];
+    /* load() takes a path verbatim (no .rb auto-append); try relative to CWD. */
+    if (namebuf[0] == '/') snprintf(abspath, sizeof abspath, "%s", namebuf);
+    else if (!realpath(namebuf, abspath)) snprintf(abspath, sizeof abspath, "%s", namebuf);
+    VALUE out; return korb_load_abspath(c, slots, abspath, false, &out);
 }
 
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
@@ -9139,9 +9264,10 @@ korb_ctx_new(void)
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "warn", korb_bi_warn, -1);
+    korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "require", korb_bi_require, -1);
-    korb_builtin_define(c, "require_relative", korb_bi_require, -1);
-    korb_builtin_define(c, "load", korb_bi_require, -1);
+    korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
+    korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
     korb_builtin_define(c, "rand",  korb_bi_rand,  -1);
     korb_builtin_define(c, "srand", korb_bi_srand, -1);
