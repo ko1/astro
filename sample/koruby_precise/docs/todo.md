@@ -2081,3 +2081,15 @@ ArgumentError (commit a160f362、float lt/gt/lte/gte)。
   IO#getc/readline/readchar(EOFError)。
 - **手法の学び**: commit gate は CORPUS_MATCH を**別 call で確認してから** commit(const_defined? arity で
   一度 failing test を commit してしまい amend で修正)。
+
+### 2026-07-02 続き9 (whole-file crash 掃討 + shim NotImplementedError rescue = 大幅 coverage 判明)
+- **✅ Comparable#== 無限再帰 SEGV 修正** (96f7df6c): Comparable#==→#<=>→Object#<=>→#==→… の cycle。
+  KORB_FL_CMP_VISITING (0x800) で receiver に guard、再入→false。Object#<=> は == dispatch 維持
+  (object_spaceship 依存)。**whole-file code=139 crash がゼロに**。
+- **✅ mspec_shim it() が NotImplementedError を rescue** (92753178): NotImplementedError は
+  StandardError でない→per-example rescue を escape して file 全体を abort してた(1 unsupported example
+  = whole-file fail)。real mspec は example 失敗後も継続する。rescue して skip 計上。
+  → **whole-file fail 291→170、pass 12532→23400、pass率 69.7%→78.9%**(passing example が abort に
+  隠れてただけ)。koruby の真の core coverage は ~79%。
+- 残: encoding(Unicode table)、real syscall(process/spawn, io/popen/pipe — fork/exec)、refinements、
+  instance_eval/class_eval の String 版、niche reflection(BasicObject.instance_methods, Method#to_proc block)。
