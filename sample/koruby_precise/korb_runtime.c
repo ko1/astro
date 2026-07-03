@@ -6938,11 +6938,11 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "bytesplice", korb_m_str_bytesplice, -1);
     korb_def_cmethod(c, KORB_C_STRING, "insert", korb_m_str_insert, 2);
     korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
-    korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);   /* overridden by prelude */
+    korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__set_encoding_tag", korb_m_str_set_enc_tag, 1);
     korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);

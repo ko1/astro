@@ -52,16 +52,5 @@ class String
     else Encoding::UTF_8
     end
   end
-  def force_encoding(enc)
-    name = enc.is_a?(Encoding) ? enc.name : enc.to_str
-    __set_encoding_tag(case name
-                       when "ASCII-8BIT", "BINARY" then 2
-                       when "US-ASCII", "ASCII", "ANSI_X3.4-1968" then 1
-                       else 0
-                       end)
-    self
-  end
-  def b
-    dup.force_encoding("ASCII-8BIT")
-  end
+  # force_encoding / b are C methods (builtins/string.c).
 end

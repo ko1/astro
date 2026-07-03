@@ -29,6 +29,45 @@ static RESULT korb_m_str_set_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     else if (n == 1) h->flags |= KORB_FL_US_ASCII;
     return RESULT_OK(s);
 }
+/* map an encoding name to the tag (0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT). */
+static int korb_enc_name_tag(const char *name) {
+    if (strcmp(name, "ASCII-8BIT") == 0 || strcmp(name, "BINARY") == 0) return 2;
+    if (strcmp(name, "US-ASCII") == 0 || strcmp(name, "ASCII") == 0 || strcmp(name, "ANSI_X3.4-1968") == 0) return 1;
+    return 0;
+}
+/* String#force_encoding(enc) — set the encoding tag in place (enc is an encoding
+ * name String or an Encoding), return self.  Frozen-checked. */
+static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE s = VALUE_REF_GET(self);
+    if (UNLIKELY(korb_str_is_frozen(s)))
+        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
+    const VALUE enc = VALUE_SLICE_GET(a, 0);
+    char nbuf[64] = {0};
+    if (KORB_STRING_P(enc)) {
+        const KorbString *es = VAL2STR(enc);
+        uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1;
+        memcpy(nbuf, es->buf->data, l);
+    } else {                                  /* an Encoding: read its @name ivar */
+        const VALUE nm = korb_ivar_get(c, enc, ID2SYM(korb_intern(c->vm, "@name", 5)));
+        if (KORB_STRING_P(nm)) { const KorbString *es = VAL2STR(nm);
+            uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1; memcpy(nbuf, es->buf->data, l); }
+    }
+    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self);
+    h->flags &= ~(uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII);
+    const int tag = korb_enc_name_tag(nbuf);
+    if (tag == 2) h->flags |= KORB_FL_BINARY;
+    else if (tag == 1) h->flags |= KORB_FL_US_ASCII;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+/* String#b — a duplicate tagged ASCII-8BIT. */
+static RESULT korb_m_str_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    uint32_t len = SELF_STR->len;
+    KorbString *r = korb_str_alloc(c, slots, len);
+    memcpy(r->buf->data, SELF_STR->buf->data, len);   /* SELF_STR re-read after alloc */
+    r->head.flags |= KORB_FL_BINARY;
+    return RESULT_OK((VALUE)r);
+}
 /* String#-@ → a frozen string (self if already frozen, else a frozen copy). */
 static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -128,6 +167,7 @@ static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op, b
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = SELF_STR;   /* re-read after alloc (GC may have moved it) */
+    r->head.flags |= (s->head.flags & (uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII));   /* preserve encoding */
     if (op >= 0 && op <= 3) { korb_case_transform(s->buf->data, r->buf->data, len, op, ascii_only); return RESULT_OK((VALUE)r); }
     for (uint32_t i = 0; i < len; i++) r->buf->data[i] = s->buf->data[len - 1 - i];   /* reverse */
     return RESULT_OK((VALUE)r);
@@ -141,6 +181,7 @@ static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = SELF_STR;                      /* re-read after alloc */
+    r->head.flags |= (s->head.flags & (uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII));   /* preserve encoding */
     uint32_t wi = len, i = 0;
     while (i < len) {
         const unsigned char b = (unsigned char)s->buf->data[i];

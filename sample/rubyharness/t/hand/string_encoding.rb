@@ -16,3 +16,8 @@ s = "x"; r = s.force_encoding("BINARY"); p r.equal?(s)
 p "abc".encoding.name
 frozen = "y".freeze
 begin; frozen.force_encoding("BINARY"); rescue FrozenError; p :frozen; end
+p "abc".b.upcase.encoding.to_s
+p "ABC".b.downcase.encoding.to_s
+p "abc".b.reverse.encoding.to_s
+p "abc".b.dup.encoding.to_s
+p "a".force_encoding("US-ASCII").upcase.encoding.to_s
