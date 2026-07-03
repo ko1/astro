@@ -41,6 +41,22 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, FILE *fp, size_t *nbyt
     return RESULT_OK(KORB_NIL);
 }
 
+/* IO#fileno → the integer file descriptor. */
+static RESULT korb_m_io_fileno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    return RESULT_OK(LONG2FIX(fileno(fp)));
+}
+/* IO#stat → File::Stat of the open descriptor (fstat). */
+static RESULT korb_m_io_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "closed stream");
+    struct stat st;
+    if (fstat(fileno(fp), &st) != 0) return korb_raise_errno(c, slots, errno, "fstat", "");
+    return korb_stat_make(c, slots, &st);
+}
 /* IO#write(*args) → total bytes written. */
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
@@ -342,6 +358,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("readlines", readlines, -1);                        IOB("each_line", each_line, -1);
     IOB("each", each_line, -1);
     IOM("close", close, 0);      IOM("closed?", closed_p, 0);
+    IOM("stat", stat, 0);        IOM("fileno", fileno, 0);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);

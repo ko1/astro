@@ -501,6 +501,97 @@ static RESULT korb_m_file_readlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (n < 0) return korb_raise_errno(c, slots, errno, "readlink", pb);
     return korb_str_new(c, slots, buf, (uint32_t)n);
 }
+/* --- File::Stat --- a stat(2)/lstat(2) result.  Fields are stored as ivars at
+ * construction (numeric fields as Fixnums, the three times as epoch seconds);
+ * methods read them back.  No live handle, so nothing to GC-scan. */
+static VALUE korb_stat_iv(CTX *c, const char *n) { return ID2SYM(korb_intern(c->vm, n, (uint32_t)strlen(n))); }
+static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "Stat", 4));
+    if (!KORB_CLASS_P(cls)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "File::Stat is not defined");
+    slots[0] = UNWRAP(korb_obj_new(c, slots, cls));
+    VALUE_REF o = VALUE_REF_AT(&slots[0]);
+    #define SETI(nm, v) CHECK(korb_ivar_set(c, slots + 1, o, korb_stat_iv(c, nm), LONG2FIX((intptr_t)(v))))
+    SETI("@__size", st->st_size);   SETI("@__mode", st->st_mode);   SETI("@__ino", st->st_ino);
+    SETI("@__dev",  st->st_dev);    SETI("@__nlink", st->st_nlink); SETI("@__uid", st->st_uid);
+    SETI("@__gid",  st->st_gid);    SETI("@__blksize", st->st_blksize); SETI("@__blocks", st->st_blocks);
+    SETI("@__rdev", st->st_rdev);   SETI("@__mtime", st->st_mtime); SETI("@__atime", st->st_atime);
+    SETI("@__ctime", st->st_ctime);
+    #undef SETI
+    return RESULT_OK(VALUE_REF_GET(o));
+}
+static intptr_t korb_stat_field(CTX *c, VALUE self, const char *nm) {
+    const VALUE v = korb_ivar_get(c, self, korb_stat_iv(c, nm));
+    return FIXNUM_P(v) ? FIX2LONG(v) : 0;
+}
+#define STAT_INT_M(fn, field) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    (void)slots; (void)a; return RESULT_OK(LONG2FIX(korb_stat_field(c, VALUE_REF_GET(self), field))); }
+STAT_INT_M(korb_m_stat_size,    "@__size")
+STAT_INT_M(korb_m_stat_mode,    "@__mode")
+STAT_INT_M(korb_m_stat_ino,     "@__ino")
+STAT_INT_M(korb_m_stat_dev,     "@__dev")
+STAT_INT_M(korb_m_stat_nlink,   "@__nlink")
+STAT_INT_M(korb_m_stat_uid,     "@__uid")
+STAT_INT_M(korb_m_stat_gid,     "@__gid")
+STAT_INT_M(korb_m_stat_blksize, "@__blksize")
+STAT_INT_M(korb_m_stat_blocks,  "@__blocks")
+STAT_INT_M(korb_m_stat_rdev,    "@__rdev")
+#undef STAT_INT_M
+#define STAT_TIME_M(fn, field) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    (void)a; const intptr_t t = korb_stat_field(c, VALUE_REF_GET(self), field); \
+    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false); }
+STAT_TIME_M(korb_m_stat_mtime, "@__mtime")
+STAT_TIME_M(korb_m_stat_atime, "@__atime")
+STAT_TIME_M(korb_m_stat_ctime, "@__ctime")
+#undef STAT_TIME_M
+#define STAT_PRED_M(fn, expr) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    (void)slots; (void)a; const mode_t m = (mode_t)korb_stat_field(c, VALUE_REF_GET(self), "@__mode"); \
+    return RESULT_OK((expr) ? KORB_TRUE : KORB_FALSE); }
+STAT_PRED_M(korb_m_stat_dir_p,   S_ISDIR(m))
+STAT_PRED_M(korb_m_stat_file_p,  S_ISREG(m))
+STAT_PRED_M(korb_m_stat_link_p,  S_ISLNK(m))
+STAT_PRED_M(korb_m_stat_sock_p,  S_ISSOCK(m))
+STAT_PRED_M(korb_m_stat_blk_p,   S_ISBLK(m))
+STAT_PRED_M(korb_m_stat_chr_p,   S_ISCHR(m))
+STAT_PRED_M(korb_m_stat_pipe_p,  S_ISFIFO(m))
+STAT_PRED_M(korb_m_stat_setuid_p, (m & S_ISUID) != 0)
+STAT_PRED_M(korb_m_stat_setgid_p, (m & S_ISGID) != 0)
+STAT_PRED_M(korb_m_stat_sticky_p, (m & S_ISVTX) != 0)
+STAT_PRED_M(korb_m_stat_wreadable_p, (m & S_IROTH) != 0)
+STAT_PRED_M(korb_m_stat_wwritable_p, (m & S_IWOTH) != 0)
+#undef STAT_PRED_M
+static RESULT korb_m_stat_zero_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__size") == 0 ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_stat_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__uid") == (intptr_t)geteuid() ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_stat_grouped_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (intptr_t)getegid() ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_stat_ftype(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const mode_t m = (mode_t)korb_stat_field(c, VALUE_REF_GET(self), "@__mode");
+    const char *t = S_ISDIR(m) ? "directory" : S_ISCHR(m) ? "characterSpecial" : S_ISBLK(m) ? "blockSpecial"
+                  : S_ISFIFO(m) ? "fifo" : S_ISLNK(m) ? "link" : S_ISSOCK(m) ? "socket" : S_ISREG(m) ? "file" : "unknown";
+    return korb_str_new(c, slots, t, (uint32_t)strlen(t));
+}
+static RESULT korb_m_stat_spaceship(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (!KORB_OBJECT_P(o)) return RESULT_OK(KORB_NIL);
+    const intptr_t m1 = korb_stat_field(c, VALUE_REF_GET(self), "@__mtime"), m2 = korb_stat_field(c, o, "@__mtime");
+    return RESULT_OK(LONG2FIX(m1 < m2 ? -1 : m1 > m2 ? 1 : 0));
+}
+/* File.stat(path) / File.lstat(path) → a File::Stat. */
+static RESULT korb_file_stat_impl(CTX *c, VALUE *slots, VALUE_SLICE a, bool is_l) {
+    char pb[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct stat st;
+    if ((is_l ? lstat(pb, &st) : stat(pb, &st)) != 0) return korb_raise_errno(c, slots, errno, is_l ? "lstat" : "stat", pb);
+    return korb_stat_make(c, slots, &st);
+}
+static RESULT korb_m_file_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_file_stat_impl(c, slots, a, false); }
+static RESULT korb_m_file_lstat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_stat_impl(c, slots, a, true); }
+
 /* Dir.pwd → getcwd; Dir.exist?(path) → stat + S_ISDIR. */
 static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; (void)a;
@@ -792,6 +883,43 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "link",        korb_m_file_link,         2);
     korb_class_def_cfn(c, slots[1], "symlink",     korb_m_file_symlink,      2);
     korb_class_def_cfn(c, slots[1], "readlink",    korb_m_file_readlink,     1);
+    korb_class_def_cfn(c, slots[1], "stat",        korb_m_file_stat,         1);
+    korb_class_def_cfn(c, slots[1], "lstat",       korb_m_file_lstat,        1);
+    /* File::Stat — a stat(2) result value class (Object subclass). */
+    slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
+                               korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
+    korb_const_define(c, korb_intern(vm, "Stat", 4), slots[2]);         /* bare + File::Stat resolution */
+    korb_const_define(c, korb_intern(vm, "File::Stat", 10), slots[2]);
+    korb_class_def_cfn(c, slots[2], "size",      korb_m_stat_size,     0);
+    korb_class_def_cfn(c, slots[2], "mode",      korb_m_stat_mode,     0);
+    korb_class_def_cfn(c, slots[2], "ino",       korb_m_stat_ino,      0);
+    korb_class_def_cfn(c, slots[2], "dev",       korb_m_stat_dev,      0);
+    korb_class_def_cfn(c, slots[2], "nlink",     korb_m_stat_nlink,    0);
+    korb_class_def_cfn(c, slots[2], "uid",       korb_m_stat_uid,      0);
+    korb_class_def_cfn(c, slots[2], "gid",       korb_m_stat_gid,      0);
+    korb_class_def_cfn(c, slots[2], "blksize",   korb_m_stat_blksize,  0);
+    korb_class_def_cfn(c, slots[2], "blocks",    korb_m_stat_blocks,   0);
+    korb_class_def_cfn(c, slots[2], "rdev",      korb_m_stat_rdev,     0);
+    korb_class_def_cfn(c, slots[2], "mtime",     korb_m_stat_mtime,    0);
+    korb_class_def_cfn(c, slots[2], "atime",     korb_m_stat_atime,    0);
+    korb_class_def_cfn(c, slots[2], "ctime",     korb_m_stat_ctime,    0);
+    korb_class_def_cfn(c, slots[2], "ftype",     korb_m_stat_ftype,    0);
+    korb_class_def_cfn(c, slots[2], "directory?", korb_m_stat_dir_p,   0);
+    korb_class_def_cfn(c, slots[2], "file?",     korb_m_stat_file_p,   0);
+    korb_class_def_cfn(c, slots[2], "symlink?",  korb_m_stat_link_p,   0);
+    korb_class_def_cfn(c, slots[2], "socket?",   korb_m_stat_sock_p,   0);
+    korb_class_def_cfn(c, slots[2], "blockdev?", korb_m_stat_blk_p,    0);
+    korb_class_def_cfn(c, slots[2], "chardev?",  korb_m_stat_chr_p,    0);
+    korb_class_def_cfn(c, slots[2], "pipe?",     korb_m_stat_pipe_p,   0);
+    korb_class_def_cfn(c, slots[2], "setuid?",   korb_m_stat_setuid_p, 0);
+    korb_class_def_cfn(c, slots[2], "setgid?",   korb_m_stat_setgid_p, 0);
+    korb_class_def_cfn(c, slots[2], "sticky?",   korb_m_stat_sticky_p, 0);
+    korb_class_def_cfn(c, slots[2], "world_readable?", korb_m_stat_wreadable_p, 0);
+    korb_class_def_cfn(c, slots[2], "world_writable?", korb_m_stat_wwritable_p, 0);
+    korb_class_def_cfn(c, slots[2], "zero?",     korb_m_stat_zero_p,   0);
+    korb_class_def_cfn(c, slots[2], "owned?",    korb_m_stat_owned_p,  0);
+    korb_class_def_cfn(c, slots[2], "grouped?",  korb_m_stat_grouped_p, 0);
+    korb_class_def_cfn(c, slots[2], "<=>",       korb_m_stat_spaceship, 1);
     /* Dir — pwd / exist? + instance objects (Dir.open/new).  Superclass = Object
      * so Dir instances inherit the universal methods (class, is_a?, …). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3),
