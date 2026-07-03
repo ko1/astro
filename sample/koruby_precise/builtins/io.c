@@ -425,6 +425,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
         vm->method_serial++;
         const VALUE fsing = korb_obj_singleton(c, slots + 1, file_cls).value;
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
+        korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_open, -1);    /* File.new = open, no block-close */
     }
     /* $stdout / $stderr / $stdin + STDOUT / STDERR / STDIN — IO objects on the std slots. */
     struct { const char *gv, *cn; uint32_t idx; } sv[] = {
