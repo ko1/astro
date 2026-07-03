@@ -1296,6 +1296,20 @@ static RESULT korb_m_exc_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const VALUE v = VALUE_REF_GET(self);
     return RESULT_OK(KORB_EXC_P(v) ? VAL2EXC(v)->backtrace : KORB_NIL);
 }
+/* NameError#name → the missing constant/method/variable name (a Symbol), or nil. */
+static RESULT korb_m_exc_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    return RESULT_OK(korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__name", 7))));
+}
+/* NameError#receiver / NoMethodError#receiver → the object the failed call/lookup
+ * targeted.  Raises ArgumentError (like CRuby) when no receiver was recorded. */
+static RESULT korb_m_exc_receiver(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE r = korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__receiver", 11)));
+    if (r == KORB_NIL && korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__has_recv", 11))) != KORB_TRUE)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
+    return RESULT_OK(r);
+}
 static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE v = VALUE_REF_GET(self);
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);
