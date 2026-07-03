@@ -187,6 +187,15 @@ static RESULT korb_m_time_usec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
      * reconstruction error for exact integer microseconds. */
     return RESULT_OK(LONG2FIX((intptr_t)((e - (double)(time_t)e) * 1e6 + 1e-6)));
 }
+/* Time#nsec / #tv_nsec — the nanosecond part (0..999_999_999). */
+static RESULT korb_m_time_nsec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
+    intptr_t ns = (intptr_t)((e - (double)(time_t)e) * 1e9 + 0.5);
+    if (ns < 0) ns = 0;
+    if (ns > 999999999) ns = 999999999;
+    return RESULT_OK(LONG2FIX(ns));
+}
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_time_is_utc(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
 }
@@ -327,6 +336,10 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "wday",  korb_m_time_wday,  0);
     korb_class_def_cfn(c, t, "yday",  korb_m_time_yday,  0);
     korb_class_def_cfn(c, t, "usec",  korb_m_time_usec,  0);
+    korb_class_def_cfn(c, t, "tv_usec", korb_m_time_usec, 0);
+    korb_class_def_cfn(c, t, "nsec",  korb_m_time_nsec,  0);
+    korb_class_def_cfn(c, t, "tv_nsec", korb_m_time_nsec, 0);
+    korb_class_def_cfn(c, t, "tv_sec", korb_m_time_to_i, 0);
     korb_class_def_cfn(c, t, "to_a",  korb_m_time_to_a,  0);
     korb_class_def_cfn(c, t, "zone",       korb_m_time_zone,       0);
     korb_class_def_cfn(c, t, "utc_offset", korb_m_time_utc_offset, 0);
