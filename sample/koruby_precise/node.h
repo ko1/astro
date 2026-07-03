@@ -371,6 +371,7 @@ enum korb_etype {
     KORB_E_NO_MATCHING_PATTERN_KEY,
     KORB_E_SYNTAX,
     KORB_E_LOADERR,
+    KORB_E_IOERROR,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

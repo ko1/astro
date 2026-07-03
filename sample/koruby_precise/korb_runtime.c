@@ -3955,7 +3955,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "SignalException",     -1,                "Exception" },
         { "Interrupt",           -1,                "SignalException" },
         { "EncodingError",       -1,                "StandardError" },
-        { "IOError",             -1,                "StandardError" },
+        { "IOError",             KORB_E_IOERROR,    "StandardError" },
         { "EOFError",            -1,                "IOError" },
         { "FiberError",          -1,                "StandardError" },
         { "ThreadError",         -1,                "StandardError" },
