@@ -59,6 +59,87 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
     else if (tag == 1) h->flags |= KORB_FL_US_ASCII;
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Length of the valid UTF-8 sequence starting at p[i] (i<n), or 0 if the bytes
+ * there are not a valid sequence (incomplete / bad continuation / overlong /
+ * out-of-range / surrogate). */
+static uint32_t korb_utf8_seq_len(const unsigned char *p, uint32_t i, uint32_t n) {
+    const unsigned char b = p[i];
+    if (b < 0x80) return 1;
+    uint32_t need; uint32_t cp; unsigned char lo = 0x80, hi = 0xBF;
+    if ((b & 0xE0) == 0xC0)      { need = 1; cp = b & 0x1F; if (b < 0xC2) return 0; }   /* reject overlong */
+    else if ((b & 0xF0) == 0xE0) { need = 2; cp = b & 0x0F; if (b == 0xE0) lo = 0xA0; if (b == 0xED) hi = 0x9F; }
+    else if ((b & 0xF8) == 0xF0) { need = 3; cp = b & 0x07; if (b == 0xF0) lo = 0x90; if (b == 0xF4) hi = 0x8F; if (b > 0xF4) return 0; }
+    else return 0;
+    if (i + 1 + need > n) return 0;
+    for (uint32_t k = 1; k <= need; k++) {
+        const unsigned char cb = p[i + k];
+        const unsigned char lok = (k == 1) ? lo : 0x80, hik = (k == 1) ? hi : 0xBF;
+        if (cb < lok || cb > hik) return 0;
+        cp = (cp << 6) | (cb & 0x3F);
+    }
+    (void)cp;
+    return need + 1;
+}
+static bool korb_str_utf8_valid(const KorbString *s) {
+    const unsigned char *const p = (const unsigned char *)s->buf->data;
+    for (uint32_t i = 0; i < s->len; ) { const uint32_t l = korb_utf8_seq_len(p, i, s->len); if (!l) return false; i += l; }
+    return true;
+}
+/* String#valid_encoding? — true for ASCII-8BIT/US-ASCII-tagged (every byte legal)
+ * and for well-formed UTF-8; false for malformed UTF-8. */
+static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (((const AroObjectHeader *)(uintptr_t)v)->flags & (KORB_FL_BINARY | KORB_FL_US_ASCII)) return RESULT_OK(KORB_TRUE);
+    return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
+}
+/* String#scrub([repl]) — replace each maximal invalid UTF-8 sub-sequence with
+ * `repl` (default U+FFFD).  A binary/US-ASCII string is returned as-is. */
+static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE v = VALUE_REF_GET(self);
+    const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
+    if (fl & KORB_FL_BINARY) return RESULT_OK(v);        /* ASCII-8BIT: every byte legal */
+    const bool us_ascii = (fl & KORB_FL_US_ASCII) != 0;   /* US-ASCII: high bytes are invalid */
+    const KorbString *const s = VAL2STR(v);
+    /* A valid string is returned unchanged — and the replacement's type is NOT
+     * checked in that case (CRuby only validates it when a replacement is used). */
+    {
+        bool valid = true;
+        if (us_ascii) { for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)s->buf->data[i] >= 0x80) { valid = false; break; } }
+        else valid = korb_str_utf8_valid(s);
+        if (valid) return RESULT_OK(v);
+    }
+    char repbuf[64]; const char *rep = "\xEF\xBF\xBD"; uint32_t replen = 3;   /* U+FFFD */
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        if (UNLIKELY(!KORB_STRING_P(VALUE_SLICE_GET(a, 0))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        const KorbString *const rs = VAL2STR(VALUE_SLICE_GET(a, 0));
+        replen = rs->len < sizeof repbuf ? rs->len : (uint32_t)sizeof repbuf;
+        memcpy(repbuf, rs->buf->data, replen); rep = repbuf;
+    }
+    const unsigned char *const p = (const unsigned char *)s->buf->data; const uint32_t n = s->len;
+    size_t cap = n + 1, len = 0; char *out = malloc(cap);
+    if (!out) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+    #define SCRUB_PUT(ptr, l) do { if (len + (l) + 1 > cap) { cap = (len + (l) + 1) * 2; char *nb = realloc(out, cap); if (!nb) { free(out); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } out = nb; } memcpy(out + len, (ptr), (l)); len += (l); } while (0)
+    uint32_t i = 0;
+    while (i < n) {
+        const uint32_t l = us_ascii ? (p[i] < 0x80 ? 1u : 0u) : korb_utf8_seq_len(p, i, n);
+        if (l) { SCRUB_PUT(p + i, l); i += l; }
+        else if (us_ascii) { SCRUB_PUT(rep, replen); i++; }   /* each high byte → one replacement */
+        else {                                    /* one replacement per maximal invalid sequence */
+            const unsigned char b = p[i];
+            SCRUB_PUT(rep, replen);
+            i++;
+            if (b >= 0xC2 && b <= 0xF4)           /* a valid lead byte, truncated → also consume its (too-few) continuations */
+                while (i < n && (p[i] & 0xC0) == 0x80) i++;
+            /* a stray continuation / invalid lead consumes just itself (one replacement each) */
+        }
+    }
+    #undef SCRUB_PUT
+    RESULT r = korb_str_new(c, slots, out, (uint32_t)len);
+    free(out);
+    return r;
+}
 /* String#b — a duplicate tagged ASCII-8BIT. */
 static RESULT korb_m_str_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;

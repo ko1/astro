@@ -6927,7 +6927,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "rpartition", korb_m_str_rpartition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "partition", korb_m_str_partition, 1);
     korb_def_cmethod(c, KORB_C_STRING, "to_f", korb_m_str_to_f, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "scrub", korb_m_str_self, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "scrub", korb_m_str_scrub, -1);
     korb_def_cmethod(c, KORB_C_STRING, "scrub!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "include?", korb_m_str_include, 1);
     korb_def_cmethod(c, KORB_C_STRING, "start_with?", korb_m_str_start_with, -1);
@@ -6965,7 +6965,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__set_encoding_tag", korb_m_str_set_enc_tag, 1);
-    korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_str_valid_encoding, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "byterindex", korb_m_str_byterindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "chr", korb_m_str_chr, 0);
