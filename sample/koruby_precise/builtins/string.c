@@ -8,6 +8,27 @@ static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static inline bool korb_str_is_frozen(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
 }
+/* String#__encoding_tag → 0 = UTF-8 (default), 1 = US-ASCII, 2 = ASCII-8BIT.
+ * Read from the header flags (BINARY / US_ASCII); the prelude maps it to the
+ * Encoding constant. */
+static RESULT korb_m_str_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const uint16_t f = ((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags;
+    return RESULT_OK(LONG2FIX((f & KORB_FL_BINARY) ? 2 : (f & KORB_FL_US_ASCII) ? 1 : 0));
+}
+/* String#__set_encoding_tag(n) → set the encoding flags in place (n as above),
+ * return self.  Raises FrozenError on a frozen string. */
+static RESULT korb_m_str_set_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE s = VALUE_REF_GET(self);
+    if (UNLIKELY(korb_str_is_frozen(s)))
+        return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
+    const intptr_t n = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)s;
+    h->flags &= ~(uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII);
+    if (n == 2) h->flags |= KORB_FL_BINARY;
+    else if (n == 1) h->flags |= KORB_FL_US_ASCII;
+    return RESULT_OK(s);
+}
 /* String#-@ → a frozen string (self if already frozen, else a frozen copy). */
 static RESULT korb_m_str_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;

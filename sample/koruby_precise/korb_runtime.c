@@ -6942,7 +6942,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);
     korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
-    korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_self, -1);   /* overridden by prelude */
+    korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "__set_encoding_tag", korb_m_str_set_enc_tag, 1);
     korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_true_lit, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
     korb_def_cmethod(c, KORB_C_STRING, "byterindex", korb_m_str_byterindex, -1);
@@ -8264,7 +8266,9 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
     switch (KORB_OBJ_TYPE(v)) {
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
-        bool binary = (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_BINARY) != 0;
+        /* Non-UTF-8 (ASCII-8BIT or US-ASCII) inspects control/high bytes as \xNN;
+         * UTF-8 passes multibyte through / uses \uNNNN. */
+        bool binary = (((const AroObjectHeader *)(uintptr_t)v)->flags & (KORB_FL_BINARY | KORB_FL_US_ASCII)) != 0;
         korb_fprint_quoted_enc(fp, s->buf->data, s->len, binary);
         return;
       }

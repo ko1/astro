@@ -148,7 +148,8 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (n < 0 || n > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
     char ch = (char)n;
     RESULT r = korb_str_new(c, slots, &ch, 1);
-    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_BINARY;   /* byte string is ASCII-8BIT */
+    if (LIKELY(r.state == KORB_NORMAL))   /* 0..127 → US-ASCII, 128..255 → ASCII-8BIT (CRuby) */
+        ((AroObjectHeader *)(uintptr_t)r.value)->flags |= (n < 0x80) ? KORB_FL_US_ASCII : KORB_FL_BINARY;
     return r;
 }
 

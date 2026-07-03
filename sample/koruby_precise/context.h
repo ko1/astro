@@ -220,6 +220,10 @@ enum korb_obj_type {
 /* bit 11 (transient): object is on the current Comparable#== path — breaks the
  * Comparable#== → #<=> → Object#<=> → #== recursion for a Comparable with no #<=>. */
 #define KORB_FL_CMP_VISITING 0x800u
+/* bit 12 (String only): US-ASCII encoding (mutually exclusive with BINARY;
+ * neither set ⇒ the default UTF-8).  Header flags survive GC (copied with the
+ * object), so this needs no GC support — see String#encoding / #force_encoding. */
+#define KORB_FL_US_ASCII   0x1000u
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
