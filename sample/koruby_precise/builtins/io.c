@@ -53,6 +53,16 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, FILE *fp, size_t *nbyt
     return RESULT_OK(KORB_NIL);
 }
 
+/* IO#truncate(len) → 0 (ftruncate the descriptor). */
+static RESULT korb_m_io_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const VALUE lv = VALUE_SLICE_GET(a, 0);
+    if (!FIXNUM_P(lv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    fflush(fp);
+    if (ftruncate(fileno(fp), (off_t)FIX2LONG(lv)) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
+    return RESULT_OK(LONG2FIX(0));
+}
 /* IO#fileno → the integer file descriptor. */
 static RESULT korb_m_io_fileno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -399,6 +409,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOB("each", each_line, -1);
     IOM("close", close, 0);      IOM("closed?", closed_p, 0);
     IOM("stat", stat, 0);        IOM("fileno", fileno, 0);
+    IOM("truncate", truncate, 1);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);

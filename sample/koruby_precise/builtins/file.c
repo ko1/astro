@@ -601,6 +601,24 @@ static RESULT korb_file_time_impl(CTX *c, VALUE *slots, VALUE_SLICE a, int which
     const time_t t = which == 0 ? st.st_atime : which == 1 ? st.st_ctime : st.st_mtime;
     return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false);
 }
+/* File.truncate(path, len) → 0 (resize the file). */
+static RESULT korb_m_file_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; char pb[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const VALUE lv = VALUE_SLICE_GET(a, 1);
+    if (!FIXNUM_P(lv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (truncate(pb, (off_t)FIX2LONG(lv)) != 0) return korb_raise_errno(c, slots, errno, "truncate", pb);
+    return RESULT_OK(LONG2FIX(0));
+}
+/* File.absolute_path?(path) → true iff `path` is an absolute path. */
+static RESULT korb_m_file_abs_path_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)slots;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const KorbString *const s = VAL2STR(pv);
+    return RESULT_OK((s->len > 0 && s->buf->data[0] == '/') ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_file_atime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 0); }
 static RESULT korb_m_file_ctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 1); }
 static RESULT korb_m_file_mtime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 2); }
@@ -901,6 +919,9 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "atime",       korb_m_file_atime,        1);
     korb_class_def_cfn(c, slots[1], "ctime",       korb_m_file_ctime,        1);
     korb_class_def_cfn(c, slots[1], "mtime",       korb_m_file_mtime,        1);
+    korb_class_def_cfn(c, slots[1], "truncate",    korb_m_file_truncate,     2);
+    korb_class_def_cfn(c, slots[1], "absolute_path?", korb_m_file_abs_path_p, 1);
+    korb_class_def_cfn(c, slots[1], "absolute_path", korb_m_file_expand_path, -1);
     /* File::Stat — a stat(2) result value class (Object subclass). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
