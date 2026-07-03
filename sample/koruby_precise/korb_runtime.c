@@ -5243,10 +5243,20 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 slots[0] = self;
                 return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
             }
-            return korb_raise(c, slots, KORB_E_NOMETHOD, line,
+            slots[0] = self;                               /* root receiver across raise + ivar_set */
+            RESULT nmr = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s", korb_sym_name(vm, mid),
-                              (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL)
-                                  ? "main" : korb_a_type_name(self));
+                              (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
+                                  ? "main" : korb_a_type_name(slots[0]));
+            if (LIKELY(KORB_EXC_P(nmr.value))) {
+                slots[1] = nmr.value;
+                VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+                korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(mid));
+                korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
+                korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__receiver", 11)), slots[0]);
+                nmr.value = VALUE_REF_GET(eref);
+            }
+            return nmr;
         }
         cc->m = m;
         cc->serial = vm->method_serial;
@@ -6471,9 +6481,19 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 return korb_dispatch_method(c, slots + argc + 4, mm, mm_mid, line, argc + 1, mm_def, block, def_env, captured_self);
             }
         }
-        return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                          "undefined method '%s' for %s",
-                          korb_sym_name(vm, mid), korb_a_type_name(self));
+        slots[0] = self;                                   /* root receiver across the raise + ivar_set allocs */
+        RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
+                              "undefined method '%s' for %s",
+                              korb_sym_name(vm, mid), korb_a_type_name(slots[0]));
+        if (LIKELY(KORB_EXC_P(r.value))) {                 /* attach #name / #receiver metadata */
+            slots[1] = r.value;
+            VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(mid));
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__receiver", 11)), slots[0]);
+            r.value = VALUE_REF_GET(eref);
+        }
+        return r;
     }
     return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self);
 }
@@ -7623,6 +7643,11 @@ korb_register_core_methods(CTX *c)
 
     /* Exception */
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace", korb_m_exc_backtrace, 0);    /* nil until first raised/rescued */
+    { const VALUE ne = korb_const_get(c->vm, korb_intern(c->vm, "NameError", 9));   /* NameError#name/#receiver (NoMethodError inherits) */
+      if (KORB_CLASS_P(ne)) {
+          korb_class_def_cfn(c, ne, "name", korb_m_exc_name, 0);
+          korb_class_def_cfn(c, ne, "receiver", korb_m_exc_receiver, 0);
+      } }
     korb_def_cmethod(c, KORB_C_EXCEPTION, "set_backtrace", korb_m_exc_set_backtrace, -1);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "cause", korb_m_exc_cause, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
