@@ -9055,6 +9055,8 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
 /* Kernel#format / sprintf(fmt, *args) — delegate to String#% with the rest
  * args collected into an Array (the form korb_m_str_format expects). */
 static RESULT
+korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args);   /* fwd */
+static RESULT
 korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
@@ -9069,6 +9071,17 @@ korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
     for (uint32_t i = 0; i < n; i++)
         CHECK(korb_ary_push_val(c, slots + 2, arr, VALUE_SLICE_GET(args, i + 1)));
     return korb_m_str_format(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1));
+}
+/* Kernel#printf(fmt, *args) — write sprintf(fmt, *args) to stdout, return nil.
+ * (The printf(io, fmt, ...) form and $stdout redirection are not supported.) */
+static RESULT
+korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (VALUE_SLICE_LEN(args) == 0) return RESULT_OK(KORB_NIL);
+    RESULT r = korb_bi_format(c, slots, args);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (KORB_STRING_P(r.value)) { const KorbString *const s = VAL2STR(r.value); fwrite(s->buf->data, 1, s->len, stdout); }
+    return RESULT_OK(KORB_NIL);
 }
 
 /* Kernel#Array(arg) — nil→[], Array→itself, else [arg]. */
@@ -9381,6 +9394,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "String", korb_bi_string, -1);
     korb_builtin_define(c, "format", korb_bi_format, -1);
     korb_builtin_define(c, "sprintf", korb_bi_format, -1);
+    korb_builtin_define(c, "printf", korb_bi_printf, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
     korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 
