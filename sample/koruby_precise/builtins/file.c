@@ -591,6 +591,19 @@ static RESULT korb_file_stat_impl(CTX *c, VALUE *slots, VALUE_SLICE a, bool is_l
 }
 static RESULT korb_m_file_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_file_stat_impl(c, slots, a, false); }
 static RESULT korb_m_file_lstat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_stat_impl(c, slots, a, true); }
+/* File.atime/ctime/mtime(path) → the corresponding Time (via stat). */
+static RESULT korb_file_time_impl(CTX *c, VALUE *slots, VALUE_SLICE a, int which) {
+    char pb[4096];
+    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct stat st;
+    if (stat(pb, &st) != 0) return korb_raise_errno(c, slots, errno, "stat", pb);
+    const time_t t = which == 0 ? st.st_atime : which == 1 ? st.st_ctime : st.st_mtime;
+    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), (double)t, false);
+}
+static RESULT korb_m_file_atime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 0); }
+static RESULT korb_m_file_ctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 1); }
+static RESULT korb_m_file_mtime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 2); }
 
 /* Dir.pwd → getcwd; Dir.exist?(path) → stat + S_ISDIR. */
 static RESULT korb_m_dir_pwd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -885,6 +898,9 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "readlink",    korb_m_file_readlink,     1);
     korb_class_def_cfn(c, slots[1], "stat",        korb_m_file_stat,         1);
     korb_class_def_cfn(c, slots[1], "lstat",       korb_m_file_lstat,        1);
+    korb_class_def_cfn(c, slots[1], "atime",       korb_m_file_atime,        1);
+    korb_class_def_cfn(c, slots[1], "ctime",       korb_m_file_ctime,        1);
+    korb_class_def_cfn(c, slots[1], "mtime",       korb_m_file_mtime,        1);
     /* File::Stat — a stat(2) result value class (Object subclass). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "File::Stat", 10),
                                korb_const_get(vm, korb_intern(vm, "Object", 6)))).value;
