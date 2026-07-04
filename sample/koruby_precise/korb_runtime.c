@@ -3765,6 +3765,19 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     const VALUE start = korb_dispatch_class(c, self);
     return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
 }
+/* like korb_responds_to but public-only (used by defined?(recv.meth), which sees
+ * only publicly-callable methods through an explicit receiver).  Non-static so
+ * node_eval.c can call it. */
+bool
+korb_responds_to_public(CTX *c, VALUE self, uint32_t mid)
+{
+    if (mid == c->vm->mid_new && KORB_CLASS_P(self) && !VAL2CLASS(self)->is_module) return true;
+    if (mid == c->vm->mid_send || mid == c->vm->mid___send__ || mid == c->vm->mid_public_send) return true;
+    const VALUE start = korb_dispatch_class(c, self);
+    if (!KORB_CLASS_P(start)) return false;
+    const struct korb_method *const m = korb_class_find_method(start, mid, NULL);
+    return m != NULL && m->visibility == 0;
+}
 
 /* Comparable mixin methods (defined in builtins/set.c, included later). */
 static RESULT korb_m_cmpbl_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);

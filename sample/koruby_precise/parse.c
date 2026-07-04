@@ -2640,9 +2640,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return ALLOC_node_defined(3, kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name), 0);
         if (PM_NODE_TYPE_P(v, PM_CALL_NODE)) {                           /* method call */
             const pm_call_node_t *cn = (const pm_call_node_t *)v;
-            if (cn->receiver == NULL && cn->arguments == NULL && cn->block == NULL)
-                { NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }   /* bareword → method? */
-            return ALLOC_node_defined(7, 0, 0);                         /* recv.meth / op → "method" (optimistic) */
+            if (cn->receiver != NULL) {                                  /* recv.meth: eval recv, check it responds */
+                if (PM_NODE_TYPE_P(cn->receiver, PM_SELF_NODE)) {         /* self.meth sees private/protected too */
+                    NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
+                }
+                NODE *recv = transduce(tc, cn->receiver);
+                return ALLOC_node_defined_call(recv, kp_intern_cid(tc, cn->name));
+            }
+            /* bareword (possibly with args): "method" iff self responds to it. */
+            NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
         if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
         if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
