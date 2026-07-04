@@ -1010,8 +1010,12 @@ static RESULT korb_m_hash_any(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_hash_all(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)  { return korb_hash_quant(c, slots, self, a, block, def_env, captured_self, 1); }
 static RESULT korb_m_hash_none(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { return korb_hash_quant(c, slots, self, a, block, def_env, captured_self, 2); }
 /* in-place select!/filter!(keep_truthy=1) and reject!/delete_if(keep_truthy=0) */
-static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "in-place Hash filter without a block is not supported");
+static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged, const char *meth) {
+    if (UNLIKELY(block == NULL)) {                       /* no block → an Enumerator (to_enum(:meth)) */
+        slots[0] = VALUE_REF_GET(self);
+        slots[1] = ID2SYM(korb_intern(c->vm, meth, (uint32_t)strlen(meth)));
+        return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1);
+    }
     uint32_t w = 0; bool changed = false;
     for (uint32_t r = 0; ; r++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
@@ -1038,11 +1042,11 @@ static RESULT korb_hash_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_hash_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true); }
-static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false); }
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, true, "select!"); }
+static RESULT korb_m_hash_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, true, false, "keep_if"); }
 static RESULT korb_m_hash_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true); }
-static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false); }
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, true, "reject!"); }
+static RESULT korb_m_hash_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self)); (void)a; return korb_hash_filter_bang(c, slots, self, block, def_env, cself, false, false, "delete_if"); }
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;

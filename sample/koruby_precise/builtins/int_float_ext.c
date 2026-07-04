@@ -196,8 +196,9 @@ static RESULT korb_m_hash_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 
 /* delete_if/reject!(keep_when_false) and keep_if/select!(keep_when_true), in-place */
-static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "in-place filter without a block is not supported");
+static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char *meth);   /* fwd (array_enum.c) */
+static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, bool keep_truthy, bool ret_nil_if_unchanged, const char *meth) {
+    if (UNLIKELY(block == NULL)) return korb_ary_to_enum(c, slots, self, meth);   /* no block → an Enumerator */
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* CRuby raises FrozenError upfront, even on an empty array */
     uint32_t w = 0; bool changed = false;
     for (uint32_t r = 0; ; r++) {
@@ -219,10 +220,10 @@ static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *b
     if (ret_nil_if_unchanged && !changed) return RESULT_OK(KORB_NIL);
     return RESULT_OK(VALUE_REF_GET(self));
 }
-static RESULT korb_m_ary_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, false, false); }
-static RESULT korb_m_ary_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, false, true); }
-static RESULT korb_m_ary_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, false); }
-static RESULT korb_m_ary_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, true); }
+static RESULT korb_m_ary_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, false, false, "delete_if"); }
+static RESULT korb_m_ary_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, false, true, "reject!"); }
+static RESULT korb_m_ary_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, false, "keep_if"); }
+static RESULT korb_m_ary_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { (void)a; return korb_ary_filter_bang(c, slots, self, block, def_env, cself, true, true, "select!"); }
 
 static RESULT korb_hash_pair_at(CTX *c, VALUE *slots, VALUE_REF self, uint32_t i, VALUE *out);
 static RESULT korb_m_hash_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
