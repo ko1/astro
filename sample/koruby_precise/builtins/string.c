@@ -1479,21 +1479,36 @@ static RESULT korb_m_str_lstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_str_rstrip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_str_strip(c, slots, self, a, 2); }
 
 static RESULT korb_m_str_chomp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t len = s->len;
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* chomp(sep) */
         VALUE sv = VALUE_SLICE_GET(a, 0);
-        if (sv == KORB_NIL) return korb_str_slice_new(c, slots, self, 0, len);   /* nil sep → unchanged copy */
-        if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+        if (sv == KORB_NIL) return korb_str_slice_new(c, slots, self, 0, VAL2STR(VALUE_REF_GET(self))->len);   /* nil sep → unchanged copy */
+        if (UNLIKELY(!KORB_STRING_P(sv))) {           /* coerce a non-String separator via #to_str */
+            slots[0] = VALUE_REF_GET(self);           /* root self across the dispatch */
+            slots[1] = sv;
+            if (KORB_OBJECT_P(sv) && korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) {
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                slots[1] = sr.value;
+            }
+            if (UNLIKELY(!KORB_STRING_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            self = VALUE_REF_AT(&slots[0]); sv = slots[1];   /* self re-rooted; sv now the coerced String */
+        }
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+        uint32_t len = s->len;
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 0) {                          /* "" → strip all trailing \n / \r\n */
+        if (sep->len == 1 && sep->buf->data[0] == '\n') {   /* "\n" = the universal line ending: \r\n, \n, or \r */
+            if (len >= 2 && s->buf->data[len-2] == '\r' && s->buf->data[len-1] == '\n') len -= 2;
+            else if (len >= 1 && (s->buf->data[len-1] == '\n' || s->buf->data[len-1] == '\r')) len -= 1;
+        } else if (sep->len == 0) {                   /* "" → strip all trailing \n / \r\n */
             while (len >= 2 && s->buf->data[len-2] == '\r' && s->buf->data[len-1] == '\n') len -= 2;
             while (len >= 1 && s->buf->data[len-1] == '\n') len -= 1;
         } else if (len >= sep->len && memcmp(s->buf->data + len - sep->len, sep->buf->data, sep->len) == 0) {
             len -= sep->len;                          /* one trailing occurrence */
         }
-        return korb_str_slice_new(c, slots, self, 0, len);
+        return korb_str_slice_new(c, slots + 2, self, 0, len);   /* slots[0]=self, slots[1]=sep may be live */
     }
+    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
+    uint32_t len = s->len;
     if (len >= 2 && s->buf->data[len-2] == '\r' && s->buf->data[len-1] == '\n') len -= 2;
     else if (len >= 1 && (s->buf->data[len-1] == '\n' || s->buf->data[len-1] == '\r')) len -= 1;
     return korb_str_slice_new(c, slots, self, 0, len);
