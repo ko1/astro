@@ -54,14 +54,24 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 #endif
     return RESULT_OK(LONG2FIX((s > o) - (s < o)));
 }
+/* An integer-valued double → Fixnum, or Bignum when it exceeds the Fixnum range. */
+static RESULT korb_flt_int_result(CTX *c, VALUE *slots, double t) {
+    if (LIKELY(t >= (double)FIXNUM_MIN && t <= (double)FIXNUM_MAX)) return RESULT_OK(LONG2FIX((intptr_t)t));
+#ifdef KORB_HAVE_GMP
+    mpz_t z; mpz_init(z); mpz_set_d(z, t);            /* t is already integer-valued (floor/ceil/round/trunc) */
+    RESULT r = korb_big_from_mpz(c, slots, z);
+    mpz_clear(z);
+    return r;
+#else
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
+#endif
+}
 /* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */
 static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
     if (UNLIKELY(!isfinite(d)))                          /* Infinity / NaN → Integer is out of domain */
         return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     double t = kind == 0 ? floor(d) : kind == 1 ? ceil(d) : kind == 2 ? round(d) : trunc(d);
-    if (UNLIKELY(!isfinite(t) || t < (double)FIXNUM_MIN || t > (double)FIXNUM_MAX))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
-    return RESULT_OK(LONG2FIX((intptr_t)t));
+    return korb_flt_int_result(c, slots, t);
 }
 /* round/floor/ceil/trunc with an optional digit count.
  * ndig>0 → Float to ndig decimals; ndig<=0 → Integer (rounded to 10^-ndig). */
@@ -100,9 +110,7 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
     if (ndig == 0) {
         if (kind == 2 && half != 0) {                          /* round to integer with explicit half mode */
             const double t = korb_round_half_apply(d, half);
-            if (UNLIKELY(!isfinite(t) || t < (double)FIXNUM_MIN || t > (double)FIXNUM_MAX))
-                return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
-            return RESULT_OK(LONG2FIX((intptr_t)t));
+            return korb_flt_int_result(c, slots, t);
         }
         return korb_flt_toint(c, slots, d, kind);
     }
@@ -112,9 +120,7 @@ static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_
     double t = kind == 0 ? floor(scaled) : kind == 1 ? ceil(scaled) : kind == 2 ? korb_round_half_apply(scaled, half) : trunc(scaled);
     if (ndig > 0) return korb_float_new(c, slots, t / f);
     double res = t * f;
-    if (UNLIKELY(!isfinite(res) || res < (double)FIXNUM_MIN || res > (double)FIXNUM_MAX))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
-    return RESULT_OK(LONG2FIX((intptr_t)res));
+    return korb_flt_int_result(c, slots, res);
 }
 static RESULT korb_m_flt_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_flt_toint(c, slots, SELF_FLT, 3); }
 static RESULT korb_m_flt_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_flt_round_to(c, slots, SELF_FLT, 0, a); }
