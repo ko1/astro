@@ -148,8 +148,14 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (n < 0 || n > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)n);
     char ch = (char)n;
     RESULT r = korb_str_new(c, slots, &ch, 1);
-    if (LIKELY(r.state == KORB_NORMAL))   /* 0..127 → US-ASCII, 128..255 → ASCII-8BIT (CRuby) */
-        KORB_STR_ENC_SET(r.value, (n < 0x80) ? KORB_ENC_USASCII : KORB_ENC_BINARY);
+    if (LIKELY(r.state == KORB_NORMAL)) {
+        /* With an explicit Encoding the result carries it (US-ASCII / ASCII-8BIT);
+         * with no argument CRuby picks US-ASCII for 0..127, else ASCII-8BIT. */
+        const uint32_t enc = (VALUE_SLICE_LEN(a) >= 1)
+            ? ((kind == 1) ? KORB_ENC_USASCII : KORB_ENC_BINARY)
+            : ((n < 0x80) ? KORB_ENC_USASCII : KORB_ENC_BINARY);
+        KORB_STR_ENC_SET(r.value, enc);
+    }
     return r;
 }
 
