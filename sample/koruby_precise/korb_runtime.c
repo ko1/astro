@@ -156,6 +156,7 @@ static intptr_t korb_gcd_pos(intptr_t a, intptr_t b) {   /* gcd of |a|,|b| */
 static void korb_to_mpz(VALUE v, mpz_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src);
 #endif
+static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
  * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via mpz_gcd. */
@@ -4804,7 +4805,11 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 2);
     if (KORB_STRING_P(l)) {
         intptr_t cnt;
-        if (UNLIKELY(!korb_to_index(rhs, &cnt))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
+        if (UNLIKELY(!korb_to_index(rhs, &cnt))) {       /* coerce the count via #to_int (lhs is a VALUE_REF → GC-safe) */
+            RESULT cr = korb_coerce_to_int(c, slots, &rhs);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(rhs, &cnt)) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Integer", korb_type_name(rhs));
+        }
         return korb_str_repeat_ref(c, slots, lhs, cnt, line);
     }
     if (KORB_ARRAY_P(l) && KORB_OBJECT_P(rhs)) {        /* Array * obj: CRuby tries #to_str (join) first, then #to_int (repeat count) */
