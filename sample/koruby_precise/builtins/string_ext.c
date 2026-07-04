@@ -363,7 +363,12 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_str_slice_new(c, slots, self, (uint32_t)b, (uint32_t)len);
     }
     intptr_t i;
-    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    if (UNLIKELY(!korb_to_index(iv, &i))) {              /* coerce index via #to_int (self via VALUE_REF; bn is a value) */
+        RESULT cr = korb_coerce_to_int(c, slots, &iv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+        bn = VAL2STR(VALUE_REF_GET(self))->len;
+    }
     if (i < 0) i += bn;
     const bool two_arg = VALUE_SLICE_LEN(a) >= 2;
     if (i < 0 || i > (intptr_t)bn || (!two_arg && i == (intptr_t)bn)) return RESULT_OK(KORB_NIL);   /* byteslice(i): nil at end */
