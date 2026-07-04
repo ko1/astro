@@ -767,44 +767,48 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
     ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(aref))->flags |= KORB_FL_JOIN_VISITING;
     RESULT rr = RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(aref))->len; i++) {
-        const VALUE e = VAL2ARY(VALUE_REF_GET(aref))->items->data[i];   /* re-read: a prior #to_s may have moved the array */
+        slots[0] = VAL2ARY(VALUE_REF_GET(aref))->items->data[i];   /* root the element (re-read: a prior #to_s may have moved the array) */
         /* Element order per CRuby: an Array (or an object with #to_ary but no
          * #to_str) recurses; otherwise #to_str, then #to_s.  The recursion happens
-         * before the separator so a nested array isn't given a leading one. */
-        bool recursed = false;
-        if (KORB_ARRAY_P(e)) {
-            slots[0] = e;
-            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
-            if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
-            recursed = true;
-        } else if (KORB_OBJECT_P(e) && !korb_responds_to(c, e, korb_intern(c->vm, "to_str", 6))
-                   && korb_responds_to(c, e, korb_intern(c->vm, "to_ary", 6))) {
-            slots[0] = e;
-            RESULT ar = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(ar.state != KORB_NORMAL)) { rr = ar; goto done; }
-            if (KORB_ARRAY_P(ar.value)) {
-                slots[0] = ar.value;
-                rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
-                if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
-                recursed = true;
+         * before the separator so a nested array isn't given a leading one.  The
+         * #to_str/#to_ary probes honor #respond_to_missing? (proxies/mocks); the
+         * element stays rooted in slots[0] across those dispatches. */
+        const uint32_t to_str_id = korb_intern(c->vm, "to_str", 6), to_ary_id = korb_intern(c->vm, "to_ary", 6);
+        /* Resolve the element to either an array (recurse, no separator) or a
+         * scalar String (write with separator), following CRuby's #to_str →
+         * #to_ary → #to_s chain where a nil conversion falls through to the next.
+         * The receiver stays at slots[0]; `scalar` is captured last (no GC before
+         * the fwrite).  korb_send_impl takes the element as receiver via slots+1. */
+        VALUE scalar = KORB_NIL;
+        bool recurse = KORB_ARRAY_P(slots[0]);
+        if (!recurse && KORB_OBJECT_P(slots[0])) {
+            if (korb_responds_to_coerce(c, slots + 1, slots[0], to_str_id)) {   /* #to_str: String, else fall through */
+                RESULT r = korb_send_impl(c, slots + 1, to_str_id, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) { rr = r; goto done; }
+                if (KORB_STRING_P(r.value)) scalar = r.value;
+            }
+            if (scalar == KORB_NIL && korb_responds_to_coerce(c, slots + 1, slots[0], to_ary_id)) {   /* #to_ary: Array → recurse */
+                RESULT r = korb_send_impl(c, slots + 1, to_ary_id, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) { rr = r; goto done; }
+                if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; recurse = true; }
+            }
+            if (!recurse && scalar == KORB_NIL) {                       /* #to_s last */
+                RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) { rr = r; goto done; }
+                if (KORB_STRING_P(r.value)) scalar = r.value;           /* non-String → fprint below */
             }
         }
-        if (recursed) continue;                                        /* recursion wrote its own seps + *first */
+        if (recurse) {
+            rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
+            continue;                                                  /* recursion wrote its own seps + *first */
+        }
         if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
             const KorbString *const sep = VAL2STR(VALUE_REF_GET(sepref));
             fwrite(sep->buf->data, 1, sep->len, ms);
         }
-        if (KORB_OBJECT_P(e)) {                                         /* user object → #to_str (if present) then #to_s */
-            slots[0] = e;
-            const uint32_t mid = korb_responds_to(c, e, korb_intern(c->vm, "to_str", 6))
-                                     ? korb_intern(c->vm, "to_str", 6) : korb_intern(c->vm, "to_s", 4);
-            RESULT tr = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(tr.state != KORB_NORMAL)) { rr = tr; goto done; }
-            if (LIKELY(KORB_STRING_P(tr.value))) fwrite(VAL2STR(tr.value)->buf->data, 1, VAL2STR(tr.value)->len, ms);
-            else korb_fprint_to_s(c, ms, tr.value);
-        } else {
-            korb_fprint_to_s(c, ms, e);                                /* immediates / builtins: no GC */
-        }
+        if (KORB_STRING_P(scalar)) fwrite(VAL2STR(scalar)->buf->data, 1, VAL2STR(scalar)->len, ms);   /* resolved scalar String */
+        else korb_fprint_to_s(c, ms, slots[0]);                        /* immediate / builtin / non-String #to_s */
         *first = false;
     }
   done:

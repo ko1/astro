@@ -3804,6 +3804,33 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     const VALUE start = korb_dispatch_class(c, self);
     return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
 }
+/* like korb_responds_to but also honors a user-defined #respond_to_missing?
+ * (the type-conversion protocols — #to_str/#to_ary/#to_int/#to_hash — check
+ * respond_to? before dispatching, so a proxy/delegator/mock that answers via
+ * respond_to_missing? must be seen).  Dispatches only on the slow path (no real
+ * method) when respond_to_missing? is actually defined.  slots must have >= 3
+ * free cells for that dispatch. */
+bool
+korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
+{
+    if (korb_responds_to(c, self, mid)) return true;
+    const VALUE dcls = korb_dispatch_class(c, self);
+    if (!KORB_CLASS_P(dcls)) return false;
+    /* Ask the object's own #respond_to? only when it (or #respond_to_missing?) is
+     * customized — otherwise the default answer is already `false` and we skip the
+     * dispatch.  Dispatching #respond_to? (not #respond_to_missing? directly) means
+     * a proxy/mock that overrides either one is honored correctly. */
+    VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL;
+    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL;
+    if (custom_rt || has_rtm) {
+        slots[0] = self; slots[1] = ID2SYM(mid);
+        const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+        return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
+    }
+    return false;
+}
 /* like korb_responds_to but public-only (used by defined?(recv.meth), which sees
  * only publicly-callable methods through an explicit receiver).  Non-static so
  * node_eval.c can call it. */
