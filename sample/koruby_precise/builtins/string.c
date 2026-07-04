@@ -762,6 +762,13 @@ static RESULT korb_m_str_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 /* delete: remove chars present in ALL set args. (in_place → delete!) */
 static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
+    if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* delete! checks frozen upfront */
+    /* CRuby validates the arg count only for a non-empty receiver: ""·delete → ""
+     * (no ArgumentError), but "x".delete → ArgumentError. */
+    if (UNLIKELY(VALUE_SLICE_LEN(a) == 0)) {
+        if (VAL2STR(VALUE_REF_GET(self))->len != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
+        return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
+    }
     { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
@@ -1120,6 +1127,7 @@ static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_float_new(c, slots, any_digit ? strtod(buf, NULL) : 0.0);
 }
 static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
