@@ -1077,7 +1077,10 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
                     CHECK(korb_ary_push_val(c, slots, aref, VAL2ARY(VALUE_REF_GET(vr))->items->data[i]));
                 return RESULT_OK(VALUE_REF_GET(aref));
             }
-            return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));   /* to_a not an Array → [x] */
+            if (ta.value == KORB_NIL)                    /* to_a → nil: `*x` is just `[x]` */
+                return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_a gives %s)",   /* to_a → non-Array */
+                              korb_type_name(VALUE_REF_GET(vr)), korb_type_name(VALUE_REF_GET(vr)), korb_type_name(ta.value));
         }
     }
     return korb_ary_push_val(c, slots, aref, val);
