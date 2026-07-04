@@ -2650,6 +2650,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             /* bareword (possibly with args): "method" iff self responds to it. */
             NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
+        if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) { tc->frame->uses_block = true; return ALLOC_node_defined_yield(-4 - tc->chain); }   /* "yield" iff block present */
         if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
         if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
         if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0);   /* "true" */

@@ -1116,6 +1116,18 @@ node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid)
     return dr;
 }
 
+// defined?(yield): "yield" iff a block was passed to the enclosing method.
+NODE_DEF @nogc
+node_defined_yield(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
+{
+    (void)n;
+    if (!((uintptr_t)slots[biseq_off] & 1u)) return RESULT_OK(KORB_NIL);
+    RESULT dr = korb_str_new(c, slots, "yield", 5);
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
 // root-scanned), returns the value.
 NODE_DEF
