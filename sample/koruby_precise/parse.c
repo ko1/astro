@@ -876,7 +876,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     const pm_node_t *p = ps->requireds.nodes[i];
                     if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring block param with opt/rest"); }
                     if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc)
-                        kp_failf(tc, p, "koruby_precise: block param not locals[%u]", loc);
+                        { pop_frame(tc); return kp_unsupported(tc, p, "block param slot ordering"); }   /* skip this block, don't abort the file */
                     loc++;
                 }
                 req_cnt = loc;
