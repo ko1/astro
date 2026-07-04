@@ -7532,6 +7532,7 @@ korb_register_core_methods(CTX *c)
     /* constant/method visibility — koruby tracks no visibility, so these are
      * no-ops returning their argument (matches `private`/`public`). */
     korb_def_cmethod(c, KORB_C_CLASS, "private_constant", korb_m_visibility_noop, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "deprecate_constant", korb_m_deprecate_constant, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_constant", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_private_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_public_class_method, -1);
@@ -7606,6 +7607,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("protected", korb_m_protected, -1);
     MOD_CFN("module_function", korb_m_module_function, -1);
     MOD_CFN("private_constant", korb_m_visibility_noop, -1);
+    MOD_CFN("deprecate_constant", korb_m_deprecate_constant, -1);
     MOD_CFN("public_constant", korb_m_visibility_noop, -1);
     MOD_CFN("const_source_location", korb_m_lit_nil, -1);
     /* default no-op callbacks so a module (Kernel, `module M`) responds to the

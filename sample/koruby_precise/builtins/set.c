@@ -430,6 +430,12 @@ static RESULT korb_m_visibility_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)c;(void)slots;(void)self;
     return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
 }
+/* Module#deprecate_constant(*names) — koruby doesn't emit deprecation warnings;
+ * a no-op that returns self (matching CRuby's return value). */
+static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 /* private/protected/public: with no args set the class body's default visibility;
  * with args set those named methods' visibility.  vis: 1 priv / 2 prot / 0 pub. */
 static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
