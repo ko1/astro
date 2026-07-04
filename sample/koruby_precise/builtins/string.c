@@ -8,35 +8,46 @@ static RESULT korb_m_str_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static inline bool korb_str_is_frozen(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
 }
-/* String#__encoding_tag → 0 = UTF-8 (default), 1 = US-ASCII, 2 = ASCII-8BIT.
- * Read from the header flags (BINARY / US_ASCII); the prelude maps it to the
- * Encoding constant. */
+static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v);                               /* fwd */
+static uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
+static uint32_t korb_str_char_count(VALUE v);                                                    /* fwd */
+/* Map an encoding name to a header index: 0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT
+ * directly; any other name is registered in vm->str_enc_names[3..7] and its
+ * slot index returned (character ops on it will raise until hooks exist). */
+static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
+    if (strcmp(name, "ASCII-8BIT") == 0 || strcmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
+    if (strcmp(name, "US-ASCII") == 0 || strcmp(name, "ASCII") == 0 || strcmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
+    if (strcmp(name, "UTF-8") == 0 || strcmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
+    const uint32_t sym = korb_intern(vm, name, (uint32_t)strlen(name));
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == sym) return i;
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == 0) { vm->str_enc_names[i] = sym; return i; }
+    return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
+}
+/* String#__encoding_tag → the header encoding index (0..7). */
 static RESULT korb_m_str_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)a;
-    const uint16_t f = ((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags;
-    return RESULT_OK(LONG2FIX((f & KORB_FL_BINARY) ? 2 : (f & KORB_FL_US_ASCII) ? 1 : 0));
+    return RESULT_OK(LONG2FIX((intptr_t)KORB_STR_ENC(VALUE_REF_GET(self))));
 }
-/* String#__set_encoding_tag(n) → set the encoding flags in place (n as above),
- * return self.  Raises FrozenError on a frozen string. */
+/* String#__encoding_name → the encoding-name String for an "other" index (nil
+ * for the three core encodings, which the prelude maps to constants). */
+static RESULT korb_m_str_enc_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const uint32_t idx = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (idx < KORB_ENC_OTHER_MIN || idx >= 8 || c->vm->str_enc_names[idx] == 0) return RESULT_OK(KORB_NIL);
+    const char *nm = korb_sym_name(c->vm, c->vm->str_enc_names[idx]);
+    return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+}
+/* String#__set_encoding_tag(n) → set the encoding index in place, return self. */
 static RESULT korb_m_str_set_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE s = VALUE_REF_GET(self);
     if (UNLIKELY(korb_str_is_frozen(s)))
         return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
-    const intptr_t n = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
-    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)s;
-    h->flags &= ~(uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII);
-    if (n == 2) h->flags |= KORB_FL_BINARY;
-    else if (n == 1) h->flags |= KORB_FL_US_ASCII;
+    const uint32_t n = FIXNUM_P(VALUE_SLICE_GET(a, 0)) ? (uint32_t)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
+    KORB_STR_ENC_SET(s, n);
     return RESULT_OK(s);
 }
-/* map an encoding name to the tag (0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT). */
-static int korb_enc_name_tag(const char *name) {
-    if (strcmp(name, "ASCII-8BIT") == 0 || strcmp(name, "BINARY") == 0) return 2;
-    if (strcmp(name, "US-ASCII") == 0 || strcmp(name, "ASCII") == 0 || strcmp(name, "ANSI_X3.4-1968") == 0) return 1;
-    return 0;
-}
-/* String#force_encoding(enc) — set the encoding tag in place (enc is an encoding
- * name String or an Encoding), return self.  Frozen-checked. */
+/* String#force_encoding(enc) — set the encoding in place (enc is a name String or
+ * an Encoding), return self.  Frozen-checked. */
 static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE s = VALUE_REF_GET(self);
     if (UNLIKELY(korb_str_is_frozen(s)))
@@ -52,11 +63,7 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
         if (KORB_STRING_P(nm)) { const KorbString *es = VAL2STR(nm);
             uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1; memcpy(nbuf, es->buf->data, l); }
     }
-    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self);
-    h->flags &= ~(uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII);
-    const int tag = korb_enc_name_tag(nbuf);
-    if (tag == 2) h->flags |= KORB_FL_BINARY;
-    else if (tag == 1) h->flags |= KORB_FL_US_ASCII;
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), korb_enc_index_for_name(c->vm, nbuf));
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Length of the valid UTF-8 sequence starting at p[i] (i<n), or 0 if the bytes
@@ -90,16 +97,21 @@ static bool korb_str_utf8_valid(const KorbString *s) {
 static RESULT korb_m_str_valid_encoding(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)a;
     const VALUE v = VALUE_REF_GET(self);
-    if (((const AroObjectHeader *)(uintptr_t)v)->flags & (KORB_FL_BINARY | KORB_FL_US_ASCII)) return RESULT_OK(KORB_TRUE);
+    const uint32_t enc = KORB_STR_ENC(v);
+    if (enc == KORB_ENC_BINARY) return RESULT_OK(KORB_TRUE);   /* every byte legal */
+    if (enc == KORB_ENC_USASCII) { const KorbString *s = VAL2STR(v);
+        for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)s->buf->data[i] >= 0x80) return RESULT_OK(KORB_FALSE);
+        return RESULT_OK(KORB_TRUE); }
+    if (enc >= KORB_ENC_OTHER_MIN) return RESULT_OK(KORB_TRUE);   /* "other": assume valid until hooked */
     return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
 }
 /* String#scrub([repl]) — replace each maximal invalid UTF-8 sub-sequence with
  * `repl` (default U+FFFD).  A binary/US-ASCII string is returned as-is. */
 static RESULT korb_m_str_scrub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE v = VALUE_REF_GET(self);
-    const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)v)->flags;
-    if (fl & KORB_FL_BINARY) return RESULT_OK(v);        /* ASCII-8BIT: every byte legal */
-    const bool us_ascii = (fl & KORB_FL_US_ASCII) != 0;   /* US-ASCII: high bytes are invalid */
+    const uint32_t enc = KORB_STR_ENC(v);
+    if (enc == KORB_ENC_BINARY || enc >= KORB_ENC_OTHER_MIN) return RESULT_OK(v);   /* every byte legal / not hooked */
+    const bool us_ascii = (enc == KORB_ENC_USASCII);   /* US-ASCII: high bytes are invalid */
     const KorbString *const s = VAL2STR(v);
     /* A valid string is returned unchanged — and the replacement's type is NOT
      * checked in that case (CRuby only validates it when a replacement is used). */
@@ -146,7 +158,7 @@ static RESULT korb_m_str_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) 
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     memcpy(r->buf->data, SELF_STR->buf->data, len);   /* SELF_STR re-read after alloc */
-    r->head.flags |= KORB_FL_BINARY;
+    KORB_STR_ENC_SET((VALUE)r, KORB_ENC_BINARY);
     return RESULT_OK((VALUE)r);
 }
 /* String#-@ → a frozen string (self if already frozen, else a frozen copy). */
@@ -248,7 +260,7 @@ static RESULT korb_str_transform(CTX *c, VALUE *slots, VALUE_REF self, int op, b
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = SELF_STR;   /* re-read after alloc (GC may have moved it) */
-    r->head.flags |= (s->head.flags & (uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII));   /* preserve encoding */
+    KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC((VALUE)s));   /* preserve encoding */
     if (op >= 0 && op <= 3) { korb_case_transform(s->buf->data, r->buf->data, len, op, ascii_only); return RESULT_OK((VALUE)r); }
     for (uint32_t i = 0; i < len; i++) r->buf->data[i] = s->buf->data[len - 1 - i];   /* reverse */
     return RESULT_OK((VALUE)r);
@@ -259,15 +271,15 @@ static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* String#reverse — reverse CHARACTERS (UTF-8 sequences kept intact), not bytes. */
 static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = SELF_STR;                      /* re-read after alloc */
-    r->head.flags |= (s->head.flags & (uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII));   /* preserve encoding */
+    KORB_STR_ENC_SET((VALUE)r, enc);                     /* preserve encoding */
     uint32_t wi = len, i = 0;
     while (i < len) {
-        const unsigned char b = (unsigned char)s->buf->data[i];
-        uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
-        if (i + clen > len) clen = 1;                    /* truncated lead → one byte */
+        const uint32_t clen = korb_str_char_bytes(enc, (const unsigned char *)s->buf->data, i, len);   /* char-aware */
         wi -= clen;
         memcpy(r->buf->data + wi, s->buf->data + i, clen);
         i += clen;
@@ -298,6 +310,28 @@ korb_utf8_count(const char *b, uint32_t nbytes)
     for (uint32_t i = 0; i < nbytes; i++)
         if (((unsigned char)b[i] & 0xC0) != 0x80) n++;
     return n;
+}
+/* raise NotImplementedError for a character-level op on an unhooked "other"
+ * encoding (the per-encoding hooks are future work). */
+static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v) {
+    const uint32_t idx = KORB_STR_ENC(v);
+    const char *nm = (idx >= KORB_ENC_OTHER_MIN && idx < 8 && c->vm->str_enc_names[idx])
+                       ? korb_sym_name(c->vm, c->vm->str_enc_names[idx]) : "this";
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "character operations on %s strings are not yet supported", nm);
+}
+/* character count for a string, per its encoding (single-byte → bytes,
+ * UTF-8 → code points).  Callers guard "other" encodings separately. */
+static uint32_t korb_str_char_count(VALUE v) {
+    const KorbString *const s = VAL2STR(v);
+    return KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(v)) ? s->len : korb_utf8_count(s->buf->data, s->len);
+}
+/* byte length of the character at byte offset i (per encoding). */
+static uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n) {
+    if (KORB_ENC_IS_SINGLE_BYTE(enc)) return 1;
+    const unsigned char b = p[i];
+    uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+    if (i + clen > n) clen = 1;
+    return clen;
 }
 
 /* byte offset of codepoint index ci (clamped to [0, len]) */
@@ -1564,20 +1598,24 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    return RESULT_OK(LONG2FIX(korb_utf8_count(s->buf->data, s->len)));
+    (void)a;
+    const VALUE v = VALUE_REF_GET(self);
+    if (UNLIKELY(KORB_STR_ENC(v) >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, v);
+    return RESULT_OK(LONG2FIX((intptr_t)korb_str_char_count(v)));
 }
 
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    const bool single = KORB_ENC_IS_SINGLE_BYTE(enc);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = VAL2STR(VALUE_REF_GET(self));
         if (pos >= s->len) break;
-        uint32_t cl = 1;                                  /* one UTF-8 codepoint */
-        while (pos + cl < s->len && ((unsigned char)s->buf->data[pos+cl] & 0xC0) == 0x80) cl++;
+        uint32_t cl = 1;                                  /* single-byte enc: 1 byte = 1 char */
+        if (!single) while (pos + cl < s->len && ((unsigned char)s->buf->data[pos+cl] & 0xC0) == 0x80) cl++;
         CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, cl))));
         pos += cl;
     }

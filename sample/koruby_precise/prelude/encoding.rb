@@ -32,6 +32,16 @@ class Encoding
   def self.default_external=(e); @@default_external = e; end
   def self.default_internal; @@default_internal; end
   def self.default_internal=(e); @@default_internal = e; end
+  # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
+  # else a fresh Encoding of that name (used by String#encoding for "other").
+  def self.find(name)
+    n = name.to_s
+    constants.each do |cn|
+      e = const_get(cn)
+      return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
+    end
+    Encoding.new(n)
+  end
 end
 class Encoding
   class Converter; end
@@ -47,9 +57,10 @@ class String
   # binary specs.  (Full per-encoding semantics / negotiation are out of scope.)
   def encoding
     case __encoding_tag
+    when 0 then Encoding::UTF_8
     when 1 then Encoding::US_ASCII
     when 2 then Encoding::ASCII_8BIT
-    else Encoding::UTF_8
+    else Encoding.find(__encoding_name)   # "other" (index 3+): by stored name
     end
   end
   # force_encoding / b are C methods (builtins/string.c).

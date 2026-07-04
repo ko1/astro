@@ -207,9 +207,6 @@ enum korb_obj_type {
 /* bit 7 (Hash only): compare_by_identity — key lookup uses object identity (==)
  * instead of value equality. */
 #define KORB_FL_CMP_BY_ID  0x80u
-/* bit 8 (String only): ASCII-8BIT / binary encoding — inspect renders control
- * and high bytes as \xNN (vs \uNNNN / UTF-8 passthrough for the default UTF-8). */
-#define KORB_FL_BINARY     0x100u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
 #define KORB_FL_HASH_NOINDEX 0x200u
@@ -220,10 +217,24 @@ enum korb_obj_type {
 /* bit 11 (transient): object is on the current Comparable#== path — breaks the
  * Comparable#== → #<=> → Object#<=> → #== recursion for a Comparable with no #<=>. */
 #define KORB_FL_CMP_VISITING 0x800u
-/* bit 12 (String only): US-ASCII encoding (mutually exclusive with BINARY;
- * neither set ⇒ the default UTF-8).  Header flags survive GC (copied with the
- * object), so this needs no GC support — see String#encoding / #force_encoding. */
-#define KORB_FL_US_ASCII   0x1000u
+/* bits 12-14 (String only): the string's encoding, as a 3-bit index.  Header
+ * flags survive GC (copied with the object), so this needs no GC support.  The
+ * index drives every character-level operation (length / [] / each_char / …):
+ *   0 UTF-8 (default)   1 US-ASCII   2 ASCII-8BIT   3..7 "other"
+ * The three concrete encodings are handled directly; an "other" index names an
+ * entry in vm->str_enc_names (an interned encoding name) and character-level ops
+ * on it raise NotImplementedError until per-encoding hooks are filled in. */
+#define KORB_STR_ENC_MASK   0x7000u
+#define KORB_STR_ENC_SHIFT  12u
+#define KORB_ENC_UTF8       0u
+#define KORB_ENC_USASCII    1u
+#define KORB_ENC_BINARY     2u
+#define KORB_ENC_OTHER_MIN  3u
+#define KORB_STR_ENC(v)     ((uint32_t)((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT))
+#define KORB_STR_ENC_SET(v, idx) do { AroObjectHeader *h__ = (AroObjectHeader *)(uintptr_t)(v); \
+    h__->flags = (uint16_t)((h__->flags & ~KORB_STR_ENC_MASK) | (((uint16_t)(idx) << KORB_STR_ENC_SHIFT) & KORB_STR_ENC_MASK)); } while (0)
+/* single-byte encodings: 1 byte = 1 character (US-ASCII / ASCII-8BIT). */
+#define KORB_ENC_IS_SINGLE_BYTE(idx) ((idx) == KORB_ENC_USASCII || (idx) == KORB_ENC_BINARY)
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
@@ -796,6 +807,10 @@ struct korb_vm {
      * (libc-side strings, no GC). */
     const char *cur_load_file;
     char **loaded_files; uint32_t loaded_cnt, loaded_capa;
+    /* "other" string encodings (index 3..7 in the header enc field): the interned
+     * encoding-name symbol per index (0 = free).  Character-level ops on these
+     * raise NotImplementedError; #encoding still round-trips via the name. */
+    uint32_t str_enc_names[8];
     /* source_location: def/block body NODE → (file symbol, line), populated at
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;

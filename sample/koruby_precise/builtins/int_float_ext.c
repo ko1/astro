@@ -343,8 +343,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         uint32_t len = VAL2STR(v)->len;
         KorbString *r = korb_str_alloc(c, slots + 1, len);
         memcpy(r->buf->data, VAL2STR(VALUE_REF_GET(self))->buf->data, len);   /* re-read after alloc */
-        r->head.flags |= (((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags   /* preserve encoding */
-                          & (uint16_t)(KORB_FL_BINARY | KORB_FL_US_ASCII));
+        KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve encoding */
         slots[1] = (VALUE)r;
     } else if (KORB_ARRAY_P(v)) {
         uint32_t n = VAL2ARY(v)->len;
