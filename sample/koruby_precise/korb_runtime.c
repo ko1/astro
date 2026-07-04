@@ -454,7 +454,22 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 #ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(e)) {                                /* exact Rational */
         mpz_t en; korb_to_mpz(e, en);
-        if (!mpz_fits_slong_p(en)) { mpz_clear(en); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "exponent too large"); }
+        if (!mpz_fits_slong_p(en)) {   /* exponent doesn't fit a long: only 0 and ±1 bases are representable */
+            const bool exp_neg = mpz_sgn(en) < 0, exp_odd = mpz_odd_p(en) != 0;
+            mpz_clear(en);
+            mpz_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
+            const int nsgn = mpz_sgn(zn);
+            if (nsgn == 0) {                                /* base 0: 0**(-n) diverges, 0**n = 0 */
+                mpz_clear(zn); mpz_clear(zd);
+                if (exp_neg) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+                return korb_rat_new_v(c, slots, LONG2FIX(0), LONG2FIX(1));
+            }
+            mpz_t az; mpz_init(az); mpz_abs(az, zn);
+            const bool base_is_one = mpz_cmp(az, zd) == 0;  /* |num| == den → |base| == 1 */
+            mpz_clear(az); mpz_clear(zn); mpz_clear(zd);
+            if (base_is_one) return korb_rat_new_v(c, slots, LONG2FIX((nsgn > 0 || !exp_odd) ? 1 : -1), LONG2FIX(1));
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "exponent is too large");
+        }
         long n = mpz_get_si(en); mpz_clear(en);
         if (n == 0) return korb_rat_new_v(c, slots, LONG2FIX(1), LONG2FIX(1));
         mpz_t zn, zd, rn, rd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd); mpz_init(rn); mpz_init(rd);
