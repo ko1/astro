@@ -109,3 +109,12 @@ def at_exit(&block)
   $__at_exit << block if block
   block
 end
+
+# pp / pretty_inspect — mspec's failure formatter calls #pretty_inspect; without
+# it a genuine failure is reported as an error.  A plain inspect (+ newline, as pp
+# does) is enough for spec messages.
+class Object
+  def pretty_inspect; inspect + "\n"; end
+  def pretty_print(q); q.text(inspect); end
+  def pretty_print_cycle(q); q.text(inspect); end
+end

@@ -5309,11 +5309,15 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
      * slots[0], args above).  Otherwise fall through to the global function
      * table (p/puts/top-level defs).  `main` (klass=nil) is excluded so
      * top-level keeps using globals. */
-    if (AROH_IS_GC_OBJECT(self) &&
-        (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL)) {
+    if ((AROH_IS_GC_OBJECT(self) &&
+         (!(KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL) || block != NULL))
+        || !AROH_IS_GC_OBJECT(self)) {
         /* `main` (klass=nil) normally keeps globals, but a block-bearing call
          * (e.g. top-level `loop do … end`, `tap { }`) must reach the Object
-         * method — top-level user defs are globals and won't respond here. */
+         * method — top-level user defs are globals and won't respond here.  An
+         * immediate self (Integer/Symbol/Float/nil/true/false) always re-dispatches
+         * a bare call on its own class (there is no "main" case for immediates);
+         * korb_responds_to below still lets true globals fall through. */
         if (korb_responds_to(c, self, mid)) {
             for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
             slots[0] = self;                            /* recv below the args */
@@ -8670,7 +8674,7 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* Not on disk.  A handful of stdlib features are built into koruby (no .rb
      * on disk): a require of one of those succeeds as a no-op.  Any other
      * missing feature is a LoadError, matching CRuby. */
-    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", NULL };
+    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", "pp", "prettyprint", "date", "delegate", NULL };
     const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
     for (uint32_t i = 0; builtin_features[i]; i++)
         if (strcmp(stem, builtin_features[i]) == 0)                   /* built-in: load-once contract by feature name */
