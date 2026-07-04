@@ -40,7 +40,7 @@ static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_ARRAY_P(o)) {                            /* coerce via #to_ary, else nil */
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-        if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, to_ary)) return RESULT_OK(KORB_NIL);
+        if (!KORB_OBJECT_P(o) || !korb_responds_to_coerce_p(c, slots, &o, to_ary)) return RESULT_OK(KORB_NIL);
         slots[0] = o;
         RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;

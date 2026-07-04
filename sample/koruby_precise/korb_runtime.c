@@ -3811,6 +3811,25 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
  * respond_to_missing? must be seen).  Dispatches only on the slow path (no real
  * method) when respond_to_missing? is actually defined.  slots must have >= 3
  * free cells for that dispatch. */
+/* Pointer variant: roots *selfp across the respond_to? dispatch and writes the
+ * (possibly moved) receiver back, so a caller holding it in a plain local stays
+ * valid.  slots needs >= 3 free cells. */
+bool
+korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
+{
+    if (korb_responds_to(c, *selfp, mid)) return true;
+    const VALUE dcls = korb_dispatch_class(c, *selfp);
+    if (!KORB_CLASS_P(dcls)) return false;
+    VALUE rt_def = KORB_NIL, rtm_def = KORB_NIL;
+    (void)korb_class_find_method(dcls, korb_intern(c->vm, "respond_to?", 11), &rt_def);
+    const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL;
+    if (!(custom_rt || has_rtm)) return false;
+    slots[0] = *selfp; slots[1] = ID2SYM(mid);
+    const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+    *selfp = slots[0];                                /* writeback: the dispatch may have moved the receiver */
+    return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
+}
 bool
 korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
 {
@@ -6182,10 +6201,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_INTEGER] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Integer.try_convert(obj) → obj/to_int/nil */
-        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_INTEGER_P(arg)) return RESULT_OK(arg);
         const uint32_t to_int = korb_intern(vm, "to_int", 6);
-        if (korb_responds_to(c, arg, to_int)) {
+        if (korb_responds_to_coerce_p(c, slots, &arg, to_int)) {
             slots[0] = arg;
             return korb_send_impl(c, slots + 1, to_int, line, 0, NULL, NULL, NULL);
         }
@@ -6193,10 +6212,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_STRING] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* String.try_convert(obj) → obj/to_str/nil */
-        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_STRING_P(arg)) return RESULT_OK(arg);
         const uint32_t to_str = korb_intern(vm, "to_str", 6);
-        if (korb_responds_to(c, arg, to_str)) {
+        if (korb_responds_to_coerce_p(c, slots, &arg, to_str)) {
             slots[0] = arg;
             return korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
         }
@@ -6204,10 +6223,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Hash.try_convert(obj) → obj/to_hash/nil */
-        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_HASH_P(arg)) return RESULT_OK(arg);
         const uint32_t to_hash = korb_intern(vm, "to_hash", 7);
-        if (korb_responds_to(c, arg, to_hash)) {
+        if (korb_responds_to_coerce_p(c, slots, &arg, to_hash)) {
             slots[0] = arg;
             return korb_send_impl(c, slots + 1, to_hash, line, 0, NULL, NULL, NULL);
         }

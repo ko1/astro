@@ -396,7 +396,7 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         VALUE ov = VALUE_SLICE_GET(a, k);
         if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
             const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-            if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, to_hash)) {
+            if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
                 slots[1] = ov;
                 RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
@@ -439,7 +439,7 @@ static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         VALUE ov = VALUE_SLICE_GET(a, k);
         if (UNLIKELY(!KORB_HASH_P(ov))) {                        /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
             const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-            if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, to_hash)) {
+            if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
                 slots[1] = ov;
                 RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;

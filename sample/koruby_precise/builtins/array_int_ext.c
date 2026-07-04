@@ -52,7 +52,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
     for (uint32_t i = 0; i < n; i++) {
         slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* element (rooted; returned on match) */
         if (!KORB_ARRAY_P(slots[1])) {                       /* coerce a non-Array element via #to_ary */
-            if (!KORB_OBJECT_P(slots[1]) || !korb_responds_to(c, slots[1], to_ary)) continue;
+            if (!KORB_OBJECT_P(slots[1]) || !korb_responds_to_coerce(c, slots + 2, slots[1], to_ary)) continue;
             RESULT cr = korb_send_impl(c, slots + 2, to_ary, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!KORB_ARRAY_P(cr.value)) continue;
@@ -645,7 +645,7 @@ static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self,
     VALUE p = VALUE_SLICE_GET(a, 0);
     if (p != KORB_NIL && !KORB_PROC_P(p)) {                   /* coerce via #to_proc, else TypeError */
         const uint32_t to_proc = korb_intern(c->vm, "to_proc", 7);
-        if (!korb_responds_to(c, p, to_proc))
+        if (!korb_responds_to_coerce_p(c, slots, &p, to_proc))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Proc", korb_type_name(p));
         slots[0] = p;
         RESULT pr = korb_send_impl(c, slots + 1, to_proc, 0, 0, NULL, NULL, KORB_NIL);
@@ -745,7 +745,7 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE ov = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_HASH_P(ov))) {                            /* coerce via #to_hash (Hash subclasses are already KORB_HASH_P) */
         const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-        if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, to_hash)) {
+        if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
             slots[0] = ov;
             RESULT hr = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;

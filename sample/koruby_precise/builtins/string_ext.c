@@ -684,7 +684,7 @@ static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (UNLIKELY(!KORB_STRING_P(sv))) {               /* coerce via #to_str, else TypeError (never #to_int) */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (!korb_responds_to(c, sv, to_str))
+        if (!korb_responds_to_coerce_p(c, slots, &sv, to_str))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "type mismatch: %s given", korb_type_name(sv));
         slots[0] = sv;
         RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
@@ -771,7 +771,7 @@ static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     VALUE padv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     if (padv != KORB_NIL && !KORB_STRING_P(padv)) {       /* padstr #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_OBJECT_P(padv) && korb_responds_to(c, padv, to_str)) {
+        if (KORB_OBJECT_P(padv) && korb_responds_to_coerce_p(c, slots, &padv, to_str)) {
             slots[0] = padv;
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;

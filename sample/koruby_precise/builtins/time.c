@@ -84,7 +84,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL)
         e = korb_time_epoch(c, v);                                /* Time.at(time) */
     else if (!korb_num_to_d(v, &e)) {                             /* try #to_int, else TypeError */
-        if (korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6))) {
+        if (korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_int", 6))) {
             slots[0] = v;
             RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
@@ -132,7 +132,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         VALUE offv = VALUE_SLICE_GET(a, 6);
         intptr_t off;
         if (!korb_parse_tz_offset(offv, &off)) {                 /* try #to_int */
-            if (KORB_OBJECT_P(offv) && korb_responds_to(c, offv, korb_intern(c->vm, "to_int", 6))) {
+            if (KORB_OBJECT_P(offv) && korb_responds_to_coerce_p(c, slots, &offv, korb_intern(c->vm, "to_int", 6))) {
                 slots[0] = offv;
                 RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;

@@ -1126,7 +1126,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
      * constants (no ancestors / no top-level fallback). */
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 2 && !KORB_TRUTHY(VALUE_SLICE_GET(a, 1)));
     if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {          /* coerce a name via #to_str */
-        if (UNLIKELY(!korb_responds_to(c, name, korb_intern(vm, "to_str", 6))))
+        if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &name, korb_intern(vm, "to_str", 6))))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
         slots[0] = name;
         RESULT sr = korb_send(c, slots + 1, korb_intern(vm, "to_str", 6), 0, 0);
