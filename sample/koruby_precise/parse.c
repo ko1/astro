@@ -783,6 +783,8 @@ build_param_info(struct kp_ctx *tc, const pm_node_t *blk_params)
     if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {   /* anonymous `**` → :** */
         const pm_constant_id_t kn = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
         pi->e[k].kind = 5; pi->e[k].name = kn ? kp_intern_cid(tc, kn) : korb_intern(tc->c->vm, "**", 2); k++;
+    } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {   /* `**nil` → :nokey */
+        pi->e[k].kind = 7; pi->e[k].name = 0; k++;
     }
     if (ps->block) {   /* anonymous `&` → :& */
         const pm_constant_id_t bn = ((const pm_block_parameter_node_t *)ps->block)->name;

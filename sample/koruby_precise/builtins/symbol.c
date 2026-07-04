@@ -374,7 +374,7 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const struct korb_param_info *const pi = p->iseq ? (const struct korb_param_info *)p->iseq->u.node_entry.param_info : NULL;
     const bool lam = p->is_lambda;
     const bool symproc = (p->iseq == NULL);
-    static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block" };
+    static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };
     const uint32_t n = pi ? pi->n : 0;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
     VALUE_REF res = VALUE_REF_AT(&slots[0]);
@@ -574,7 +574,7 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
      * immortal libc (no GC). NULL (e.g. define_method) → fall back to the counts. */
     const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
     if ((km->kind == KORB_METHOD_ISEQ || km->kind == KORB_METHOD_DM) && pi != NULL) {   /* define_method carries its block's params */
-        static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block" };
+        static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };
         for (uint32_t i = 0; i < pi->n; i++) {
             const uint8_t kind = pi->e[i].kind;
             const char *const kn = knames[kind];
