@@ -6822,9 +6822,9 @@ static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);   /* fwd (arithseq.c) */
 static bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* fwd (near require) */
 static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool utc);   /* fwd (time.c) — used by File::Stat */
+static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — used by integer.c / float.c */
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
-static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — used by float.c round */
 #include "builtins/float.c"
 #include "builtins/string.c"
 #include "builtins/symbol.c"

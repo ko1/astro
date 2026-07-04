@@ -219,10 +219,22 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (len > 0) mask_len = len;                                    /* reversed/empty ⇒ no upper mask */
         }                                                                  /* endless ⇒ no upper mask */
     } else {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        VALUE iv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(iv, &i))) {                            /* coerce the bit index via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &iv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(iv, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            selfv = VALUE_REF_GET(self);                                    /* re-read: coercion may have moved a Bignum self */
+        }
         if (VALUE_SLICE_LEN(a) >= 2) {                                      /* n[i, len] */
             intptr_t len;
-            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            VALUE lv = VALUE_SLICE_GET(a, 1);
+            if (UNLIKELY(!korb_to_index(lv, &len))) {
+                RESULT cr = korb_coerce_to_int(c, slots, &lv);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                selfv = VALUE_REF_GET(self);
+            }
             if (len == 0) zero = true; else if (len > 0) mask_len = len;   /* len<0 ⇒ no upper mask (all bits) */
         } else single_bit = true;                                          /* n[i] */
     }
