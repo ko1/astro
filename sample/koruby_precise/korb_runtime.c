@@ -8906,9 +8906,18 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
-    const VALUE sv = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    VALUE sv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(sv))) {                    /* coerce a non-String source via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(sv) && korb_responds_to(c, sv, to_str)) {
+            slots[0] = sv;                                 /* root receiver across the dispatch */
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(args, 0), sr.value); sv = sr.value; }
+        }
+        if (UNLIKELY(!KORB_STRING_P(sv)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    }
     const bool have_bind = VALUE_SLICE_LEN(args) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(args, 1));
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
