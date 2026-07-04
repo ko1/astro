@@ -79,9 +79,19 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
 }
 
 static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (VALUE_SLICE_LEN(a) == 1 && !KORB_ARRAY_P(single) && KORB_OBJECT_P(single)) {   /* a single non-Array arg is coerced via #to_ary (before caching fmt → GC-safe) */
+        slots[0] = VALUE_REF_GET(self);                  /* root self across the dispatch */
+        slots[1] = single;
+        if (korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_ary", 6))) {
+            RESULT ar = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+            if (KORB_ARRAY_P(ar.value)) single = ar.value;
+        }
+        self = VALUE_REF_AT(&slots[0]);                  /* self re-rooted after the possible GC */
+    }
     const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
     const char *fmt = fs->buf->data; uint32_t flen = fs->len;
-    VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     const VALUE *args; uint32_t argn;
     if (KORB_ARRAY_P(single)) { args = VAL2ARY(single)->items->data; argn = VAL2ARY(single)->len; }
     else { args = &single; argn = VALUE_SLICE_LEN(a); }
