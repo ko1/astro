@@ -1320,7 +1320,7 @@ korb_hash_merge_val(CTX *c, VALUE *slots, VALUE_REF href, VALUE src)
     if (UNLIKELY(!KORB_HASH_P(src))) {                 /* `**obj` → obj.to_hash */
         const char *const orig = korb_type_name(src);
         const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-        if (KORB_OBJECT_P(src) && korb_responds_to(c, src, to_hash)) {
+        if (KORB_OBJECT_P(src) && korb_responds_to_coerce_p(c, slots, &src, to_hash)) {
             slots[0] = src;
             RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -1833,12 +1833,12 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
         if (UNLIKELY(!KORB_ARRAY_P(yr.value))) {             /* coerce the yielded pair via #to_ary */
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-            if (KORB_OBJECT_P(yr.value) && korb_responds_to(c, yr.value, to_ary)) {
-                slots[4] = yr.value;
+            slots[4] = yr.value;                             /* root before respond_to?/to_ary dispatch */
+            if (KORB_OBJECT_P(slots[4]) && korb_responds_to_coerce(c, slots + 5, slots[4], to_ary)) {
                 RESULT ar = korb_send_impl(c, slots + 5, to_ary, 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 yr.value = ar.value;
-            }
+            } else { yr.value = slots[4]; }
             if (UNLIKELY(!KORB_ARRAY_P(yr.value)))
                 return korb_raise(c, slots + 4, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(yr.value));
         }
@@ -4748,7 +4748,7 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     }
     if (KORB_STRING_P(l)) {                          /* String + non-String → coerce via #to_str */
         const uint32_t to_str_mid = korb_intern(c->vm, "to_str", 6);
-        if (!korb_responds_to(c, rhs, to_str_mid))
+        if (!korb_responds_to_coerce_p(c, slots, &rhs, to_str_mid))
             return korb_raise(c, slots, KORB_E_TYPE, line,
                               "no implicit conversion of %s into String", korb_type_name(rhs));
         const char *const rcls = korb_type_name(rhs);   /* capture before dispatch (STRESS-safe) */
@@ -4809,7 +4809,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     }
     if (KORB_ARRAY_P(l) && KORB_OBJECT_P(rhs)) {        /* Array * obj: CRuby tries #to_str (join) first, then #to_int (repeat count) */
         const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
-        if (!korb_responds_to(c, rhs, korb_intern(c->vm, "to_str", 6)) && korb_responds_to(c, rhs, to_int)) {
+        if (!korb_responds_to_coerce_p(c, slots, &rhs, korb_intern(c->vm, "to_str", 6)) && korb_responds_to_coerce_p(c, slots, &rhs, to_int)) {
             slots[1] = rhs;                              /* receiver for the dispatch (base[-1]) */
             RESULT ir = korb_send_impl(c, slots + 2, to_int, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
@@ -4833,7 +4833,7 @@ korb_mul_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
     }
     if (KORB_ARRAY_P(l)) {                           /* Array * String-or-#to_str → join (join coerces the sep) */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_STRING_P(rhs) || (KORB_OBJECT_P(rhs) && korb_responds_to(c, rhs, to_str))) {
+        if (KORB_STRING_P(rhs) || (KORB_OBJECT_P(rhs) && korb_responds_to_coerce_p(c, slots, &rhs, to_str))) {
             slots[0] = rhs;
             return korb_m_ary_join(c, slots + 1, lhs, VALUE_SLICE_MAKE(slots, 1));
         }
@@ -5538,10 +5538,10 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
  * scanned caller slot, so the coerced Proc stays rooted for the forward.  Raises
  * TypeError when obj has no #to_proc (or it returns a non-Proc), matching CRuby. */
 RESULT korb_blockarg_to_proc(CTX *c, VALUE *slots, VALUE *restrict pslot, uint32_t line) {
-    const VALUE pv = *pslot;
+    VALUE pv = *pslot;
     if (LIKELY(KORB_PROC_P(pv)) || pv == KORB_NIL) return RESULT_OK(pv);
     const uint32_t to_proc = korb_intern(c->vm, "to_proc", 7);
-    if (UNLIKELY(!korb_responds_to(c, pv, to_proc)))
+    if (UNLIKELY(!korb_responds_to_coerce_p(c, slots, &pv, to_proc)))
         return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Proc", korb_type_name(pv));
     slots[0] = pv;
     const RESULT r = korb_send_impl(c, slots + 1, to_proc, line, 0, NULL, NULL, NULL);
@@ -6106,7 +6106,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         slots[0] = UNWRAP(korb_hash_new(c, slots, argc));
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         if (argc == 1 && !KORB_HASH_P(base[0]) && !KORB_ARRAY_P(base[0]) && KORB_OBJECT_P(base[0]) &&
-            korb_responds_to(c, base[0], korb_intern(vm, "to_ary", 6))) {  /* Hash[obj] → obj.to_ary */
+            korb_responds_to_coerce(c, slots + 2, base[0], korb_intern(vm, "to_ary", 6))) {  /* Hash[obj] → obj.to_ary */
             slots[1] = base[0];
             RESULT ar = korb_send_impl(c, slots + 2, korb_intern(vm, "to_ary", 6), 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
@@ -6340,7 +6340,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 VALUE av = slots[-(intptr_t)argc];
                 if (!KORB_ARRAY_P(av) && KORB_OBJECT_P(av)) {
                     const uint32_t to_ary = korb_intern(vm, "to_ary", 6);
-                    if (korb_responds_to(c, av, to_ary)) {
+                    if (korb_responds_to_coerce_p(c, slots, &av, to_ary)) {
                         slots[0] = av;
                         RESULT r = korb_send_impl(c, slots + 1, to_ary, line, 0, NULL, NULL, KORB_NIL);
                         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -8635,9 +8635,9 @@ korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    const VALUE nv = VALUE_SLICE_GET(args, 0);
+    VALUE nv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(nv))) {
-        if (KORB_OBJECT_P(nv) && korb_responds_to(c, nv, korb_intern(c->vm, "to_path", 7))) {
+        if (KORB_OBJECT_P(nv) && korb_responds_to_coerce_p(c, slots, &nv, korb_intern(c->vm, "to_path", 7))) {
             slots[0] = nv;
             RESULT pr = korb_send(c, slots + 1, korb_intern(c->vm, "to_path", 7), 0, 0);
             if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
@@ -9034,7 +9034,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE sv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(sv))) {                    /* coerce a non-String source via #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_OBJECT_P(sv) && korb_responds_to(c, sv, to_str)) {
+        if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_str)) {
             slots[0] = sv;                                 /* root receiver across the dispatch */
             RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
@@ -9309,7 +9309,7 @@ korb_bi_hash(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (KORB_HASH_P(a0)) return RESULT_OK(a0);
     if (KORB_ARRAY_P(a0) && VAL2ARY(a0)->len == 0) return korb_hash_new(c, slots, 0);   /* Hash([]) → {} */
     const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
-    if (KORB_OBJECT_P(a0) && korb_responds_to(c, a0, to_hash)) {
+    if (KORB_OBJECT_P(a0) && korb_responds_to_coerce_p(c, slots, &a0, to_hash)) {
         slots[0] = a0;                                    /* receiver */
         const RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;

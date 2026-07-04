@@ -79,7 +79,7 @@ static RESULT korb_m_time_now(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double e = 0;
-    const VALUE v = VALUE_SLICE_GET(a, 0);
+    VALUE v = VALUE_SLICE_GET(a, 0);
     if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_f", 4)) &&
         korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL)
         e = korb_time_epoch(c, v);                                /* Time.at(time) */
