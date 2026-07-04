@@ -383,13 +383,23 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
     } else {
         if (pos0 != KORB_NIL) {
-            if (UNLIKELY(!korb_to_index(pos0, &beg))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos0));
+            if (UNLIKELY(!korb_to_index(pos0, &beg))) {   /* coerce start via #to_int (self is a VALUE_REF; n is a value) */
+                RESULT cr = korb_coerce_to_int(c, slots, &pos0);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(pos0, &beg)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos0));
+                n = VAL2ARY(VALUE_REF_GET(self))->len;
+            }
         }
         VALUE pos1 = VALUE_SLICE_LEN(a) > base + 1 ? VALUE_SLICE_GET(a, base + 1) : KORB_NIL;
         if (pos1 != KORB_NIL) {
             if (UNLIKELY(KORB_BIGNUM_P(pos1)))           /* a Bignum length can't fit → RangeError (CRuby) */
                 return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
-            if (UNLIKELY(!korb_to_index(pos1, &len))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos1));
+            if (UNLIKELY(!korb_to_index(pos1, &len))) {
+                RESULT cr = korb_coerce_to_int(c, slots, &pos1);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(pos1, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(pos1));
+                n = VAL2ARY(VALUE_REF_GET(self))->len;
+            }
             have_len = true;
         }
         if (beg < 0) { beg += n; if (beg < 0) beg = 0; }
