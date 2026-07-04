@@ -1081,8 +1081,8 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
      * (Ruby `[*x]` / `a, b = *x` semantics); otherwise `*x` is just `[x]`. */
     if (KORB_OBJECT_P(val)) {
         const uint32_t to_a_mid = korb_intern(c->vm, "to_a", 4);
-        if (korb_responds_to(c, val, to_a_mid)) {
-            VALUE_REF vr = SLOTS_PUSH(slots, val);       /* root recv across the send */
+        VALUE_REF vr = SLOTS_PUSH(slots, val);           /* root recv across the respond_to? / to_a dispatch */
+        if (korb_responds_to_coerce(c, slots, VALUE_REF_GET(vr), to_a_mid)) {   /* honors #respond_to? (proxies/mocks) */
             RESULT ta = korb_send(c, slots, to_a_mid, 0, 0);
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             if (KORB_ARRAY_P(ta.value)) {
@@ -1097,6 +1097,7 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_a gives %s)",   /* to_a → non-Array */
                               korb_type_name(VALUE_REF_GET(vr)), korb_type_name(VALUE_REF_GET(vr)), korb_type_name(ta.value));
         }
+        return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));   /* re-read: coerce may have moved val */
     }
     return korb_ary_push_val(c, slots, aref, val);
 }
@@ -1111,7 +1112,7 @@ korb_massign_coerce(CTX *c, VALUE *slots)
     const VALUE v = slots[0];
     if (KORB_ARRAY_P(v) || !KORB_OBJECT_P(v)) return RESULT_OK(v);
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-    if (!korb_responds_to(c, v, to_ary)) return RESULT_OK(slots[0]);
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) return RESULT_OK(slots[0]);   /* honors #respond_to? */
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
