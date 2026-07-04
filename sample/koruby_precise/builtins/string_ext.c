@@ -324,8 +324,8 @@ static int korb_ci_cmp(const char *a, uint32_t al, const char *b, uint32_t bl) {
 static bool korb_casecmp_coerce(CTX *c, VALUE *slots, VALUE *o, RESULT *err) {
     if (LIKELY(KORB_STRING_P(*o))) return true;
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-    if (!korb_responds_to(c, *o, to_str)) return false;
-    slots[0] = *o;
+    slots[0] = *o;                                    /* root before respond_to?/to_str dispatch */
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) { *o = slots[0]; return false; }
     RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
     if (UNLIKELY(cr.state != KORB_NORMAL)) { *err = cr; return false; }
     if (!KORB_STRING_P(cr.value)) return false;

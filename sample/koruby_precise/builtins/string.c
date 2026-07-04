@@ -508,11 +508,11 @@ static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
     intptr_t tmp;
     if (korb_to_index(*v, &tmp)) return RESULT_OK(KORB_TRUE);
     const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
-    if (!korb_responds_to(c, *v, to_int)) return RESULT_OK(KORB_FALSE);
-    slots[0] = *v;
-    RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, KORB_NIL);
+    slots[0] = *v;                                    /* root the receiver across respond_to?/to_int dispatch */
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_int)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
+    RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (!korb_to_index(r.value, &tmp)) return RESULT_OK(KORB_FALSE);
+    if (!korb_to_index(r.value, &tmp)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
