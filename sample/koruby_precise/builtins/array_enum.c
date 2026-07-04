@@ -530,7 +530,7 @@ static RESULT korb_ary_to_enum(CTX *c, VALUE *slots, VALUE_REF self, const char 
 }
 /* min_by(want=-1) / max_by(want=1): element with the extreme block key. */
 static RESULT korb_ary_minmax_by(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *cself, int want) {
-    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#min_by/max_by without a block is not supported");
+    if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "min_by", 6)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = KORB_NIL;   /* best value */
     slots[1] = KORB_NIL;   /* best key */
     bool have = false;

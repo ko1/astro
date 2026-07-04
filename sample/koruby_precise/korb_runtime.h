@@ -38,9 +38,15 @@
 /* ---- block-given guard (yielding methods) -------------------------------- *
  * Used inside a method whose params are (c, slots, ..., block, ...): bail with
  * NotImplementedError when called without a block (eager Enumerator gap). */
+/* no block → return an Enumerator (to_enum(:method); the method name is the tail
+ * of `what` after '#').  self must be the receiver VALUE_REF in scope. */
 #define REQUIRE_BLOCK(what) \
-    do { if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, \
-        what " without a block (Enumerator) is not supported"); } while (0)
+    do { if (UNLIKELY(block == NULL)) { \
+        const char *_wn__ = strrchr(what, '#'); _wn__ = _wn__ ? _wn__ + 1 : (what); \
+        slots[0] = VALUE_REF_GET(self); \
+        slots[1] = ID2SYM(korb_intern(c->vm, _wn__, (uint32_t)strlen(_wn__))); \
+        return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); \
+    } } while (0)
 #define ARY_REQUIRE_BLOCK(what) REQUIRE_BLOCK(what)
 
 /* ---- Set → Array delegation --------------------------------------------- *
