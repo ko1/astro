@@ -874,7 +874,7 @@ static RESULT korb_m_ary_permutation(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     uint32_t len = SELF_ARY->len;
     intptr_t want = len;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        { VALUE _iv = VALUE_SLICE_GET(a, 0); if (UNLIKELY(!korb_to_index(_iv, &want))) { RESULT _cr = korb_coerce_to_int(c, slots, &_iv); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; if (!korb_to_index(_iv, &want)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); len = SELF_ARY->len; } }
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                   /* out: array of permutations */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
@@ -920,7 +920,7 @@ static RESULT korb_m_ary_combination(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     uint32_t len = SELF_ARY->len;
     intptr_t want = 0;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        { VALUE _iv = VALUE_SLICE_GET(a, 0); if (UNLIKELY(!korb_to_index(_iv, &want))) { RESULT _cr = korb_coerce_to_int(c, slots, &_iv); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; if (!korb_to_index(_iv, &want)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); len = SELF_ARY->len; } }
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                   /* out: array of combinations */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
@@ -977,7 +977,7 @@ static RESULT korb_rperm_rec(CTX *c, VALUE *scratch, VALUE_REF self, VALUE_REF o
 static RESULT korb_m_ary_repeated(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool perm) {
     intptr_t want = 0;
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        { VALUE _iv = VALUE_SLICE_GET(a, 0); if (UNLIKELY(!korb_to_index(_iv, &want))) { RESULT _cr = korb_coerce_to_int(c, slots, &_iv); if (UNLIKELY(_cr.state != KORB_NORMAL)) return _cr; if (!korb_to_index(_iv, &want)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); } }
     }
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));                   /* out */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
