@@ -7099,6 +7099,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_STRING, "each_codepoint", korb_m_str_each_codepoint, 0);
 
     /* Symbol */
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_SYMBOL), "all_symbols", korb_m_sym_all_symbols, 0);   /* Symbol.all_symbols class method */
     korb_def_cmethod(c, KORB_C_SYMBOL, "to_s", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "id2name", korb_m_sym_to_s, 0);
     korb_def_cmethod(c, KORB_C_SYMBOL, "slice", korb_m_sym_slice, -1);

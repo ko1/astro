@@ -7,6 +7,15 @@ static RESULT korb_m_sym_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
 static RESULT korb_m_sym_to_sym(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+/* Symbol.all_symbols → an Array of every interned Symbol. */
+static RESULT korb_m_sym_all_symbols(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    const uint32_t n = c->vm->sym_cnt;                /* snapshot: no interning happens in the loop */
+    slots[0] = UNWRAP(korb_ary_new(c, slots, n));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, ID2SYM(i)));
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 static RESULT korb_m_sym_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     return RESULT_OK(korb_sym_name(c->vm, SYM2ID(VALUE_REF_GET(self)))[0] == '\0' ? KORB_TRUE : KORB_FALSE);
