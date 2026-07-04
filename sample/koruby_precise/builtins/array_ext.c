@@ -42,10 +42,20 @@ static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1,
  * No GC alloc happens between fetching elements and emitting bytes, so the bare
  * array pointer stays valid for the whole loop. */
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE tv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(tv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(tv));
-    const KorbString *t = VAL2STR(tv);
+    /* Template lives in slots[0] for the whole call (rooted) so it survives an
+     * element #to_str dispatch; self is a rooted VALUE_REF (GC re-reads it), so
+     * `ary`/`t` are re-derived after any coercion. */
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(slots[0]))) {             /* coerce the template via #to_str */
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "to_str", 6))) {
+            RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[0] = sr.value;
+        }
+        if (UNLIKELY(!KORB_STRING_P(slots[0])))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    const KorbString *t = VAL2STR(slots[0]);
     const KorbArray *ary = SELF_ARY;
     uint8_t *ob = NULL; size_t olen = 0, ocap = 0;
     #define PK_RESERVE(n) do { if (olen + (size_t)(n) > ocap) { ocap = (olen + (size_t)(n)) * 2 + 64; ob = (uint8_t *)realloc(ob, ocap); if (!ob) { fprintf(stderr, "koruby_precise: pack OOM\n"); abort(); } } } while (0)
@@ -154,6 +164,16 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             else if (coerce && KORB_FLOAT_P(e)) { elen = korb_float_to_s(korb_float_val(e), cobuf); ed = cobuf; }
             else if (coerce && e == KORB_TRUE) { ed = "true"; elen = 4; }
             else if (coerce && e == KORB_FALSE) { ed = "false"; elen = 5; }
+            else if (!coerce && KORB_OBJECT_P(e)) {       /* a/A/Z/B/b/H/h: coerce the element via #to_str */
+                slots[1] = e;
+                if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { free(ob); return sr; }
+                if (!KORB_STRING_P(sr.value)) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+                slots[1] = sr.value;                      /* root the coerced String; ed used immediately (no GC before emit) */
+                ed = VAL2STR(slots[1])->buf->data; elen = VAL2STR(slots[1])->len;
+                ary = SELF_ARY; t = VAL2STR(slots[0]);    /* re-read: the dispatch may have moved them */
+            }
             else { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
             if (d == 'a' || d == 'A') {
                 uint32_t want = star ? elen : (uint32_t)cnt;
