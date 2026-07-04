@@ -429,7 +429,7 @@ static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         slots[1] = VALUE_SLICE_GET(a, j);
         if (UNLIKELY(!KORB_STRING_P(slots[1]))) {
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-            if (KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+            if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
                 RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 slots[1] = sr.value;
@@ -573,7 +573,7 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[0] = VALUE_SLICE_GET(a, na - 1);             /* replacement — coerce via #to_str first (Integer-index: TypeError before IndexError) */
     if (UNLIKELY(!KORB_STRING_P(slots[0]))) {
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
             RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             slots[0] = cr.value;
@@ -807,13 +807,13 @@ static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, ui
 static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
-    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
         RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
     slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
-    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
         RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[1] = r.value;
@@ -851,13 +851,13 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
-    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
+    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
         RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
     slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
-    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+    if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
         RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[1] = r.value;
@@ -2011,7 +2011,7 @@ static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[1] = VALUE_SLICE_GET(a, 0);        /* end (rooted) */
     if (!KORB_STRING_P(slots[1])) {          /* coerce end via #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
-        if (KORB_OBJECT_P(slots[1]) && korb_responds_to(c, slots[1], to_str)) {
+        if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
             RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[1] = sr.value;

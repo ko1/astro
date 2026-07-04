@@ -298,7 +298,7 @@ static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* other (rooted; possibly coerced) */
     if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {            /* coerce via #to_ary before mutating self */
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
-        if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_ary)) {
+        if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) {
             RESULT cr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             slots[0] = cr.value;
