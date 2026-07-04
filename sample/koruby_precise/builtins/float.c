@@ -45,6 +45,7 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         return RESULT_OK(KORB_NIL);
     }
     double s = SELF_FLT;
+    if (UNLIKELY(isnan(s) || isnan(o))) return RESULT_OK(KORB_NIL);   /* NaN is unordered */
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(ov)) {                                 /* Float <=> Bignum: exact (invert Integer<=>Float) */
         const int cmp = korb_big_flo_cmp(ov, s);
