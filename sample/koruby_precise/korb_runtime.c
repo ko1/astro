@@ -1086,6 +1086,25 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
     return korb_ary_push_val(c, slots, aref, val);
 }
 
+/* Multiple assignment `a, b = rhs`: coerce a non-Array rhs via #to_ary (an Array
+ * result is spread; nil keeps it scalar → [rhs]; any other non-Array raises
+ * TypeError).  rhs must be in slots[0]; slots[0] is updated to the Array on
+ * success.  Non-static so node_eval.c can call it. */
+RESULT
+korb_massign_coerce(CTX *c, VALUE *slots)
+{
+    const VALUE v = slots[0];
+    if (KORB_ARRAY_P(v) || !KORB_OBJECT_P(v)) return RESULT_OK(v);
+    const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+    if (!korb_responds_to(c, v, to_ary)) return RESULT_OK(slots[0]);
+    RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
+    if (r.value == KORB_NIL) return RESULT_OK(slots[0]);   /* to_ary → nil: keep scalar */
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
+                      korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
+}
+
 /* Concatenate two arrays into a fresh one (Array#+ / the `+` binop).  lref/rref
  * are rooted; the result is left on the slots cursor via push. */
 static RESULT
