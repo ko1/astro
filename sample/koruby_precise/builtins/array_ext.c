@@ -58,6 +58,8 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const char d = t->buf->data[ti++];
         if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
         if (d == '#') { while (ti < t->len && t->buf->data[ti] != '\n') ti++; continue; }   /* comment to EOL */
+        bool bang = false;   /* `!` = native size (l!/L! = long = 8, i!/I! = int = 4, s!/S! = short = 2) */
+        if (ti < t->len && t->buf->data[ti] == '!') { bang = true; ti++; }
         bool star = false, has_cnt = false; long cnt = 1;
         if (ti < t->len && t->buf->data[ti] == '*') { star = true; ti++; }
         else if (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') {
@@ -72,14 +74,15 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 PK_PUT(b & 0xFF);
             }
         } else if (d == 'N' || d == 'n' || d == 'V' || d == 'v' || d == 'L' || d == 'l' ||
-                   d == 'S' || d == 's' || d == 'Q' || d == 'q' || d == 'I' || d == 'i') {   /* multi-byte ints */
+                   d == 'S' || d == 's' || d == 'Q' || d == 'q' || d == 'I' || d == 'i' ||
+                   d == 'J' || d == 'j') {   /* multi-byte ints (J/j = native intptr = 8-byte LE here) */
             int sz; bool big;
             switch (d) {
                 case 'N': sz = 4; big = true;  break;   case 'n': sz = 2; big = true;  break;
                 case 'V': sz = 4; big = false; break;   case 'v': sz = 2; big = false; break;
                 case 'S': case 's': sz = 2; big = false; break;
-                case 'Q': case 'q': sz = 8; big = false; break;
-                default:  sz = 4; big = false; break;   /* L/l/I/i = 4-byte native (LE) */
+                case 'Q': case 'q': case 'J': case 'j': sz = 8; big = false; break;
+                default:  sz = (bang && (d == 'L' || d == 'l')) ? 8 : 4; big = false; break;   /* L/l/I/i = 4-byte native; l!/L! = long = 8 */
             }
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) {

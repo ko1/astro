@@ -70,6 +70,11 @@ static RESULT korb_m_io_fileno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     return RESULT_OK(LONG2FIX(fileno(fp)));
 }
+static RESULT korb_m_io_tty_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; (void)slots;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    return RESULT_OK((fp && isatty(fileno(fp))) ? KORB_TRUE : KORB_FALSE);
+}
 /* IO#stat → File::Stat of the open descriptor (fstat). */
 static RESULT korb_m_io_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -409,6 +414,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOB("each", each_line, -1);
     IOM("close", close, 0);      IOM("closed?", closed_p, 0);
     IOM("stat", stat, 0);        IOM("fileno", fileno, 0);
+    IOM("tty?", tty_p, 0);       IOM("isatty", tty_p, 0);
     IOM("truncate", truncate, 1);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
     IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);

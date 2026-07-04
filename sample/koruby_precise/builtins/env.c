@@ -178,6 +178,13 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
         korb_const_define(c, korb_intern(c->vm, "$PROGRAM_NAME", 13), slots[1]);
     }
     korb_const_define(c, korb_intern(c->vm, "$$", 2), LONG2FIX((intptr_t)getpid()));   /* process id */
+    /* $LOAD_PATH / $: — the require search path (one Array shared by both names). */
+    slots[1] = korb_ary_new(c, slots + 1, 0).value;
+    korb_const_define(c, korb_intern(c->vm, "$LOAD_PATH", 10), slots[1]);
+    korb_const_define(c, korb_intern(c->vm, "$:", 2), slots[1]);
+    slots[1] = korb_ary_new(c, slots + 1, 0).value;                                    /* $" / $LOADED_FEATURES */
+    korb_const_define(c, korb_intern(c->vm, "$\"", 2), slots[1]);
+    korb_const_define(c, korb_intern(c->vm, "$LOADED_FEATURES", 16), slots[1]);
 }
 
 void korb_init_env(CTX *c, VALUE *slots) {

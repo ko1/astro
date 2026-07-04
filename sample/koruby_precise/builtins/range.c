@@ -113,6 +113,12 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     else if (!KORB_OBJECT_P(r->rbegin)) {
         return korb_m_range_cover(c, slots, self, a);        /* numeric/other → cover-based (fast) */
     }
+    else if (korb_responds_to(c, r->rbegin, korb_intern(c->vm, "to_str", 6))) {
+        /* a String-coercible Comparable begin (e.g. mspec's SpecVersion) is treated
+         * like a String range by CRuby's #include?, which for such objects reduces
+         * to #cover? (a <=> comparison) rather than #succ iteration. */
+        return korb_m_range_cover(c, slots, self, a);
+    }
     else {
         /* custom-object range → succ-membership: walk begin, begin.succ, ...
          * checking == x, until current passes end (CRuby: include? ≠ cover here). */

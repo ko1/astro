@@ -8633,10 +8633,25 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
         VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
     }
+    if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (no alloc until the load) */
+        const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+        if (KORB_ARRAY_P(lp)) {
+            const KorbArray *const la = VAL2ARY(lp);
+            for (uint32_t i = 0; i < la->len; i++) {
+                const VALUE e = la->items->data[i];
+                if (!KORB_STRING_P(e)) continue;
+                char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
+                memcpy(dir, VAL2STR(e)->buf->data, dl); dir[dl] = '\0';
+                if (korb_resolve_load(dir, namebuf, abspath, sizeof abspath)) {
+                    VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
+                }
+            }
+        }
+    }
     /* Not on disk.  A handful of stdlib features are built into koruby (no .rb
      * on disk): a require of one of those succeeds as a no-op.  Any other
      * missing feature is a LoadError, matching CRuby. */
-    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", NULL };
+    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", NULL };
     const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
     for (uint32_t i = 0; builtin_features[i]; i++)
         if (strcmp(stem, builtin_features[i]) == 0)                   /* built-in: load-once contract by feature name */
@@ -8678,6 +8693,69 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (namebuf[0] == '/') snprintf(abspath, sizeof abspath, "%s", namebuf);
     else if (!realpath(namebuf, abspath)) snprintf(abspath, sizeof abspath, "%s", namebuf);
     VALUE out; return korb_load_abspath(c, slots, abspath, false, &out);
+}
+
+/* Kernel#exit([status]) / exit! — terminate the process (true/nil → 0, false → 1,
+ * Integer → that code).  Runs the registered at_exit blocks first (reverse order),
+ * matching CRuby's exit (exit! skips them). */
+void korb_drain_at_exit(CTX *c, VALUE *slots);   /* fwd (defined below; called from main.c) */
+static RESULT
+korb_bi_exit(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    int code = 0;
+    if (VALUE_SLICE_LEN(args) >= 1) {
+        const VALUE s = VALUE_SLICE_GET(args, 0);
+        if (s == KORB_FALSE) code = 1;
+        else if (s == KORB_TRUE || s == KORB_NIL) code = 0;
+        else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
+    }
+    korb_drain_at_exit(c, slots);
+    fflush(stdout); fflush(stderr);
+    exit(code);
+}
+static RESULT
+korb_bi_exit_bang(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    (void)c; (void)slots;
+    int code = 0;
+    if (VALUE_SLICE_LEN(args) >= 1) {
+        const VALUE s = VALUE_SLICE_GET(args, 0);
+        if (s == KORB_FALSE) code = 1;
+        else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
+    }
+    fflush(stdout); fflush(stderr);
+    _exit(code);
+}
+/* Kernel#abort([msg]) — write msg to stderr (if given) and exit(1). */
+static RESULT
+korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    if (VALUE_SLICE_LEN(args) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(args, 0))) {
+        const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 0));
+        fwrite(s->buf->data, 1, s->len, stderr); fputc('\n', stderr);
+    }
+    korb_drain_at_exit(c, slots);
+    fflush(stdout); fflush(stderr);
+    exit(1);
+}
+/* Run at_exit blocks (reverse order); guarded so an at_exit block calling exit
+ * doesn't re-enter.  Shared by main.c's post-run drain and Kernel#exit. */
+void
+korb_drain_at_exit(CTX *c, VALUE *slots)
+{
+    static bool draining = false;
+    if (draining) return;
+    draining = true;
+    const VALUE ax = korb_const_get(c->vm, korb_intern(c->vm, "$__at_exit", 10));
+    if (!KORB_ARRAY_P(ax)) { draining = false; return; }
+    slots[0] = ax;
+    for (int32_t i = (int32_t)VAL2ARY(slots[0])->len - 1; i >= 0; i--) {
+        if ((uint32_t)i >= VAL2ARY(slots[0])->len) continue;
+        slots[1] = VAL2ARY(slots[0])->items->data[i];
+        RESULT er = korb_send(c, slots + 2, korb_intern(c->vm, "call", 4), 0, 0);
+        if (er.state == KORB_RAISE) korb_report_uncaught(c, er.value);
+    }
+    draining = false;
 }
 
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
@@ -9489,6 +9567,9 @@ korb_ctx_new(void)
     korb_builtin_define(c, "format", korb_bi_format, -1);
     korb_builtin_define(c, "sprintf", korb_bi_format, -1);
     korb_builtin_define(c, "printf", korb_bi_printf, -1);
+    korb_builtin_define(c, "exit", korb_bi_exit, -1);
+    korb_builtin_define(c, "exit!", korb_bi_exit_bang, -1);
+    korb_builtin_define(c, "abort", korb_bi_abort, -1);
     korb_builtin_define(c, "Rational", korb_bi_rational, -1);
     korb_builtin_define(c, "Complex", korb_bi_complex, -1);
 

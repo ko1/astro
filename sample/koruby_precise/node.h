@@ -348,6 +348,7 @@ NODE    *korb_entry_body(NODE *entry);
 RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);
+void   korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c) */
 
 enum korb_etype {
     KORB_E_RUNTIME = 0,

@@ -5,6 +5,7 @@
  * structural hash matches; `--plain` ignores the code store entirely.
  */
 
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,7 @@ struct koruby_option OPTION;
 #define KORUBY_PRELUDE_DIR  KORUBY_SRC_DIR "/prelude"
 static const char *const KORUBY_PRELUDE_FILES[] = {
     "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb", "numeric.rb",
-    "stringio.rb", "marshal.rb",
+    "stringio.rb", "marshal.rb", "system.rb",
 };
 
 static void
@@ -276,6 +277,14 @@ main(int argc, char *argv[])
     struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
     if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 2;
 
+    /* Point RUBY_EXE at this interpreter (unless already set) so ruby/spec's mspec
+     * can resolve the executable and run.  Harmless for normal programs. */
+    if (!getenv("RUBY_EXE")) {
+        char exe[4096];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        if (n > 0) { exe[n] = '\0'; setenv("RUBY_EXE", exe, 0); }
+    }
+
     if (bcfg.help_requested)    { usage(stdout); return 0; }
     if (bcfg.version_requested) { printf("koruby_precise %s\n", ASTRO_VERSION); return 0; }
 
@@ -439,6 +448,10 @@ main(int argc, char *argv[])
         clock_gettime(CLOCK_MONOTONIC, &t0);
         RESULT r = EVAL(c, ast, toplevel_cursor);
         clock_gettime(CLOCK_MONOTONIC, &t1);
+        /* Run at_exit blocks (reverse registration order) — this is how mspec and
+         * other suites trigger their run.  They execute even after an uncaught
+         * exception, matching CRuby (Kernel#exit shares korb_drain_at_exit). */
+        korb_drain_at_exit(c, toplevel_cursor);
         fflush(stdout);
         if (r.state == KORB_RAISE) {
             korb_report_uncaught(c, r.value);
