@@ -707,6 +707,7 @@ static RESULT korb_str_sets_validate(CTX *c, VALUE *slots, VALUE_SLICE a) {
 }
 /* delete_prefix/suffix (mode 0/1); in_place → bang (self if changed else nil). */
 static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode, bool in_place) {
+    if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* delete_prefix!/suffix! check frozen upfront */
     VALUE pv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(pv))) {                  /* coerce arg via #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
