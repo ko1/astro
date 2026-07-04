@@ -2908,6 +2908,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->owner = slots[0];
     m->params_cnt = -1;                                  /* lenient arity (block semantics) */
     m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
+    m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
+                        ? VAL2PROC(slots[1])->iseq->u.node_entry.param_info : NULL;
     c->vm->method_serial++;
     return RESULT_OK(ID2SYM(mid));
 }
