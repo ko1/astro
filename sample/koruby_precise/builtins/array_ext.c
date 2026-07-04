@@ -195,8 +195,14 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 }
                 if (elen > 0 && last != '\n') PK_PUTS("=\n", 2);
             } else {                                      /* m (base64) / u (uuencode) */
-                long per = has_cnt ? cnt : 45;
-                per = (per / 3) * 3; if (per < 3) per = 3;
+                /* `m0` = base64 with no line breaks (and no trailing newline);
+                 * `m` / `m*` / `m1` / `m2` = 45 bytes per line; `mN` (N>=3) = N. */
+                const bool m_nowrap = (d == 'm' && has_cnt && cnt == 0);
+                long per;
+                if (d == 'm' && has_cnt && (cnt == 1 || cnt == 2)) per = 45;
+                else per = has_cnt ? cnt : 45;
+                if (m_nowrap) per = elen > 0 ? (long)elen : 3;
+                else { per = (per / 3) * 3; if (per < 3) per = 3; }
                 if (elen == 0) { /* empty → no output (both m and u) */ }
                 for (uint32_t off = 0; off < elen; off += (uint32_t)per) {
                     uint32_t end = off + (uint32_t)per; if (end > elen) end = elen;
@@ -213,7 +219,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                             PK_PUT(v2 ? v2 + 0x20 : '`'); PK_PUT(v3 ? v3 + 0x20 : '`');
                         }
                     }
-                    PK_PUT('\n');
+                    if (!m_nowrap) PK_PUT('\n');             /* m0 emits no line break */
                 }
             }
         } else {
