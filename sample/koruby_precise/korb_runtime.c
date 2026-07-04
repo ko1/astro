@@ -8232,7 +8232,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         if (o->klass == KORB_NIL) { fputs("main", fp); return; }       /* top-level self */
         fputs("#<", fp);
         if (!korb_fprint_class_qname(c, fp, o->klass)) fputs("Class", fp);   /* qualified (M::C); anonymous fallback */
-        fputc('>', fp);
+        fprintf(fp, ":0x%016lx>", (unsigned long)(uintptr_t)v);   /* to_s: "#<Foo:0x…>" (no ivars) */
         return;
       }
       case KORB_OBJ_CLASS:

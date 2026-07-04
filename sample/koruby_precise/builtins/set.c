@@ -234,6 +234,44 @@ static RESULT korb_m_obj_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_obj_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    const VALUE v0 = VALUE_REF_GET(self);
+    /* A plain object with instance variables inspects as "#<Class:0x.. @a=1, @b=2>"
+     * (the default #inspect, distinct from #to_s which omits the ivars).  Struct/
+     * Data render their members via the shared inspect formatter below. */
+    if (KORB_OBJECT_P(v0) && VAL2OBJ(v0)->klass != KORB_NIL &&
+        !KORB_ARRAY_P(VAL2CLASS(VAL2OBJ(v0)->klass)->members) &&
+        c->vm->shapes[VAL2OBJ(v0)->shape_id].ivar_count > 0) {
+        char *buf = NULL; size_t sz = 0;
+        FILE *ms = open_memstream(&buf, &sz);
+        if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+        const uint32_t sid0 = VAL2OBJ(v0)->shape_id;
+        const uint32_t nvv = c->vm->shapes[sid0].ivar_count;
+        const uint32_t n = nvv < 64 ? nvv : 64;
+        uint32_t syms[64];
+        for (uint32_t sid = sid0; sid; ) { const struct korb_shape *s = &c->vm->shapes[sid]; if (s->ivar_count >= 1 && s->ivar_count <= n) syms[s->ivar_count - 1] = s->edge_sym; sid = s->parent; }
+        fputs("#<", ms);
+        if (!korb_fprint_class_qname(c, ms, VAL2OBJ(v0)->klass)) fputs("Object", ms);
+        fprintf(ms, ":0x%016lx", (unsigned long)(uintptr_t)v0);
+        slots[0] = v0;                                       /* root the object across nested #inspect dispatch */
+        const bool cyc = (((const AroObjectHeader *)(uintptr_t)v0)->flags & KORB_FL_JOIN_VISITING) != 0;
+        if (cyc) {
+            fputs(" ...", ms);                               /* already being inspected → recursion marker */
+        } else {
+            ((AroObjectHeader *)(uintptr_t)v0)->flags |= KORB_FL_JOIN_VISITING;
+            for (uint32_t i = 0; i < n; i++) {
+                fputs(i == 0 ? " " : ", ", ms);
+                fputs(korb_sym_name(c->vm, syms[i]), ms); fputc('=', ms);
+                const KorbObject *const oo = VAL2OBJ(slots[0]);  /* re-read: dispatch may move it */
+                korb_fprint_inspect_d(c, slots + 1, ms, oo->ivars ? oo->ivars->data[i] : KORB_NIL, 1);
+            }
+            ((AroObjectHeader *)(uintptr_t)slots[0])->flags &= ~KORB_FL_JOIN_VISITING;
+        }
+        fputc('>', ms);
+        fclose(ms);
+        RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+        free(buf);
+        return r;
+    }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
