@@ -2664,6 +2664,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_AND_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_OR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_INDEX_OPERATOR_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_INDEX_OR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_INDEX_AND_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CONSTANT_AND_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CONSTANT_OR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CONSTANT_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_AND_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_OR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_OPERATOR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CALL_AND_WRITE_NODE) || PM_NODE_TYPE_P(v, PM_CALL_OR_WRITE_NODE) ||
+            PM_NODE_TYPE_P(v, PM_CALL_OPERATOR_WRITE_NODE) ||
             PM_NODE_TYPE_P(v, PM_MULTI_WRITE_NODE))
             return ALLOC_node_defined(11, 0, 0);                        /* "assignment" (not evaluated) */
         return ALLOC_node_defined(5, 0, 0);                             /* literals / expr → "expression" */
