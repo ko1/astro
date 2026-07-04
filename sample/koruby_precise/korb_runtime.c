@@ -4119,6 +4119,7 @@ korb_cmp_full(CTX *c, VALUE a, VALUE b)
 bool
 korb_value_eq(VALUE a, VALUE b)
 {
+    if (UNLIKELY(KORB_FLOAT_P(a) && isnan(korb_float_val(a)))) return false;   /* NaN == anything is false, even itself (eql? differs) */
     if (a == b) return true;    /* fixnum / symbol / singletons / identity */
     if (FIXNUM_P(a) && FIXNUM_P(b)) return false;   /* two Fixnums: equal iff identical (handled above) — skip korb_int_cmp (hot in Array#== of int arrays) */
     if (SYMBOL_P(a)) return false;   /* a Symbol is eql? only to the identical Symbol — skip the type cascade (hot in symbol-keyed Hash / kwargs scans) */
