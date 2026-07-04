@@ -9,8 +9,7 @@ static inline bool korb_str_is_frozen(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
 }
 static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v);                               /* fwd */
-static uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
-static uint32_t korb_str_char_count(VALUE v);                                                    /* fwd */
+static inline uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
 /* Map an encoding name to a header index: 0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT
  * directly; any other name is registered in vm->str_enc_names[3..7] and its
  * slot index returned (character ops on it will raise until hooks exist). */
@@ -319,14 +318,9 @@ static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v) {
                        ? korb_sym_name(c->vm, c->vm->str_enc_names[idx]) : "this";
     return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "character operations on %s strings are not yet supported", nm);
 }
-/* character count for a string, per its encoding (single-byte → bytes,
- * UTF-8 → code points).  Callers guard "other" encodings separately. */
-static uint32_t korb_str_char_count(VALUE v) {
-    const KorbString *const s = VAL2STR(v);
-    return KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(v)) ? s->len : korb_utf8_count(s->buf->data, s->len);
-}
-/* byte length of the character at byte offset i (per encoding). */
-static uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n) {
+/* byte length of the character at byte offset i (per encoding).  Inlined — it is
+ * called per character in the reverse / each_char loops. */
+static inline uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n) {
     if (KORB_ENC_IS_SINGLE_BYTE(enc)) return 1;
     const unsigned char b = p[i];
     uint32_t clen = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
@@ -1604,8 +1598,11 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE v = VALUE_REF_GET(self);
-    if (UNLIKELY(KORB_STR_ENC(v) >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, v);
-    return RESULT_OK(LONG2FIX((intptr_t)korb_str_char_count(v)));
+    const KorbString *const s = VAL2STR(v);
+    const uint32_t enc = KORB_STR_ENC(v);
+    if (LIKELY(enc == KORB_ENC_UTF8)) return RESULT_OK(LONG2FIX((intptr_t)korb_utf8_count(s->buf->data, s->len)));
+    if (KORB_ENC_IS_SINGLE_BYTE(enc)) return RESULT_OK(LONG2FIX((intptr_t)s->len));
+    return korb_str_enc_notimpl(c, slots, v);
 }
 
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
