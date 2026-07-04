@@ -227,7 +227,18 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
     uint32_t npos; const int half = korb_round_half(c, a, &npos);
     intptr_t ndig = 0;
     if (npos >= 1) {
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        VALUE dv = VALUE_SLICE_GET(a, 0);
+        if (KORB_FLOAT_P(dv)) {                        /* a non-finite Float digits count is out of range */
+            const double d = korb_float_val(dv);
+            if (UNLIKELY(isinf(d) || isnan(d))) return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", isnan(d) ? "NaN" : "Infinity");
+            ndig = (intptr_t)d;
+        } else if (UNLIKELY(KORB_BIGNUM_P(dv))) {      /* a Bignum digits count can't fit */
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
+            RESULT cr = korb_coerce_to_int(c, slots, &dv);   /* coerce via #to_int */
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(dv, &ndig)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
     }
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
     intptr_t f = 1;
