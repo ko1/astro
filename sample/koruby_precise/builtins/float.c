@@ -333,8 +333,13 @@ static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {
-        if (!FIXNUM_P(VALUE_SLICE_GET(a, 0))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        base = FIX2LONG(VALUE_SLICE_GET(a, 0));
+        VALUE bv = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!korb_to_index(bv, &base))) {       /* coerce the radix via #to_int (before self is read) */
+            RESULT cr = korb_coerce_to_int(c, slots, &bv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(bv, &base)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        if (base < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative radix");
         if (base < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %ld", (long)base);
     }
 #ifdef KORB_HAVE_GMP
