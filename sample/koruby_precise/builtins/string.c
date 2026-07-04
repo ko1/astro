@@ -1530,7 +1530,14 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     /* limit: 0/omitted = unlimited + drop trailing empties; <0 = unlimited keep;
      * >0 = at most `limit` fields (last = remainder).  limit==1 → [self] verbatim. */
     intptr_t limit = 0;
-    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) (void)korb_to_index(VALUE_SLICE_GET(a, 1), &limit);
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (!korb_to_index(lv, &limit)) {                    /* coerce a non-Integer limit via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots, &lv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            (void)korb_to_index(lv, &limit);
+        }
+    }
     if (limit == 1) {                                         /* whole string (sep untouched); empty → [] */
         const uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
         VALUE_REF d1 = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
@@ -1539,7 +1546,16 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     bool ws = (sepv == KORB_NIL);
     if (!ws) {
-        if (UNLIKELY(!KORB_STRING_P(sepv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
+        if (UNLIKELY(!KORB_STRING_P(sepv))) {                /* coerce a non-String pattern via #to_str */
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(sepv) && korb_responds_to(c, sepv, to_str)) {
+                slots[0] = sepv;                             /* root receiver across the dispatch */
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); sepv = sr.value; }
+            }
+            if (UNLIKELY(!KORB_STRING_P(sepv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sepv));
+        }
         const KorbString *sp = VAL2STR(sepv);
         if (sp->len == 1 && sp->buf->data[0] == ' ') ws = true;   /* " " behaves as whitespace */
     }
