@@ -768,19 +768,37 @@ static RESULT korb_join_rec(CTX *c, VALUE *slots, FILE *ms, VALUE_REF aref, VALU
     RESULT rr = RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(aref))->len; i++) {
         const VALUE e = VAL2ARY(VALUE_REF_GET(aref))->items->data[i];   /* re-read: a prior #to_s may have moved the array */
+        /* Element order per CRuby: an Array (or an object with #to_ary but no
+         * #to_str) recurses; otherwise #to_str, then #to_s.  The recursion happens
+         * before the separator so a nested array isn't given a leading one. */
+        bool recursed = false;
         if (KORB_ARRAY_P(e)) {
             slots[0] = e;
             rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
             if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
-            continue;
+            recursed = true;
+        } else if (KORB_OBJECT_P(e) && !korb_responds_to(c, e, korb_intern(c->vm, "to_str", 6))
+                   && korb_responds_to(c, e, korb_intern(c->vm, "to_ary", 6))) {
+            slots[0] = e;
+            RESULT ar = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) { rr = ar; goto done; }
+            if (KORB_ARRAY_P(ar.value)) {
+                slots[0] = ar.value;
+                rr = korb_join_rec(c, slots + 1, ms, VALUE_REF_AT(&slots[0]), sepref, first);
+                if (UNLIKELY(rr.state != KORB_NORMAL)) goto done;
+                recursed = true;
+            }
         }
+        if (recursed) continue;                                        /* recursion wrote its own seps + *first */
         if (!*first && KORB_STRING_P(VALUE_REF_GET(sepref))) {
             const KorbString *const sep = VAL2STR(VALUE_REF_GET(sepref));
             fwrite(sep->buf->data, 1, sep->len, ms);
         }
-        if (KORB_OBJECT_P(e)) {                                         /* user object → its #to_s (may GC) */
+        if (KORB_OBJECT_P(e)) {                                         /* user object → #to_str (if present) then #to_s */
             slots[0] = e;
-            RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+            const uint32_t mid = korb_responds_to(c, e, korb_intern(c->vm, "to_str", 6))
+                                     ? korb_intern(c->vm, "to_str", 6) : korb_intern(c->vm, "to_s", 4);
+            RESULT tr = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(tr.state != KORB_NORMAL)) { rr = tr; goto done; }
             if (LIKELY(KORB_STRING_P(tr.value))) fwrite(VAL2STR(tr.value)->buf->data, 1, VAL2STR(tr.value)->len, ms);
             else korb_fprint_to_s(c, ms, tr.value);
