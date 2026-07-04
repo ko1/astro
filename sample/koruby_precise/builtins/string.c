@@ -355,6 +355,7 @@ korb_str_slice_new(CTX *c, VALUE *slots, VALUE_REF sref, uint32_t start, uint32_
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(VALUE_REF_GET(sref));   /* re-read: GC may have moved it */
     memcpy(r->buf->data, s->buf->data + start, len);
+    KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(sref)));   /* a slice keeps the source encoding */
     return RESULT_OK((VALUE)r);
 }
 
@@ -531,7 +532,10 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    const bool sb = KORB_ENC_IS_SINGLE_BYTE(enc);   /* single-byte enc: char index == byte index */
+    uint32_t ncp = sb ? s->len : korb_utf8_count(s->buf->data, s->len);
     *found = true;
     if (KORB_STRING_P(idx)) {                          /* substring target */
         const KorbString *sub = VAL2STR(idx);
@@ -564,8 +568,8 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && !write && st == (intptr_t)ncp)) { *found = false; return RESULT_OK(KORB_NIL); }
     if (single && write && st == (intptr_t)ncp) ln = 0;              /* str[len]=x → append (empty span at end) */
     if (st + ln > (intptr_t)ncp) ln = (intptr_t)ncp - st;
-    *bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)st);
-    *be = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(st + ln));
+    *bs = sb ? ((uint32_t)st < s->len ? (uint32_t)st : s->len) : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)st);
+    *be = sb ? ((uint32_t)(st + ln) < s->len ? (uint32_t)(st + ln) : s->len) : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(st + ln));
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1646,7 +1650,11 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     }
     const KorbString *s = SELF_STR;
-    uint32_t ncp = korb_utf8_count(s->buf->data, s->len);
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    const bool sb = KORB_ENC_IS_SINGLE_BYTE(enc);   /* single-byte enc: char index == byte index */
+    uint32_t ncp = sb ? s->len : korb_utf8_count(s->buf->data, s->len);
+    #define BOFF(ci) (sb ? ((uint32_t)(ci) < s->len ? (uint32_t)(ci) : s->len) : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(ci)))
 
     if (KORB_STRING_P(i0)) {                       /* s[substr] → copy of substr if present */
         const KorbString *sub = VAL2STR(i0);
@@ -1669,8 +1677,8 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         intptr_t cnt = last - b + 1;
         if (cnt < 0) cnt = 0;
         if (b + cnt > (intptr_t)ncp) cnt = (intptr_t)ncp - b;
-        uint32_t bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)b);
-        uint32_t es = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(b + cnt));
+        uint32_t bs = BOFF(b);
+        uint32_t es = BOFF(b + cnt);
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
     intptr_t i;
@@ -1688,14 +1696,15 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         if (len < 0 || i < 0 || i > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
         if (i + len > (intptr_t)ncp) len = (intptr_t)ncp - i;
-        uint32_t bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)i);
-        uint32_t es = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(i + len));
+        uint32_t bs = BOFF(i);
+        uint32_t es = BOFF(i + len);
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
     if (i < 0 || i >= (intptr_t)ncp) return RESULT_OK(KORB_NIL);   /* single codepoint */
-    uint32_t bs = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)i);
-    uint32_t es = korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)(i + 1));
+    uint32_t bs = BOFF(i);
+    uint32_t es = BOFF(i + 1);
     return korb_str_slice_new(c, slots, self, bs, es - bs);
+    #undef BOFF
 }
 
 static uint32_t korb_utf8_decode(const char *p, uint32_t avail, uint32_t *clen) {
