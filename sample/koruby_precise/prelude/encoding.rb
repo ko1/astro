@@ -65,3 +65,9 @@ class String
   end
   # force_encoding / b are C methods (builtins/string.c).
 end
+class Symbol
+  # A Symbol reports US-ASCII when its name is ASCII-only, else UTF-8 (CRuby).
+  def encoding
+    to_s.ascii_only? ? Encoding::US_ASCII : Encoding::UTF_8
+  end
+end
