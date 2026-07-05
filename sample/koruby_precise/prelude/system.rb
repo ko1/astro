@@ -118,3 +118,12 @@ class Object
   def pretty_print(q); q.text(inspect); end
   def pretty_print_cycle(q); q.text(inspect); end
 end
+
+module Kernel
+  # pp(*objs) — pretty-print each and return the argument(s) (Kernel#pp).
+  def pp(*objs)
+    objs.each { |obj| $stdout.write(obj.pretty_inspect) }
+    objs.size <= 1 ? objs.first : objs
+  end
+  private :pp
+end
