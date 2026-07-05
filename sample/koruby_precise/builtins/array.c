@@ -453,6 +453,7 @@ static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* re-read each iter */
+        if (e == slots[0]) return RESULT_OK(KORB_TRUE);     /* identity short-circuit (CRuby rb_equal; catches NaN's own bits) */
         if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
             RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
