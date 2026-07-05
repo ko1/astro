@@ -107,6 +107,33 @@ class StringIO
     lines
   end
 
+  def each_char
+    return enum_for(:each_char) unless block_given?
+    while (c = getc)
+      yield c
+    end
+    self
+  end
+
+  def getbyte
+    boff = @buf[0...@pos].bytesize
+    return nil if boff >= @buf.bytesize
+    b = @buf.getbyte(boff)
+    @pos += 1                                 # advance one character (ASCII: one byte)
+    b
+  end
+  def each_byte
+    return enum_for(:each_byte) unless block_given?
+    boff = @buf[0...@pos].bytesize
+    all = @buf.bytes
+    while boff < all.length
+      yield all[boff]
+      boff += 1
+    end
+    @pos = @buf.length
+    self
+  end
+
   def self.open(string = +"", mode = "r+")
     io = new(string, mode)
     return io unless block_given?
