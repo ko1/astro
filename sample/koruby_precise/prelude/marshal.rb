@@ -13,6 +13,21 @@ module Marshal
   end
 
   def self._dump(o, out)
+    # A String/Array/Hash carrying user @ivars is wrapped in the 'I' ivar container.
+    if (String === o || Array === o || Hash === o)
+      ivars = o.instance_variables
+      unless ivars.empty?
+        out << "I"
+        _dump_val(o, out)
+        _long(ivars.length, out)
+        ivars.each { |iv| _dump(iv, out); _dump(o.instance_variable_get(iv), out) }
+        return
+      end
+    end
+    _dump_val(o, out)
+  end
+
+  def self._dump_val(o, out)
     case o
     when nil            then out << "0"
     when true           then out << "T"
@@ -159,10 +174,14 @@ module Marshal
       n = _rlong(st); h = {}
       n.times { k = _read(st); h[k] = _read(st) }
       h
-    when 0x49                                            # 'I' ivar-wrapped (skip ivars)
+    when 0x49                                            # 'I' ivar-wrapped: restore user ivars
       v = _read(st)
       ni = _rlong(st)
-      ni.times { _read(st); _read(st) }
+      ni.times do
+        name = _read(st); val = _read(st)
+        next if name == :E || name == :encoding   # CRuby encoding markers, not user ivars
+        v.instance_variable_set(name, val) rescue nil
+      end
       v
     when 0x6f                                            # 'o' generic object (class symbol + ivars)
       cls = _read(st)
