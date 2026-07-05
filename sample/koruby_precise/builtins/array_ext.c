@@ -93,7 +93,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (d == '#') { while (ti < t->len && t->buf->data[ti] != '\n') ti++; continue; }   /* comment to EOL */
         bool bang = false, force_little = false, force_big = false;   /* `!`=native size, `<`=little-endian, `>`=big-endian (any order) */
         for (;;) {
-            if (ti < t->len && t->buf->data[ti] == '!') { bang = true; ti++; }
+            if (ti < t->len && (t->buf->data[ti] == '!' || t->buf->data[ti] == '_')) { bang = true; ti++; }   /* `!` and `_` = native size */
             else if (ti < t->len && t->buf->data[ti] == '<') { force_little = true; ti++; }
             else if (ti < t->len && t->buf->data[ti] == '>') { force_big = true; ti++; }
             else break;
