@@ -91,10 +91,17 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         self = VALUE_REF_AT(&slots[0]);                  /* self re-rooted after the possible GC */
     }
     const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
-    const char *fmt = fs->buf->data; uint32_t flen = fs->len;
+    uint32_t flen = fs->len;
+    /* Copy the format string to a stack buffer so it is immune to any GC a
+     * per-directive #to_int/#to_f arg coercion may trigger; a format > the buffer
+     * (essentially never) keeps the raw pointer and skips that coercion. */
+    char fmtbuf[1024]; const char *fmt; const bool fmt_stable = flen < sizeof(fmtbuf);
+    if (fmt_stable) { memcpy(fmtbuf, fs->buf->data, flen); fmtbuf[flen] = '\0'; fmt = fmtbuf; }
+    else fmt = fs->buf->data;
+    slots[0] = single;                                   /* root the args source for the whole loop */
     const VALUE *args; uint32_t argn;
-    if (KORB_ARRAY_P(single)) { args = VAL2ARY(single)->items->data; argn = VAL2ARY(single)->len; }
-    else { args = &single; argn = VALUE_SLICE_LEN(a); }
+    #define FMT_REREAD_ARGS() do { if (KORB_ARRAY_P(slots[0])) { args = VAL2ARY(slots[0])->items->data; argn = VAL2ARY(slots[0])->len; } else { args = &slots[0]; argn = VALUE_SLICE_LEN(a); } } while (0)
+    FMT_REREAD_ARGS();
     /* Reuse the vm's cached memstream (rewind) instead of mallocing+zeroing a
      * fresh stdio buffer per call.  A re-entrant format (via a user #to_s /
      * #inspect inside %s/%p) takes its own open_memstream. */
@@ -113,6 +120,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
+    RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
+    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6), fmt_to_f = korb_intern(c->vm, "to_f", 4);
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
         char spec[80]; int si = 0; spec[si++] = '%';
@@ -202,13 +211,28 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (!korb_str_to_int(c, slots, VAL2STR(arg)->buf->data, VAL2STR(arg)->len, 0, &iv) || !FIXNUM_P(iv)) { err = true; errmsg = "invalid value for Integer()"; break; }
                 v = FIX2LONG(iv);
             }
+            else if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int)) {   /* %d coerces an object via #to_int */
+                RESULT ir = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
+                if (FIXNUM_P(ir.value)) v = FIX2LONG(ir.value);
+                else { err = true; errmsg = "expected a number"; break; }
+            }
             else { err = true; errmsg = "expected a number"; break; }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
             fprintf(ms, spec, (long)v);
             break;
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {   /* a/A = hex float (C printf) */
-            double v; if (!korb_num_to_d(arg, &v)) { err = true; errmsg = "expected a number"; break; }
+            double v;
+            if (UNLIKELY(!korb_num_to_d(arg, &v))) {     /* %f/%e/%g coerces an object via #to_f (Float() semantics) */
+                if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_f)) {
+                    RESULT fr = korb_send_impl(c, slots + 2, fmt_to_f, 0, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(fr.state != KORB_NORMAL)) { coerce_err = fr; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS();
+                    if (!korb_num_to_d(fr.value, &v)) { err = true; errmsg = "expected a number"; break; }
+                } else { err = true; errmsg = "expected a number"; break; }
+            }
             if (UNLIKELY(isinf(v) || isnan(v))) {
                 /* CRuby renders non-finite floats as "Inf"/"NaN" (fixed casing,
                  * never C's inf/INF/nan), honouring sign + width but ignoring
@@ -239,7 +263,15 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             break;
           }
           case 'x': case 'X': case 'o': case 'b': case 'B': {
-            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) { err = true; errmsg = "expected Integer"; break; }
+            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {  /* %x/%o/%b coerces an object via #to_int */
+                if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int)) {
+                    RESULT ir = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS();
+                    if (FIXNUM_P(ir.value) || KORB_BIGNUM_P(ir.value)) arg = ir.value;
+                    else { err = true; errmsg = "expected Integer"; break; }
+                } else { err = true; errmsg = "expected Integer"; break; }
+            }
             const int base = (conv == 'o') ? 8 : (conv == 'b' || conv == 'B') ? 2 : 16;
             const bool upper = (conv == 'X' || conv == 'B');
             bool left = false, zero = false, alt = false, plus = false, space = false, has_prec = false;
@@ -294,6 +326,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           default: err = true; errmsg = "malformed format sequence"; break;
         }
         if (err) break;
+    }
+    #undef FMT_REREAD_ARGS
+    if (has_coerce_err) {                                /* a #to_int/#to_f arg coercion raised → propagate it */
+        if (shared) vm->fmt_busy = false; else free(buf);
+        return coerce_err;
     }
     /* Finalize: for the shared stream, flush + take the byte count from ftell
      * (current write position) and read from the cached buffer without closing;
