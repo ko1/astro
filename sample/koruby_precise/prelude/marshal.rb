@@ -51,6 +51,10 @@ module Marshal
       mem = o.members; vals = o.to_a
       _long(mem.length, out)
       mem.each_with_index { |m, i| _dump(m, out); _dump(vals[i], out) }
+    when Rational                             # 'U' user-marshal: [numerator, denominator]
+      out << "U"; _dump(:Rational, out); _dump([o.numerator, o.denominator], out)
+    when Complex                              # 'U' user-marshal: [real, imaginary]
+      out << "U"; _dump(:Complex, out); _dump([o.real, o.imaginary], out)
     else                                      # generic object: 'o' + class symbol + ivars
       name = o.class.name
       raise TypeError, "can't dump #{o.class}" if name.nil?
@@ -178,6 +182,17 @@ module Marshal
       vals = []
       n.times { _read(st); vals << _read(st) }           # member name (order matches) + value
       Object.const_get(cls).new(*vals)
+    when 0x55                                            # 'U' user-marshal (class + marshal_dump data)
+      cls = _read(st)
+      data = _read(st)
+      case cls
+      when :Rational then Rational(data[0], data[1])
+      when :Complex  then Complex(data[0], data[1])
+      else
+        obj = Object.const_get(cls).allocate
+        obj.marshal_load(data) if obj.respond_to?(:marshal_load)
+        obj
+      end
     else
       raise TypeError, "unsupported Marshal type 0x#{t.to_s(16)}"
     end
