@@ -6233,8 +6233,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Array.try_convert(obj) */
-        const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
-        return RESULT_OK(KORB_ARRAY_P(arg) ? arg : KORB_NIL);              /* no to_ary coercion of arbitrary objects */
+        VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+        if (KORB_ARRAY_P(arg)) return RESULT_OK(arg);
+        const uint32_t to_ary = korb_intern(vm, "to_ary", 6);
+        if (KORB_OBJECT_P(arg) && korb_responds_to_coerce_p(c, slots, &arg, to_ary)) {
+            slots[0] = arg;
+            RESULT r = korb_send_impl(c, slots + 1, to_ary, line, 0, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_ARRAY_P(r.value)) return r;
+            if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to Array (%s#to_ary gives %s)", korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
+        }
+        return RESULT_OK(KORB_NIL);
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_INTEGER] &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Integer.try_convert(obj) → obj/to_int/nil */
@@ -6243,7 +6253,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         const uint32_t to_int = korb_intern(vm, "to_int", 6);
         if (korb_responds_to_coerce_p(c, slots, &arg, to_int)) {
             slots[0] = arg;
-            return korb_send_impl(c, slots + 1, to_int, line, 0, NULL, NULL, NULL);
+            RESULT r = korb_send_impl(c, slots + 1, to_int, line, 0, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_INTEGER_P(r.value)) return r;
+            if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to Integer (%s#to_int gives %s)", korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
         }
         return RESULT_OK(KORB_NIL);
     }
@@ -6254,7 +6268,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         const uint32_t to_str = korb_intern(vm, "to_str", 6);
         if (korb_responds_to_coerce_p(c, slots, &arg, to_str)) {
             slots[0] = arg;
-            return korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
+            RESULT r = korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_STRING_P(r.value)) return r;
+            if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to String (%s#to_str gives %s)", korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
         }
         return RESULT_OK(KORB_NIL);
     }
@@ -6265,7 +6283,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         const uint32_t to_hash = korb_intern(vm, "to_hash", 7);
         if (korb_responds_to_coerce_p(c, slots, &arg, to_hash)) {
             slots[0] = arg;
-            return korb_send_impl(c, slots + 1, to_hash, line, 0, NULL, NULL, NULL);
+            RESULT r = korb_send_impl(c, slots + 1, to_hash, line, 0, NULL, NULL, NULL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_HASH_P(r.value)) return r;
+            if (r.value == KORB_NIL) return RESULT_OK(KORB_NIL);
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to Hash (%s#to_hash gives %s)", korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
         }
         return RESULT_OK(KORB_NIL);
     }
