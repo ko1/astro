@@ -139,7 +139,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
             if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
-            named_arg = (hidx >= 0) ? VAL2HASH(nh)->items->data[2 * hidx + 1] : KORB_NIL;
+            if (UNLIKELY(hidx < 0)) {                      /* a missing named key raises KeyError, not "" */
+                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key%c%.*s%c not found", bare ? '{' : '<', (int)(i - nstart), fmt + nstart, bare ? '}' : '>');
+                has_coerce_err = true; err = true; break;
+            }
+            named_arg = VAL2HASH(nh)->items->data[2 * hidx + 1];
             has_named = true;                              /* i is at the close char */
             if (bare) {                                    /* %{name} → to_s, no conversion */
                 if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
