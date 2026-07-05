@@ -41,6 +41,29 @@ static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1,
  * 1-based index into the side table above, recoverable by unpack; 0 for nil).
  * No GC alloc happens between fetching elements and emitting bytes, so the bare
  * array pointer stays valid for the whole loop. */
+/* Convert a pack element to an integer for a numeric directive: Fixnum, Bignum
+ * (low 64 bits), Float (truncated), or an object via #to_int; nil/true/false/
+ * String/etc. → TypeError.  May GC (dispatches #to_int); the caller re-reads its
+ * array afterwards.  Uses scratch at `sc` (must not overlap the caller's rooted
+ * template slot). */
+static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
+    if (FIXNUM_P(e)) { *out = FIX2LONG(e); return RESULT_OK(KORB_NIL); }
+    if (KORB_FLOAT_P(e)) { *out = (int64_t)korb_float_val(e); return RESULT_OK(KORB_NIL); }
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(e)) { mpz_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)mpz_get_ui(z); *out = (mpz_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; mpz_clear(z); return RESULT_OK(KORB_NIL); }
+#endif
+    if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
+        sc[0] = e;
+        RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (FIXNUM_P(r.value)) { *out = FIX2LONG(r.value); return RESULT_OK(KORB_NIL); }
+#ifdef KORB_HAVE_GMP
+        if (KORB_BIGNUM_P(r.value)) { mpz_t z; korb_to_mpz(r.value, z); uint64_t lo = (uint64_t)mpz_get_ui(z); *out = (mpz_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; mpz_clear(z); return RESULT_OK(KORB_NIL); }
+#endif
+        return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert Object to Integer (Object#to_int gives %s)", korb_type_name(r.value));
+    }
+    return korb_raise(c, sc, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(e));
+}
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* Template lives in slots[0] for the whole call (rooted) so it survives an
      * element #to_str dispatch; self is a rooted VALUE_REF (GC re-reads it), so
@@ -80,7 +103,10 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = ary->items->data[ai++];
-                intptr_t b = FIXNUM_P(e) ? FIX2LONG(e) : 0;
+                int64_t b;
+                RESULT ir = korb_pack_int_val(c, slots + 2, e, &b);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
+                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
                 PK_PUT(b & 0xFF);
             }
         } else if (d == 'N' || d == 'n' || d == 'V' || d == 'v' || d == 'L' || d == 'l' ||
@@ -98,7 +124,11 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = ary->items->data[ai++];
-                const uint64_t v = FIXNUM_P(e) ? (uint64_t)FIX2LONG(e) : 0;
+                int64_t iv;
+                RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
+                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                const uint64_t v = (uint64_t)iv;
                 for (int b = 0; b < sz; b++) PK_PUT((v >> (8 * (big ? (sz - 1 - b) : b))) & 0xFF);
             }
         } else if (d == 'e' || d == 'E' || d == 'g' || d == 'G' || d == 'f' || d == 'F' || d == 'd' || d == 'D') {   /* IEEE floats */
