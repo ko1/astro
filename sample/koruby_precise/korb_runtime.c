@@ -6432,7 +6432,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             intptr_t n = 0;
             if (argc >= 1) {
-                if (UNLIKELY(!korb_to_index(slots[-(intptr_t)argc], &n))) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion into Integer");
+                VALUE nv = slots[-(intptr_t)argc];
+                if (UNLIKELY(!korb_to_index(nv, &n))) {     /* coerce the size via #to_int */
+                    RESULT cr = korb_coerce_to_int(c, slots, &nv);
+                    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                    if (!korb_to_index(nv, &n)) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion into Integer");
+                }
                 if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
             }
             slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
