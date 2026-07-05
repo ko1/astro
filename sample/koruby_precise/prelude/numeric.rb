@@ -10,6 +10,9 @@ class Numeric
   def abs; self < 0 ? -self : self; end
   def magnitude; abs; end
   def abs2; self * self; end
+  def arg; self < 0 ? Math::PI : 0; end   # angle: 0 for non-negative reals, PI for negative (Float/Integer have C impls)
+  alias angle arg
+  alias phase arg
   def zero?; self == 0; end
   def nonzero?; zero? ? nil : self; end
   def negative?; self < 0; end
