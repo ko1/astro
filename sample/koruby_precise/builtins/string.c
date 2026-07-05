@@ -516,6 +516,18 @@ static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+/* If *v isn't a String, try #to_str; returns TRUE (with *v the String) or FALSE (leaves *v). */
+static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
+    if (KORB_STRING_P(*v)) return RESULT_OK(KORB_TRUE);
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    slots[0] = *v;                                    /* root the receiver across respond_to?/to_str dispatch */
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
+    RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!KORB_STRING_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
+    *v = r.value;
+    return RESULT_OK(KORB_TRUE);
+}
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
     if (!KORB_STRING_P(idx) && !KORB_RANGE_P(idx)) {   /* coerce a non-String/Range index via #to_int (before reading self) */
         RESULT cr = korb_coerce_to_int(c, slots, &idx);
@@ -1196,16 +1208,24 @@ static RESULT korb_m_str_append_as_bytes(CTX *c, VALUE *slots, VALUE_REF self, V
 
 static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
+    if (UNLIKELY(!KORB_STRING_P(sv))) {                  /* coerce the needle via #to_str */
+        RESULT cr = korb_coerce_to_str(c, slots, &sv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self)), *n = VAL2STR(sv);
     return RESULT_OK(korb_byte_find(s->buf->data, s->len, n->buf->data, n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a prefix via #to_str (regex prefixes are astrorge-blocked) */
+            RESULT cr = korb_coerce_to_str(c, slots, &pv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+        }
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
         if (p->len <= s->len && memcmp(s->buf->data, p->buf->data, p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
@@ -1213,10 +1233,14 @@ static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 static RESULT korb_m_str_end_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+        if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a suffix via #to_str */
+            RESULT cr = korb_coerce_to_str(c, slots, &pv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
+        }
+        const KorbString *s = VAL2STR(VALUE_REF_GET(self));   /* re-read after possible dispatch */
         const KorbString *p = VAL2STR(pv);
         if (p->len <= s->len && memcmp(s->buf->data + s->len - p->len, p->buf->data, p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
