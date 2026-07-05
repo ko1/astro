@@ -86,7 +86,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     #define PK_PUTS(p,n)  do { PK_RESERVE(n); memcpy(ob + olen, (p), (n)); olen += (size_t)(n); } while (0)
     static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     uint32_t ti = 0, ai = 0;                             /* template / array cursors */
-    unsigned errtype = 0; const char *errmsg = NULL; char bad = 0;
+    unsigned errtype = 0; const char *errmsg = NULL; char bad = 0; bool has_bad = false;
     while (ti < t->len) {
         const char d = t->buf->data[ti++];
         if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
@@ -286,12 +286,12 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 }
             }
         } else {
-            bad = d; break;
+            bad = d; has_bad = true; break;
         }
         if (errmsg) break;
     }
     if (errmsg) { free(ob); return korb_raise(c, slots, errtype, 0, "%s", errmsg); }
-    if (bad)    { free(ob); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown pack directive '%c' in '%.*s'", bad, (int)t->len, t->buf->data); }
+    if (has_bad) { free(ob); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown pack directive '%c' in '%.*s'", bad, (int)t->len, t->buf->data); }
     RESULT r = korb_str_new(c, slots, ob ? (const char *)ob : "", (uint32_t)olen);
     free(ob);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* pack yields ASCII-8BIT */
