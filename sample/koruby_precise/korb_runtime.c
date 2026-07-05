@@ -8919,19 +8919,15 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool def; const VALUE out = korb_out_target(c, "$stdout", 7, &def);
-    FILE *ms = NULL; char *buf = NULL; size_t sz = 0;
-    if (!def) ms = open_memstream(&buf, &sz);            /* redirected: buffer then $stdout.write */
-    FILE *const fp = ms ? ms : stdout;                  /* default (or memstream failure): straight to stdout */
-    if (n == 0) fputc('\n', fp);
-    else for (uint32_t i = 0; i < n; i++) {
-        RESULT r = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), fp);
-        if (UNLIKELY(r.state != KORB_NORMAL)) { if (ms) { fclose(ms); free(buf); } return r; }
+    if (def || !KORB_OBJECT_P(out)) {                    /* default $stdout → direct fwrite */
+        if (n == 0) { fputc('\n', stdout); return RESULT_OK(KORB_NIL); }
+        for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stdout));
+        return RESULT_OK(KORB_NIL);
     }
-    if (!ms) return RESULT_OK(KORB_NIL);
-    fclose(ms);
-    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz);
-    free(buf);
-    return er;
+    slots[0] = out;                                      /* redirected → delegate $stdout.puts(*args) (CRuby) */
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
+    RESULT r = korb_send(c, slots + 1 + n, korb_intern(c->vm, "puts", 4), 0, n);
+    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
 }
 
 #ifdef KORB_HAVE_GMP
@@ -9571,16 +9567,16 @@ korb_bi_clock_gettime(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
+    uint32_t n = VALUE_SLICE_LEN(args);
     bool def; const VALUE out = korb_out_target(c, "$stdout", 7, &def);
-    FILE *ms = NULL; char *buf = NULL; size_t sz = 0;
-    if (!def) ms = open_memstream(&buf, &sz);
-    FILE *const fp = ms ? ms : stdout;
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(args); i++) korb_fprint_to_s(c, fp, VALUE_SLICE_GET(args, i));
-    if (!ms) return RESULT_OK(KORB_NIL);
-    fclose(ms);
-    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz);
-    free(buf);
-    return er;
+    if (def || !KORB_OBJECT_P(out)) {                    /* default $stdout → direct fwrite */
+        for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, stdout, VALUE_SLICE_GET(args, i));
+        return RESULT_OK(KORB_NIL);
+    }
+    slots[0] = out;                                      /* redirected → delegate $stdout.print(*args) */
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
+    RESULT r = korb_send(c, slots + 1 + n, korb_intern(c->vm, "print", 5), 0, n);
+    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
 }
 
 /* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
