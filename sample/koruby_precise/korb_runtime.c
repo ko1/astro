@@ -792,12 +792,28 @@ static RESULT korb_m_cpx_polar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * components' types.  Both must be real (non-real → TypeError). */
 static RESULT korb_m_cpx_class_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE re = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);
-    const VALUE im = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(0);
+    slots[0] = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : LONG2FIX(0);   /* re/im rooted across #real? dispatch */
+    slots[1] = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : LONG2FIX(0);
+    const uint32_t realq = korb_intern(c->vm, "real?", 5);
     double tmp;
-    if (UNLIKELY(!korb_num_to_d(re, &tmp) || !korb_num_to_d(im, &tmp)))
+    /* accept a built-in real, a Complex with zero imaginary (→ its real part), or
+     * any object whose #real? answers truthy — matches CRuby. */
+    for (int k = 0; k < 2; k++) {
+        const VALUE v = slots[k];
+        if (korb_num_to_d(v, &tmp)) continue;
+        if (KORB_COMPLEX_P(v)) {
+            double vi;
+            if (korb_num_to_d(VAL2CPX(v)->im, &vi) && vi == 0.0) { slots[k] = VAL2CPX(v)->re; continue; }
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+        }
+        if (KORB_OBJECT_P(v) && korb_responds_to(c, v, realq)) {
+            slots[2] = v;
+            RESULT rr = korb_send_impl(c, slots + 3, realq, 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (KORB_TRUTHY(rr.value)) continue;   /* real? truthy → accept (slots[k] rooted/fresh) */
+        }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
-    slots[0] = re; slots[1] = im;
+    }
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
 static RESULT korb_m_cpx_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_cpx_arith(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 0); }
