@@ -1607,10 +1607,11 @@ static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
 }
 static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     uint32_t op_mid;
-    /* A trailing operator Symbol/String selects the symbol form and takes
-     * precedence over any block (CRuby ignores the block in that case). */
+    /* The operator Symbol/String form applies ONLY when no block is given; with a
+     * block, every argument is an initial value (CRuby: inject(:+){} treats :+ as
+     * the initial accumulator, not the operator). */
     const uint32_t na0 = VALUE_SLICE_LEN(a);
-    const bool sym_form = na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
+    const bool sym_form = block == NULL && na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
     if (block == NULL && !sym_form)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
     if (sym_form) {                                        /* reduce(:+) / reduce(init, :+) [block ignored] */
