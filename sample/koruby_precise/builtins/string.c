@@ -1810,14 +1810,14 @@ static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);      
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);
 /* build an Enumerator over `arr_fn(self)` labelled `name`. */
 static RESULT korb_str_each_enum(CTX *c, VALUE *slots, VALUE_REF self,
-                                 RESULT (*arr_fn)(CTX *, VALUE *, VALUE_REF, VALUE_SLICE), const char *name) {
-    slots[0] = UNWRAP(arr_fn(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+                                 RESULT (*arr_fn)(CTX *, VALUE *, VALUE_REF, VALUE_SLICE), const char *name, VALUE_SLICE a) {
+    slots[0] = UNWRAP(arr_fn(c, slots, self, a));   /* forward sep/chomp args (each_line) */
     slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), name));
     return korb_enum_new(c, slots + 2, slots[0], slots[1]);
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints, "each_codepoint");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints, "each_codepoint", a);
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
@@ -1947,7 +1947,7 @@ static RESULT korb_m_str_codepoints(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 static RESULT korb_m_str_each_byte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_bytes, "each_byte");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_bytes, "each_byte", a);
     for (uint32_t pos = 0; ; pos++) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
@@ -1996,7 +1996,7 @@ static bool korb_line_chomp(CTX *c, VALUE_SLICE a) {
     return false;
 }
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
     const bool chomp = korb_line_chomp(c, a);
@@ -2036,7 +2036,7 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_str_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_chars, "each_char");
+    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_chars, "each_char", a);
     uint32_t pos = 0;
     for (;;) {
         const KorbString *s = SELF_STR;
