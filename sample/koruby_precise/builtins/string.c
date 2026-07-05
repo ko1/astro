@@ -930,8 +930,11 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         const uint32_t sn = s0->len; char *const src = malloc(sn ? sn : 1); memcpy(src, s0->buf->data, sn);  /* stable across block GC */
         char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
         uint32_t i = 0; bool replaced = false;
-        while (i < sn) {
-            if (pn > 0 && i + pn <= sn && memcmp(src + i, pat, pn) == 0 && (global || !replaced)) {
+        while (i < sn || (pn == 0 && i == sn && (global || !replaced))) {
+            /* pn==0 (empty pattern) matches at every position, incl. the end. */
+            const bool hit = pn == 0 ? (global || !replaced)
+                                     : (i + pn <= sn && memcmp(src + i, pat, pn) == 0 && (global || !replaced));
+            if (hit) {
                 RESULT mr = korb_str_new(c, slots, src + i, pn);   /* the match (src/pat/ms libc-stable) */
                 if (UNLIKELY(mr.state != KORB_NORMAL)) { free(pat); free(src); fclose(ms); free(buf); return mr; }
                 slots[0] = mr.value;
@@ -940,8 +943,11 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 slots[0] = yr.value;
                 if (KORB_STRING_P(slots[0])) { const KorbString *r = VAL2STR(slots[0]); fwrite(r->buf->data, 1, r->len, ms); }
                 else korb_fprint_to_s(c, ms, slots[0]);
-                i += pn; replaced = true;
-            } else { fputc(src[i], ms); i++; }
+                replaced = true;
+                if (pn == 0) { if (i < sn) fputc(src[i], ms); i++; }   /* empty match: still advance one char */
+                else i += pn;
+            } else { if (i < sn) fputc(src[i], ms);
+                     i++; }
         }
         free(pat); free(src); fclose(ms);
         RESULT nr = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
@@ -982,11 +988,16 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (!ms) { free(pat); free(rep); fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t i = 0, sn = s->len; bool replaced = false;
-    while (i < sn) {
-        if (pn > 0 && i + pn <= sn && memcmp(s->buf->data + i, pat, pn) == 0 && (global || !replaced)) {
-            fwrite(rep, 1, rn, ms); i += pn; replaced = true;
+    while (i < sn || (pn == 0 && i == sn && (global || !replaced))) {
+        const bool hit = pn == 0 ? (global || !replaced)
+                                 : (i + pn <= sn && memcmp(s->buf->data + i, pat, pn) == 0 && (global || !replaced));
+        if (hit) {
+            fwrite(rep, 1, rn, ms); replaced = true;
+            if (pn == 0) { if (i < sn) fputc(s->buf->data[i], ms); i++; }   /* empty match: emit the replacement then advance a char */
+            else i += pn;
         } else {
-            fputc(s->buf->data[i], ms); i++;
+            if (i < sn) fputc(s->buf->data[i], ms);
+            i++;
         }
     }
     fclose(ms); free(pat); free(rep);
