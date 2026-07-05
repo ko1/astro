@@ -3,8 +3,18 @@
 /* ---- more Integer / Float methods ---------------------------------------- */
 static RESULT korb_m_int_self2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; intptr_t n = FIX2LONG(VALUE_REF_GET(self)); intptr_t r;
-    if (__builtin_mul_overflow(n, n, &r) || !FIXABLE(r)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+    (void)a; const VALUE sv = VALUE_REF_GET(self);
+#ifdef KORB_HAVE_GMP
+    if (!FIXNUM_P(sv)) { mpz_t z; korb_to_mpz(sv, z); mpz_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); mpz_clear(z); return out; }
+#endif
+    intptr_t n = FIX2LONG(sv), r;
+    if (__builtin_mul_overflow(n, n, &r) || !FIXABLE(r)) {
+#ifdef KORB_HAVE_GMP
+        mpz_t z; korb_to_mpz(sv, z); mpz_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); mpz_clear(z); return out;
+#else
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
+#endif
+    }
     return RESULT_OK(LONG2FIX(r));
 }
 static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
