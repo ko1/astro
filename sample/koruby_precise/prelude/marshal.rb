@@ -43,6 +43,14 @@ module Marshal
       _dump(:excl, out);  _dump(o.exclude_end?, out)
       _dump(:begin, out); _dump(o.begin, out)
       _dump(:end, out);   _dump(o.end, out)
+    when Struct
+      name = o.class.name
+      raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+      out << "S"                              # 'S' struct: class symbol + [member, value] pairs
+      _dump(name.to_sym, out)
+      mem = o.members; vals = o.to_a
+      _long(mem.length, out)
+      mem.each_with_index { |m, i| _dump(m, out); _dump(vals[i], out) }
     else
       raise TypeError, "can't dump #{o.class}"
     end
@@ -157,6 +165,12 @@ module Marshal
       else
         raise TypeError, "unsupported Marshal object class #{cls}"
       end
+    when 0x53                                            # 'S' struct (class symbol + member/value pairs)
+      cls = _read(st)
+      n = _rlong(st)
+      vals = []
+      n.times { _read(st); vals << _read(st) }           # member name (order matches) + value
+      Object.const_get(cls).new(*vals)
     else
       raise TypeError, "unsupported Marshal type 0x#{t.to_s(16)}"
     end
