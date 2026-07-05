@@ -14,6 +14,24 @@ static bool korb_set_member(const KorbSet *s, VALUE v) {
     for (uint32_t i = 0; i < ar->len; i++) if (ar->items->data[i] == v) return true;
     return false;
 }
+/* Set membership dispatching #eql? for object elements (like CRuby's hash-backed
+ * Set); GC-safe — elems/needle stay rooted in slots[0]/slots[1] and are re-read
+ * after each dispatch.  Uses slots[0..4]. */
+static RESULT korb_set_member_disp(CTX *c, VALUE *slots, VALUE elems, bool by_id, VALUE needle, bool *found) {
+    slots[0] = elems; slots[1] = needle; *found = false;
+    const uint32_t n = VAL2ARY(slots[0])->len;
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE e = VAL2ARY(slots[0])->items->data[i];
+        if (by_id) { if (e == slots[1]) { *found = true; return RESULT_OK(KORB_NIL); } continue; }
+        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[1])) {          /* user #eql? → dispatch */
+            slots[2] = e; slots[3] = slots[1];
+            RESULT r = korb_send_impl(c, slots + 4, korb_intern(c->vm, "eql?", 4), 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) { *found = true; return RESULT_OK(KORB_NIL); }
+        } else if (korb_value_eql(e, slots[1])) { *found = true; return RESULT_OK(KORB_NIL); }
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems) {
     slots[0] = elems;
     KorbSet *s = korb_alloc(c, slots + 1, sizeof(KorbSet), KORB_OBJ_SET);
@@ -24,9 +42,12 @@ static RESULT korb_set_new(CTX *c, VALUE *slots, VALUE elems) {
 static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src) {
     slots[0] = UNWRAP(korb_ary_new(c, slots, VAL2ARY(VALUE_REF_GET(src))->len));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(src))->len; i++) {
-        VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
-        if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+    const uint32_t sn = VAL2ARY(VALUE_REF_GET(src))->len;
+    for (uint32_t i = 0; i < sn; i++) {
+        const VALUE e = VAL2ARY(VALUE_REF_GET(src))->items->data[i];
+        bool found; RESULT mr = korb_set_member_disp(c, slots + 1, VALUE_REF_GET(dst), false, e, &found);
+        if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+        if (!found) CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));   /* slots[2] = the rooted needle */
     }
     return korb_set_new(c, slots + 1, VALUE_REF_GET(dst));
 }
@@ -39,7 +60,11 @@ static RESULT korb_m_set_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_set_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(VAL2ARY(SELF_SET->elems)->len)); }
 static RESULT korb_m_set_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2ARY(SELF_SET->elems)->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_set_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
-static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_set_member(SELF_SET, VALUE_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE); }
+static RESULT korb_m_set_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    bool found; RESULT r = korb_set_member_disp(c, slots, SELF_SET->elems, SELF_SET->by_identity, VALUE_SLICE_GET(a, 0), &found);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(found ? KORB_TRUE : KORB_FALSE);
+}
 /* compare_by_identity — switch the set to identity comparison (returns self). */
 static RESULT korb_m_set_cbi(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
@@ -63,12 +88,15 @@ static RESULT korb_m_set_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(r.value == KORB_TRUE ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_set_add(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE v = VALUE_SLICE_GET(a, 0);
-    if (!korb_set_member(SELF_SET, v)) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), v)); }
+    bool found; RESULT r = korb_set_member_disp(c, slots, SELF_SET->elems, SELF_SET->by_identity, VALUE_SLICE_GET(a, 0), &found);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!found) { slots[0] = SELF_SET->elems; CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1])); }   /* slots[1] = rooted needle */
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_set_add_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (korb_set_member(SELF_SET, VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
+    bool found; RESULT r = korb_set_member_disp(c, slots, SELF_SET->elems, SELF_SET->by_identity, VALUE_SLICE_GET(a, 0), &found);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (found) return RESULT_OK(KORB_NIL);
     return korb_m_set_add(c, slots, self, a);
 }
 static RESULT korb_m_set_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
