@@ -91,6 +91,8 @@ static RESULT korb_m_flt_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (korb_num_to_d(vlo, &al) && korb_num_to_d(vhi, &ah) && al > ah)
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
     }
+    if (UNLIKELY(isnan(s)) && (vlo != KORB_NIL || vhi != KORB_NIL))   /* NaN can't be compared with the bounds */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison of Float with %s failed", korb_type_name(vlo != KORB_NIL ? vlo : vhi));
     if (vlo != KORB_NIL) {
         if (UNLIKELY(!korb_num_to_d(vlo, &lo))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
         if (s < lo) return RESULT_OK(vlo);

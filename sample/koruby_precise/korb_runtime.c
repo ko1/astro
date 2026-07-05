@@ -4210,6 +4210,7 @@ korb_cmp_values(VALUE a, VALUE b)
     if ((FIXNUM_P(a) || KORB_FLOAT_P(a) || KORB_RATIONAL_P(a)) &&
         (FIXNUM_P(b) || KORB_FLOAT_P(b) || KORB_RATIONAL_P(b))) {   /* Rational ordered via double (GC-free; exact for realistic denominators) */
         double x = 0, y = 0; korb_num_to_d(a, &x); korb_num_to_d(b, &y);
+        if (UNLIKELY(x != x || y != y)) return 2;   /* NaN → incomparable (<=> nil; sort raises) */
         return (x > y) - (x < y);
     }
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
