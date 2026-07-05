@@ -285,8 +285,15 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_obj_false(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 
 static RESULT korb_m_ary_difference(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++)    /* difference(*arrays) */
-        if (UNLIKELY(!KORB_ARRAY_P(VALUE_SLICE_GET(a, k)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* difference(*arrays): coerce each via #to_ary */
+        VALUE ov = VALUE_SLICE_GET(a, k);
+        if (UNLIKELY(!KORB_ARRAY_P(ov))) {
+            RESULT cr = korb_coerce_to_ary(c, slots, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+            VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
+        }
+    }
     uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     for (uint32_t i = 0; i < n; i++) {

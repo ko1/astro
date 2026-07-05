@@ -479,8 +479,13 @@ static RESULT korb_m_ary_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 static RESULT korb_m_ary_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_ARRAY_P(ov)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
+    if (UNLIKELY(!KORB_ARRAY_P(ov))) {                   /* coerce the operand via #to_ary (self is a VALUE_REF) */
+        RESULT cr = korb_coerce_to_ary(c, slots, &ov);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        slots[0] = ov;
+        return korb_ary_plus_ref(c, slots + 1, self, VALUE_REF_AT(&slots[0]));
+    }
     return korb_ary_plus_ref(c, slots, self, VALUE_SLICE_REF(a, 0));
 }
 static RESULT korb_m_ary_mul(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

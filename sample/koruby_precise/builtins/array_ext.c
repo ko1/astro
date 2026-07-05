@@ -718,20 +718,35 @@ static bool korb_ary_has(const KorbArray *ar, VALUE v) {
 }
 /* `|` union (in self then other, deduped) / `&` intersection (in both, self order, deduped) */
 static RESULT korb_m_ary_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* coerce each operand via #to_ary before building */
+        VALUE ov = VALUE_SLICE_GET(a, k);
+        if (UNLIKELY(!KORB_ARRAY_P(ov))) {
+            RESULT cr = korb_coerce_to_ary(c, slots, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+            VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
+        }
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     uint32_t sn = VAL2ARY(VALUE_REF_GET(self))->len;
     for (uint32_t i = 0; i < sn; i++) { VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i]; if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e)); }
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* union(*others) */
         VALUE ov = VALUE_SLICE_GET(a, k);
-        if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(ov));
         uint32_t on = VAL2ARY(ov)->len;
         for (uint32_t i = 0; i < on; i++) { VALUE e = VAL2ARY(VALUE_SLICE_GET(a, k))->items->data[i]; if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e)); }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_ary_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++)
-        if (UNLIKELY(!KORB_ARRAY_P(VALUE_SLICE_GET(a, k)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* coerce each operand via #to_ary */
+        VALUE ov = VALUE_SLICE_GET(a, k);
+        if (UNLIKELY(!KORB_ARRAY_P(ov))) {
+            RESULT cr = korb_coerce_to_ary(c, slots, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, k)));
+            VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
+        }
+    }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     bool no_args = VALUE_SLICE_LEN(a) == 0;             /* intersection() → plain copy of self, no dedup */
     uint32_t sn = VAL2ARY(VALUE_REF_GET(self))->len;

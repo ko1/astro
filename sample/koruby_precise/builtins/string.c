@@ -516,6 +516,18 @@ static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+/* If *v isn't an Array, try #to_ary; returns TRUE (with *v the Array) or FALSE (leaves *v). */
+static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) {
+    if (KORB_ARRAY_P(*v)) return RESULT_OK(KORB_TRUE);
+    const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+    slots[0] = *v;
+    if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
+    RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!KORB_ARRAY_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
+    *v = r.value;
+    return RESULT_OK(KORB_TRUE);
+}
 /* If *v isn't a String, try #to_str; returns TRUE (with *v the String) or FALSE (leaves *v). */
 static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     if (KORB_STRING_P(*v)) return RESULT_OK(KORB_TRUE);

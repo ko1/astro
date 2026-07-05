@@ -157,6 +157,7 @@ static void korb_to_mpz(VALUE v, mpz_t out);
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src);
 #endif
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
+static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
  * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via mpz_gcd. */
@@ -4765,9 +4766,12 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         return korb_str_plus_ref(c, slots, lhs, r);
     }
     if (KORB_ARRAY_P(l)) {
-        if (!KORB_ARRAY_P(rhs))
-            return korb_raise(c, slots, KORB_E_TYPE, line,
-                              "no implicit conversion of %s into Array", korb_type_name(rhs));
+        if (!KORB_ARRAY_P(rhs)) {                    /* Array + non-Array → coerce via #to_ary (lhs is a VALUE_REF) */
+            RESULT cr = korb_coerce_to_ary(c, slots, &rhs);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE)
+                return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Array", korb_type_name(rhs));
+        }
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_ary_plus_ref(c, slots, lhs, r);
     }
