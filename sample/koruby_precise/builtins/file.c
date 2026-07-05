@@ -170,6 +170,22 @@ static RESULT korb_m_file_dirname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return korb_str_new(c, slots, out, (uint32_t)last);
 }
 
+static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+/* File.split(path) → [File.dirname(path), File.basename(path)]. */
+static RESULT korb_m_file_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    RESULT dr = korb_m_file_dirname(c, slots, self, a);
+    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+    slots[0] = dr.value;                                  /* dirname (rooted across basename's alloc) */
+    RESULT br = korb_m_file_basename(c, slots + 1, self, a);
+    if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+    slots[1] = br.value;
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF arr = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
+
 /* File.basename(path, suffix = nil) → last component, optionally minus a suffix
  * (".*" strips any extension). */
 static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -889,6 +905,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "join",        korb_m_file_join,        -1);
     korb_class_def_cfn(c, slots[1], "dirname",     korb_m_file_dirname,     -1);
     korb_class_def_cfn(c, slots[1], "basename",    korb_m_file_basename,    -1);
+    korb_class_def_cfn(c, slots[1], "split",       korb_m_file_split,        1);
     korb_class_def_cfn(c, slots[1], "extname",     korb_m_file_extname,     1);
     korb_class_def_cfn(c, slots[1], "fnmatch",     korb_m_file_fnmatch,     -1);
     korb_class_def_cfn(c, slots[1], "fnmatch?",    korb_m_file_fnmatch,     -1);
