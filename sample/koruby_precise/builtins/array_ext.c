@@ -91,8 +91,16 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const char d = t->buf->data[ti++];
         if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
         if (d == '#') { while (ti < t->len && t->buf->data[ti] != '\n') ti++; continue; }   /* comment to EOL */
-        bool bang = false;   /* `!` = native size (l!/L! = long = 8, i!/I! = int = 4, s!/S! = short = 2) */
-        if (ti < t->len && t->buf->data[ti] == '!') { bang = true; ti++; }
+        bool bang = false, force_little = false, force_big = false;   /* `!`=native size, `<`=little-endian, `>`=big-endian (any order) */
+        for (;;) {
+            if (ti < t->len && t->buf->data[ti] == '!') { bang = true; ti++; }
+            else if (ti < t->len && t->buf->data[ti] == '<') { force_little = true; ti++; }
+            else if (ti < t->len && t->buf->data[ti] == '>') { force_big = true; ti++; }
+            else break;
+        }
+        if ((force_little || force_big) && !strchr("sSiIlLqQjJ", d)) {   /* `<`/`>` only after integer types */
+            errtype = KORB_E_ARGUMENT; errmsg = "'<' allowed only after types sSiIlLqQjJ"; break;
+        }
         bool star = false, has_cnt = false; long cnt = 1;
         if (ti < t->len && t->buf->data[ti] == '*') { star = true; ti++; }
         else if (ti < t->len && t->buf->data[ti] >= '0' && t->buf->data[ti] <= '9') {
@@ -120,6 +128,8 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 case 'Q': case 'q': case 'J': case 'j': sz = 8; big = false; break;
                 default:  sz = (bang && (d == 'L' || d == 'l')) ? 8 : 4; big = false; break;   /* L/l/I/i = 4-byte native; l!/L! = long = 8 */
             }
+            if (force_little) big = false;                /* `<` / `>` override endianness */
+            if (force_big) big = true;
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
