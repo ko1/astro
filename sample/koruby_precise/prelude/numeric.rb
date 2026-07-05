@@ -13,6 +13,11 @@ class Numeric
   def arg; self < 0 ? Math::PI : 0; end   # angle: 0 for non-negative reals, PI for negative (Float/Integer have C impls)
   alias angle arg
   alias phase arg
+  def rectangular; [self, 0]; end         # a real's rectangular form (Complex overrides)
+  alias rect rectangular
+  def polar; [abs, arg]; end
+  def conjugate; self; end
+  alias conj conjugate
   def zero?; self == 0; end
   def nonzero?; zero? ? nil : self; end
   def negative?; self < 0; end
