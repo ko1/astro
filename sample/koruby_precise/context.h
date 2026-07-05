@@ -210,6 +210,10 @@ enum korb_obj_type {
 /* bit 8 (IO only): this is the init-time default $stdout/$stderr — output methods
  * take the fast direct-fwrite path while $stdout/$stderr still holds it. */
 #define KORB_FL_DEFAULT_IO 0x100u
+/* bit 15 (avoids the STR_ENC field 0x7000 so strings can use it too): a
+ * non-KorbObject (String/Array/Hash/Proc/...) carries @ivars in the vm generic-ivar
+ * side table.  Cheap "has ivars?" gate before the linear scan. */
+#define KORB_FL_HAS_IVARS  0x8000u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
 #define KORB_FL_HASH_NOINDEX 0x200u
@@ -687,6 +691,12 @@ struct korb_vm {
     VALUE    *sklass_obj;
     VALUE    *sklass_cls;
     uint32_t  sklass_cnt, sklass_capa;
+    /* generic-ivar side table (same lockstep-forwarded pattern as sklass): lets a
+     * String/Array/Hash/Proc/... carry @ivars it has no struct slot for.  objivar_hash[i]
+     * is a Hash {sym=>val} for objivar_obj[i].  Keeps such objects alive (weak-ref later). */
+    VALUE    *objivar_obj;
+    VALUE    *objivar_hash;
+    uint32_t  objivar_cnt, objivar_capa;
 
     /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-1]
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
@@ -919,6 +929,12 @@ struct CTX_struct {
     for (uint32_t _si = 0; _si < (c)->vm->sklass_cnt; _si++) {               \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_obj[_si]);     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sklass_cls[_si]);     \
+    }                                                                        \
+    /* generic-ivar side table: forward object + its ivar-hash in lockstep    \
+     * so identity keys survive compaction (same rule as sklass). */          \
+    for (uint32_t _oi = 0; _oi < (c)->vm->objivar_cnt; _oi++) {              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_obj[_oi]);    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->objivar_hash[_oi]);   \
     }                                                                        \
     /* open closure envs now live in each frame's EP cell (base[-2]), scanned    \
      * as part of the slot range above — no separate registry. */               \

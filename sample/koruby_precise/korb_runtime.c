@@ -1529,13 +1529,56 @@ korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE 
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+/* Generic-ivar side table for objects without a struct ivar slot (String/Array/
+ * Hash/Proc/...).  Same lockstep-forwarded pattern as the sklass override table:
+ * both columns are GC roots (see AROH_VISIT_ROOTS), so `obj == objivar_obj[i]`
+ * stays a valid identity test across compaction. */
+static VALUE korb_objivar_hash_of(const struct korb_vm *vm, VALUE obj) {
+    if (!(((const AroObjectHeader *)(uintptr_t)obj)->flags & KORB_FL_HAS_IVARS)) return KORB_NIL;
+    for (uint32_t i = 0; i < vm->objivar_cnt; i++)
+        if (vm->objivar_obj[i] == obj) return vm->objivar_hash[i];
+    return KORB_NIL;
+}
+static void korb_objivar_register(CTX *c, VALUE obj, VALUE h) {   /* libc realloc, not a GC point */
+    struct korb_vm *const vm = c->vm;
+    if (vm->objivar_cnt == vm->objivar_capa) {
+        uint32_t nc = vm->objivar_capa ? vm->objivar_capa * 2 : 16;
+        vm->objivar_obj  = realloc(vm->objivar_obj,  sizeof(VALUE) * nc);
+        vm->objivar_hash = realloc(vm->objivar_hash, sizeof(VALUE) * nc);
+        if (!vm->objivar_obj || !vm->objivar_hash) { fprintf(stderr, "koruby_precise: oom (objivar)\n"); abort(); }
+        vm->objivar_capa = nc;
+    }
+    vm->objivar_obj[vm->objivar_cnt]  = obj;
+    vm->objivar_hash[vm->objivar_cnt] = h;
+    vm->objivar_cnt++;
+    ((AroObjectHeader *)(uintptr_t)obj)->flags |= KORB_FL_HAS_IVARS;
+}
+static RESULT korb_objivar_set(CTX *c, VALUE *slots, VALUE_REF objref, VALUE name_sym, VALUE val) {
+    VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root val/name across hash alloc/grow */
+    VALUE_REF nref = SLOTS_PUSH(slots, name_sym);
+    VALUE h = korb_objivar_hash_of(c->vm, VALUE_REF_GET(objref));
+    if (h == KORB_NIL) {
+        h = UNWRAP(korb_hash_new(c, slots, 4));       /* GC; objref (VALUE_REF) tracks the move */
+        korb_objivar_register(c, VALUE_REF_GET(objref), h);   /* libc; sets the flag */
+    }
+    VALUE_REF href = SLOTS_PUSH(slots, h);            /* h is now also a root via the table (forwarded in lockstep) */
+    CHECK(korb_hash_set(c, slots, href, nref, VALUE_REF_GET(vref)));
+    return RESULT_OK(VALUE_REF_GET(vref));
+}
+static VALUE korb_objivar_get(const struct korb_vm *vm, VALUE obj, VALUE name_sym) {
+    const VALUE h = korb_objivar_hash_of(vm, obj);
+    if (h == KORB_NIL) return KORB_NIL;
+    const int32_t idx = korb_hash_find(VAL2HASH(h), name_sym);
+    return idx >= 0 ? VAL2HASH(h)->items->data[2 * idx + 1] : KORB_NIL;
+}
 VALUE
 korb_ivar_get(CTX *c, VALUE self, VALUE name_sym)
 {
-    if (UNLIKELY(!KORB_OBJECT_P(self))) {            /* class → side hash; other builtins (Proc/Fiber/...) carry no ivars */
+    if (UNLIKELY(!KORB_OBJECT_P(self))) {            /* class → side hash; other heap objects → generic-ivar table */
         if (KORB_CLASS_P(self)) return korb_class_ivar_get(self, name_sym);
         if (KORB_EXC_P(self)) return korb_exc_ivar_get(self, name_sym);
-        return KORB_NIL;
+        if (AROH_IS_GC_OBJECT(self)) return korb_objivar_get(c->vm, self, name_sym);
+        return KORB_NIL;                             /* immediate (Integer/Symbol/nil/...): no ivars */
     }
     const KorbObject *o = VAL2OBJ(self);
     int32_t idx = korb_shape_index_cached(c->vm, o->shape_id, SYM2ID(name_sym));
@@ -1557,7 +1600,9 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
             return korb_class_ivar_set(c, slots, selfref, name_sym, val);
         if (KORB_EXC_P(VALUE_REF_GET(selfref)))       /* custom Exception subclass ivars → side hash */
             return korb_exc_ivar_set(c, slots, selfref, name_sym, val);
-        return RESULT_OK(val);                        /* Proc/Fiber/... : no ivar storage (silently dropped) */
+        if (AROH_IS_GC_OBJECT(VALUE_REF_GET(selfref)))   /* String/Array/Hash/Proc/... → generic-ivar table */
+            return korb_objivar_set(c, slots, selfref, name_sym, val);
+        return RESULT_OK(val);                        /* immediate (Integer/Symbol/nil/...): no ivar storage */
     }
     const uint32_t sym = SYM2ID(name_sym);
     KorbObject *o = VAL2OBJ(VALUE_REF_GET(selfref));
@@ -1603,6 +1648,10 @@ korb_ivar_defined(CTX *c, VALUE self, VALUE name_sym)
         const VALUE h = VAL2EXC(self)->ivars;
         return h != KORB_NIL && korb_hash_find(VAL2HASH(h), name_sym) >= 0;
     }
+    if (AROH_IS_GC_OBJECT(self)) {                    /* container/heap object → generic-ivar table */
+        const VALUE h = korb_objivar_hash_of(c->vm, self);
+        return h != KORB_NIL && korb_hash_find(VAL2HASH(h), name_sym) >= 0;
+    }
     return false;
 }
 
@@ -1642,6 +1691,7 @@ korb_ivar_remove(CTX *c, VALUE self, VALUE name_sym, bool *found)
     }
     const VALUE h = KORB_CLASS_P(self) ? VAL2CLASS(self)->class_ivars
                   : KORB_EXC_P(self)   ? VAL2EXC(self)->ivars
+                  : AROH_IS_GC_OBJECT(self) ? korb_objivar_hash_of(vm, self)   /* container/heap object */
                   : KORB_NIL;
     if (h == KORB_NIL) { *found = false; return KORB_NIL; }
     const int32_t idx = korb_hash_find(VAL2HASH(h), name_sym);
