@@ -1013,6 +1013,24 @@ static RESULT korb_m_class_cvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     return korb_cvar_set(c, slots, cls, KORB_NIL, id, VALUE_SLICE_GET(a, 1));   /* self is a class → cref = self */
 }
+static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (hash.c) */
+/* Module#remove_class_variable(name) → removes the class variable from self
+ * (not ancestors) and returns its value; NameError if not defined on self. */
+static RESULT korb_m_class_remove_cvar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(id == UINT32_MAX))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const VALUE cls = VALUE_REF_GET(self);
+    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    const VALUE cvars = VAL2CLASS(cls)->cvars;
+    if (!KORB_HASH_P(cvars) || korb_hash_find(VAL2HASH(cvars), ID2SYM(id)) < 0) {
+        const char *cname = VAL2CLASS(cls)->name_sym ? korb_sym_name(c->vm, VAL2CLASS(cls)->name_sym) : korb_type_name(cls);
+        return korb_raise(c, slots, KORB_E_NAME, 0, "class variable %s not defined for %s", korb_sym_name(c->vm, id), cname);
+    }
+    slots[0] = cvars;
+    slots[1] = ID2SYM(id);
+    return korb_m_hash_delete(c, slots + 2, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(&slots[1], 1), NULL, NULL, NULL);
+}
 /* Module#class_variable_defined?(name) → true if defined on self or an ancestor. */
 static RESULT korb_m_class_cvar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));

@@ -7666,6 +7666,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_get", korb_m_class_cvar_get, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_set", korb_m_class_cvar_set, 2);
+    korb_def_cmethod(c, KORB_C_CLASS, "remove_class_variable", korb_m_class_remove_cvar, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_defined?", korb_m_class_cvar_defined, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variables", korb_m_class_cvars, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
