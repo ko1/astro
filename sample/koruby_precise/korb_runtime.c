@@ -8877,6 +8877,17 @@ static RESULT korb_stderr_emit(CTX *c, VALUE *slots, const char *data, size_t le
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
     return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
 }
+/* Kernel#gets / #readline — read a line from $stdin (forwarding any sep/limit). */
+static RESULT korb_bi_gets_impl(CTX *c, VALUE *slots, VALUE_SLICE args, const char *meth, uint32_t mlen) {
+    const VALUE in = korb_const_get(c->vm, korb_intern(c->vm, "$stdin", 6));
+    if (UNLIKELY(!KORB_OBJECT_P(in))) return RESULT_OK(KORB_NIL);
+    const uint32_t n = VALUE_SLICE_LEN(args);
+    slots[0] = in;
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
+    return korb_send(c, slots + 1 + n, korb_intern(c->vm, meth, mlen), 0, n);
+}
+static RESULT korb_bi_gets(CTX *c, VALUE *slots, VALUE_SLICE args)     { return korb_bi_gets_impl(c, slots, args, "gets", 4); }
+static RESULT korb_bi_readline(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_gets_impl(c, slots, args, "readline", 8); }
 static RESULT
 korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -9710,6 +9721,8 @@ korb_ctx_new(void)
     aro_gc_init(c);
 
     korb_builtin_define(c, "puts",  korb_bi_puts,  -1);
+    korb_builtin_define(c, "gets",  korb_bi_gets,  -1);
+    korb_builtin_define(c, "readline", korb_bi_readline, -1);
     korb_builtin_define(c, "p",     korb_bi_p,     -1);
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
