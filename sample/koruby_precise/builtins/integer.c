@@ -213,6 +213,20 @@ static RESULT korb_m_int_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (UNLIKELY(!KORB_INTEGER_P(ev))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(ev));
 #ifdef KORB_HAVE_GMP
+    if (VALUE_SLICE_LEN(a) >= 2 && !(FIXNUM_P(selfv) && FIXNUM_P(ev) && FIXNUM_P(VALUE_SLICE_GET(a, 1)))) {
+        VALUE mv = VALUE_SLICE_GET(a, 1);              /* pow(exp, mod) with a Bignum operand → GMP modular exponentiation */
+        if (UNLIKELY(!KORB_INTEGER_P(mv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(mv));
+        mpz_t zm; korb_to_mpz(mv, zm);
+        if (UNLIKELY(mpz_sgn(zm) == 0)) { mpz_clear(zm); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+        mpz_t ze; korb_to_mpz(ev, ze);
+        if (UNLIKELY(mpz_sgn(ze) < 0)) { mpz_clear(zm); mpz_clear(ze); return korb_raise(c, slots, KORB_E_RANGE, 0, "Integer#pow() 1st argument cannot be negative when 2nd argument specified"); }
+        mpz_t zb, zr; korb_to_mpz(selfv, zb); mpz_init(zr);
+        mpz_powm(zr, zb, ze, zm);
+        if (mpz_sgn(zm) < 0 && mpz_sgn(zr) != 0) mpz_add(zr, zr, zm);   /* floored result (sign of mod) */
+        RESULT out = korb_big_from_mpz(c, slots, zr);
+        mpz_clear(zb); mpz_clear(ze); mpz_clear(zm); mpz_clear(zr);
+        return out;
+    }
     if (VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(selfv) || !FIXNUM_P(ev))   /* plain pow (incl. overflow/bignum) */
         return korb_int_pow(c, slots, selfv, ev, 0);
 #endif
@@ -409,11 +423,23 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE bv = VALUE_SLICE_GET(a, 0);
     if (KORB_FLOAT_P(bv)) {                            /* Integer#ceildiv(Float) → ceil(self/f) Integer */
-        double f = korb_float_val(bv);
+        double f = korb_float_val(bv), s;
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        return RESULT_OK(LONG2FIX((intptr_t)ceil((double)SELF_INT / f)));
+        (void)korb_num_to_d(VALUE_REF_GET(self), &s);  /* works for Bignum self too */
+        return RESULT_OK(LONG2FIX((intptr_t)ceil(s / f)));
     }
-    if (UNLIKELY(!FIXNUM_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+#ifdef KORB_HAVE_GMP
+    if (KORB_BIGNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(bv)) {   /* ceiling division in GMP (no intptr_t overflow) */
+        mpz_t za, zb, zq;
+        korb_to_mpz(VALUE_REF_GET(self), za); korb_to_mpz(bv, zb);
+        if (UNLIKELY(mpz_sgn(zb) == 0)) { mpz_clear(za); mpz_clear(zb); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+        mpz_init(zq); mpz_cdiv_q(zq, za, zb);
+        RESULT out = korb_big_from_mpz(c, slots, zq);
+        mpz_clear(za); mpz_clear(zb); mpz_clear(zq);
+        return out;
+    }
+#endif
     intptr_t b = FIX2LONG(bv);
     if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     return RESULT_OK(LONG2FIX(-korb_int_fdiv(-SELF_INT, b)));   /* ceil = -floor(-a/b) */
