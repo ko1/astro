@@ -291,7 +291,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (errmsg) break;
     }
     if (errmsg) { free(ob); return korb_raise(c, slots, errtype, 0, "%s", errmsg); }
-    if (bad)    { free(ob); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#pack: directive '%c' not supported", bad); }
+    if (bad)    { free(ob); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown pack directive '%c' in '%.*s'", bad, (int)t->len, t->buf->data); }
     RESULT r = korb_str_new(c, slots, ob ? (const char *)ob : "", (uint32_t)olen);
     free(ob);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* pack yields ASCII-8BIT */
