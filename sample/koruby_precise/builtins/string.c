@@ -2017,6 +2017,11 @@ static bool korb_line_chomp(CTX *c, VALUE_SLICE a) {
 }
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil separator → yield the whole string once */
+        slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, 0, SELF_STR->len));
+        CHECK(korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self));
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
     char sepbuf[64]; uint32_t seplen;
     { const char *sp = korb_line_sep(a, &seplen); if (seplen > 63) seplen = 63; memcpy(sepbuf, sp, seplen); }
     const bool chomp = korb_line_chomp(c, a);
