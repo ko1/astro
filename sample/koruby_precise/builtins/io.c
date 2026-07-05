@@ -453,5 +453,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
         (void)korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[1]), ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)sv[i].idx));
         korb_const_define(c, korb_intern(vm, sv[i].gv, (uint32_t)strlen(sv[i].gv)), slots[1]);
         korb_const_define(c, korb_intern(vm, sv[i].cn, (uint32_t)strlen(sv[i].cn)), slots[1]);
+        if (sv[i].idx >= 1 && AROH_IS_GC_OBJECT(slots[1]))   /* mark default $stdout/$stderr for the fast fwrite path */
+            ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_DEFAULT_IO;
     }
 }

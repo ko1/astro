@@ -207,6 +207,9 @@ enum korb_obj_type {
 /* bit 7 (Hash only): compare_by_identity — key lookup uses object identity (==)
  * instead of value equality. */
 #define KORB_FL_CMP_BY_ID  0x80u
+/* bit 8 (IO only): this is the init-time default $stdout/$stderr — output methods
+ * take the fast direct-fwrite path while $stdout/$stderr still holds it. */
+#define KORB_FL_DEFAULT_IO 0x100u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
 #define KORB_FL_HASH_NOINDEX 0x200u
