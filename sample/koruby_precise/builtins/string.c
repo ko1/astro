@@ -1978,6 +1978,26 @@ static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos, const char 
     }
     return e - pos;
 }
+/* One line/paragraph starting at pos.  Returns the yielded byte length (chomped if
+ * requested); *adv = bytes to advance to the next start.  In paragraph mode
+ * (seplen==0) a paragraph ends after the first "\n\n"; extra trailing newlines of
+ * that run are skipped (advanced past) but not yielded. */
+static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char *sep, uint32_t seplen, bool chomp, uint32_t *adv) {
+    if (seplen == 0) {                                     /* paragraph mode */
+        uint32_t m = pos; bool found = false;
+        while (m + 1 < s->len) { if (s->buf->data[m] == '\n' && s->buf->data[m + 1] == '\n') { found = true; break; } m++; }
+        if (!found) { *adv = s->len - pos; return *adv; }  /* last paragraph: rest of string (no run to chomp) */
+        uint32_t rune = m; while (rune < s->len && s->buf->data[rune] == '\n') rune++;   /* end of the newline run */
+        *adv = rune - pos;
+        uint32_t yl = (m + 2) - pos;                       /* text + exactly two newlines */
+        if (chomp) while (yl > 0 && s->buf->data[pos + yl - 1] == '\n') yl--;
+        return yl;
+    }
+    const uint32_t ll = korb_str_line_len(s, pos, sep, seplen);
+    *adv = ll;
+    if (chomp && ll >= seplen && memcmp(s->buf->data + pos + ll - seplen, sep, seplen) == 0) return ll - seplen;
+    return ll;
+}
 /* resolve the line separator arg (a[0]) → bytes; default "\n". */
 static const char *korb_line_sep(VALUE_SLICE a, uint32_t *seplen) {
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
@@ -2004,8 +2024,7 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t ll = korb_str_line_len(s, pos, sepbuf, seplen);
-        uint32_t yl = (chomp && ll >= seplen && memcmp(s->buf->data + pos + ll - seplen, sepbuf, seplen) == 0) ? ll - seplen : ll;
+        uint32_t ll; uint32_t yl = korb_str_line_span(s, pos, sepbuf, seplen, chomp, &ll);
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, yl));   /* root the line (chomped if requested) */
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
@@ -2027,8 +2046,7 @@ static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t ll = korb_str_line_len(s, pos, sepbuf, seplen);
-        uint32_t yl = (chomp && ll >= seplen && memcmp(s->buf->data + pos + ll - seplen, sepbuf, seplen) == 0) ? ll - seplen : ll;
+        uint32_t ll; uint32_t yl = korb_str_line_span(s, pos, sepbuf, seplen, chomp, &ll);
         CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, yl))));
         pos += ll;
     }
