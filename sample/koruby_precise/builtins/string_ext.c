@@ -284,9 +284,16 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             break;
           }
           case 'x': case 'X': case 'o': case 'b': case 'B': {
-            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {  /* %x/%o/%b coerces an object via #to_int */
-                if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int)) {
-                    RESULT ir = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
+            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {  /* %x/%o/%b coerces a Rational (trunc) or an object (#to_int, then #to_i) */
+                if (KORB_RATIONAL_P(arg)) {
+                    RESULT tr = korb_rat_intdiv(c, slots, VAL2RAT(arg)->num, VAL2RAT(arg)->den, 2);
+                    if (UNLIKELY(tr.state != KORB_NORMAL)) { coerce_err = tr; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS(); arg = tr.value;
+                } else if (KORB_OBJECT_P(arg) && fmt_stable) {
+                    const uint32_t m = korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int) ? fmt_to_int
+                                     : (korb_responds_to(c, arg, fmt_to_i) ? fmt_to_i : 0);
+                    if (!m) { err = true; errmsg = "expected Integer"; break; }
+                    RESULT ir = korb_send_impl(c, slots + 2, m, 0, 0, NULL, NULL, NULL);
                     if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
                     FMT_REREAD_ARGS();
                     if (FIXNUM_P(ir.value) || KORB_BIGNUM_P(ir.value)) arg = ir.value;
