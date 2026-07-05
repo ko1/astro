@@ -9413,7 +9413,7 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (KORB_FLOAT_P(a0)) {
         double d = korb_float_val(a0);
         if (UNLIKELY(!isfinite(d)))
-            INT_FAIL(KORB_E_ARGUMENT, 0, "Integer(): value out of range");
+            INT_FAIL(KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
 #ifdef KORB_HAVE_GMP
         if (UNLIKELY(!FIXABLE((intptr_t)d) || fabs(d) >= 9.0e18)) {   /* large finite Float → Bignum (trunc) */
             mpz_t z; mpz_init_set_d(z, d);                 /* mpz_set_d truncates toward zero */
@@ -9444,6 +9444,20 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (a0 == KORB_NIL)
         INT_FAIL(KORB_E_TYPE, 0, "can't convert nil into Integer");
+    if (KORB_OBJECT_P(a0)) {                               /* user object → #to_int, then #to_i (CRuby) */
+        VALUE v = a0;
+        RESULT ci = korb_coerce_to_int(c, slots, &v);      /* dispatches #to_int */
+        if (UNLIKELY(ci.state != KORB_NORMAL)) return exc ? ci : RESULT_OK(KORB_NIL);
+        if (ci.value == KORB_TRUE) return RESULT_OK(v);
+        const uint32_t to_i = korb_intern(c->vm, "to_i", 4);
+        slots[0] = a0;
+        if (korb_responds_to(c, a0, to_i)) {
+            RESULT r = korb_send_impl(c, slots + 1, to_i, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return exc ? r : RESULT_OK(KORB_NIL);
+            intptr_t tmp;
+            if (korb_to_index(r.value, &tmp) || KORB_BIGNUM_P(r.value)) return RESULT_OK(r.value);
+        }
+    }
     INT_FAIL(KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(a0));
 #undef INT_FAIL
 }
