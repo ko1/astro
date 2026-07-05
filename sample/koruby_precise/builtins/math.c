@@ -175,6 +175,7 @@ void korb_init_math(CTX *c, VALUE *slots) {
     korb_const_define(c, korb_intern(vm, "MAX", 3),      korb_float_new(c, slots + 1, DBL_MAX).value);
     korb_const_define(c, korb_intern(vm, "MIN", 3),      korb_float_new(c, slots + 1, DBL_MIN).value);
     korb_const_define(c, korb_intern(vm, "EPSILON", 7),  korb_float_new(c, slots + 1, DBL_EPSILON).value);
+    korb_const_define(c, korb_intern(vm, "I", 1),        korb_cpx_new(c, slots + 1, LONG2FIX(0), LONG2FIX(1)).value);   /* Complex::I */
     /* integer-valued Float:: constants (IEEE-754 double properties). */
     korb_const_define(c, korb_intern(vm, "DIG", 3),         LONG2FIX(DBL_DIG));
     korb_const_define(c, korb_intern(vm, "MANT_DIG", 8),    LONG2FIX(DBL_MANT_DIG));
