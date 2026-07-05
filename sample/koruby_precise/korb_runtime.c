@@ -8877,16 +8877,36 @@ korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
     return RESULT_OK(KORB_NIL);
 }
 
+/* Emit a byte run to $stdout, routed through $stdout.write so a reassigned or
+ * mocked $stdout captures it; the default $stdout wraps the C stdout FILE* so
+ * ordering with any raw fwrite is preserved. */
+static RESULT korb_stdout_emit(CTX *c, VALUE *slots, const char *data, size_t len) {
+    const VALUE out = korb_const_get(c->vm, korb_intern(c->vm, "$stdout", 7));
+    if (UNLIKELY(!KORB_OBJECT_P(out))) { if (len) fwrite(data, 1, len, stdout); return RESULT_OK(KORB_NIL); }
+    slots[0] = out;
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, data, (uint32_t)len));
+    RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
+    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
+}
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
-    if (n == 0) {
-        fputc('\n', stdout);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (UNLIKELY(!ms)) {   /* fallback: raw stdout */
+        if (n == 0) { fputc('\n', stdout); return RESULT_OK(KORB_NIL); }
+        for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one(c, slots, VALUE_SLICE_GET(args, i)));
         return RESULT_OK(KORB_NIL);
     }
-    for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one(c, slots, VALUE_SLICE_GET(args, i)));
-    return RESULT_OK(KORB_NIL);
+    if (n == 0) fputc('\n', ms);
+    else for (uint32_t i = 0; i < n; i++) {
+        RESULT r = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), ms);
+        if (UNLIKELY(r.state != KORB_NORMAL)) { fclose(ms); free(buf); return r; }
+    }
+    fclose(ms);
+    RESULT er = korb_stdout_emit(c, slots, buf, sz);
+    free(buf);
+    return er;
 }
 
 #ifdef KORB_HAVE_GMP
@@ -9088,26 +9108,29 @@ static RESULT
 korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
+    if (n == 0) return RESULT_OK(KORB_NIL);              /* p() → nil, no output */
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    FILE *const out = ms ? ms : stdout;                 /* build into a buffer, then route via $stdout */
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = VALUE_SLICE_GET(args, i);
         /* user-class instance → honour a (possibly user-defined) #inspect via
          * dispatch; the default Object#inspect yields the same "#<Class>" form as
-         * korb_fprint_inspect, so non-overriding objects are unaffected.  Builtins
-         * (Integer/String/Array/...) keep the fast C inspect. */
+         * korb_fprint_inspect, so non-overriding objects are unaffected. */
         if (KORB_OBJECT_P(v) && VAL2OBJ(v)->klass != KORB_NIL) {
             slots[0] = v;
             RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (LIKELY(KORB_STRING_P(r.value))) fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, stdout);
-            else korb_fprint_inspect(c, stdout, r.value);
+            if (UNLIKELY(r.state != KORB_NORMAL)) { if (ms) { fclose(ms); free(buf); } return r; }
+            if (LIKELY(KORB_STRING_P(r.value))) fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, out);
+            else korb_fprint_inspect(c, out, r.value);
         } else {
-            korb_fprint_inspect_s(c, slots, stdout, v);   /* containers dispatch element #inspect */
+            korb_fprint_inspect_s(c, slots, out, v);   /* containers dispatch element #inspect */
         }
-        fputc('\n', stdout);
+        fputc('\n', out);
     }
+    if (ms) { fclose(ms); RESULT er = korb_stdout_emit(c, slots, buf, sz); free(buf); if (UNLIKELY(er.state != KORB_NORMAL)) return er; }
     /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
      * arrays land in M1, return the first arg until then. */
-    return RESULT_OK(n > 0 ? VALUE_SLICE_GET(args, 0) : KORB_NIL);
+    return RESULT_OK(VALUE_SLICE_GET(args, 0));
 }
 
 /* Kernel#eval(string) — parse + run the string as a program in a fresh frame
@@ -9522,11 +9545,13 @@ korb_bi_clock_gettime(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)slots;
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(args); i++) {
-        korb_fprint_to_s(c, stdout, VALUE_SLICE_GET(args, i));
-    }
-    return RESULT_OK(KORB_NIL);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (UNLIKELY(!ms)) { for (uint32_t i = 0; i < VALUE_SLICE_LEN(args); i++) korb_fprint_to_s(c, stdout, VALUE_SLICE_GET(args, i)); return RESULT_OK(KORB_NIL); }
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(args); i++) korb_fprint_to_s(c, ms, VALUE_SLICE_GET(args, i));
+    fclose(ms);
+    RESULT er = korb_stdout_emit(c, slots, buf, sz);
+    free(buf);
+    return er;
 }
 
 /* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
