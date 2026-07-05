@@ -194,6 +194,7 @@ static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(!KORB_STRING_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
+    if (n == 0) return korb_str_new(c, slots, "", 0);   /* basename("") → "" */
     while (n > 1 && p[n - 1] == '/') n--;             /* strip trailing slashes */
     size_t s = 0;
     for (size_t i = 0; i < n; i++) if (p[i] == '/') s = i + 1;
