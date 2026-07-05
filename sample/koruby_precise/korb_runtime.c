@@ -8867,14 +8867,32 @@ korb_drain_at_exit(CTX *c, VALUE *slots)
 
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
  * keyword Hash, e.g. uplevel:/category:, is ignored). */
+static RESULT korb_stdout_emit(CTX *c, VALUE *slots, const char *data, size_t len);   /* fwd (defined below) */
+/* Route to $stderr.write (mockable/redirectable); default $stderr wraps C stderr. */
+static RESULT korb_stderr_emit(CTX *c, VALUE *slots, const char *data, size_t len) {
+    const VALUE out = korb_const_get(c->vm, korb_intern(c->vm, "$stderr", 7));
+    if (UNLIKELY(!KORB_OBJECT_P(out))) { if (len) fwrite(data, 1, len, stderr); return RESULT_OK(KORB_NIL); }
+    slots[0] = out;
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, data, (uint32_t)len));
+    RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
+    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
+}
 static RESULT
 korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) n--;   /* drop uplevel:/category: kwargs */
-    for (uint32_t i = 0; i < n; i++)
-        CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stderr));
-    return RESULT_OK(KORB_NIL);
+    if (n == 0) return RESULT_OK(KORB_NIL);
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (UNLIKELY(!ms)) { for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stderr)); return RESULT_OK(KORB_NIL); }
+    for (uint32_t i = 0; i < n; i++) {
+        RESULT r = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), ms);
+        if (UNLIKELY(r.state != KORB_NORMAL)) { fclose(ms); free(buf); return r; }
+    }
+    fclose(ms);
+    RESULT er = korb_stderr_emit(c, slots, buf, sz);
+    free(buf);
+    return er;
 }
 
 /* Emit a byte run to $stdout, routed through $stdout.write so a reassigned or
