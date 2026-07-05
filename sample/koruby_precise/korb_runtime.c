@@ -6357,6 +6357,20 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 ? (argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
                    korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc])))
                 : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]));
+            if (kwinit) {                                  /* reject keyword arguments that aren't members */
+                const KorbHash *const kh = VAL2HASH(slots[-(intptr_t)argc]);
+                const KorbArray *const mem0 = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                char ukbuf[256]; int uklen = 0, ukn = 0;
+                for (uint32_t hi = 0; hi < kh->len; hi++) {
+                    const VALUE key = kh->items->data[2 * hi];
+                    bool found = false;
+                    for (uint32_t mi = 0; mi < mem0->len; mi++) if (mem0->items->data[mi] == key) { found = true; break; }
+                    if (!found && SYMBOL_P(key) && uklen < (int)sizeof(ukbuf) - 64)
+                        uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s%s", ukn++ ? ", " : "", korb_sym_name(vm, SYM2ID(key)));
+                    else if (!found) ukn++;
+                }
+                if (ukn > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keywords: %s", ukbuf);
+            }
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (i >= mem->len) break;
