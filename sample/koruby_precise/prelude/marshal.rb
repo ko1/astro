@@ -51,8 +51,13 @@ module Marshal
       mem = o.members; vals = o.to_a
       _long(mem.length, out)
       mem.each_with_index { |m, i| _dump(m, out); _dump(vals[i], out) }
-    else
-      raise TypeError, "can't dump #{o.class}"
+    else                                      # generic object: 'o' + class symbol + ivars
+      name = o.class.name
+      raise TypeError, "can't dump #{o.class}" if name.nil?
+      ivars = o.instance_variables
+      out << "o"
+      _dump(name.to_sym, out); _long(ivars.length, out)
+      ivars.each { |iv| _dump(iv, out); _dump(o.instance_variable_get(iv), out) }
     end
   end
 
@@ -162,8 +167,10 @@ module Marshal
       ni.times { name = _read(st); ivars[name] = _read(st) }
       if cls == :Range
         Range.new(ivars[:begin], ivars[:end], ivars[:excl])
-      else
-        raise TypeError, "unsupported Marshal object class #{cls}"
+      else                                               # generic object: allocate + set ivars
+        obj = Object.const_get(cls).allocate
+        ivars.each { |name, val| obj.instance_variable_set(name, val) }
+        obj
       end
     when 0x53                                            # 'S' struct (class symbol + member/value pairs)
       cls = _read(st)
