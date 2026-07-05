@@ -272,10 +272,58 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
     }
     return RESULT_OK(LONG2FIX(res));
 }
-static RESULT korb_m_int_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_int_round_to(c, slots, SELF_INT, 0, a); }
-static RESULT korb_m_int_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { return korb_int_round_to(c, slots, SELF_INT, 1, a); }
-static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_int_round_to(c, slots, SELF_INT, 2, a); }
-static RESULT korb_m_int_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_int_round_to(c, slots, SELF_INT, 3, a); }
+/* round/floor/ceil/truncate for a Bignum receiver with a negative digit count —
+ * done in GMP so it doesn't overflow the intptr_t fixnum path (kind: 0 floor,
+ * 1 ceil, 2 round, 3 truncate). */
+static RESULT korb_bigint_round_to(CTX *c, VALUE *slots, VALUE bigself, int kind, VALUE_SLICE a) {
+    slots[0] = bigself;                                  /* root across a possible #to_int digit coercion */
+    uint32_t npos; const int half = korb_round_half(c, a, &npos);
+    intptr_t ndig = 0;
+    if (npos >= 1) {
+        VALUE dv = VALUE_SLICE_GET(a, 0);
+        if (KORB_FLOAT_P(dv)) {
+            const double d = korb_float_val(dv);
+            if (UNLIKELY(isinf(d) || isnan(d))) return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", isnan(d) ? "NaN" : "Infinity");
+            ndig = (intptr_t)d;
+        } else if (UNLIKELY(KORB_BIGNUM_P(dv))) {
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
+            RESULT cr = korb_coerce_to_int(c, slots + 1, &dv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(dv, &ndig)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+    }
+    if (ndig >= 0) return RESULT_OK(slots[0]);            /* an Integer has no fractional digits */
+    mpz_t z, f, q, r, res;
+    korb_to_mpz(slots[0], z);
+    mpz_init(f); mpz_ui_pow_ui(f, 10, (unsigned long)(-ndig));
+    mpz_init(q); mpz_init(r); mpz_init(res);
+    mpz_tdiv_qr(q, r, z, f);                              /* truncated: q toward 0, r has sign of z */
+    const int rsgn = mpz_sgn(r), zsgn = mpz_sgn(z);
+    switch (kind) {
+      case 0:  if (rsgn != 0 && zsgn < 0) mpz_sub_ui(q, q, 1); mpz_mul(res, q, f); break;   /* floor */
+      case 1:  if (rsgn != 0 && zsgn > 0) mpz_add_ui(q, q, 1); mpz_mul(res, q, f); break;   /* ceil  */
+      case 3:  mpz_mul(res, q, f); break;                                                   /* truncate */
+      default: {                                                                            /* round */
+        mpz_mul(res, q, f);
+        mpz_t ar; mpz_init(ar); mpz_abs(ar, r); mpz_mul_ui(ar, ar, 2);   /* twice = 2|r| */
+        const int cmp = mpz_cmp(ar, f);
+        bool away = false;
+        if (cmp > 0) away = true;                                        /* clear majority */
+        else if (cmp == 0) away = (half == 1) ? (mpz_odd_p(q) != 0) : (half != 2);   /* tie: even/up/down */
+        if (away) { if (zsgn < 0) mpz_sub(res, res, f); else mpz_add(res, res, f); }
+        mpz_clear(ar);
+        break;
+      }
+    }
+    RESULT out = korb_big_from_mpz(c, slots + 1, res);
+    mpz_clear(z); mpz_clear(f); mpz_clear(q); mpz_clear(r); mpz_clear(res);
+    return out;
+}
+static RESULT korb_m_int_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 0, a) : korb_int_round_to(c, slots, SELF_INT, 0, a); }
+static RESULT korb_m_int_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 1, a) : korb_int_round_to(c, slots, SELF_INT, 1, a); }
+static RESULT korb_m_int_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 2, a) : korb_int_round_to(c, slots, SELF_INT, 2, a); }
+static RESULT korb_m_int_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 3, a) : korb_int_round_to(c, slots, SELF_INT, 3, a); }
 static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE lo, hi;
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
