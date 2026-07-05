@@ -541,9 +541,9 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             slots[3] = (VALUE)r;
             CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
             si = VAL2STR(slots[1])->len;
-        } else {                                          /* anything else → nil */
-            const long reps = star ? 0 : cnt;
-            for (long r = 0; r < reps; r++) CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL));
+        } else {                                          /* unknown directive → ArgumentError (CRuby) */
+            const KorbString *tt = VAL2STR(slots[0]);
+            return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "unknown unpack directive '%c' in '%.*s'", d, (int)tt->len, tt->buf->data);
         }
     }
     return RESULT_OK(VALUE_REF_GET(res));
