@@ -413,7 +413,8 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
-    if (sub) korb_klass_override_set(c, slots[1], slots[0]);
+    if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
+        korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
     return RESULT_OK(slots[1]);
 }
 /* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
@@ -430,6 +431,16 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
     RESULT r = korb_m_obj_dup(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    /* clone (unlike dup) carries the singleton class, so singleton methods survive. */
+    const bool self_sub = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS);
+    if (self_sub && AROH_IS_GC_OBJECT(r.value)) {
+        const VALUE ov = korb_klass_override_get(c->vm, sv);
+        if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) {
+            slots[0] = r.value;
+            korb_klass_override_set(c, slots[0], ov);
+            r.value = slots[0];
+        }
+    }
     if (((fmode == 1) || (fmode == -1 && self_frozen)) && AROH_IS_GC_OBJECT(r.value))
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
     return r;
