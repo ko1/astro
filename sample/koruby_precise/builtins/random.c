@@ -105,6 +105,24 @@ static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
     return KORB_STRING_P(s) ? (KorbMT *)VAL2STR(s)->buf->data : NULL;
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
+/* Random.urandom(n) → n bytes of OS entropy as an ASCII-8BIT String. */
+static RESULT korb_m_random_urandom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    intptr_t n = 0;
+    if (VALUE_SLICE_LEN(a) < 1 || UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
+    char *buf = (char *)malloc((size_t)(n ? n : 1));
+    if (!buf) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
+    FILE *fp = fopen("/dev/urandom", "rb");
+    size_t got = fp ? fread(buf, 1, (size_t)n, fp) : 0;
+    if (fp) fclose(fp);
+    for (size_t i = got; i < (size_t)n; i++) buf[i] = 0;   /* pad if the read fell short */
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)n);
+    free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
+    return r;
+}
 static bool korb_is_random(CTX *const c, VALUE v) {
     if (!KORB_OBJECT_P(v)) return false;
     VALUE cls = korb_class_obj_of(c, v);
