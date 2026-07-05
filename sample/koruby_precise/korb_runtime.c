@@ -1789,17 +1789,33 @@ static RESULT korb_m_struct_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_struct_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = STRUCT_MEMBERS(self);                            /* members (rooted) */
     const uint32_t n = VAL2ARY(slots[0])->len;
-    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, VALUE_SLICE_LEN(a)));
-    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
-    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 3, n));           /* the struct's values, in member order */
+    VALUE_REF vals = VALUE_REF_AT(&slots[1]);
+    for (uint32_t k = 0; k < n; k++) {
+        const VALUE iv = korb_member_ivar_sym(c->vm, VAL2ARY(slots[0])->items->data[k]);
+        CHECK(korb_ary_push_val(c, slots + 3, vals, korb_ivar_get(c, VALUE_REF_GET(self), iv)));
+    }
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 3, VALUE_SLICE_LEN(a)));
+    VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const VALUE av = VALUE_SLICE_GET(a, j);
+        if (KORB_RANGE_P(av)) {                                /* a Range picks each index in it (nil-filled, like Array) */
+            const KorbRange *r = VAL2RANGE(av);
+            intptr_t b = 0, e2, last;
+            if (r->rbegin != KORB_NIL) { if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (b < 0) b += n; }
+            if (r->rend == KORB_NIL) last = (intptr_t)n - 1;
+            else { if (UNLIKELY(!korb_to_index(r->rend, &e2))) return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e2 < 0) e2 += n; last = r->exclude_end ? e2 - 1 : e2; }
+            for (intptr_t i = b; i <= last; i++)
+                CHECK(korb_ary_push_val(c, slots + 3, dst, (i >= 0 && (uint32_t)i < n) ? VAL2ARY(VALUE_REF_GET(vals))->items->data[i] : KORB_NIL));
+            continue;
+        }
         intptr_t idx;
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, k), &idx)))
-            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, k)));
+        if (UNLIKELY(!korb_to_index(av, &idx)))
+            return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(av));
         if (idx < 0) idx += n;
         if (UNLIKELY(idx < 0 || (uint32_t)idx >= n))
-            return korb_raise(c, slots + 2, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)idx, n);
-        const VALUE iv = korb_member_ivar_sym(c->vm, VAL2ARY(slots[0])->items->data[idx]);
-        CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ivar_get(c, VALUE_REF_GET(self), iv)));
+            return korb_raise(c, slots + 3, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)idx, n);
+        CHECK(korb_ary_push_val(c, slots + 3, dst, VAL2ARY(VALUE_REF_GET(vals))->items->data[idx]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
