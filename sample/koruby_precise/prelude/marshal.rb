@@ -37,6 +37,12 @@ module Marshal
     when Hash
       out << "{"; _long(o.size, out)
       o.each { |k, v| _dump(k, out); _dump(v, out) }
+    when Range
+      out << "o"                              # generic object: class :Range + 3 ivars
+      _dump(:Range, out); _long(3, out)
+      _dump(:excl, out);  _dump(o.exclude_end?, out)
+      _dump(:begin, out); _dump(o.begin, out)
+      _dump(:end, out);   _dump(o.end, out)
     else
       raise TypeError, "can't dump #{o.class}"
     end
@@ -141,6 +147,16 @@ module Marshal
       ni = _rlong(st)
       ni.times { _read(st); _read(st) }
       v
+    when 0x6f                                            # 'o' generic object (class symbol + ivars)
+      cls = _read(st)
+      ni = _rlong(st)
+      ivars = {}
+      ni.times { name = _read(st); ivars[name] = _read(st) }
+      if cls == :Range
+        Range.new(ivars[:begin], ivars[:end], ivars[:excl])
+      else
+        raise TypeError, "unsupported Marshal object class #{cls}"
+      end
     else
       raise TypeError, "unsupported Marshal type 0x#{t.to_s(16)}"
     end
