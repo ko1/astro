@@ -328,6 +328,7 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE lo, hi;
     if (VALUE_SLICE_LEN(a) == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* clamp(lo..hi) */
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        if (UNLIKELY(r->exclude_end)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot clamp with an exclusive range");
         lo = r->rbegin; hi = r->rend;
     } else { lo = VALUE_SLICE_GET(a, 0); hi = VALUE_SLICE_GET(a, 1); }
     if (lo != KORB_NIL && hi != KORB_NIL) {            /* CRuby: min must be <= max */
