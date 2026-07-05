@@ -90,6 +90,12 @@ class StringIO
     line
   end
 
+  def readline(sep = "\n")
+    line = gets(sep)
+    raise EOFError, "end of file reached" if line.nil?
+    line
+  end
+
   def each_line(sep = "\n")
     return enum_for(:each_line, sep) unless block_given?
     while (l = gets(sep))
