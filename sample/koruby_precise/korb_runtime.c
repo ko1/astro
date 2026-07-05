@@ -9356,10 +9356,26 @@ korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
 static RESULT
 korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    if (VALUE_SLICE_LEN(args) == 0) return RESULT_OK(KORB_NIL);
-    RESULT r = korb_bi_format(c, slots, args);
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (KORB_STRING_P(r.value)) { const KorbString *const s = VAL2STR(r.value); fwrite(s->buf->data, 1, s->len, stdout); }
+    const uint32_t n = VALUE_SLICE_LEN(args);
+    if (n == 0) return RESULT_OK(KORB_NIL);
+    const VALUE first = VALUE_SLICE_GET(args, 0);
+    VALUE target;
+    RESULT fr;
+    if (KORB_STRING_P(first)) {                           /* printf(format, *args) → $stdout */
+        target = korb_const_get(c->vm, korb_intern(c->vm, "$stdout", 7));
+        fr = korb_bi_format(c, slots + 2, args);
+    } else {                                              /* printf(io, format, *args) → io.write(...) */
+        target = first;
+        fr = korb_bi_format(c, slots + 2, VALUE_SLICE_MAKE(args.p + 1, n - 1));
+    }
+    if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    if (target == KORB_NIL || !KORB_OBJECT_P(target)) {   /* no usable $stdout → raw stdout */
+        if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(s->buf->data, 1, s->len, stdout); }
+        return RESULT_OK(KORB_NIL);
+    }
+    slots[0] = target; slots[1] = fr.value;               /* target.write(formatted) */
+    RESULT wr = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
+    if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
     return RESULT_OK(KORB_NIL);
 }
 
