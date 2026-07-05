@@ -675,8 +675,14 @@ static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
  * korb_num_binop (Int/Float/Rational-aware). Division (op 3) is unsupported. */
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
-    if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim)))
+    if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim))) {
+        if (KORB_COMPLEX_P(l) && KORB_OBJECT_P(r) && op >= 0 && op <= 3) {   /* Complex op object → coerce protocol */
+            static const char *const opn[] = { "+", "-", "*", "/" };
+            bool h; RESULT cr = korb_try_coerce(c, slots, l, r, opn[op], 0, &h);
+            if (h) return cr;
+        }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_type_name(KORB_COMPLEX_P(l) ? r : l));
+    }
     slots[0] = lre; slots[1] = lim; slots[2] = rre; slots[3] = rim;   /* root inputs */
     VALUE res_re, res_im;
     if (op == 0 || op == 1) {
