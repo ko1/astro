@@ -121,7 +121,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
     RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
-    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6), fmt_to_f = korb_intern(c->vm, "to_f", 4);
+    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6), fmt_to_f = korb_intern(c->vm, "to_f", 4), fmt_to_i = korb_intern(c->vm, "to_i", 4);
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
         char spec[80]; int si = 0; spec[si++] = '%';
@@ -201,6 +201,23 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         switch (conv) {
           case 'd': case 'i': case 'u': {
             intptr_t v;
+            /* coerce a Rational (truncate) or an object (#to_int, then #to_i) to an
+             * Integer up front, so the Fixnum/Bignum paths below handle it. */
+            if (KORB_RATIONAL_P(arg)) {
+                RESULT tr = korb_rat_intdiv(c, slots, VAL2RAT(arg)->num, VAL2RAT(arg)->den, 2);   /* trunc toward 0 */
+                if (UNLIKELY(tr.state != KORB_NORMAL)) { coerce_err = tr; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS(); arg = tr.value;
+            } else if (KORB_OBJECT_P(arg) && fmt_stable) {
+                const uint32_t m = korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int) ? fmt_to_int
+                                 : (korb_responds_to(c, arg, fmt_to_i) ? fmt_to_i : 0);
+                if (m) {
+                    RESULT ir = korb_send_impl(c, slots + 2, m, 0, 0, NULL, NULL, NULL);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS();
+                    if (FIXNUM_P(ir.value) || KORB_BIGNUM_P(ir.value)) arg = ir.value;
+                    else { err = true; errmsg = "expected a number"; break; }
+                }
+            }
             if (KORB_BIGNUM_P(arg)) {                     /* Bignum: let GMP honour the flags/width via %Zd */
                 spec[si++] = 'Z'; spec[si++] = 'd'; spec[si] = '\0';
                 mpz_t z; korb_to_mpz(arg, z);
