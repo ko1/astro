@@ -1,0 +1,32 @@
+# Files/prefixes excluded from the rubyspec compat GATE because their result is
+# inherently non-deterministic (random, filesystem, clock, process, threads) or
+# environment-dependent — they can't be a stable no-regression signal.  They are
+# still RUN and counted in the pass-rate; they're only ignored for regression
+# detection.  One prefix (rel-path) per line; '#' comments.
+dir/
+file/
+io/
+argf/
+process/
+random/
+signal/
+thread/
+mutex/
+conditionvariable/
+queue/
+fiber/
+objectspace/
+gc/
+array/sample
+array/shuffle
+kernel/rand
+kernel/srand
+kernel/system
+kernel/exec
+kernel/spawn
+kernel/`
+kernel/at_exit
+kernel/caller
+kernel/sleep
+kernel/test
+time/

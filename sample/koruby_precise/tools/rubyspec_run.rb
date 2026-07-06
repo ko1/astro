@@ -61,6 +61,16 @@ ex = tot[:pass]+tot[:fail]+tot[:err]
 puts "files=#{tot[:files]} (file-clean=#{tot[:filepass]})  whole-file-fail/crash=#{tot[:wfail]}"
 puts "examples: pass=#{tot[:pass]} fail=#{tot[:fail]} err=#{tot[:err]} skip=#{tot[:skip]}"
 puts "example pass-rate (of pass+fail+err) = #{ex>0 ? (100.0*tot[:pass]/ex).round(1) : 0}%"
+# machine-readable per-file dump for the baseline/gate (DUMP=<path>).
+# Format per line: "<relpath>\t<pass>\t<fail>\t<err>\t<skip>"  or  "<relpath>\tWFAIL\t<code>".
+if (dp = ENV['DUMP'])
+  File.open(dp, 'w') do |io|
+    per_file.sort.each do |f, v|
+      io.puts(v[0] == :WFAIL ? "#{f}\tWFAIL\t#{v[1]}" : "#{f}\t#{v[0]}\t#{v[1]}\t#{v[2]}\t#{v[3]}")
+    end
+  end
+  $stderr.puts "wrote #{per_file.size} entries to #{dp}"
+end
 # worst files
 if ENV['WORST']
   puts "\n# worst (fail+err):"

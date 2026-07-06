@@ -122,6 +122,18 @@ GC_STRESS_ENV := BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1
 include ../rubyharness/harness.mk
 test bench: koruby_precise
 
+# Real rubyspec compat gate: run the actual CRuby core specs through the mspec
+# shim and fail on any regression vs tools/rubyspec_baseline.txt (encoding/regex/
+# IO stay failing by design — the baseline encodes the supported set).  This
+# tests behavioural contracts (frozen?/equal?/raises/warnings/mocks) that the
+# generated `p (expr)` golden can't.  `make rubyspec-update` re-records the
+# baseline after reviewing the reported improvements.
+.PHONY: rubyspec rubyspec-update
+rubyspec: koruby_precise
+	@$(RUBY) tools/rubyspec_gate.rb
+rubyspec-update: koruby_precise
+	@$(RUBY) tools/rubyspec_gate.rb --update
+
 # Persist a full benchmark sweep to bench-report/<timestamp>-<commit>.txt.
 # (The shared `bench` target only prints to stdout.)  Knobs: BENCHRUNS=, BENCHMODES=.
 BENCHREPORT_MODES ?= $(if $(BENCHMODES),$(BENCHMODES),cruby,cruby+yjit,interp,aot+compile,aot+cached)
