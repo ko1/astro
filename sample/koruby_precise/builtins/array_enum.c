@@ -1119,6 +1119,21 @@ static RESULT korb_m_ary_each_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+/* A 64-bit hash for uniq/Set-style dedup: dispatch #hash for a user object (so
+ * elements are compared by hash first, and #eql? only when hashes match, like
+ * CRuby's st_table), else the intrinsic value hash. */
+static RESULT korb_elem_hash(CTX *c, VALUE *slots, VALUE v, uint64_t *out) {
+    if (!KORB_OBJECT_P(v)) { *out = korb_value_hash(v); return RESULT_OK(KORB_NIL); }
+    slots[0] = v;
+    const RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (FIXNUM_P(r.value)) *out = (uint64_t)FIX2LONG(r.value);
+#ifdef KORB_HAVE_GMP
+    else if (KORB_BIGNUM_P(r.value)) *out = (uint64_t)mpz_get_ui(VAL2BIG(r.value)->z);
+#endif
+    else *out = korb_value_hash(r.value);
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const uint32_t before = SELF_ARY->len;
@@ -1135,25 +1150,40 @@ static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, SELF_ARY->len)));
+    const uint32_t n0 = SELF_ARY->len;
+    uint64_t *const hashes = n0 ? (uint64_t *)malloc((size_t)n0 * sizeof(uint64_t)) : NULL;   /* stored elems' hashes (parallel to dst) */
+    if (n0 && UNLIKELY(!hashes)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
+    VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));
     const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
+    RESULT ret = RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; i < SELF_ARY->len; i++) {
-        slots[0] = SELF_ARY->items->data[i];             /* e, rooted across eql? dispatch / push */
+        slots[0] = SELF_ARY->items->data[i];             /* e, rooted across hash/eql? dispatch + push */
+        uint64_t he;
+        { RESULT hr = korb_elem_hash(c, slots + 1, slots[0], &he); if (UNLIKELY(hr.state != KORB_NORMAL)) { ret = hr; goto done; } }
         const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));
         bool seen = false;
         for (uint32_t j = 0; j < d->len; j++) {
+            if (hashes[j] != he) continue;               /* hash mismatch → never call #eql? */
             const VALUE existing = d->items->data[j];
-            if (KORB_OBJECT_P(existing) || KORB_OBJECT_P(slots[0])) {   /* user eql? → dispatch (stored.eql?(e)) */
-                slots[1] = existing; slots[2] = existing; slots[3] = slots[0];
+            if (KORB_OBJECT_P(existing) || KORB_OBJECT_P(slots[0])) {   /* same hash → e.eql?(existing) */
+                slots[1] = slots[0]; slots[2] = slots[0]; slots[3] = existing;
                 const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, KORB_NIL);
-                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (UNLIKELY(r.state != KORB_NORMAL)) { ret = r; goto done; }
                 if (KORB_TRUTHY(r.value)) { seen = true; break; }
                 d = VAL2ARY(VALUE_REF_GET(dst));         /* re-read after dispatch GC */
             } else if (korb_value_eql(existing, slots[0])) { seen = true; break; }
         }
-        if (!seen) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
+        if (!seen) {
+            const uint32_t idx = VAL2ARY(VALUE_REF_GET(dst))->len;
+            RESULT pr = korb_ary_push_val(c, slots + 1, dst, slots[0]);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) { ret = pr; goto done; }
+            hashes[idx] = he;
+        }
     }
-    return RESULT_OK(VALUE_REF_GET(dst));
+    ret = RESULT_OK(VALUE_REF_GET(dst));
+done:
+    free(hashes);
+    return ret;
 }
 /* Array#uniq — block form dedups by yield(x); keeps the first element per key. */
 static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
