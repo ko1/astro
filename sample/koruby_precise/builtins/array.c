@@ -19,6 +19,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     intptr_t n;
     if (UNLIKELY(!korb_to_index(a0, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(a0));
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+    if (block != NULL && argc >= 2) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = (!block && argc >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;   /* default (rooted) */
     for (intptr_t i = 0; i < n; i++) {
         VALUE el = slots[0];

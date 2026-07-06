@@ -6,6 +6,7 @@ static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALU
 
 
 static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: first truthy-yield index */
         for (uint32_t i = 0; ; i++) {
             const KorbArray *ary = SELF_ARY;
@@ -34,6 +35,7 @@ static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 
 static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: count truthy yields */
         intptr_t n = 0;
         for (uint32_t i = 0; ; i++) {
@@ -1335,6 +1337,7 @@ static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */
+        if (block != NULL) korb_warn(c, slots, "given block not used");   /* arg wins */
         VALUE needle = VALUE_SLICE_GET(a, 0);
         const KorbArray *ary = SELF_ARY;
         for (uint32_t i = 0; i < ary->len; i++)
@@ -1544,6 +1547,7 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
     bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    if (has_pat && block != NULL) korb_warn(c, slots, "given block not used");   /* pattern arg wins */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;

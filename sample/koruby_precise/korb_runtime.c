@@ -7008,6 +7008,7 @@ static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (stri
 #include "builtins/file.c"
 #include "builtins/env.c"
 static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp);   /* defined below; io.c IO#puts uses it */
+void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 #include "builtins/io.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
@@ -8985,6 +8986,22 @@ static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, FILE *fb, const cha
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, data, (uint32_t)len));
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
     return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
+}
+/* Emit `warning: ...\n` to $stderr, suppressed only when $VERBOSE is nil (-W0);
+ * routed through $stderr so mspec's `complain` matcher (which reassigns $stderr)
+ * captures it.  Fire-and-forget: any write error from the sink is ignored. */
+void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
+    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    char body[240];
+    va_list ap; va_start(ap, fmt);
+    const int bl = vsnprintf(body, sizeof body, fmt, ap);
+    va_end(ap);
+    if (bl < 0) return;
+    char msg[256];
+    const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
+    if (ml < 0) return;
+    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    (void)korb_out_emit(c, slots, out, stderr, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
