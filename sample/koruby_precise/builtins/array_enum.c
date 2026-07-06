@@ -227,21 +227,36 @@ static RESULT korb_m_ary_transpose(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)a;
     uint32_t rows = SELF_ARY->len;
     if (rows == 0) return korb_ary_new(c, slots, 0);
-    VALUE first = SELF_ARY->items->data[0];
-    if (UNLIKELY(!KORB_ARRAY_P(first))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(first));
-    uint32_t cols = VAL2ARY(first)->len;
-    slots[0] = UNWRAP(korb_ary_new(c, slots, cols));               /* result rows */
+    /* coerce each row to an Array via #to_ary into a rooted src array. */
+    VALUE_REF src = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, rows)));
+    const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+    for (uint32_t i = 0; i < rows; i++) {
+        slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        if (!KORB_ARRAY_P(slots[0])) {
+            if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
+                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                slots[0] = r.value;
+            }
+            if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, src, slots[0]));
+    }
+    #define SRC_I(i) (VAL2ARY(VAL2ARY(VALUE_REF_GET(src))->items->data[(i)]))
+    const uint32_t cols = SRC_I(0)->len;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, cols));           /* result rows */
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     for (uint32_t j = 0; j < cols; j++) {
-        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, rows));       /* one output row */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 2, rows));       /* one output row */
         VALUE_REF row = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < rows; i++) {
-            VALUE e = SELF_ARY->items->data[i];
-            if (UNLIKELY(!KORB_ARRAY_P(e) || VAL2ARY(e)->len != cols)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "element size differs");
-            CHECK(korb_ary_push_val(c, slots + 2, row, VAL2ARY(e)->items->data[j]));
+            const KorbArray *e = SRC_I(i);
+            if (UNLIKELY(e->len != cols)) return korb_raise(c, slots, KORB_E_INDEX, 0, "element size differs (%u should be %u)", e->len, cols);
+            CHECK(korb_ary_push_val(c, slots + 2, row, e->items->data[j]));
         }
         CHECK(korb_ary_push_val(c, slots + 2, out, VALUE_REF_GET(row)));
     }
+    #undef SRC_I
     return RESULT_OK(VALUE_REF_GET(out));
 }
 /* minmax via comparator block — replicates CRuby's pairwise scan: seed min/max
