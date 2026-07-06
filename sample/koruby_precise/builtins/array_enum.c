@@ -835,6 +835,10 @@ static RESULT korb_m_ary_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         slots[0] = sv;                                              /* the (possibly coerced) String sep */
     }
+    if (slots[0] == KORB_NIL) {                                    /* no explicit separator → fall back to $, */
+        const VALUE ofs = korb_const_get(c->vm, korb_intern(c->vm, "$,", 2));
+        if (KORB_STRING_P(ofs)) { slots[0] = ofs; korb_warn(c, slots + 1, "$, is set to non-nil value"); }
+    }
     char *buf = NULL; size_t sz = 0;
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
