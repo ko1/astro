@@ -681,6 +681,13 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
 /* Class#allocate — a bare instance with no #initialize call. */
 static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    if (KORB_CLASS_P(VALUE_REF_GET(self))) {             /* immediate classes have no allocator */
+        const uint32_t cn = VAL2CLASS(VALUE_REF_GET(self))->name_sym;
+        if (cn == c->vm->class_name[KORB_C_NIL] || cn == c->vm->class_name[KORB_C_TRUE] ||
+            cn == c->vm->class_name[KORB_C_FALSE] || cn == c->vm->class_name[KORB_C_INTEGER] ||
+            cn == c->vm->class_name[KORB_C_FLOAT] || cn == c->vm->class_name[KORB_C_SYMBOL])
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", korb_sym_name(c->vm, cn));
+    }
     /* Enumerator.allocate must produce a KorbEnumerator (not a generic object),
      * else enumerator methods VAL2ENUM-cast a too-small object → heap corruption.
      * A zeroed enumerator is mode 0 with a nil `values`; Enumerator#initialize
