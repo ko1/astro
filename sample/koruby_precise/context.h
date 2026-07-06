@@ -697,6 +697,9 @@ struct korb_vm {
     VALUE    *objivar_obj;
     VALUE    *objivar_hash;
     uint32_t  objivar_cnt, objivar_capa;
+    /* cached frozen result of nil/true/false #to_s (CRuby returns the same frozen
+     * object each call).  KORB_NIL until first use; GC roots (AROH_VISIT_ROOTS). */
+    VALUE     str_nil_to_s, str_true_to_s, str_false_to_s;
 
     /* B3 escape: a frame's open KorbEnv (if any) lives in its EP cell base[-1]
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
@@ -942,6 +945,10 @@ struct CTX_struct {
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
     /* Enumerator::Lazy class object. */                                       \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->lazy_class);               \
+    /* cached frozen nil/true/false #to_s strings. */                          \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_nil_to_s);             \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_true_to_s);            \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_false_to_s);           \
     /* class pointers may move/reuse this GC → invalidate method caches      \
      * (mcache + node callcaches all validate against method_serial). */     \
     (c)->vm->method_serial++;                                                \

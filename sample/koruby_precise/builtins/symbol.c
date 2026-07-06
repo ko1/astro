@@ -28,15 +28,25 @@ static RESULT korb_m_sym_len(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 /* ---- nil / true / false methods ------------------------------------------ */
 
-static RESULT korb_m_nil_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "", 0); }
+/* Return a cached frozen String (created once, then the same object each call) —
+ * matches CRuby's nil/true/false #to_s returning a shared frozen literal. */
+static RESULT korb_cached_frozen_str(CTX *c, VALUE *slots, VALUE *cache, const char *s, uint32_t len) {
+    if (LIKELY(KORB_STRING_P(*cache))) return RESULT_OK(*cache);
+    RESULT r = korb_str_new(c, slots, s, len);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    *cache = r.value;                                    /* store in the vm (a GC root) */
+    return RESULT_OK(*cache);
+}
+static RESULT korb_m_nil_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cached_frozen_str(c, slots, &c->vm->str_nil_to_s, "", 0); }
 static RESULT korb_m_nil_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
 static RESULT korb_m_nil_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_ary_new(c, slots, 0); }
 static RESULT korb_m_nil_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_rat_new(c, slots, 0, 1); }   /* nil.to_r / nil.rationalize([eps]) → (0/1); rationalize ignores its arg */
 static RESULT korb_m_nil_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_float_new(c, slots, 0.0); }   /* nil.to_f → 0.0 */
 static RESULT korb_m_nil_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_hash_new(c, slots, 4); }       /* nil.to_h → {} */
 static RESULT korb_m_nil_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cpx_new(c, slots, LONG2FIX(0), LONG2FIX(0)); }   /* nil.to_c → (0+0i) */
-static RESULT korb_m_true_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "true", 4); }
-static RESULT korb_m_false_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_str_new(c, slots, "false", 5); }
+static RESULT korb_m_true_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cached_frozen_str(c, slots, &c->vm->str_true_to_s, "true", 4); }
+static RESULT korb_m_false_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cached_frozen_str(c, slots, &c->vm->str_false_to_s, "false", 5); }
 
 /* ---- universal (Object) methods ------------------------------------------ */
 
