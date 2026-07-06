@@ -7,17 +7,35 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode);  
  * (), (size[, default]), (size){|i| ...}, (other_array). */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     const uint32_t argc = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(argc > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", argc);
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* reset */
     if (argc == 0) return RESULT_OK(VALUE_REF_GET(self));
-    const VALUE a0 = VALUE_SLICE_GET(a, 0);
-    if (KORB_ARRAY_P(a0)) {                               /* copy another array */
-        slots[0] = a0;
-        const uint32_t n = VAL2ARY(slots[0])->len;
-        for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));
-        return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
+    if (argc == 1 && !FIXNUM_P(slots[0])) {              /* 1-arg form may be an Array copy (Array or #to_ary) */
+        if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            if (korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
+                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
+                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array", korb_type_name(slots[0]));
+                slots[0] = ar.value;
+            }
+        }
+        if (KORB_ARRAY_P(slots[0])) {                    /* copy another array */
+            const uint32_t n = VAL2ARY(slots[0])->len;
+            for (uint32_t i = 0; i < n; i++) CHECK(korb_ary_push_val(c, slots + 1, self, VAL2ARY(slots[0])->items->data[i]));
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
     }
     intptr_t n;
-    if (UNLIKELY(!korb_to_index(a0, &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(a0));
+    if (UNLIKELY(!korb_to_index(slots[0], &n))) {        /* size form: coerce via #to_int */
+        VALUE sz = slots[0];
+        RESULT ci = korb_coerce_to_int(c, slots + 1, &sz);
+        if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        if (ci.value != KORB_TRUE || !korb_to_index(sz, &n))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[0]));
+    }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
     if (block != NULL && argc >= 2) korb_warn(c, slots, "block supersedes default value argument");
     slots[0] = (!block && argc >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;   /* default (rooted) */
