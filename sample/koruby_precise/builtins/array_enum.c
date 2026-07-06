@@ -1175,8 +1175,9 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));
     const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
     RESULT ret = RESULT_OK(KORB_NIL);
-    for (uint32_t i = 0; i < SELF_ARY->len; i++) {
-        slots[0] = SELF_ARY->items->data[i];             /* e, rooted across hash/eql? dispatch + push */
+    for (uint32_t i = 0; i < n0; i++) {                   /* bound to the snapshot (hashes[] size); a mutating #eql? can't overflow */
+        if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;   /* array shrank during iteration */
+        slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* e, rooted across hash/eql? dispatch + push */
         uint64_t he;
         { RESULT hr = korb_elem_hash(c, slots + 1, slots[0], &he); if (UNLIKELY(hr.state != KORB_NORMAL)) { ret = hr; goto done; } }
         const KorbArray *d = VAL2ARY(VALUE_REF_GET(dst));

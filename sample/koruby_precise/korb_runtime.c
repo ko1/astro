@@ -1191,7 +1191,7 @@ static inline bool korb_key_indexable(VALUE v) {
     return FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || KORB_ARRAY_P(v) ||
            v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE;
 }
-static uint64_t korb_value_hash(VALUE v) {
+static uint64_t korb_value_hash_d(VALUE v, int depth) {
     if (FIXNUM_P(v)) { uint64_t x = (uint64_t)v; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 29; return x; }
     if (SYMBOL_P(v)) { uint64_t x = (uint64_t)SYM2ID(v) + 1; x *= 0x9e3779b97f4a7c15ULL; return x ^ (x >> 32); }
     if (KORB_STRING_P(v)) {
@@ -1204,13 +1204,15 @@ static uint64_t korb_value_hash(VALUE v) {
     if (v == KORB_TRUE) return 0x100000001ULL;
     if (v == KORB_FALSE) return 0x200000002ULL;
     if (KORB_ARRAY_P(v)) {                              /* Array key: content hash (matches Array#== / #eql?) */
+        if (depth > 3) return 0x345678ULL;             /* shallow cap: bounds cost on wide self-referential arrays (width^depth); deeper distinctions fall through to #eql? */
         const KorbArray *const a = VAL2ARY(v);
         uint64_t h = 0x345678ULL ^ ((uint64_t)a->len * 0x9e3779b97f4a7c15ULL);
-        for (uint32_t i = 0; i < a->len; i++) { h ^= korb_value_hash(a->items->data[i]); h *= 1099511628211ULL; }
+        for (uint32_t i = 0; i < a->len; i++) { h ^= korb_value_hash_d(a->items->data[i], depth + 1); h *= 1099511628211ULL; }
         return h;
     }
     return 0x200000002ULL;                              /* other heap objects: single bucket (rare; value_eq confirms) */
 }
+static uint64_t korb_value_hash(VALUE v) { return korb_value_hash_d(v, 0); }
 
 bool korb_value_eq(VALUE a, VALUE b);   /* defined below */
 
@@ -4395,21 +4397,23 @@ korb_value_eq(VALUE a, VALUE b)
 
 /* eql? semantics (Array#uniq/&/|/-, Set, hash membership): like ==, but numerics
  * are type-strict — 1 is NOT eql? 1.0 / (1/1).  Non-numeric → identical to ==. */
-static bool korb_value_eql(VALUE a, VALUE b) {
+static bool korb_value_eql_d(VALUE a, VALUE b, int depth) {
     int ta = FIXNUM_P(a) ? 1 : KORB_FLOAT_P(a) ? 2 : KORB_RATIONAL_P(a) ? 3 : 0;
     int tb = FIXNUM_P(b) ? 1 : KORB_FLOAT_P(b) ? 2 : KORB_RATIONAL_P(b) ? 3 : 0;
     if ((ta || tb) && ta != tb) return false;        /* mixed numeric types → not eql? */
     if (!ta && KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {  /* Array#eql?: element-wise eql? (type-strict, unlike ==) */
+        if (depth > 8) return true;                  /* recursion cap: self-referential arrays are eql? at the cycle (identity-skip handles same-object; this bounds distinct recursive arrays) */
         const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++) {
             const VALUE xi = x->items->data[i], yi = y->items->data[i];
-            if (xi != yi && !korb_value_eql(xi, yi)) return false;   /* identity skip breaks self-referential eql?/uniq */
+            if (xi != yi && !korb_value_eql_d(xi, yi, depth + 1)) return false;   /* identity skip breaks self-referential eql?/uniq */
         }
         return true;
     }
     return korb_value_eq(a, b);
 }
+static bool korb_value_eql(VALUE a, VALUE b) { return korb_value_eql_d(a, b, 0); }
 
 /* case equality `pat === val`: Range membership, Class is-a, else ==. No alloc. */
 static bool
