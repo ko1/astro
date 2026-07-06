@@ -555,7 +555,7 @@ static RESULT korb_m_num_rect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* decompose a finite double into exact num/den (reduced); den>0. */
 static RESULT korb_flt_to_rat(CTX *c, VALUE *slots, double d) {
-    if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "can't convert non-finite Float to Rational");
+    if (UNLIKELY(!isfinite(d))) return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
     if (d == 0.0) return korb_rat_new(c, slots, 0, 1);
     int e; double m = frexp(d, &e);                    /* d = m * 2^e, m in [0.5,1) */
     intptr_t mant = (intptr_t)ldexp(m, 53);            /* integer mantissa */
