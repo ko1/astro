@@ -130,10 +130,11 @@ static bool korb_is_random(CTX *const c, VALUE v) {
     while (KORB_CLASS_P(cls)) { if (cls == rc) return true; cls = VAL2CLASS(cls)->superclass; }
     return false;
 }
-/* Pick the generator for shuffle/sample: a trailing `random:` kwarg Random, else
- * the per-vm default.  Call AFTER any allocation (the returned KorbMT* points
- * into a Random's @__mt String buffer, which a later GC could move). */
-static KorbMT *korb_rng_from_kwargs(CTX *const c, VALUE_SLICE a) {
+
+/* A random source for shuffle/sample: an MT generator, or a user object passed
+ * via `random:` whose #rand(n) is dispatched. */
+typedef struct { KorbMT *mt; VALUE obj; } KorbRandSrc;
+static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
     const uint32_t n = VALUE_SLICE_LEN(a);
     if (n >= 1) {
         const VALUE last = VALUE_SLICE_GET(a, n - 1);
@@ -141,11 +142,30 @@ static KorbMT *korb_rng_from_kwargs(CTX *const c, VALUE_SLICE a) {
             const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "random", 6)));
             if (hi >= 0) {
                 const VALUE rng = VAL2HASH(last)->items->data[2 * hi + 1];
-                if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) return st; }
+                if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_NIL }; return s; } }
+                else if (KORB_OBJECT_P(rng)) { KorbRandSrc s = { NULL, rng }; return s; }   /* custom RNG → dispatch #rand */
             }
         }
     }
-    return korb_default_rng(c->vm);
+    KorbRandSrc s = { korb_default_rng(c->vm), KORB_NIL };
+    return s;
+}
+/* Draw an integer in [0, bound] inclusive.  Re-resolves the source from `a` each
+ * call (whose kwargs Hash lives in the caller's rooted slots, so it stays valid
+ * across the #rand dispatch's GC); the MT path allocates nothing. */
+static RESULT korb_rand_upto(CTX *const c, VALUE *slots, VALUE_SLICE a, uint32_t bound, uint32_t *out) {
+    KorbRandSrc src = korb_rand_src_from_kwargs(c, a);
+    if (src.obj == KORB_NIL) { *out = korb_mt_limited(src.mt, bound); return RESULT_OK(KORB_NIL); }
+    slots[0] = src.obj; slots[1] = LONG2FIX((intptr_t)bound + 1);   /* rng.rand(bound+1) → [0, bound] */
+    RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "rand", 4), 0, 1);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    intptr_t v;
+    if (UNLIKELY(!korb_to_index(r.value, &v)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(r.value));
+    if (UNLIKELY(v < 0 || (uintptr_t)v > bound))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "random number too big %ld", (long)v);
+    *out = (uint32_t)v;
+    return RESULT_OK(KORB_NIL);
 }
 
 /* core rand: st is the generator, args is [] | [n] | [range].  Returns a Float

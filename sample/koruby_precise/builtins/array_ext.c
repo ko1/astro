@@ -580,11 +580,17 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
     if (argc == 0) {   /* one random element */
         if (len == 0) return RESULT_OK(KORB_NIL);
-        KorbMT *const st = korb_rng_from_kwargs(c, a);
-        return RESULT_OK(VAL2ARY(VALUE_REF_GET(self))->items->data[korb_mt_limited(st, len - 1)]);
+        uint32_t idx; CHECK(korb_rand_upto(c, slots, a, len - 1, &idx));
+        return RESULT_OK(VAL2ARY(VALUE_REF_GET(self))->items->data[idx]);   /* re-read self after any #rand GC */
     }
     intptr_t n;
-    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) {   /* count coerces via #to_int */
+        VALUE cv = VALUE_SLICE_GET(a, 0);
+        RESULT ci = korb_coerce_to_int(c, slots, &cv);
+        if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        if (ci.value != KORB_TRUE || !korb_to_index(cv, &n))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative sample number");
     if ((uint32_t)n > (intptr_t)len) n = len;
     if (n == 0) return korb_ary_new(c, slots, 0);
@@ -592,9 +598,8 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (n <= 10) {
         /* CRuby ary_sample n<=10: draw all randoms FIRST (alloc would move the
          * rng buffer), then build distinct indices, then materialize. */
-        KorbMT *const st = korb_rng_from_kwargs(c, a);
         long rnds[10], idx[10], sorted[10];
-        for (intptr_t i = 0; i < n; i++) rnds[i] = (long)korb_mt_limited(st, (uint32_t)(len - i - 1));   /* RAND_UPTO(len-i) */
+        for (intptr_t i = 0; i < n; i++) { uint32_t rv; CHECK(korb_rand_upto(c, slots, a, (uint32_t)(len - i - 1), &rv)); rnds[i] = (long)rv; }
         sorted[0] = idx[0] = rnds[0];
         for (intptr_t i = 1; i < n; i++) {
             long k = rnds[i], j;
@@ -614,10 +619,10 @@ static RESULT korb_m_ary_sample(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const RESULT cp = korb_ary_subseq(c, slots, self, 0, len);
     if (UNLIKELY(cp.state != KORB_NORMAL)) return cp;
     slots[0] = cp.value;
-    KorbMT *const st = korb_rng_from_kwargs(c, a);
-    KorbArrayItems *const it = VAL2ARY(slots[0])->items;
     for (intptr_t i = 0; i < n; i++) {
-        const uint32_t j = i + korb_mt_limited(st, (uint32_t)(len - i - 1));   /* [i, len-1] */
+        uint32_t rj; CHECK(korb_rand_upto(c, slots + 1, a, (uint32_t)(len - i - 1), &rj));   /* slots+1: keep the copy at slots[0] */
+        const uint32_t j = i + rj;
+        KorbArrayItems *const it = VAL2ARY(slots[0])->items;   /* re-read after any #rand GC */
         const VALUE t = it->data[i]; it->data[i] = it->data[j]; it->data[j] = t;
     }
     VAL2ARY(slots[0])->len = (uint32_t)n;
@@ -630,10 +635,9 @@ static RESULT korb_m_ary_shuffle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const RESULT cp = korb_ary_subseq(c, slots, self, 0, len);   /* copy (may GC) */
     if (UNLIKELY(cp.state != KORB_NORMAL)) return cp;
     slots[0] = cp.value;                                          /* root the copy */
-    KorbMT *const st = korb_rng_from_kwargs(c, a);                /* AFTER alloc: rng ptr is fresh */
-    KorbArrayItems *const it = VAL2ARY(slots[0])->items;
     for (uint32_t i = len; i > 1; i--) {                          /* j in [0, i-1]; swap (i-1, j) */
-        const uint32_t j = korb_mt_limited(st, i - 1);
+        uint32_t j; CHECK(korb_rand_upto(c, slots + 1, a, i - 1, &j));   /* slots+1: keep the copy at slots[0] */
+        KorbArrayItems *const it = VAL2ARY(slots[0])->items;      /* re-read after any #rand GC */
         const VALUE t = it->data[i - 1]; it->data[i - 1] = it->data[j]; it->data[j] = t;
     }
     return RESULT_OK(slots[0]);
@@ -641,10 +645,9 @@ static RESULT korb_m_ary_shuffle(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_ary_shuffle_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const uint32_t len = VAL2ARY(VALUE_REF_GET(self))->len;
-    KorbMT *const st = korb_rng_from_kwargs(c, a);                /* may parse kwargs → re-read items after */
-    KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(self))->items;
     for (uint32_t i = len; i > 1; i--) {                          /* in-place Fisher-Yates */
-        const uint32_t j = korb_mt_limited(st, i - 1);
+        uint32_t j; CHECK(korb_rand_upto(c, slots, a, i - 1, &j));
+        KorbArrayItems *const it = VAL2ARY(VALUE_REF_GET(self))->items;   /* re-read after any #rand GC */
         const VALUE t = it->data[i - 1]; it->data[i - 1] = it->data[j]; it->data[j] = t;
     }
     return RESULT_OK(VALUE_REF_GET(self));
