@@ -268,14 +268,23 @@ static RESULT korb_ary_splice(CTX *c, VALUE *slots, VALUE_REF self, intptr_t sta
     }
     return RESULT_OK(VALUE_REF_GET(valref));
 }
+/* Coerce an index arg to an intptr_t, dispatching #to_int (may GC); TypeError otherwise. */
+static RESULT korb_index_coerce(CTX *c, VALUE *slots, VALUE v, intptr_t *out) {
+    if (korb_to_index(v, out)) return RESULT_OK(KORB_TRUE);
+    VALUE cv = v;
+    RESULT ci = korb_coerce_to_int(c, slots, &cv);
+    if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+    if (ci.value == KORB_TRUE && korb_to_index(cv, out)) return RESULT_OK(KORB_TRUE);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+}
 static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
     VALUE iv = VALUE_SLICE_GET(a, 0);
     if (VALUE_SLICE_LEN(a) >= 3) {                        /* a[start, len] = val */
         intptr_t start, dellen;
-        if (UNLIKELY(!korb_to_index(iv, &start)))               return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
-        if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &dellen))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+        CHECK(korb_index_coerce(c, slots, iv, &start));
+        CHECK(korb_index_coerce(c, slots, VALUE_SLICE_GET(a, 1), &dellen));
         return korb_ary_splice(c, slots, self, start, dellen, VALUE_SLICE_REF(a, 2));
     }
     if (KORB_RANGE_P(iv)) {                               /* a[b..e] = val (incl. beginless/endless) */
@@ -285,18 +294,18 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
         intptr_t b, e;
         if (beginless) b = 0;
-        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else CHECK(korb_index_coerce(c, slots, r->rbegin, &b));
         if (endless) e = len;
-        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else CHECK(korb_index_coerce(c, slots, r->rend, &e));
         if (b < 0) b += len;
         if (!endless && e < 0) e += len;
         intptr_t last = (endless || r->exclude_end) ? e - 1 : e, dellen = last - b + 1;
         if (dellen < 0) dellen = 0;
         return korb_ary_splice(c, slots, self, b, dellen, VALUE_SLICE_REF(a, 1));
     }
-    KorbArray *ary = SELF_ARY;
     intptr_t i;
-    if (UNLIKELY(!korb_to_index(iv, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(iv));
+    CHECK(korb_index_coerce(c, slots, iv, &i));          /* may GC (via #to_int) → read ary after */
+    KorbArray *ary = SELF_ARY;
     if (i < 0) i += ary->len;
     if (UNLIKELY(i < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld too small for array; minimum: -%u", (long)i, ary->len);
     if ((uint32_t)i >= ary->len) {
