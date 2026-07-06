@@ -372,8 +372,9 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         intptr_t b = 0, e;
         if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &b)))   /* beginless → 0 */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        const intptr_t braw = b;
         if (b < 0) b += n;
-        if (b < 0) b = 0;
+        if (b < 0) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld..%ld out of range", (long)braw, (long)(r->rend == KORB_NIL ? -1 : 0));   /* begin before array start */
         if (r->rend == KORB_NIL) {                       /* endless range → to end of array */
             beg = b; len = n - b; have_len = true;
         } else {
