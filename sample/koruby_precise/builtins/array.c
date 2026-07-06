@@ -137,6 +137,7 @@ static RESULT korb_ary_subseq(CTX *c, VALUE *slots, VALUE_REF self, uint32_t sta
         CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2ARY(VALUE_REF_GET(self))->items->data[start + i]));
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+static RESULT korb_index_coerce(CTX *c, VALUE *slots, VALUE v, intptr_t *out);   /* fwd (defined below) */
 static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
@@ -148,10 +149,11 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const KorbRange *r = VAL2RANGE(i0);
         const bool beginless = (r->rbegin == KORB_NIL);    /* a[..e] → from 0 */
         const bool endless   = (r->rend   == KORB_NIL);    /* a[b..] → to the end */
-        if (UNLIKELY((!beginless && !FIXNUM_P(r->rbegin)) || (!endless && !FIXNUM_P(r->rend))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        intptr_t b = beginless ? 0 : FIX2LONG(r->rbegin);
-        intptr_t e = endless ? (intptr_t)n : FIX2LONG(r->rend);
+        intptr_t b = 0, e;                                 /* coerce endpoints via #to_int */
+        if (!beginless) CHECK(korb_index_coerce(c, slots, r->rbegin, &b));
+        if (!endless)   CHECK(korb_index_coerce(c, slots, r->rend, &e));
+        n = SELF_ARY->len;                                 /* re-read after any #to_int GC */
+        if (endless) e = (intptr_t)n;
         if (b < 0) b += n;
         if (!endless && e < 0) e += n;
         if (b < 0 || b > (intptr_t)n) return RESULT_OK(KORB_NIL);
