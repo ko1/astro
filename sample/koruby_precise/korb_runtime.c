@@ -3818,7 +3818,7 @@ static enum korb_class korb_builtin_base_class(struct korb_vm *vm, VALUE cls) {
 /* class object of `self` (for `.class` / is_a?).  User objects → their klass;
  * overridden builtins → their subclass; exceptions → the etype's class; else the
  * builtin class via class_name[]. */
-static VALUE
+VALUE
 korb_class_obj_of(CTX *c, VALUE self)
 {
     if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL) return VAL2OBJ(self)->klass;

@@ -248,6 +248,7 @@ bool   korb_value_eq(VALUE a, VALUE b);
 
 /* ---- receiver method dispatch (x.foo) — enum/fn in context.h ------------- */
 enum korb_class korb_class_of(VALUE v);
+VALUE korb_class_obj_of(CTX *c, VALUE self);   /* the class object of a value (NilClass for nil, etc.) */
 const char *korb_class_name(enum korb_class cls);
 void   korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
                         korb_method_fn fn, int32_t arity);

@@ -901,7 +901,14 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint
 {
     (void)n; (void)body_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
-    if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) {
+        /* nil/true/false have a sole instance, so a singleton def lands on their class;
+         * other immediates (Integer/Float/Symbol) genuinely can't take one. */
+        if (UNLIKELY(obj != KORB_NIL && obj != KORB_TRUE && obj != KORB_FALSE))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton method for %s", korb_type_name(obj));
+        korb_class_def_method(c, korb_class_obj_of(c, obj), mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
+        return RESULT_OK(ID2SYM(mid));
+    }
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
     korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the
