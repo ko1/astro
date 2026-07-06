@@ -6564,11 +6564,37 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(slots[0]);
         }
-        if (cname == vm->class_name[KORB_C_SET]) {          /* Set.new([enumerable]) */
-            VALUE src = argc >= 1 ? korb_set_elems_of(slots[-(intptr_t)argc]) : KORB_NIL;
-            if (argc >= 1 && src == KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
-            if (src == KORB_NIL) { slots[0] = UNWRAP(korb_ary_new(c, slots, 0)); return korb_set_new(c, slots + 1, slots[0]); }
-            slots[0] = src;
+        if (cname == vm->class_name[KORB_C_SET]) {          /* Set.new([enum]) { |o| … } */
+            const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
+            if (argc < 1 || arg == KORB_NIL) {              /* Set.new / Set.new(nil) → empty */
+                slots[0] = UNWRAP(korb_ary_new(c, slots, 0)); return korb_set_new(c, slots + 1, slots[0]);
+            }
+            VALUE src = korb_set_elems_of(arg);
+            if (src == KORB_NIL) {                          /* not Array/Set → convert via #to_a (Range/Enumerable/…) */
+                if (UNLIKELY(!korb_responds_to(c, arg, korb_intern(vm, "to_a", 4)) &&
+                             !korb_responds_to(c, arg, korb_intern(vm, "each", 4))))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+                slots[0] = arg;
+                RESULT ar = korb_send_impl(c, slots + 1, korb_intern(vm, "to_a", 4), line, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "value must be enumerable");
+                src = ar.value;
+            }
+            slots[0] = src;                                 /* rooted src array */
+            if (block != NULL) {                            /* Set.new(enum){ |o| … } → map each element */
+                VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+                slots[1] = UNWRAP(korb_ary_new(c, slots + 2, VAL2ARY(src)->len));
+                VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+                for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(sref))->len; i++) {
+                    slots[2] = VAL2ARY(VALUE_REF_GET(sref))->items->data[i];
+                    RESULT yr = korb_block_yield(c, slots + 3, block, def_env, &slots[2], 1, captured_self);
+                    if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+                    slots[2] = yr.value;
+                    RESULT pr = korb_ary_push_val(c, slots + 3, dst, slots[2]);
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                }
+                slots[0] = VALUE_REF_GET(dst);
+            }
             return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
         }
         if (cname == vm->class_name[KORB_C_STRING]) {       /* String.new([str]) */
