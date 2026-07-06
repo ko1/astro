@@ -41,7 +41,12 @@ static RESULT korb_cached_frozen_str(CTX *c, VALUE *slots, VALUE *cache, const c
 static RESULT korb_m_nil_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cached_frozen_str(c, slots, &c->vm->str_nil_to_s, "", 0); }
 static RESULT korb_m_nil_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(0)); }
 static RESULT korb_m_nil_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_ary_new(c, slots, 0); }
-static RESULT korb_m_nil_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_rat_new(c, slots, 0, 1); }   /* nil.to_r / nil.rationalize([eps]) → (0/1); rationalize ignores its arg */
+static RESULT korb_m_nil_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_rat_new(c, slots, 0, 1); }   /* nil.to_r → (0/1) */
+static RESULT korb_m_nil_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* nil.rationalize([eps]) → (0/1); ignores eps, but >1 arg is an ArgumentError */
+    (void)self;
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
+    return korb_rat_new(c, slots, 0, 1);
+}
 static RESULT korb_m_nil_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_float_new(c, slots, 0.0); }   /* nil.to_f → 0.0 */
 static RESULT korb_m_nil_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_hash_new(c, slots, 4); }       /* nil.to_h → {} */
 static RESULT korb_m_nil_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self;(void)a; return korb_cpx_new(c, slots, LONG2FIX(0), LONG2FIX(0)); }   /* nil.to_c → (0+0i) */

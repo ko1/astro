@@ -7296,7 +7296,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_NIL, "to_i", korb_m_nil_to_i, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_a", korb_m_nil_to_a, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_r", korb_m_nil_to_r, 0);
-    korb_def_cmethod(c, KORB_C_NIL, "rationalize", korb_m_nil_to_r, -1);   /* ignores optional eps */
+    korb_def_cmethod(c, KORB_C_NIL, "rationalize", korb_m_nil_rationalize, -1);   /* ignores optional eps; >1 arg → ArgumentError */
     korb_def_cmethod(c, KORB_C_NIL, "to_f", korb_m_nil_to_f, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_h", korb_m_nil_to_h, 0);
     korb_def_cmethod(c, KORB_C_NIL, "to_c", korb_m_nil_to_c, 0);
