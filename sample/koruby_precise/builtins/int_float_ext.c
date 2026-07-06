@@ -490,11 +490,25 @@ static RESULT korb_m_ary_rotate_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     uint32_t na = VALUE_SLICE_LEN(a);
     if (na > 15) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Array#product with >16 arrays is not supported");
-    for (uint32_t j = 0; j < na; j++)
-        if (UNLIKELY(!KORB_ARRAY_P(VALUE_SLICE_GET(a, j))))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, j)));
+    /* collect [self, *args] into a rooted array, coercing each arg via #to_ary. */
+    VALUE_REF cargs = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, na + 1)));
+    CHECK(korb_ary_push_val(c, slots, cargs, VALUE_REF_GET(self)));
+    for (uint32_t j = 0; j < na; j++) {
+        slots[0] = VALUE_SLICE_GET(a, j);
+        if (!KORB_ARRAY_P(slots[0])) {                   /* coerce a #to_ary object to an Array */
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
+                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                slots[0] = r.value;
+            }
+            if (UNLIKELY(!KORB_ARRAY_P(slots[0])))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, j)));
+        }
+        CHECK(korb_ary_push_val(c, slots + 1, cargs, slots[0]));
+    }
     uint32_t k = na + 1;                                  /* self + args */
-    #define ARR_J(j) ((j) == 0 ? VAL2ARY(VALUE_REF_GET(self)) : VAL2ARY(VALUE_SLICE_GET(a, (j) - 1)))
+    #define ARR_J(j) (VAL2ARY(VAL2ARY(VALUE_REF_GET(cargs))->items->data[(j)]))
     uint32_t lens[16];
     uint64_t total = 1;
     for (uint32_t j = 0; j < k; j++) {
