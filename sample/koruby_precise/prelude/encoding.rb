@@ -31,13 +31,15 @@ class Encoding
   @@default_external = UTF_8
   @@default_internal = nil
   def self.default_external; @@default_external; end
-  def self.default_external=(e); @@default_external = e; end
+  def self.default_external=(e); @@default_external = e.is_a?(String) ? find(e) : e; end
   def self.default_internal; @@default_internal; end
-  def self.default_internal=(e); @@default_internal = e; end
+  def self.default_internal=(e); @@default_internal = (e.nil? ? nil : (e.is_a?(String) ? find(e) : e)); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
   def self.find(name)
     n = name.to_s
+    return default_external if n == 'external' || n == 'filesystem' || n == 'locale'
+    return (default_internal || default_external) if n == 'internal'
     constants.each do |cn|
       e = const_get(cn)
       return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
