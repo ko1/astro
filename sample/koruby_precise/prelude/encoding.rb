@@ -5,7 +5,7 @@ class Encoding
   def initialize(name); @name = name; end
   def name; @name; end
   def to_s; @name; end
-  def inspect; "#<Encoding:" + @name + ">"; end
+  def inspect; @name == "ASCII-8BIT" ? "#<Encoding:BINARY (ASCII-8BIT)>" : "#<Encoding:" + @name + ">"; end
   def ==(o); o.is_a?(Encoding) && o.name == @name; end
   def ascii_compatible?; @name != "UTF-16" && @name != "UTF-32"; end
   def dummy?; false; end
@@ -21,6 +21,8 @@ class Encoding
   UTF_7 = Encoding.new("UTF-7")
   CESU_8 = Encoding.new("CESU-8")
   SHIFT_JIS = Encoding.new("Shift_JIS")
+  Shift_JIS = SHIFT_JIS                    # CRuby's actual constant name (mixed case)
+  Windows_31J = Encoding.new("Windows-31J")
   EUC_JP = Encoding.new("EUC-JP")
   ISO_2022_JP = Encoding.new("ISO-2022-JP")
   CP50221 = Encoding.new("CP50221")
@@ -41,6 +43,25 @@ class Encoding
       return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)
     end
     Encoding.new(n)
+  end
+  # Encoding.compatible?(obj1, obj2) → the encoding two objects can share, else nil.
+  # Follows CRuby's rb_enc_compatible for ASCII-compatible encodings: same encoding
+  # wins; otherwise an ASCII-only operand yields to the other's encoding.
+  def self.compatible?(a, b)
+    ea = a.is_a?(Encoding) ? a : (a.respond_to?(:encoding) ? a.encoding : nil)
+    eb = b.is_a?(Encoding) ? b : (b.respond_to?(:encoding) ? b.encoding : nil)
+    return nil if ea.nil? || eb.nil?
+    return ea if ea == eb
+    # "ASCII-only" coderange: a String/Symbol exposes it directly; a bare Encoding
+    # has no content, so only US-ASCII (which can hold nothing but ASCII) counts.
+    a1 = a.is_a?(String) ? a.ascii_only? : (a.is_a?(Symbol) ? a.to_s.ascii_only? : ea == US_ASCII)
+    b1 = b.is_a?(String) ? b.ascii_only? : (b.is_a?(Symbol) ? b.to_s.ascii_only? : eb == US_ASCII)
+    return nil unless ea.ascii_compatible? && eb.ascii_compatible?
+    if a1 && b1 then ea
+    elsif a1 then eb
+    elsif b1 then ea
+    else nil
+    end
   end
 end
 class Encoding
