@@ -44,6 +44,23 @@ class Encoding
     end
     Encoding.new(n)
   end
+  # Alias → canonical encoding name.
+  def self.aliases
+    { 'BINARY' => 'ASCII-8BIT', 'ASCII' => 'US-ASCII', 'ANSI_X3.4-1968' => 'US-ASCII',
+      'UTF8' => 'UTF-8', 'SJIS' => 'Shift_JIS', 'CP932' => 'Windows-31J', 'eucJP' => 'EUC-JP',
+      'external' => default_external.name, 'locale' => default_external.name }
+  end
+  def self.list
+    r = []; constants.each { |cn| e = const_get(cn); r << e if e.is_a?(Encoding) && !r.include?(e) }; r
+  end
+  def self.name_list; list.map(&:name) + aliases.keys; end
+  def self.locale_charmap; default_external.name; end
+  # This encoding's canonical name plus any aliases pointing to it.
+  def names
+    r = [@name]
+    Encoding.aliases.each { |a, canon| r << a if canon == @name && a != 'external' && a != 'locale' }
+    r
+  end
   # Encoding.compatible?(obj1, obj2) → the encoding two objects can share, else nil.
   # Follows CRuby's rb_enc_compatible for ASCII-compatible encodings: same encoding
   # wins; otherwise an ASCII-only operand yields to the other's encoding.
