@@ -38,9 +38,12 @@ EXCLUDE = File.file?("#{HERE}/tools/rubyspec_exclude.txt") ?
   File.readlines("#{HERE}/tools/rubyspec_exclude.txt").map(&:strip).reject { |l| l.empty? || l.start_with?('#') } : []
 excluded = ->(f) { EXCLUDE.any? { |p| f.start_with?(p) } }
 
-def score(v)  # comparable "goodness": crash is worst, else pass count minus penalties
-  return -1_000_000 if v[0] == :WFAIL
-  v[0] - (v[1] + v[2]) * 1000   # heavily weight fail/err so a pass->fail is always a regression
+def score(v)  # "goodness" = passing-example count (a whole-file crash is worst).
+  # NB: track pass count, NOT fail+err — when a newly-working method makes a spec's
+  # generated examples expand, fail+err can rise while pass rises; that's progress,
+  # not a regression.  A regression is fewer examples passing (or a new crash).
+  return -1 if v[0] == :WFAIL
+  v[0]
 end
 
 regressions = []; improvements = []; newfiles = []

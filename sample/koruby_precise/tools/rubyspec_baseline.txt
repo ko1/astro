@@ -140,7 +140,7 @@ array/reverse_each_spec.rb	5	0	0	0
 array/reverse_spec.rb	9	0	0	0
 array/rindex_spec.rb	13	2	1	0
 array/rotate_spec.rb	34	0	0	0
-array/sample_spec.rb	51	8	0	0
+array/sample_spec.rb	50	10	0	0
 array/select_spec.rb	6	0	0	0
 array/shift_spec.rb	39	1	1	0
 array/shuffle_spec.rb	37	2	5	0
@@ -299,7 +299,7 @@ encoding/_dump_spec.rb	0	0	0	1
 encoding/_load_spec.rb	0	0	0	1
 encoding/aliases_spec.rb	0	0	8	0
 encoding/ascii_compatible_spec.rb	3	2	1	0
-encoding/compatible_spec.rb	0	3	372	10
+encoding/compatible_spec.rb	182	393	6	0
 encoding/converter/asciicompat_encoding_spec.rb	0	0	5	0
 encoding/converter/constants_spec.rb	0	13	13	0
 encoding/converter/convert_spec.rb	0	0	7	0
@@ -1787,7 +1787,7 @@ string/encoding_spec.rb	WFAIL	1
 string/end_with_spec.rb	0	0	0	0
 string/eql_spec.rb	0	0	0	0
 string/equal_value_spec.rb	4	2	0	0
-string/force_encoding_spec.rb	1	11	0	2
+string/force_encoding_spec.rb	3	11	0	0
 string/freeze_spec.rb	1	0	0	0
 string/getbyte_spec.rb	59	1	0	0
 string/grapheme_clusters_spec.rb	0	2	0	0
