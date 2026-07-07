@@ -481,7 +481,7 @@ env/delete_if_spec.rb	0	0	7	0
 env/delete_spec.rb	5	4	1	0
 env/dup_spec.rb	0	1	0	0
 env/each_key_spec.rb	0	0	3	0
-env/each_pair_spec.rb	73	0	2	1
+env/each_pair_spec.rb	76	0	2	1
 env/each_spec.rb	1	0	0	0
 env/each_value_spec.rb	0	0	3	0
 env/element_reference_spec.rb	2	2	1	1
@@ -541,7 +541,7 @@ exception/message_spec.rb	5	0	0	0
 exception/name_error_spec.rb	2	2	1	0
 exception/name_spec.rb	4	6	0	0
 exception/new_spec.rb	0	0	0	0
-exception/no_method_error_spec.rb	7	18	5	1
+exception/no_method_error_spec.rb	10	20	1	1
 exception/reason_spec.rb	0	1	0	0
 exception/receiver_spec.rb	2	0	6	0
 exception/result_spec.rb	0	0	1	0
