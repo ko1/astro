@@ -79,6 +79,15 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
         korb_exc_ivar_set(c, slots + 1, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), name);   /* Symbol immediate */
         korb_exc_ivar_set(c, slots + 1, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
         korb_exc_ivar_set(c, slots + 1, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), VALUE_REF_GET(self));
+        const uint32_t na = VALUE_SLICE_LEN(a);            /* @__args = args after the name (method_missing(name, *args)) */
+        RESULT ar = korb_ary_new(c, slots + 1, na > 1 ? na - 1 : 0);
+        if (LIKELY(ar.state == KORB_NORMAL)) {
+            slots[1] = ar.value;
+            VALUE_REF argsref = VALUE_REF_AT(&slots[1]);
+            for (uint32_t j = 1; j < na; j++)
+                korb_ary_push_val(c, slots + 2, argsref, VALUE_SLICE_GET(a, j));
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__args", 7)), VALUE_REF_GET(argsref));
+        }
         r.value = VALUE_REF_GET(eref);
     }
     return r;

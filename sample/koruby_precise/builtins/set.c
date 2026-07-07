@@ -1410,6 +1410,12 @@ static RESULT korb_m_exc_receiver(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
     return RESULT_OK(r);
 }
+/* NoMethodError#args → the arguments passed to the missing method (or []). */
+static RESULT korb_m_nme_args(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE v = korb_exc_ivar_get(VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__args", 7)));
+    return KORB_ARRAY_P(v) ? RESULT_OK(v) : korb_ary_new(c, slots, 0);
+}
 static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE v = VALUE_REF_GET(self);
     if (!KORB_EXC_P(v)) return RESULT_OK(KORB_NIL);

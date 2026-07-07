@@ -5472,6 +5472,14 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(mid));
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
                 korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__receiver", 11)), slots[0]);
+                RESULT ar = korb_ary_new(c, slots + 2, argc);   /* @__args = the args passed to the missing method */
+                if (LIKELY(ar.state == KORB_NORMAL)) {
+                    slots[2] = ar.value;
+                    VALUE_REF argsref = VALUE_REF_AT(&slots[2]);
+                    for (uint32_t j = 0; j < argc; j++)
+                        korb_ary_push_val(c, slots + 3, argsref, slots[-(intptr_t)argc + j]);
+                    korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(vm, "@__args", 7)), VALUE_REF_GET(argsref));
+                }
                 nmr.value = VALUE_REF_GET(eref);
             }
             return nmr;
@@ -6780,6 +6788,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(mid));
             korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
             korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(vm, "@__receiver", 11)), slots[0]);
+            RESULT ar = korb_ary_new(c, slots + 2, argc);   /* @__args = the args passed to the missing method */
+            if (LIKELY(ar.state == KORB_NORMAL)) {
+                slots[2] = ar.value;
+                VALUE_REF argsref = VALUE_REF_AT(&slots[2]);
+                for (uint32_t j = 0; j < argc; j++)
+                    korb_ary_push_val(c, slots + 3, argsref, slots[-(intptr_t)argc + j]);
+                korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(vm, "@__args", 7)), VALUE_REF_GET(argsref));
+            }
             r.value = VALUE_REF_GET(eref);
         }
         return r;
@@ -7950,6 +7966,8 @@ korb_register_core_methods(CTX *c)
           korb_class_def_cfn(c, ne, "name", korb_m_exc_name, 0);
           korb_class_def_cfn(c, ne, "receiver", korb_m_exc_receiver, 0);
       } }
+    { const VALUE nme = korb_const_get(c->vm, korb_intern(c->vm, "NoMethodError", 13));   /* NoMethodError#args */
+      if (KORB_CLASS_P(nme)) korb_class_def_cfn(c, nme, "args", korb_m_nme_args, 0); }
     korb_def_cmethod(c, KORB_C_EXCEPTION, "set_backtrace", korb_m_exc_set_backtrace, -1);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "cause", korb_m_exc_cause, 0);
     korb_def_cmethod(c, KORB_C_EXCEPTION, "backtrace_locations", korb_m_lit_nil, 0);
