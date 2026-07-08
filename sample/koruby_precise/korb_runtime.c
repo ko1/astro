@@ -930,6 +930,17 @@ korb_str_plus_ref(CTX *c, VALUE *slots, VALUE_REF a, VALUE_REF b)
     const KorbString *bs = VAL2STR(VALUE_REF_GET(b));
     memcpy(s->buf->data, as->buf->data, alen);
     memcpy(s->buf->data + alen, bs->buf->data, blen);
+    /* negotiate the result encoding (CRuby: same encoding wins; an ASCII-only
+     * operand yields to the other's encoding). */
+    const uint32_t ea = KORB_STR_ENC(VALUE_REF_GET(a)), eb = KORB_STR_ENC(VALUE_REF_GET(b));
+    uint32_t renc = ea;
+    if (ea != eb) {
+        bool aa = true, bb = true;
+        for (uint32_t i = 0; i < alen; i++) if ((unsigned char)as->buf->data[i] >= 0x80) { aa = false; break; }
+        for (uint32_t i = 0; i < blen; i++) if ((unsigned char)bs->buf->data[i] >= 0x80) { bb = false; break; }
+        renc = (aa && bb) ? ea : aa ? eb : bb ? ea : ea;
+    }
+    if (renc != KORB_ENC_UTF8) KORB_STR_ENC_SET((VALUE)s, renc);
     return RESULT_OK((VALUE)s);
 }
 
