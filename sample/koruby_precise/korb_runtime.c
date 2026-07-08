@@ -7792,6 +7792,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "name", korb_m_class_name, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "set_temporary_name", korb_m_module_set_temp_name, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "constants", korb_m_mod_constants, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "to_s", korb_m_class_to_s, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inspect", korb_m_class_to_s, 0);
@@ -7881,6 +7882,7 @@ korb_register_core_methods(CTX *c)
     #define MOD_CFN(nm, fn, ar)     korb_class_def_cfn(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     #define MOD_CFN_BLK(nm, fn, ar) korb_class_def_cfn_blk(c, korb_const_get(c->vm, c->vm->name_module), nm, fn, ar)
     MOD_CFN("name", korb_m_class_name, 0);
+    MOD_CFN("set_temporary_name", korb_m_module_set_temp_name, -1);
     MOD_CFN("constants", korb_m_mod_constants, -1);
     MOD_CFN("to_s", korb_m_class_to_s, 0);
     MOD_CFN("inspect", korb_m_class_to_s, 0);

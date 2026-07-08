@@ -699,6 +699,31 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return korb_obj_new(c, slots, VALUE_REF_GET(self));
 }
+/* Module#set_temporary_name(name|nil) — assign/clear a temporary name on an
+ * (anonymous) module; the name may not be a constant path (contain "::"). */
+static RESULT korb_m_module_set_temp_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE sv = VALUE_REF_GET(self);
+    if (!KORB_CLASS_P(sv)) return RESULT_OK(sv);
+    const VALUE nm = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (nm == KORB_NIL) { VAL2CLASS(sv)->name_sym = 0; return RESULT_OK(sv); }   /* clear → anonymous */
+    if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nm));
+    const KorbString *const s = VAL2STR(nm);
+    if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");
+    {   /* reject a valid constant path (each ::-segment is [A-Z][A-Za-z0-9_]*) to avoid confusion */
+        const char *const d = s->buf->data; const uint32_t len = s->len; uint32_t i = 0; bool cpath = true;
+        for (;;) {
+            if (i >= len || !(d[i] >= 'A' && d[i] <= 'Z')) { cpath = false; break; }
+            i++;
+            while (i < len && ((d[i]>='A'&&d[i]<='Z')||(d[i]>='a'&&d[i]<='z')||(d[i]>='0'&&d[i]<='9')||d[i]=='_')) i++;
+            if (i == len) break;                                   /* ended on a valid segment */
+            if (i + 1 < len && d[i] == ':' && d[i+1] == ':') { i += 2; continue; }
+            cpath = false; break;
+        }
+        if (cpath) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the temporary name must not be a constant path to avoid confusion");
+    }
+    VAL2CLASS(sv)->name_sym = korb_intern(c->vm, s->buf->data, s->len);
+    return RESULT_OK(sv);
+}
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */
 static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
