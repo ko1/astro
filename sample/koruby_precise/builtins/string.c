@@ -1019,7 +1019,13 @@ static RESULT korb_m_str_sub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_str_gsub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_str_gsub_into(c, slots, self, a, true, true, block, def_env, cself); }
 static RESULT korb_m_str_sub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)  { return korb_str_gsub_into(c, slots, self, a, false, true, block, def_env, cself); }
 static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a;
+    (void)slots;(void)a;
+    const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));   /* a non-ASCII-compatible encoding is never ASCII-only */
+    if (enc >= KORB_ENC_OTHER_MIN && enc < 8 && c->vm->str_enc_names[enc]) {
+        const char *const nm = korb_sym_name(c->vm, c->vm->str_enc_names[enc]);
+        if (strncmp(nm, "UTF-16", 6) == 0 || strncmp(nm, "UTF-32", 6) == 0 || strcmp(nm, "UTF-7") == 0)
+            return RESULT_OK(KORB_FALSE);
+    }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     for (uint32_t i = 0; i < s->len; i++)
         if ((unsigned char)s->buf->data[i] >= 0x80) return RESULT_OK(KORB_FALSE);
