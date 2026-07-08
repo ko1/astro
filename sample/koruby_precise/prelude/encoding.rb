@@ -7,8 +7,14 @@ class Encoding
   def to_s; @name; end
   def inspect; @name == "ASCII-8BIT" ? "#<Encoding:BINARY (ASCII-8BIT)>" : "#<Encoding:" + @name + ">"; end
   def ==(o); o.is_a?(Encoding) && o.name == @name; end
-  def ascii_compatible?; @name != "UTF-16" && @name != "UTF-32"; end
-  def dummy?; false; end
+  def ascii_compatible?
+    n = @name.upcase
+    !(n.start_with?("UTF-16") || n.start_with?("UTF-32") || n == "UTF-7")
+  end
+  def dummy?
+    n = @name.upcase
+    n == "UTF-16" || n == "UTF-32" || n == "UTF-7" || n.start_with?("ISO-2022") || n.start_with?("CP502")
+  end
   UTF_8 = Encoding.new("UTF-8")
   US_ASCII = Encoding.new("US-ASCII")
   ASCII = US_ASCII
