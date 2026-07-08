@@ -1149,7 +1149,18 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_
      * time (0 = top-level / global var).  Resolve it to the live module for
      * Module#constants; only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_const_get(c->vm, owner_name) : KORB_NIL;
-    korb_const_define_owned(c, name_sym, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);
+    const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
+    korb_const_define_owned(c, name_sym, val, ownc);
+    if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */
+        const uint32_t ca = korb_intern(c->vm, "const_added", 11);
+        if (UNLIKELY(korb_responds_to(c, ownc, ca))) {
+            slots[0] = val;                              /* root val across the hook's GC */
+            slots[1] = ownc; slots[2] = ID2SYM(name_sym);
+            RESULT hr = korb_send(c, slots + 3, ca, 0, 1);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            return RESULT_OK(slots[0]);                  /* re-read (may have moved) */
+        }
+    }
     return RESULT_OK(val);
 }
 
