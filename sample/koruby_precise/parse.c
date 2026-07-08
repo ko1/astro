@@ -1149,6 +1149,23 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         return nb;
     }
 
+    /* `local_variables` — desugar to `binding.local_variables`.  The Binding node is
+     * built staged as the send's receiver (KP_SEND0_SC) so its baked offsets match. */
+    if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
+        strcmp(kp_cid_cstr(tc, cn->name), "local_variables") == 0) {
+        const pm_constant_id_list_t *locals = tc->frame->locals;
+        const uint32_t cnt = (uint32_t)locals->size;
+        uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));
+        if (!syms) abort();
+        for (uint32_t i = 0; i < cnt; i++) syms[i] = kp_intern_cid(tc, locals->ids[i]);
+        NODE *nb;
+        WITH_CHAIN(tc, KP_SEND0_SC, (nb = ALLOC_node_binding(-tc->chain, -1 - tc->chain,
+                                          (const char *)(const void *)syms, cnt)));
+        bake_add(tc, &nb->u.node_binding.def_env_off);
+        bake_add(tc, &nb->u.node_binding.self_off);
+        return kp_send0(korb_intern(tc->c->vm, "local_variables", 15), line, nb);
+    }
+
     /* bare `module_function` is a normal runtime call (korb_m_module_function
      * sets cur_visibility mode 3: subsequent defs become private instance methods
      * with a public module-singleton copy).  No parse-time interception. */
