@@ -31,6 +31,12 @@ class Encoding
   CP50221 = Encoding.new("CP50221")
   ISO_8859_1 = Encoding.new("ISO-8859-1")
   Windows_1252 = Encoding.new("Windows-1252")
+  KOI8_U = Encoding.new("KOI8-U"); KOI8_R = Encoding.new("KOI8-R")
+  UTF_16BE = Encoding.new("UTF-16BE"); UTF_16LE = Encoding.new("UTF-16LE")
+  UTF_32BE = Encoding.new("UTF-32BE"); UTF_32LE = Encoding.new("UTF-32LE")
+  EUC_KR = Encoding.new("EUC-KR"); GB18030 = Encoding.new("GB18030"); Big5 = Encoding.new("Big5")
+  Emacs_Mule = Encoding.new("Emacs-Mule"); EmacsMule = Emacs_Mule
+  ISO_8859_2 = Encoding.new("ISO-8859-2"); ISO_8859_15 = Encoding.new("ISO-8859-15")
   @@default_external = UTF_8
   @@default_internal = nil
   def self.default_external; @@default_external; end
