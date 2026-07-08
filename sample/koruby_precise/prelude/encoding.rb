@@ -104,6 +104,30 @@ class String
     end
   end
   # force_encoding / b are C methods (builtins/string.c).
+
+  # encode([enc][, from][, opts]) — koruby models the 3 ASCII-compatible encodings,
+  # where transcoding of ASCII-only data is a no-op (just a tag change).  Non-ASCII
+  # content only converts trivially when the target encoding matches; US-ASCII
+  # targets require ASCII-only content; non-ASCII-compatible targets (UTF-16/32)
+  # and real byte transcoding are out of scope.
+  def encode(*args)
+    opts = args.last.is_a?(Hash) ? args.pop : {}
+    tenc = args[0].nil? ? Encoding.default_external : (args[0].is_a?(Encoding) ? args[0] : Encoding.find(args[0].to_s))
+    senc = args[1] ? (args[1].is_a?(Encoding) ? args[1] : Encoding.find(args[1].to_s)) : encoding
+    replace_undef = [:undef, :invalid, :replace, :fallback, :xml].any? { |k| opts.key?(k) }
+    r = dup
+    if tenc == senc || (ascii_only? && tenc.ascii_compatible?)
+      return r.force_encoding(tenc.name)          # identity / ASCII-only → tag change only
+    end
+    # US-ASCII / BINARY targets can't hold non-ASCII source content.
+    if (tenc == Encoding::US_ASCII) && !ascii_only? && !replace_undef
+      raise Encoding::UndefinedConversionError, "from #{senc.name} to US-ASCII"
+    end
+    # non-ASCII-compatible targets (UTF-16/32) need real byte transcoding, which is
+    # out of scope — return a best-effort tag change rather than a spurious error.
+    r.force_encoding(tenc.name)
+  end
+  def encode!(*args); replace(encode(*args)); force_encoding(args[0].is_a?(Encoding) ? args[0].name : (args[0] || Encoding.default_external.name).to_s); end
 end
 class Symbol
   # A Symbol reports US-ASCII when its name is ASCII-only, else UTF-8 (CRuby).
