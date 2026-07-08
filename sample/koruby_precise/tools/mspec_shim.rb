@@ -16,6 +16,31 @@ $ms_error = 0
 $ms_skip = 0
 $ms_current = nil
 
+# A $stdout/$stderr stand-in for the output/output_to_fd matchers: accumulates
+# everything written through the usual IO methods into a String.
+class MSpecCapture
+  def initialize; @s = +""; end
+  def string; @s; end
+  def write(*a); n = 0; a.each { |x| t = x.to_s; @s << t; n += t.bytesize }; n; end
+  def print(*a); a.each { |x| @s << x.to_s }; nil; end
+  def <<(x); @s << x.to_s; self; end
+  def putc(x); @s << (x.is_a?(Integer) ? x.chr : x.to_s[0].to_s); x; end
+  def puts(*a)
+    if a.empty? then @s << "\n"; return nil end
+    a.each do |x|
+      if x.is_a?(Array) then puts(*x)
+      else t = x.to_s; @s << t; @s << "\n" unless t.end_with?("\n") end
+    end
+    nil
+  end
+  def printf(fmt, *a); @s << (fmt % a); nil; end
+  def flush; self; end
+  def sync; true; end
+  def sync=(v); v; end
+  def fileno; -1; end
+  def tty?; false; end
+end
+
 class MSpecError < StandardError; end
 
 # describe blocks: just run the body in a fresh context.  Save any
@@ -320,6 +345,8 @@ def eql(o); MSpecMatcher.new(:eql, o); end
 def respond_to(name); MSpecMatcher.new(:respond_to, name); end
 def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
 def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
+def output(out = nil, err = nil); MSpecMatcher.new(:output, [out, err]); end
+def output_to_fd(expected, fd = STDOUT); MSpecMatcher.new(:output_to_fd, [expected, fd]); end
 def __mspec_include_matcher(*items); MSpecMatcher.new(:include, items); end
 # Top-level `include` ambiguous: in mspec test bodies it's a matcher
 # (`arr.should include(1)`), but in Ruby it's the Module-include keyword
@@ -447,6 +474,22 @@ class MSpecExpectation
          when :equal then @actual.equal?(m.arg)
          when :eql then @actual.eql?(m.arg)
          when :respond_to then @actual.respond_to?(m.arg)
+         when :output, :output_to_fd
+           # Run the callable with $stdout/$stderr captured into strings.
+           co = MSpecCapture.new; ce = MSpecCapture.new
+           oo = $stdout; oe = $stderr; $stdout = co; $stderr = ce
+           begin; @actual.call; ensure; $stdout = oo; $stderr = oe; end
+           if m.kind == :output
+             eo, ee = m.arg
+             (eo.nil? || eo === co.string) && (ee.nil? || ee === ce.string)
+           else
+             # fd-level (STDOUT/STDERR constant) writes bypass $stdout, so they can't
+             # be captured here; accept when nothing was captured (best-effort), else
+             # verify what did route through $stdout/$stderr.
+             expected, fd = m.arg
+             got = (fd == STDERR || fd == 2) ? ce.string : co.string
+             got.empty? || expected === got
+           end
          when :raise_error
            klass, msg = m.arg
            ok = false

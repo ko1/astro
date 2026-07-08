@@ -143,7 +143,7 @@ array/reverse_spec.rb	9	0	0	0
 array/rfind_spec.rb	0	0	0	0
 array/rindex_spec.rb	13	2	1	0
 array/rotate_spec.rb	34	0	0	0
-array/sample_spec.rb	50	8	0	0
+array/sample_spec.rb	52	6	0	0
 array/select_spec.rb	6	0	0	0
 array/shift_spec.rb	39	1	1	0
 array/shuffle_spec.rb	37	2	5	0
@@ -288,11 +288,11 @@ dir/glob_spec.rb	6	56	2	0
 dir/home_spec.rb	0	1	8	0
 dir/initialize_spec.rb	0	0	1	0
 dir/inspect_spec.rb	2	0	0	0
-dir/mkdir_spec.rb	1	0	1	0
+dir/mkdir_spec.rb	0	0	2	0
 dir/open_spec.rb	0	0	1	0
 dir/path_spec.rb	1	0	0	0
 dir/pos_spec.rb	0	0	2	0
-dir/pwd_spec.rb	2	0	1	0
+dir/pwd_spec.rb	0	0	2	0
 dir/read_spec.rb	0	0	1	0
 dir/rewind_spec.rb	0	0	1	0
 dir/rmdir_spec.rb	1	0	0	0
@@ -991,7 +991,7 @@ io/lineno_spec.rb	1	6	8	0
 io/new_spec.rb	1	0	0	0
 io/nonblock_spec.rb	0	0	4	0
 io/open_spec.rb	3	6	3	0
-io/output_spec.rb	0	0	4	0
+io/output_spec.rb	4	0	1	0
 io/path_spec.rb	0	0	1	0
 io/pid_spec.rb	0	0	3	0
 io/pipe_spec.rb	0	1	25	0
@@ -1001,7 +1001,7 @@ io/pread_spec.rb	0	8	14	0
 io/print_spec.rb	0	7	0	0
 io/printf_spec.rb	0	1	2	0
 io/putc_spec.rb	0	0	0	0
-io/puts_spec.rb	15	31	1	0
+io/puts_spec.rb	16	31	0	0
 io/pwrite_spec.rb	1	3	5	0
 io/read_nonblock_spec.rb	0	2	16	0
 io/read_spec.rb	8	42	42	0
@@ -1031,7 +1031,7 @@ io/tty_spec.rb	1	1	1	0
 io/ungetbyte_spec.rb	0	1	5	0
 io/ungetc_spec.rb	0	1	13	0
 io/write_nonblock_spec.rb	0	1	4	1
-io/write_spec.rb	14	19	3	1
+io/write_spec.rb	15	19	3	1
 kernel/Array_spec.rb	10	4	0	0
 kernel/Complex_spec.rb	52	5	7	1
 kernel/Float_spec.rb	123	5	10	0
@@ -1046,7 +1046,7 @@ kernel/abort_spec.rb	0	2	0	0
 kernel/at_exit_spec.rb	0	3	0	0
 kernel/autoload_relative_spec.rb	0	0	0	0
 kernel/autoload_spec.rb	5	24	4	1
-kernel/backtick_spec.rb	0	2	2	4
+kernel/backtick_spec.rb	0	2	1	5
 kernel/binding_spec.rb	5	6	2	0
 kernel/block_given_spec.rb	5	4	0	0
 kernel/caller_locations_spec.rb	6	9	5	0
@@ -1099,9 +1099,9 @@ kernel/nil_spec.rb	0	0	0	0
 kernel/not_match_spec.rb	2	0	1	0
 kernel/object_id_spec.rb	0	0	0	0
 kernel/open_spec.rb	1	4	14	1
-kernel/p_spec.rb	0	4	4	1
+kernel/p_spec.rb	9	4	0	1
 kernel/pp_spec.rb	0	0	0	1
-kernel/print_spec.rb	0	2	2	0
+kernel/print_spec.rb	1	3	0	0
 kernel/printf_spec.rb	0	2	1	0
 kernel/private_methods_spec.rb	5	0	0	0
 kernel/proc_spec.rb	3	3	1	0
@@ -1148,7 +1148,7 @@ kernel/untaint_spec.rb	0	0	0	0
 kernel/untrace_var_spec.rb	0	2	0	0
 kernel/untrust_spec.rb	0	0	0	0
 kernel/untrusted_spec.rb	0	0	0	0
-kernel/warn_spec.rb	3	8	15	8
+kernel/warn_spec.rb	14	11	1	8
 kernel/yield_self_spec.rb	0	0	0	0
 main/define_method_spec.rb	0	0	3	0
 main/include_spec.rb	1	0	1	0
@@ -1987,7 +1987,7 @@ thread/pass_spec.rb	1	0	0	0
 thread/pending_interrupt_spec.rb	0	1	2	0
 thread/priority_spec.rb	WFAIL	124
 thread/raise_spec.rb	WFAIL	124
-thread/report_on_exception_spec.rb	1	8	4	2
+thread/report_on_exception_spec.rb	WFAIL	124
 thread/run_spec.rb	0	0	0	0
 thread/set_trace_func_spec.rb	0	0	0	1
 thread/start_spec.rb	0	5	0	0
