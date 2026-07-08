@@ -282,7 +282,7 @@ dir/glob_spec.rb	6	56	2	0
 dir/home_spec.rb	0	1	8	0
 dir/initialize_spec.rb	0	0	1	0
 dir/inspect_spec.rb	2	0	0	0
-dir/mkdir_spec.rb	1	0	1	0
+dir/mkdir_spec.rb	0	0	2	0
 dir/open_spec.rb	0	0	1	0
 dir/path_spec.rb	1	0	0	0
 dir/pos_spec.rb	0	0	2	0
@@ -1319,7 +1319,7 @@ module/remove_class_variable_spec.rb	8	0	1	0
 module/remove_const_spec.rb	17	3	3	0
 module/remove_method_spec.rb	13	2	0	0
 module/ruby2_keywords_spec.rb	3	18	0	0
-module/set_temporary_name_spec.rb	1	10	7	0
+module/set_temporary_name_spec.rb	22	10	0	0
 module/singleton_class_spec.rb	0	0	5	0
 module/to_s_spec.rb	3	12	0	2
 module/undef_method_spec.rb	16	5	0	3
