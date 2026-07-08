@@ -57,3 +57,37 @@ module Errno
   EXDEV = Class.new(SystemCallError); EMFILE = Class.new(SystemCallError)
   ENOSPC = Class.new(SystemCallError); EDOM = Class.new(SystemCallError)
 end
+
+# Exception-detail constructors: NameError/NoMethodError carry #name/#receiver/#args;
+# KeyError/FrozenError carry #receiver (+ #key).  Stored in the same @__ ivars the
+# dispatch-time raises use, so the existing C getters keep working.
+class NameError
+  UNSET__ = Object.new
+  def initialize(msg = nil, name = nil, receiver: UNSET__)
+    super(msg)
+    @__name = name
+    unless receiver.equal?(UNSET__); @__receiver = receiver; @__has_recv = true; end
+  end
+end
+class NoMethodError
+  def initialize(msg = nil, name = nil, args = nil, priv = false, receiver: NameError::UNSET__)
+    super(msg, name, receiver: receiver)
+    @__args = args
+  end
+end
+class KeyError
+  def initialize(msg = nil, receiver: NameError::UNSET__, key: NameError::UNSET__)
+    super(msg)
+    unless receiver.equal?(NameError::UNSET__); @__receiver = receiver; @__has_recv = true; end
+    @__key = key unless key.equal?(NameError::UNSET__)
+  end
+  def receiver; @__has_recv ? @__receiver : raise(ArgumentError, "no receiver is available"); end
+  def key; defined?(@__key) ? @__key : raise(ArgumentError, "no key is available"); end
+end
+class FrozenError
+  def initialize(msg = nil, receiver: NameError::UNSET__)
+    super(msg)
+    unless receiver.equal?(NameError::UNSET__); @__receiver = receiver; @__has_recv = true; end
+  end
+  def receiver; @__has_recv ? @__receiver : raise(ArgumentError, "no receiver is available"); end
+end
