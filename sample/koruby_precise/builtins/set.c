@@ -740,15 +740,26 @@ static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * (owner-tagged in the VM const table).  Globals ($) and cvars (@) share the
  * table and are excluded.  (inherit arg / ancestor constants not modelled.) */
 static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
+    const bool inherit = VALUE_SLICE_LEN(a) < 1 || KORB_TRUTHY(VALUE_SLICE_GET(a, 0));   /* default: include ancestors */
     struct korb_vm *const vm = c->vm;
+    const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < vm->const_cnt; i++) {
-        if (vm->const_owners[i] != VALUE_REF_GET(self)) continue;   /* re-read self: push may GC (owners are root-updated) */
+        const VALUE owner = vm->const_owners[i];                    /* owners are root-updated across the push GC */
+        bool match = (owner == VALUE_REF_GET(self));
+        if (!match && inherit && KORB_CLASS_P(VALUE_REF_GET(self)))   /* walk superclasses, excluding Object */
+            for (VALUE k = VAL2CLASS(VALUE_REF_GET(self))->superclass; KORB_CLASS_P(k) && k != objc; k = VAL2CLASS(k)->superclass)
+                if (owner == k) { match = true; break; }
+        if (!match) continue;
         const char *const nm = korb_sym_name(vm, vm->const_names[i]);
         if (nm[0] == '$' || nm[0] == '@') continue;
-        CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(vm->const_names[i])));
+        const VALUE csym = ID2SYM(vm->const_names[i]);
+        bool dup = false;                                          /* a subclass constant shadows the ancestor's */
+        const KorbArray *const d = VAL2ARY(VALUE_REF_GET(arr));
+        for (uint32_t j = 0; j < d->len; j++) if (d->items->data[j] == csym) { dup = true; break; }
+        if (dup) continue;
+        CHECK(korb_ary_push_val(c, slots + 1, arr, csym));
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
