@@ -9011,7 +9011,13 @@ static RESULT
 korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) n--;   /* drop uplevel:/category: kwargs */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {      /* uplevel:/category: kwargs */
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t ci = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "category", 8)));
+        if (ci >= 0 && h->items->data[2 * ci + 1] == ID2SYM(korb_intern(c->vm, "deprecated", 10)))
+            return RESULT_OK(KORB_NIL);                            /* deprecation warnings are off by default */
+        n--;
+    }
     if (n == 0) return RESULT_OK(KORB_NIL);
     bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
     char *buf = NULL; size_t sz = 0; FILE *ms = def ? NULL : open_memstream(&buf, &sz);
