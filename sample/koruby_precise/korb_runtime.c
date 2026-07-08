@@ -9012,6 +9012,20 @@ static RESULT korb_bi_gets_impl(CTX *c, VALUE *slots, VALUE_SLICE args, const ch
 }
 static RESULT korb_bi_gets(CTX *c, VALUE *slots, VALUE_SLICE args)     { return korb_bi_gets_impl(c, slots, args, "gets", 4); }
 static RESULT korb_bi_readline(CTX *c, VALUE *slots, VALUE_SLICE args) { return korb_bi_gets_impl(c, slots, args, "readline", 8); }
+/* Kernel#global_variables — every defined $-global as a Symbol.  Globals reuse the
+ * const table with a $-prefixed name (see parse.c), so scan it for those. */
+static RESULT korb_bi_global_variables(CTX *c, VALUE *slots, VALUE_SLICE args) {
+    (void)args;
+    struct korb_vm *const vm = c->vm;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < vm->const_cnt; i++) {
+        const char *const nm = korb_sym_name(vm, vm->const_names[i]);   /* const_names is append-only; re-read each iter */
+        if (nm[0] != '$') continue;
+        CHECK(korb_ary_push_val(c, slots + 1, arr, ID2SYM(vm->const_names[i])));
+    }
+    return RESULT_OK(VALUE_REF_GET(arr));
+}
 static RESULT
 korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -9893,6 +9907,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
     korb_builtin_define(c, "warn", korb_bi_warn, -1);
+    korb_builtin_define(c, "global_variables", korb_bi_global_variables, 0);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
