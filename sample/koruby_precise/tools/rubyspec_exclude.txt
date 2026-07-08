@@ -30,3 +30,5 @@ kernel/caller
 kernel/sleep
 kernel/test
 time/
+env/
+kernel/env

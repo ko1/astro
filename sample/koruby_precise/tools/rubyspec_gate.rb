@@ -78,10 +78,8 @@ if regressions.empty?
 else
   puts "\nREGRESSIONS (#{regressions.size}):"
   regressions.each { |f, b, c| puts "  #{f}: #{b.inspect} -> #{c.inspect}" }
-  if update
-    File.write(BASELINE, cur.sort.map { |f, v| v[0] == :WFAIL ? "#{f}\tWFAIL\t#{v[1]}" : "#{f}\t#{v.join("\t")}" }.join("\n") + "\n")
-    puts "\nbaseline force-updated despite regressions (--update)."
-    exit 0
-  end
+  # Never fold a real regression into the baseline, even with --update: investigate
+  # first (add to the exclude list if it's flaky, or fix the code).
+  puts "\nbaseline NOT updated — resolve the regressions (or exclude if flaky) first." if update
   exit 1
 end
