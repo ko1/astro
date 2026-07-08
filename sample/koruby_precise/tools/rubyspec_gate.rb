@@ -38,23 +38,24 @@ EXCLUDE = File.file?("#{HERE}/tools/rubyspec_exclude.txt") ?
   File.readlines("#{HERE}/tools/rubyspec_exclude.txt").map(&:strip).reject { |l| l.empty? || l.start_with?('#') } : []
 excluded = ->(f) { EXCLUDE.any? { |p| f.start_with?(p) } }
 
-def score(v)  # "goodness" = passing-example count (a whole-file crash is worst).
-  # NB: track pass count, NOT fail+err — when a newly-working method makes a spec's
-  # generated examples expand, fail+err can rise while pass rises; that's progress,
-  # not a regression.  A regression is fewer examples passing (or a new crash).
-  return -1 if v[0] == :WFAIL
-  v[0]
-end
+# A real regression moves examples pass -> fail/err, i.e. fail+err RISES while pass
+# does NOT rise.  Pure pass-count drops with unchanged fail+err are be_computed_by
+# expansion variance (some specs generate a different example count run to run, e.g.
+# tables that iterate Encoding.list) — not a regression.  An improvement is more passes.
+BAD_TOL = 2
+def bad(v);  v[0] == :WFAIL ? 1_000_000 : v[1] + v[2]; end
+def pass(v); v[0] == :WFAIL ? -1 : v[0]; end
 
 regressions = []; improvements = []; newfiles = []
 cur.each do |f, v|
   next if excluded.(f)
-  if !base.key?(f)
+  b = base[f]
+  if !b
     newfiles << f
-  elsif score(v) < score(base[f])
-    regressions << [f, base[f], v]
-  elsif score(v) > score(base[f])
-    improvements << [f, base[f], v]
+  elsif (v[0] == :WFAIL && b[0] != :WFAIL) || (bad(v) - bad(b) > BAD_TOL && pass(v) <= pass(b))
+    regressions << [f, b, v]
+  elsif pass(v) > pass(b) || (b[0] == :WFAIL && v[0] != :WFAIL)
+    improvements << [f, b, v]
   end
 end
 gone = base.keys - cur.keys
