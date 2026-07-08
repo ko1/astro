@@ -347,6 +347,9 @@ def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error
 def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
 def output(out = nil, err = nil); MSpecMatcher.new(:output, [out, err]); end
 def output_to_fd(expected, fd = STDOUT); MSpecMatcher.new(:output_to_fd, [expected, fd]); end
+# mspec helper: like raise_error but ignores the message on CRuby < 4.1 (coercion
+# error messages were inconsistent there) — koruby models that, so check class only.
+def raise_consistent_error(klass = Exception, msg = nil, opts = nil); MSpecMatcher.new(:raise_error, [klass, nil]); end
 def __mspec_include_matcher(*items); MSpecMatcher.new(:include, items); end
 # Top-level `include` ambiguous: in mspec test bodies it's a matcher
 # (`arr.should include(1)`), but in Ruby it's the Module-include keyword
