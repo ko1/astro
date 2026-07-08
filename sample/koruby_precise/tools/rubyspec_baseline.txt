@@ -143,7 +143,7 @@ array/reverse_spec.rb	9	0	0	0
 array/rfind_spec.rb	0	0	0	0
 array/rindex_spec.rb	13	2	1	0
 array/rotate_spec.rb	34	0	0	0
-array/sample_spec.rb	50	10	0	0
+array/sample_spec.rb	51	8	0	0
 array/select_spec.rb	6	0	0	0
 array/shift_spec.rb	39	1	1	0
 array/shuffle_spec.rb	37	2	5	0
@@ -187,7 +187,7 @@ binding/implicit_parameter_get_spec.rb	0	0	0	0
 binding/implicit_parameters_spec.rb	0	0	0	0
 binding/local_variable_defined_spec.rb	5	4	1	0
 binding/local_variable_get_spec.rb	8	0	2	0
-binding/local_variable_set_spec.rb	6	2	2	0
+binding/local_variable_set_spec.rb	7	4	1	0
 binding/local_variables_spec.rb	3	4	0	0
 binding/receiver_spec.rb	2	0	0	0
 binding/source_location_spec.rb	0	0	2	0
@@ -1090,7 +1090,7 @@ kernel/itself_spec.rb	0	0	0	0
 kernel/kind_of_spec.rb	1	0	0	0
 kernel/lambda_spec.rb	14	7	3	0
 kernel/load_spec.rb	0	2	0	0
-kernel/local_variables_spec.rb	0	2	4	0
+kernel/local_variables_spec.rb	4	2	0	0
 kernel/loop_spec.rb	7	6	1	0
 kernel/match_spec.rb	0	0	0	0
 kernel/method_spec.rb	9	1	1	0
