@@ -5439,9 +5439,12 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
         }
     }
 
-    /* `include Mod...` inside a class/module body (self is the class) */
-    if (KORB_CLASS_P(self) && argc >= 1 && strcmp(korb_sym_name(vm, mid), "include") == 0) {
-        return korb_do_include(c, slots, self, VALUE_SLICE_MAKE(slots - argc, argc));
+    /* `include Mod...` inside a class/module body (self is the class), or at the
+     * top level (self is main) where it includes into Object. */
+    if (argc >= 1 && strcmp(korb_sym_name(vm, mid), "include") == 0 &&
+        (KORB_CLASS_P(self) || (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL))) {
+        const VALUE target = KORB_CLASS_P(self) ? self : korb_builtin_class_obj(vm, KORB_C_OBJECT);
+        return korb_do_include(c, slots, target, VALUE_SLICE_MAKE(slots - argc, argc));
     }
     /* `prepend Mod...` inside a class/module body (self is the class) */
     if (KORB_CLASS_P(self) && argc >= 1 && strcmp(korb_sym_name(vm, mid), "prepend") == 0) {
