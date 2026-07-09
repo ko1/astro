@@ -1,9 +1,13 @@
 # Proc#curry — partial application.
 class Proc
   def curry(n = (arity < 0 ? -arity - 1 : arity))
-    acc = nil
-    acc = ->(got) { got.length >= n ? call(*got) : ->(*more) { acc.call(got + more) } }
-    acc.call([])
+    # Always return a curried Proc (arity -1, params [[:rest]]) — even when the
+    # required count is already 0 (a variadic/0-arg callee), where the old
+    # immediate-call form returned the result instead of a Proc.
+    f = self   # capture the callee as a local so it survives instance_exec self-rebind
+    make = nil
+    make = ->(got) { ->(*more) { all = got + more; all.length >= n ? f.call(*all) : make.call(all) } }
+    make.call([])
   end
   # Function composition: (f >> g).(x) == g(f(x)); (f << g).(x) == f(g(x)).
   # The result is a lambda iff the first-executed proc is (matches CRuby):
