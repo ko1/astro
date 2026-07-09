@@ -2909,13 +2909,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
       }
-      case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name */
+      case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name,
+                                             * owner = the path's parent (`A`) so B nests under A. */
         const pm_constant_path_write_node_t *cpw = (const pm_constant_path_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, cpw->target->name);
+        uint32_t owner_name = tc->frame->class_name_sym;
+        const pm_node_t *const parent = cpw->target->parent;
+        if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE))
+            owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
+        else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
+            owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);   /* rightmost of the parent path */
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        return ALLOC_node_const_set(name, owner_name, val);
       }
 
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
