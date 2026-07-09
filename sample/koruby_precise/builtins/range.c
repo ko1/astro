@@ -95,29 +95,89 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* include?/member?: membership of a single value (a Range/other container is not an element). */
 static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE x = VALUE_SLICE_GET(a, 0);
-    if (KORB_RANGE_P(x) || KORB_ARRAY_P(x) || KORB_HASH_P(x)) return RESULT_OK(KORB_FALSE);
     const KorbRange *const r = VAL2RANGE(VALUE_REF_GET(self));
-    if (KORB_STRING_P(x) && KORB_STRING_P(r->rbegin) && KORB_STRING_P(r->rend)) {
-        /* String ranges use succ-membership, not just cover: a value is included
-         * only if it's reachable by #succ from begin — equivalently (CRuby's
-         * optimization) it is covered AND its char-length is within [begin, end]. */
-        RESULT cov = korb_m_range_cover(c, slots, self, a);
-        if (cov.state != KORB_NORMAL || cov.value != KORB_TRUE) return cov;
-        const KorbRange *const r2 = VAL2RANGE(VALUE_REF_GET(self));
-        const KorbString *const xs = VAL2STR(VALUE_SLICE_GET(a, 0));
-        const uint32_t xl = korb_utf8_count(xs->buf->data, xs->len);
-        const uint32_t bl = korb_utf8_count(VAL2STR(r2->rbegin)->buf->data, VAL2STR(r2->rbegin)->len);
-        const uint32_t el = korb_utf8_count(VAL2STR(r2->rend)->buf->data, VAL2STR(r2->rend)->len);
-        return RESULT_OK((xl >= bl && xl <= el) ? KORB_TRUE : KORB_FALSE);
+    /* Fully-open (nil..nil): true for a Numeric/Time value, TypeError otherwise —
+     * checked before the container-argument short-circuit so (nil..nil).include?([])
+     * raises rather than returning false. */
+    if (r->rbegin == KORB_NIL && r->rend == KORB_NIL) {
+        bool linear = FIXNUM_P(x) || KORB_FLOAT_P(x) || KORB_BIGNUM_P(x) || KORB_RATIONAL_P(x) || KORB_COMPLEX_P(x);
+        if (!linear && KORB_OBJECT_P(x)) {
+            const VALUE dcls = korb_dispatch_class(c, x);
+            const VALUE num = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+            const VALUE tim = korb_const_get(c->vm, korb_intern(c->vm, "Time", 4));
+            linear = (num != KORB_NIL && korb_class_has_ancestor(dcls, num)) ||
+                     (tim != KORB_NIL && korb_class_has_ancestor(dcls, tim));
+        }
+        if (linear) return RESULT_OK(KORB_TRUE);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot determine inclusion in beginless/endless ranges");
     }
-    else if (!KORB_OBJECT_P(r->rbegin)) {
+    if (KORB_RANGE_P(x) || KORB_ARRAY_P(x) || KORB_HASH_P(x)) return RESULT_OK(KORB_FALSE);
+    /* String-element range: CRuby uses #succ-membership (a value is in the range
+     * iff it appears in the begin, begin.succ, … , end sequence), with #to_str
+     * coercion of the argument, and raises TypeError for an open (nil) bound. */
+    if (KORB_STRING_P(r->rbegin) || KORB_STRING_P(r->rend)) {
+        if (r->rbegin == KORB_NIL || r->rend == KORB_NIL)
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot determine inclusion in beginless/endless ranges");
+        slots[0] = VALUE_REF_GET(self);                  /* root the range (holds begin/end) */
+        slots[1] = x;                                    /* the (maybe to_str-coerced) argument */
+        if (!KORB_STRING_P(slots[1])) {                  /* coerce via #to_str; non-convertible → false */
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
+                const char *onm = korb_type_name(slots[1]);
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (!KORB_STRING_P(sr.value))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_str gives %s)", onm, onm, korb_type_name(sr.value));
+                slots[1] = sr.value;
+            } else return RESULT_OK(KORB_FALSE);
+        }
+        const bool excl = VAL2RANGE(slots[0])->exclude_end;
+        slots[2] = VAL2RANGE(slots[0])->rbegin;          /* current = begin (rooted) */
+        const VALUE end = VAL2RANGE(slots[0])->rend;
+        slots[3] = end;                                  /* end (rooted) */
+        const uint32_t el = korb_utf8_count(VAL2STR(end)->buf->data, VAL2STR(end)->len);
+        const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);
+        for (int guard = 0; guard < 10000000; guard++) {
+            const KorbString *cur = VAL2STR(slots[2]), *xs = VAL2STR(slots[1]);
+            const bool cur_eq_end = (cur->len == VAL2STR(slots[3])->len && memcmp(cur->buf->data, VAL2STR(slots[3])->buf->data, cur->len) == 0);
+            if (!(excl && cur_eq_end)) {                  /* check membership (skip end itself when exclusive) */
+                if (cur->len == xs->len && memcmp(cur->buf->data, xs->buf->data, cur->len) == 0) return RESULT_OK(KORB_TRUE);
+            }
+            if (cur_eq_end) return RESULT_OK(KORB_FALSE); /* reached end without a match */
+            if (korb_utf8_count(cur->buf->data, cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
+            slots[4] = slots[2];                          /* stage current as the #succ receiver */
+            RESULT sc = korb_send_impl(c, slots + 5, mid_succ, 0, 0, NULL, NULL, KORB_NIL);   /* current = current.succ */
+            if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
+            if (UNLIKELY(!KORB_STRING_P(sc.value))) return RESULT_OK(KORB_FALSE);
+            slots[2] = sc.value;
+        }
+        return RESULT_OK(KORB_FALSE);
+    }
+    /* Non-string range: classify by the DEFINED bound (either may be nil for an
+     * open range).  Numeric → cover (works for open ranges).  Custom Comparable
+     * → succ-membership, but an open bound can't be walked → TypeError. */
+    const VALUE defb = (r->rbegin != KORB_NIL) ? r->rbegin : r->rend;
+    if (!KORB_OBJECT_P(defb)) {
         return korb_m_range_cover(c, slots, self, a);        /* numeric/other → cover-based (fast) */
     }
-    else if (korb_responds_to(c, r->rbegin, korb_intern(c->vm, "to_str", 6))) {
-        /* a String-coercible Comparable begin (e.g. mspec's SpecVersion) is treated
+    /* CRuby treats Numeric (incl. subclasses) and Time bounds as "linear objects"
+     * → #cover? logic (works for open ranges), never #succ iteration. */
+    else if (({ const VALUE dcls = korb_dispatch_class(c, defb);
+                const VALUE num = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+                const VALUE tim = korb_const_get(c->vm, korb_intern(c->vm, "Time", 4));
+                (num != KORB_NIL && korb_class_has_ancestor(dcls, num)) ||
+                (tim != KORB_NIL && korb_class_has_ancestor(dcls, tim)); })) {
+        return korb_m_range_cover(c, slots, self, a);
+    }
+    else if (korb_responds_to(c, defb, korb_intern(c->vm, "to_str", 6))) {
+        /* a String-coercible Comparable bound (e.g. mspec's SpecVersion) is treated
          * like a String range by CRuby's #include?, which for such objects reduces
          * to #cover? (a <=> comparison) rather than #succ iteration. */
         return korb_m_range_cover(c, slots, self, a);
+    }
+    else if (r->rbegin == KORB_NIL || r->rend == KORB_NIL) {
+        /* custom-object range with an open bound → can't succ-walk → TypeError. */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot determine inclusion in beginless/endless ranges");
     }
     else {
         /* custom-object range → succ-membership: walk begin, begin.succ, ...
