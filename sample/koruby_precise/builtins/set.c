@@ -1236,8 +1236,11 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     else                memcpy(buf, VAL2STR(name)->buf->data, len);
     buf[len] = 0;
 
+    /* Only a String name is parsed for `::` scope separators; a Symbol name is
+     * treated atomically (so :"A::B" / :"::A" are "wrong constant name"). */
+    const bool is_sym = SYMBOL_P(VALUE_SLICE_GET(a, 0));
     const char *p = buf, *const end = buf + len;
-    if (p + 2 <= end && p[0] == ':' && p[1] == ':') { p += 2; }          /* leading :: → start at top-level */
+    if (!is_sym && p + 2 <= end && p[0] == ':' && p[1] == ':') { p += 2; } /* leading :: → start at top-level */
     VALUE owner = (p != buf) ? KORB_NIL : VALUE_REF_GET(self);           /* nil owner = top-level namespace */
     const bool leading_top = (p != buf);
     if (UNLIKELY(p >= end))
@@ -1246,7 +1249,8 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     bool first = true;
     while (p < end) {
         const char *q = p;
-        while (q < end && !(q[0] == ':' && q + 1 < end && q[1] == ':')) q++;
+        if (is_sym) q = end;                                             /* atomic: whole Symbol is one component */
+        else while (q < end && !(q[0] == ':' && q + 1 < end && q[1] == ':')) q++;
         const uint32_t clen = (uint32_t)(q - p);
         if (UNLIKELY(!korb_valid_const_name(p, clen)))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", buf);
@@ -1279,7 +1283,13 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                     return korb_send_impl(c, slots + 2, cm, 0, 1, NULL, NULL, KORB_NIL);
                 }
             }
-            return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", (int)clen, buf + (p - buf));
+            RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", (int)clen, buf + (p - buf));
+            if (LIKELY(KORB_EXC_P(nr.value))) {           /* NameError#name = the missing constant symbol */
+                slots[0] = nr.value;
+                korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(cid));
+                nr.value = slots[0];
+            }
+            return nr;
         }
         result = vm->const_vals[idx];
         owner = result;                                     /* next component resolves within this */
