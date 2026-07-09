@@ -6400,6 +6400,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_range_new(c, slots, VALUE_REF_AT(&base[0]), base[1], excl);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
+        /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
+         * allocator: dispatch it with the args + block.  The non-block path resolves
+         * this in node_send_cached; this shared path (block/*send) must too. */
+        {
+            const VALUE sing = korb_dispatch_class(c, self);
+            VALUE sdef = KORB_NIL;
+            struct korb_method *const snew =
+                KORB_CLASS_P(sing) ? korb_class_find_method(sing, vm->mid_new, &sdef) : NULL;
+            if (snew && snew->kind == KORB_METHOD_ISEQ)
+                return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self);
+        }
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->class_name[KORB_C_NIL] || cname == vm->class_name[KORB_C_TRUE] ||
             cname == vm->class_name[KORB_C_FALSE] || cname == vm->class_name[KORB_C_INTEGER] ||
