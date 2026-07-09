@@ -567,6 +567,8 @@ static RESULT korb_m_hash_transform_values(CTX *c, VALUE *slots, VALUE_REF self,
     (void)a;
     if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "transform_values", 16)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
+    if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* keys unchanged → keep identity comparison */
+        ((AroObjectHeader *)(uintptr_t)slots[0])->flags |= KORB_FL_CMP_BY_ID;
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
