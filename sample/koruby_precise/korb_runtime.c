@@ -8005,6 +8005,13 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_exec", korb_m_obj_instance_exec, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_eval", korb_m_obj_instance_eval, -1);
+    /* instance_eval/instance_exec are BasicObject instance methods in CRuby, so a
+     * bare BasicObject (which does not inherit Object/Kernel) can still use them. */
+    { const VALUE bo = korb_const_get(c->vm, korb_intern(c->vm, "BasicObject", 11));
+      if (KORB_CLASS_P(bo)) {
+          korb_class_def_cfn_blk(c, bo, "instance_eval", korb_m_obj_instance_eval, -1);
+          korb_class_def_cfn_blk(c, bo, "instance_exec", korb_m_obj_instance_exec, -1);
+      } }
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "loop", korb_m_loop, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "catch", korb_m_catch, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "throw", korb_m_throw, -1);

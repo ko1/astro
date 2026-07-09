@@ -1406,10 +1406,12 @@ static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)cself;
     if (UNLIKELY(block == NULL)) {
-        if (VALUE_SLICE_LEN(a) >= 1)
-            return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "instance_eval with a String is not supported");
-        return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
+        if (VALUE_SLICE_LEN(a) == 0)                          /* no block and no string → ArgumentError (CRuby) */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "instance_eval with a String is not supported");
     }
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));
     slots[0] = VALUE_REF_GET(self);
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
         return korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
