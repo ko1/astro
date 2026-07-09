@@ -1729,6 +1729,17 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
     k->exc_etype = -1;                                 /* not an exception class by default */
     if (superclass != KORB_NIL) ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->superclass, VALUE_REF_GET(sref));
+    /* A subclass of a Struct/Data class inherits its member layout: share the
+     * (immutable) members list + is_data/keyword-init flags so the member-based
+     * .new / inspect / to_a / … paths (which read the instance's own class) work. */
+    for (VALUE a = VALUE_REF_GET(sref); KORB_CLASS_P(a); a = VAL2CLASS(a)->superclass) {
+        if (VAL2CLASS(a)->members != KORB_NIL) {
+            ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->members, VAL2CLASS(a)->members);
+            k->is_data = VAL2CLASS(a)->is_data;
+            k->struct_kwinit = VAL2CLASS(a)->struct_kwinit;
+            break;
+        }
+    }
     aro_gc_finalize_register(c, k);                    /* free the libc methods[] + entries when k is collected */
     return RESULT_OK((VALUE)k);
 }
@@ -6469,6 +6480,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
             return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
+        /* Struct/Data members are inherited (korb_class_new shares the member list
+         * onto subclasses), so the receiver class itself carries them. */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
             /* Data kwargs: a single Hash of all-symbol keys is taken as keyword form,
