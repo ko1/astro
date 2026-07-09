@@ -747,10 +747,12 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     VALUE_REF arr = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < vm->const_cnt; i++) {
         const VALUE owner = vm->const_owners[i];                    /* owners are root-updated across the push GC */
-        bool match = (owner == VALUE_REF_GET(self));
-        if (!match && inherit && KORB_CLASS_P(VALUE_REF_GET(self)))   /* walk superclasses, excluding Object */
-            for (VALUE k = VAL2CLASS(VALUE_REF_GET(self))->superclass; KORB_CLASS_P(k) && k != objc; k = VAL2CLASS(k)->superclass)
-                if (owner == k) { match = true; break; }
+        const VALUE selfv = VALUE_REF_GET(self);
+        bool match = (owner == selfv);
+        /* inherit (default): own + included + prepended + ancestors (excl. Object).
+         * non-inherit: only constants defined directly in self (owner == self). */
+        if (!match && inherit && KORB_CLASS_P(selfv) && KORB_CLASS_P(owner) && owner != objc)
+            match = korb_class_has_ancestor(selfv, owner);
         if (!match) continue;
         const char *const nm = korb_sym_name(vm, vm->const_names[i]);
         if (nm[0] == '$' || nm[0] == '@') continue;
