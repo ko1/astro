@@ -4,6 +4,7 @@
 #define KORUBY_NODE_H 1
 
 #include "context.h"
+#include "precise_gc/gc.h"
 
 typedef struct Node NODE;
 typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *slots);
