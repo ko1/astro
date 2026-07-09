@@ -42,7 +42,21 @@ module Enumerable
   alias member? include?
   def first(n = nil); if n.nil?; __each_el { |e| return e }; nil; else; r = []; c = 0; __each_el { |e| if c < n; r << e; c += 1; end }; r; end; end
   # reduce/inject: (sym) | (init, sym) | { block } | (init) { block }.
-  def reduce(*args); if block_given?; if args.size >= 1; acc = args[0]; f = false; else; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = yield(acc, x); end }; acc; else; if args.size >= 2; acc = args[0]; op = args[1]; f = false; else; op = args[0]; acc = nil; f = true; end; __each_el { |x| if f; acc = x; f = false; else; acc = acc.send(op, x); end }; acc; end; end
+  def reduce(*args)
+    if block_given?
+      if args.size >= 1 then acc = args[0]; f = false else acc = nil; f = true end
+      __each_el { |x| if f then acc = x; f = false else acc = yield(acc, x) end }
+      return acc
+    end
+    if args.size >= 2 then acc = args[0]; op = args[1]; f = false else op = args[0]; acc = nil; f = true end
+    # the operator/method-name arg is a Symbol/String, or #to_str-coercible; else TypeError.
+    unless op.is_a?(Symbol) || op.is_a?(String)
+      raise TypeError, "#{op.inspect} is not a symbol nor a string" unless op.respond_to?(:to_str)
+      op = op.to_str
+    end
+    __each_el { |x| if f then acc = x; f = false else acc = acc.send(op, x) end }
+    acc
+  end
   alias inject reduce
   def sum(init = 0, &blk); s = init; if blk; each { |*a| s = s + blk.call(a.size <= 1 ? a[0] : a) }; else; __each_el { |x| s = s + x }; end; s; end
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.

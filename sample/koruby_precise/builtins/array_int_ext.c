@@ -474,6 +474,8 @@ static RESULT korb_m_hash_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* slice (keep==true) / except (keep==false) the listed keys */
 static RESULT korb_hash_pick(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool keep) {
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
+    if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* except/slice keep compare_by_identity */
+        ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
     if (keep) {                                           /* slice: walk the requested keys (preserve their order) */
         for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
             const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
