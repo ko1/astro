@@ -547,8 +547,21 @@ static RESULT korb_m_str_insert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     free(out);
     return RESULT_OK(VALUE_REF_GET(self));
 }
-/* String#bytesplice(index, length, str) / (range, str) — replace bytes in place,
- * return self. */
+/* Render a Range as "<begin><..|...><end>" (for bytesplice's RangeError text). */
+static void korb_range_desc(CTX *c, VALUE rng, char *buf, size_t sz) {
+    const KorbRange *r = VAL2RANGE(rng);
+    char *b = NULL; size_t z = 0; FILE *ms = open_memstream(&b, &z);
+    if (ms) {
+        if (r->rbegin != KORB_NIL) korb_fprint_inspect(c, ms, r->rbegin);
+        fputs(r->exclude_end ? "..." : "..", ms);
+        if (r->rend != KORB_NIL) korb_fprint_inspect(c, ms, r->rend);
+        fclose(ms);
+    }
+    snprintf(buf, sz, "%s", b ? b : "");
+    free(b);
+}
+/* String#bytesplice(index, length, str) / (range, str) [+ str_range | str_index,str_length]
+ * — replace bytes in place, return self. */
 static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -567,14 +580,34 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (start < 0) start += bn;
         repl = VALUE_SLICE_GET(a, 2); repl_pos = 2;
     }
-    if (UNLIKELY((repl_pos == 1 && VALUE_SLICE_LEN(a) != 2) || (repl_pos == 2 && VALUE_SLICE_LEN(a) != 3 && VALUE_SLICE_LEN(a) != 5)))
+    /* Trailing args after the replacement select a sub-span of it:
+     *   0 extra          → the whole replacement
+     *   1 extra (Range)  → str_range
+     *   2 extra (Int,Int)→ str_index, str_length (index form only). */
+    const uint32_t nafter = VALUE_SLICE_LEN(a) - (repl_pos + 1);
+    const bool src_is_range = (nafter == 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, repl_pos + 1)));
+    if (UNLIKELY(!(nafter == 0 || src_is_range || (nafter == 2 && repl_pos == 2))))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2, 3, or 5)", (unsigned)VALUE_SLICE_LEN(a));
-    if (UNLIKELY(start < 0 || start > (intptr_t)bn)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)start);
+    /* index form uses IndexError; range form uses RangeError (with the range's text). */
+    if (UNLIKELY(start < 0 || start > (intptr_t)bn)) {
+        if (repl_pos == 1) { char rb[96]; korb_range_desc(c, VALUE_SLICE_GET(a, 0), rb, sizeof rb); return korb_raise(c, slots, KORB_E_RANGE, 0, "%s out of range", rb); }
+        return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)start);
+    }
     if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)dellen);
     if (start + dellen > (intptr_t)bn) dellen = (intptr_t)bn - start;
     if (UNLIKELY(!KORB_STRING_P(repl))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(repl));
     const KorbString *rs = VAL2STR(repl); uint32_t rn = rs->len, roff = 0;
-    if (VALUE_SLICE_LEN(a) == 5) {                          /* 5-arg form: replace with str[str_index, str_length] */
+    if (src_is_range) {                                    /* replacement sub-span given as a Range */
+        const KorbRange *sr = VAL2RANGE(VALUE_SLICE_GET(a, repl_pos + 1));
+        intptr_t si = 0, e;
+        if (sr->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(sr->rbegin, &si))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (si < 0) si += rn;
+        if (sr->rend == KORB_NIL) e = rn; else { if (UNLIKELY(!korb_to_index(sr->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += rn; if (!sr->exclude_end) e += 1; }
+        if (UNLIKELY(si < 0 || si > (intptr_t)rn)) { char rb[96]; korb_range_desc(c, VALUE_SLICE_GET(a, repl_pos + 1), rb, sizeof rb); return korb_raise(c, slots, KORB_E_RANGE, 0, "%s out of range", rb); }
+        intptr_t sl = e - si; if (sl < 0) sl = 0;
+        if (si + sl > (intptr_t)rn) sl = (intptr_t)rn - si;
+        roff = (uint32_t)si; rn = (uint32_t)sl;
+    } else if (nafter == 2) {                              /* 5-arg form: str[str_index, str_length] */
         intptr_t si, sl;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, repl_pos + 1), &si) || !korb_to_index(VALUE_SLICE_GET(a, repl_pos + 2), &sl)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
