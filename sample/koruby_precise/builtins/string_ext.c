@@ -78,17 +78,52 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
     free(digits);
 }
 
+/* Emit `nbytes` of a single %c character to `ms`, honouring width + '-' parsed
+ * from `spec` (a %c pads to `width` characters, one char here). */
+static void korb_fmt_emit_c(FILE *ms, const char *bytes, int nbytes, const char *spec, int si) {
+    bool left = false; int width = 0;
+    for (int k = 1; k < si; k++) {
+        const char sc = spec[k];
+        if (sc == '-') left = true;
+        else if (isdigit((unsigned char)sc)) width = width * 10 + (sc - '0');
+    }
+    const int pad = width > 1 ? width - 1 : 0;
+    if (left) { fwrite(bytes, 1, (size_t)nbytes, ms); for (int p = 0; p < pad; p++) fputc(' ', ms); }
+    else      { for (int p = 0; p < pad; p++) fputc(' ', ms); fwrite(bytes, 1, (size_t)nbytes, ms); }
+}
+
+/* Coerce a format argument to an Integer exactly as Kernel#Integer would
+ * (String "0x.."/"0b.."/underscores, #to_int→#to_i, Float trunc); `arg` is
+ * rooted in slots[1] across the call.  Returns a Fixnum/Bignum or raises. */
+static RESULT korb_fmt_integer(CTX *c, VALUE *slots, VALUE arg) {
+    slots[1] = arg;
+    return korb_bi_integer(c, slots + 2, VALUE_SLICE_MAKE(&slots[1], 1));
+}
+/* Coerce a format argument to a double as Kernel#Float would. */
+static RESULT korb_fmt_float(CTX *c, VALUE *slots, VALUE arg, double *out) {
+    slots[1] = arg;
+    RESULT r = korb_bi_float(c, slots + 2, VALUE_SLICE_MAKE(&slots[1], 1));
+    if (r.state == KORB_NORMAL) (void)korb_num_to_d(r.value, out);
+    return r;
+}
+
 static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     if (VALUE_SLICE_LEN(a) == 1 && !KORB_ARRAY_P(single) && KORB_OBJECT_P(single)) {   /* a single non-Array arg is coerced via #to_ary (before caching fmt → GC-safe) */
         slots[0] = VALUE_REF_GET(self);                  /* root self across the dispatch */
         slots[1] = single;
         if (korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_ary", 6))) {
+            const char *onm = korb_type_name(slots[1]);
             RESULT ar = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
-            if (KORB_ARRAY_P(ar.value)) single = ar.value;
+            if (KORB_ARRAY_P(ar.value)) slots[1] = ar.value;   /* use the array (rooted in slots[1]) */
+            else if (ar.value != KORB_NIL)                     /* to_ary gave a non-Array → TypeError (CRuby) */
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
+                                  onm, onm, korb_type_name(ar.value));
+            /* to_ary → nil: keep the object itself (slots[1] auto-forwarded by GC) as the single arg */
         }
         self = VALUE_REF_AT(&slots[0]);                  /* self re-rooted after the possible GC */
+        single = slots[1];                               /* array or the (GC-forwarded) object */
     }
     const KorbString *fs = VAL2STR(VALUE_REF_GET(self));
     uint32_t flen = fs->len;
@@ -121,7 +156,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
     RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
-    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6), fmt_to_f = korb_intern(c->vm, "to_f", 4), fmt_to_i = korb_intern(c->vm, "to_i", 4);
+    const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6);   /* %c fallback coercion */
     for (uint32_t i = 0; i < flen; i++) {
         if (fmt[i] != '%') { fputc(fmt[i], ms); continue; }
         char spec[80]; int si = 0; spec[si++] = '%';
@@ -190,6 +225,15 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
             }
         }
+        /* trailing positional value index `N$` (after width/precision), e.g.
+         * `%*1$.*2$3$d` — the value comes from arg N.  Only digits here can be
+         * this index (plain width digits were consumed above). */
+        if (explicit_idx < 0 && !has_named && i < flen && isdigit((unsigned char)fmt[i])) {
+            const uint32_t save = i; int num = 0;
+            while (i < flen && isdigit((unsigned char)fmt[i])) { num = num * 10 + (fmt[i] - '0'); i++; }
+            if (i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
+            else i = save;
+        }
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
         char conv = fmt[i];
         const bool sequential = (!has_named && explicit_idx < 0);
@@ -200,23 +244,12 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (sequential && conv != '%') ai++;               /* advance only for a sequential arg */
         switch (conv) {
           case 'd': case 'i': case 'u': {
-            intptr_t v;
-            /* coerce a Rational (truncate) or an object (#to_int, then #to_i) to an
-             * Integer up front, so the Fixnum/Bignum paths below handle it. */
-            if (KORB_RATIONAL_P(arg)) {
-                RESULT tr = korb_rat_intdiv(c, slots, VAL2RAT(arg)->num, VAL2RAT(arg)->den, 2);   /* trunc toward 0 */
-                if (UNLIKELY(tr.state != KORB_NORMAL)) { coerce_err = tr; has_coerce_err = true; err = true; break; }
-                FMT_REREAD_ARGS(); arg = tr.value;
-            } else if (KORB_OBJECT_P(arg) && fmt_stable) {
-                const uint32_t m = korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int) ? fmt_to_int
-                                 : (korb_responds_to(c, arg, fmt_to_i) ? fmt_to_i : 0);
-                if (m) {
-                    RESULT ir = korb_send_impl(c, slots + 2, m, 0, 0, NULL, NULL, NULL);
-                    if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
-                    FMT_REREAD_ARGS();
-                    if (FIXNUM_P(ir.value) || KORB_BIGNUM_P(ir.value)) arg = ir.value;
-                    else { err = true; errmsg = "expected a number"; break; }
-                }
+            /* Coerce to an Integer as Kernel#Integer (String base-0 / #to_int→#to_i
+             * / Float trunc / Rational trunc), then render Fixnum or Bignum. */
+            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {
+                RESULT ir = korb_fmt_integer(c, slots, arg);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS(); arg = ir.value;
             }
             if (KORB_BIGNUM_P(arg)) {                     /* Bignum: let GMP honour the flags/width via %Zd */
                 spec[si++] = 'Z'; spec[si++] = 'd'; spec[si] = '\0';
@@ -225,34 +258,16 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 mpz_clear(z);
                 break;
             }
-            if (FIXNUM_P(arg)) v = FIX2LONG(arg);
-            else if (KORB_FLOAT_P(arg)) v = (intptr_t)korb_float_val(arg);
-            else if (KORB_STRING_P(arg)) {               /* %d coerces a String via Integer() */
-                VALUE iv;
-                if (!korb_str_to_int(c, slots, VAL2STR(arg)->buf->data, VAL2STR(arg)->len, 0, &iv) || !FIXNUM_P(iv)) { err = true; errmsg = "invalid value for Integer()"; break; }
-                v = FIX2LONG(iv);
-            }
-            else if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int)) {   /* %d coerces an object via #to_int */
-                RESULT ir = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
-                FMT_REREAD_ARGS();
-                if (FIXNUM_P(ir.value)) v = FIX2LONG(ir.value);
-                else { err = true; errmsg = "expected a number"; break; }
-            }
-            else { err = true; errmsg = "expected a number"; break; }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
-            fprintf(ms, spec, (long)v);
+            fprintf(ms, spec, (long)FIX2LONG(arg));
             break;
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {   /* a/A = hex float (C printf) */
             double v;
-            if (UNLIKELY(!korb_num_to_d(arg, &v))) {     /* %f/%e/%g coerces an object via #to_f (Float() semantics) */
-                if (KORB_OBJECT_P(arg) && fmt_stable && korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_f)) {
-                    RESULT fr = korb_send_impl(c, slots + 2, fmt_to_f, 0, 0, NULL, NULL, NULL);
-                    if (UNLIKELY(fr.state != KORB_NORMAL)) { coerce_err = fr; has_coerce_err = true; err = true; break; }
-                    FMT_REREAD_ARGS();
-                    if (!korb_num_to_d(fr.value, &v)) { err = true; errmsg = "expected a number"; break; }
-                } else { err = true; errmsg = "expected a number"; break; }
+            if (UNLIKELY(!korb_num_to_d(arg, &v))) {     /* coerce via Kernel#Float (String parse / #to_f) */
+                RESULT fr = korb_fmt_float(c, slots, arg, &v);
+                if (UNLIKELY(fr.state != KORB_NORMAL)) { coerce_err = fr; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
             }
             if (UNLIKELY(isinf(v) || isnan(v))) {
                 /* CRuby renders non-finite floats as "Inf"/"NaN" (fixed casing,
@@ -284,21 +299,10 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             break;
           }
           case 'x': case 'X': case 'o': case 'b': case 'B': {
-            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {  /* %x/%o/%b coerces a Rational (trunc) or an object (#to_int, then #to_i) */
-                if (KORB_RATIONAL_P(arg)) {
-                    RESULT tr = korb_rat_intdiv(c, slots, VAL2RAT(arg)->num, VAL2RAT(arg)->den, 2);
-                    if (UNLIKELY(tr.state != KORB_NORMAL)) { coerce_err = tr; has_coerce_err = true; err = true; break; }
-                    FMT_REREAD_ARGS(); arg = tr.value;
-                } else if (KORB_OBJECT_P(arg) && fmt_stable) {
-                    const uint32_t m = korb_responds_to_coerce(c, slots + 2, (slots[1] = arg), fmt_to_int) ? fmt_to_int
-                                     : (korb_responds_to(c, arg, fmt_to_i) ? fmt_to_i : 0);
-                    if (!m) { err = true; errmsg = "expected Integer"; break; }
-                    RESULT ir = korb_send_impl(c, slots + 2, m, 0, 0, NULL, NULL, NULL);
-                    if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
-                    FMT_REREAD_ARGS();
-                    if (FIXNUM_P(ir.value) || KORB_BIGNUM_P(ir.value)) arg = ir.value;
-                    else { err = true; errmsg = "expected Integer"; break; }
-                } else { err = true; errmsg = "expected Integer"; break; }
+            if (!FIXNUM_P(arg) && !KORB_BIGNUM_P(arg)) {  /* coerce via Kernel#Integer (String / #to_int→#to_i / Rational trunc) */
+                RESULT ir = korb_fmt_integer(c, slots, arg);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { coerce_err = ir; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS(); arg = ir.value;
             }
             const int base = (conv == 'o') ? 8 : (conv == 'b' || conv == 'B') ? 2 : 16;
             const bool upper = (conv == 'X' || conv == 'B');
@@ -325,6 +329,19 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           case 's': {
             spec[si++] = 's'; spec[si] = '\0';
             if (KORB_STRING_P(arg)) { fprintf(ms, spec, VAL2STR(arg)->buf->data); }
+            else if (KORB_OBJECT_P(arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
+                slots[1] = arg;
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { coerce_err = sr; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
+                char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
+                if (tms) {
+                    if (KORB_STRING_P(sr.value)) fwrite(VAL2STR(sr.value)->buf->data, 1, VAL2STR(sr.value)->len, tms);
+                    else korb_fprint_to_s(c, tms, sr.value);
+                    fclose(tms);
+                }
+                fprintf(ms, spec, tb ? tb : ""); free(tb);
+            }
             else {
                 char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
                 if (tms) { korb_fprint_to_s(c, tms, arg); fclose(tms); }
@@ -334,21 +351,60 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           }
           case 'p': {
             char *tb = NULL; size_t tsz = 0; FILE *tms = open_memstream(&tb, &tsz);
-            if (tms) { korb_fprint_inspect(c, tms, arg); fclose(tms); }
+            if (KORB_OBJECT_P(arg) && fmt_stable) {        /* dispatch #inspect (honours overrides) */
+                slots[1] = arg;
+                RESULT ir = korb_send_impl(c, slots + 2, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { if (tms) fclose(tms); free(tb); coerce_err = ir; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
+                if (tms) {
+                    if (KORB_STRING_P(ir.value)) fwrite(VAL2STR(ir.value)->buf->data, 1, VAL2STR(ir.value)->len, tms);
+                    else korb_fprint_inspect(c, tms, ir.value);
+                    fclose(tms);
+                }
+            } else if (tms) { korb_fprint_inspect(c, tms, arg); fclose(tms); }
             spec[si++] = 's'; spec[si] = '\0';
             fprintf(ms, spec, tb ? tb : ""); free(tb);
             break;
           }
           case 'c': {
-            int ch = -1;
-            if (FIXNUM_P(arg)) ch = (int)(unsigned char)FIX2LONG(arg);
-            else if (KORB_STRING_P(arg) && VAL2STR(arg)->len > 0) ch = (int)(unsigned char)VAL2STR(arg)->buf->data[0];
-            if (ch < 0) break;
-            if (si > 1) {                                  /* width/flags present → pad like C %c */
-                if (si < 70) spec[si++] = 'c';
-                spec[si] = '\0';
-                char tmp[128]; snprintf(tmp, sizeof tmp, spec, ch); fputs(tmp, ms);
-            } else fputc(ch, ms);
+            /* %c: Integer → codepoint; String → first char; else #to_str, then
+             * #to_ary (single elem), then #to_int; nothing → TypeError. */
+            long cp = -1;                                  /* codepoint, or -1 → use `cbytes` */
+            const char *cbytes = NULL; int cnbytes = 0;
+            if (FIXNUM_P(arg)) cp = FIX2LONG(arg);
+            else if (KORB_STRING_P(arg)) {
+                const KorbString *cs = VAL2STR(arg);
+                if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
+                cnbytes = (int)korb_utf8_seq_len((const unsigned char *)cs->buf->data, 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
+                cbytes = cs->buf->data;
+            }
+            else if (KORB_OBJECT_P(arg) && fmt_stable) {
+                /* Root arg in slots[1] across the (GC-point) respond_to?/coerce
+                 * dispatches — a bare C-local would go stale when a prior arg's
+                 * allocation triggers a moving GC (real bug, hit by mock chains). */
+                slots[1] = arg;
+                const uint32_t c_to_str = korb_intern(c->vm, "to_str", 6), c_to_ary = korb_intern(c->vm, "to_ary", 6);
+                uint32_t cm = korb_responds_to_coerce(c, slots + 2, slots[1], c_to_str) ? c_to_str
+                            : korb_responds_to_coerce(c, slots + 2, slots[1], c_to_ary) ? c_to_ary
+                            : korb_responds_to_coerce(c, slots + 2, slots[1], fmt_to_int) ? fmt_to_int : 0;
+                if (!cm) { coerce_err = korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(slots[1])); has_coerce_err = true; err = true; break; }
+                RESULT cr = korb_send_impl(c, slots + 2, cm, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) { coerce_err = cr; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
+                VALUE cv = cr.value;
+                if (KORB_ARRAY_P(cv)) cv = VAL2ARY(cv)->len > 0 ? VAL2ARY(cv)->items->data[0] : KORB_NIL;
+                if (FIXNUM_P(cv)) cp = FIX2LONG(cv);
+                else if (KORB_STRING_P(cv)) { slots[1] = cv;  /* root the coerced String */
+                    const KorbString *cs = VAL2STR(slots[1]);
+                    if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
+                    cnbytes = (int)korb_utf8_seq_len((const unsigned char *)cs->buf->data, 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
+                    cbytes = cs->buf->data; }
+                else { coerce_err = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(arg)); has_coerce_err = true; err = true; break; }
+            }
+            else { coerce_err = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(arg)); has_coerce_err = true; err = true; break; }
+            char enc[4];
+            if (cp >= 0) { cnbytes = (int)korb_utf8_encode((uint32_t)cp, enc); cbytes = enc; }
+            korb_fmt_emit_c(ms, cbytes, cnbytes, spec, si);
             break;
           }
           default: err = true; errmsg = "malformed format sequence"; break;

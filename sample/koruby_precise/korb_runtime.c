@@ -7052,8 +7052,9 @@ korb_fmt_int(intptr_t n, int base, char *buf)
  * can build a beyond-Fixnum literal). */
 
 /* Kernel#Float(x) — strict parse (handles String/Integer/Float).  Defined far
- * below but used by Float#coerce in builtins/float.c. */
+ * below but used by Float#coerce in builtins/float.c and String#% in string_ext.c. */
 static RESULT korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args);
+static RESULT korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args);   /* Kernel#Integer — used by String#% */
 
 /* fwd decls: ArithmeticSequence helpers are defined in arithseq.c (included after
  * array*.c) but used by Integer#upto(∞) and zip's element pull. */
@@ -9514,6 +9515,10 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (UNLIKELY(n < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     VALUE a0 = VALUE_SLICE_GET(args, 0);
+    /* A base (2nd arg) is only meaningful for a String value → reject numerics. */
+    if (n >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL &&
+        (FIXNUM_P(a0) || KORB_FLOAT_P(a0) || KORB_BIGNUM_P(a0) || KORB_RATIONAL_P(a0)))
+        INT_FAIL(KORB_E_ARGUMENT, 0, "base specified for non string value");
     if (FIXNUM_P(a0)) return RESULT_OK(a0);
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(a0)) return RESULT_OK(a0);
@@ -9537,29 +9542,61 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (KORB_RATIONAL_P(a0))                                /* Integer(Rational) → truncate toward zero */
         return korb_rat_intdiv(c, slots, VAL2RAT(a0)->num, VAL2RAT(a0)->den, 2);
-    if (KORB_STRING_P(a0)) {
-        int base = 0;
-        if (n >= 2) {
-            VALUE b = VALUE_SLICE_GET(args, 1);
-            if (UNLIKELY(!FIXNUM_P(b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
-            base = (int)FIX2LONG(b);
+    /* Optional base (2nd arg): valid only with a String (or #to_str) value;
+     * coerced via #to_int; range 2..36 (0 = auto-detect). */
+    int base = 0; bool base_given = (n >= 2);
+    if (base_given) {
+        VALUE b = VALUE_SLICE_GET(args, 1);
+        if (b == KORB_NIL) base_given = false;             /* explicit nil base == none */
+        else {
+            intptr_t bi;
+            if (FIXNUM_P(b)) bi = FIX2LONG(b);
+            else if (KORB_OBJECT_P(b)) {                    /* #to_int on the base */
+                VALUE bv = b; RESULT bc = korb_coerce_to_int(c, slots, &bv);
+                if (UNLIKELY(bc.state != KORB_NORMAL)) return bc;
+                if (bc.value != KORB_TRUE || !FIXNUM_P(bv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
+                bi = FIX2LONG(bv);
+            }
+            else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(b));
+            base = (int)bi;
         }
+    }
+    if (KORB_STRING_P(a0)) {
+        if (base_given && base != 0 && (base < 2 || base > 36))
+            INT_FAIL(KORB_E_ARGUMENT, 0, "invalid radix %d", base);
         const KorbString *s = VAL2STR(a0);
         VALUE v;
         if (UNLIKELY(!korb_str_to_int(c, slots, s->buf->data, s->len, base, &v)))
             INT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
         return RESULT_OK(v);
     }
+    /* A base with a non-String value is an error (checked after String above). */
+    if (base_given && !KORB_OBJECT_P(a0))
+        INT_FAIL(KORB_E_ARGUMENT, 0, "base specified for non string value");
     if (a0 == KORB_NIL)
         INT_FAIL(KORB_E_TYPE, 0, "can't convert nil into Integer");
-    if (KORB_OBJECT_P(a0)) {                               /* user object → #to_int, then #to_i (CRuby) */
+    if (KORB_OBJECT_P(a0)) {                               /* user object → #to_int, then #to_i, then #to_str (CRuby) */
         VALUE v = a0;
         RESULT ci = korb_coerce_to_int(c, slots, &v);      /* dispatches #to_int */
         if (UNLIKELY(ci.state != KORB_NORMAL)) return exc ? ci : RESULT_OK(KORB_NIL);
         if (ci.value == KORB_TRUE) return RESULT_OK(v);
+        slots[0] = a0;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {   /* #to_str → parse as a String (honours base) */
+            RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return exc ? r : RESULT_OK(KORB_NIL);
+            if (KORB_STRING_P(r.value)) {
+                if (base_given && base != 0 && (base < 2 || base > 36)) INT_FAIL(KORB_E_ARGUMENT, 0, "invalid radix %d", base);
+                slots[0] = r.value; const KorbString *s = VAL2STR(slots[0]); VALUE iv;
+                if (UNLIKELY(!korb_str_to_int(c, slots + 1, s->buf->data, s->len, base, &iv)))
+                    INT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Integer(): \"%.*s\"", (int)s->len, s->buf->data);
+                return RESULT_OK(iv);
+            }
+        }
         const uint32_t to_i = korb_intern(c->vm, "to_i", 4);
         slots[0] = a0;
-        if (korb_responds_to(c, a0, to_i)) {
+        if (korb_responds_to_coerce(c, slots + 1, slots[0], to_i)) {   /* honors respond_to_missing? (proxies/mocks) */
+            slots[0] = a0;                                       /* re-root (coerce used slots+1 scratch) */
             RESULT r = korb_send_impl(c, slots + 1, to_i, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return exc ? r : RESULT_OK(KORB_NIL);
             intptr_t tmp;
@@ -9698,7 +9735,22 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
         const KorbString *s = VAL2STR(a0);
         char buf[64];
         if (s->len >= sizeof(buf)) FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
-        memcpy(buf, s->buf->data, s->len); buf[s->len] = '\0';
+        /* Copy, dropping Ruby-legal `_` (a decimal float allows a single `_`
+         * between two decimal digits only; leading/trailing/double `_`, `_`
+         * adjacent to 'e'/'.'/sign, and any `_` in a hex literal are invalid →
+         * leave them in so strtod then rejects the whole string). */
+        const char *sp = s->buf->data; uint32_t sl = s->len;
+        while (sl && isspace((unsigned char)*sp)) { sp++; sl--; }             /* skip leading ws for the hex test */
+        const bool hex = sl >= 2 && sp[0] == '0' && (sp[1] == 'x' || sp[1] == 'X');
+        uint32_t bl = 0;
+        for (uint32_t k = 0; k < s->len; k++) {
+            const char ch = s->buf->data[k];
+            if (ch == '_' && !hex && k > 0 && k + 1 < s->len &&
+                isdigit((unsigned char)s->buf->data[k - 1]) && isdigit((unsigned char)s->buf->data[k + 1]))
+                continue;                                    /* valid decimal separator → skip */
+            buf[bl++] = ch;
+        }
+        buf[bl] = '\0';
         char *endp; errno = 0;
         double d = strtod(buf, &endp);
         while (*endp && isspace((unsigned char)*endp)) endp++;
@@ -9708,7 +9760,7 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (KORB_OBJECT_P(a0)) {                                  /* object with #to_f → use it (nil/true/false excluded: not objects) */
         const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
-        if (korb_responds_to(c, a0, to_f)) {
+        if (korb_responds_to_coerce(c, slots + 1, a0, to_f)) {   /* honors respond_to_missing? (proxies/mocks) */
             const char *const cls = korb_type_name(a0);       /* capture before dispatch (a0 may move) */
             slots[0] = a0;
             RESULT r = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, KORB_NIL);
