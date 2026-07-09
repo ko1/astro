@@ -1018,6 +1018,24 @@ node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int
     return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL);
 }
 
+// `super(args) { block }` — explicit super with a literal block.  Args come from a
+// built Array (like node_super_splat); the block + its captured env/self (the current
+// frame) are threaded to korb_super (like node_send_blk).  @noinline: the block is a
+// per-process NODE pointer (not bakeable).  self_off/dc_off match node_super_splat;
+// def_env_off = self_off+1 (the frame's local base), tagged for the eget path.
+NODE_DEF @noinline
+node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, NODE *block, int32_t def_env_off, VALUE_REF args@child)
+{
+    (void)n; (void)args; (void)block_dispatcher;
+    const VALUE arr  = slots[-1];                         /* the staged args array */
+    const VALUE dc   = slots[dc_off];
+    const VALUE self = slots[self_off];
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_super(c, slots + N, mid, line, N, dc, self, block,
+                      (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self);
+}
+
 // constant read (`Foo`) — classes only for now.  Inline cache: the const table
 // `$!` — the current exception (top of the per-CTX errinfo stack, pushed by the
 // active rescue body), nil when none.  O(1) read; no const-table involvement.

@@ -2929,12 +2929,24 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
       case PM_SUPER_NODE: {           /* super(...) — explicit args */
         const pm_super_node_t *sn = (const pm_super_node_t *)node;
-        if (sn->block) return kp_unsupported(tc, node, "super with a block");
         uint32_t m_mid = tc->frame->method_mid;
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
         const pm_arguments_node_t *args = sn->arguments;
         size_t argc = args ? args->arguments.size : 0;
+        /* `super(args) { block }` — build the args Array + thread the literal block.
+         * Staged like node_super_splat (one array child); def_env_off = self_off+1. */
+        if (sn->block) {
+            NODE *bentry = kp_block_entry(tc, sn->block);
+            if (!bentry) return kp_unsupported(tc, node, "super with a non-literal block");
+            int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1, deo = -tc->chain - 1;
+            NODE *arr;
+            WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
+            NODE *_s = ALLOC_node_super_blk(m_mid, line, soff, dco, bentry, deo, arr);
+            bake_add(tc, &_s->u.node_super_blk.self_off);
+            bake_add(tc, &_s->u.node_super_blk.def_env_off);
+            return _s;
+        }
         /* `super(*arr)` / `super(a, *b)` — build the args Array, spread at dispatch
          * (one staged child = the array; self_off/dc_off like the 1-arg case). */
         {
