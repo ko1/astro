@@ -63,15 +63,8 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     const char *nm = SYMBOL_P(name) ? korb_sym_name(c->vm, SYM2ID(name))
                    : (KORB_STRING_P(name) ? VAL2STR(name)->buf->data : "(unknown)");
     const VALUE recv = VALUE_REF_GET(self);
-    char buf[160]; const char *tn = korb_a_type_name(recv);
-    if (KORB_OBJECT_P(recv) && KORB_OBJ_TYPE(recv) == KORB_OBJ_OBJECT) {   /* user instance → real class name */
-        const VALUE k = VAL2OBJ(recv)->klass;
-        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym) {
-            char qn[160]; korb_class_qname_into(c, k, qn, sizeof(qn));
-            snprintf(buf, sizeof(buf), "an instance of %s", qn);
-            tn = buf;
-        }
-    }
+    char buf[256];   /* CRuby-shaped: "class Foo" / "module Bar" / "an instance of Foo" / … */
+    const char *tn = korb_recv_desc(c, recv, buf, sizeof buf);
     RESULT r = korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
     if (LIKELY(KORB_EXC_P(r.value))) {                    /* attach #name / #receiver metadata */
         slots[0] = r.value;

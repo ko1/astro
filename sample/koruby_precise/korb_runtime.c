@@ -4273,6 +4273,34 @@ korb_a_type_name(VALUE v)
     return "an instance of Object";
 }
 
+/* Receiver description for a NoMethodError message, CRuby-shaped:
+ *   Class    → "class Foo"    / anonymous "class #<Class:0x…>"
+ *   Module   → "module Bar"   / anonymous "module #<Module:0x…>"
+ *   instance → "an instance of Foo" (the object's real class name)
+ *   others   → korb_a_type_name (nil/true/Integer/String/…).
+ * Formats into `buf` for the dynamic cases; returns a static string otherwise. */
+static const char *
+korb_recv_desc(CTX *c, VALUE v, char *buf, size_t sz)
+{
+    if (KORB_CLASS_P(v)) {
+        const KorbClass *const k = VAL2CLASS(v);
+        const char *const kind = k->is_module ? "module" : "class";
+        if (k->name_sym) { char qn[192]; korb_class_qname_into(c, v, qn, sizeof qn); snprintf(buf, sz, "%s %s", kind, qn); }
+        else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, k->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
+        return buf;
+    }
+    if (KORB_OBJECT_P(v)) {
+        const VALUE cls = VAL2OBJ(v)->klass;
+        if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { char qn[192]; korb_class_qname_into(c, cls, qn, sizeof qn); snprintf(buf, sz, "an instance of %s", qn); }
+        else if (KORB_CLASS_P(cls))
+            snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
+        else
+            snprintf(buf, sz, "an instance of Object");
+        return buf;
+    }
+    return korb_a_type_name(v);
+}
+
 /* ---------------------------------------------------------------------------
  * Equality / comparison.
  * ------------------------------------------------------------------------- */
@@ -5465,10 +5493,11 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                 return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
             }
             slots[0] = self;                               /* root receiver across raise + ivar_set */
+            char rdbuf2[256];
             RESULT nmr = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s", korb_sym_name(vm, mid),
                               (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
-                                  ? "main" : korb_a_type_name(slots[0]));
+                                  ? "main" : korb_recv_desc(c, slots[0], rdbuf2, sizeof rdbuf2));
             if (LIKELY(KORB_EXC_P(nmr.value))) {
                 slots[1] = nmr.value;
                 VALUE_REF eref = VALUE_REF_AT(&slots[1]);
@@ -6402,7 +6431,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
          * allocator: dispatch it with the args + block.  The non-block path resolves
-         * this in node_send_cached; this shared path (block/*send) must too. */
+         * this in node_send_cached; this shared path (block / send) must too. */
         {
             const VALUE sing = korb_dispatch_class(c, self);
             VALUE sdef = KORB_NIL;
@@ -6793,9 +6822,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
         }
         slots[0] = self;                                   /* root receiver across the raise + ivar_set allocs */
+        char rdbuf[256];
         RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s",
-                              korb_sym_name(vm, mid), korb_a_type_name(slots[0]));
+                              korb_sym_name(vm, mid), korb_recv_desc(c, slots[0], rdbuf, sizeof rdbuf));
         if (LIKELY(KORB_EXC_P(r.value))) {                 /* attach #name / #receiver metadata */
             slots[1] = r.value;
             VALUE_REF eref = VALUE_REF_AT(&slots[1]);
