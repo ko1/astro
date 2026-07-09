@@ -65,10 +65,11 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* A deferred generator enumerator: stores the block as a proc in `source`, mode 3.
  * Terminals re-run the proc (bounded by a limit via the yielder) — so infinite
  * generators work for first/take/next without eager materialization. */
-static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc) {
+static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc, VALUE size) {
     slots[0] = proc;
     KorbEnumerator *e = korb_alloc(c, slots + 1, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = 3;
+    e->size = FIXNUM_P(size) ? size : KORB_NIL;          /* known size (Fixnum) → Enumerator#size; else unknown */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     return RESULT_OK((VALUE)e);
 }
@@ -301,6 +302,7 @@ static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbEnumerator *const e = SELF_ENUM;
+    if (FIXNUM_P(e->size)) return RESULT_OK(e->size);         /* explicit size (Enumerator.new(size)/to_enum) */
     /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
      * returns nil when the size is unknown (no size given to Enumerator.new). */
     if (e->mode != 0 || !KORB_ARRAY_P(e->values)) return RESULT_OK(KORB_NIL);

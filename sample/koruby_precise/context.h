@@ -284,6 +284,7 @@ typedef struct KorbEnumerator {
     VALUE ARO_GC_EDGE desc;
     VALUE ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */
     VALUE ARO_GC_EDGE ops;           /* lazy: Array of [op_sym, block_proc] pairs */
+    VALUE size;                      /* known #size (Fixnum) or nil/0 (unknown); immediate → not a GC edge */
 } KorbEnumerator;
 
 /* Enumerator::ArithmeticSequence — a lazy step/% sequence.  `recv` is the begin

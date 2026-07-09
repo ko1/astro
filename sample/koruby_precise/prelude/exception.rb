@@ -31,11 +31,13 @@ class Object
   # that raises does so at iteration time, not at to_enum time (matches CRuby).
   def to_enum(meth = :each, *args)
     this = self
-    Enumerator.new { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    sz = (respond_to?(:size) && args.empty?) ? size : nil    # size-preserving enumerators report the receiver's size
+    Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
   def enum_for(meth = :each, *args)
     this = self
-    Enumerator.new { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
+    sz = (respond_to?(:size) && args.empty?) ? size : nil
+    Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
 end
 # Minimal Errno: just enough that Errno::X constant references resolve (as
