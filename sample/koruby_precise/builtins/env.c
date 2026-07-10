@@ -187,6 +187,35 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
     korb_const_define(c, korb_intern(c->vm, "$LOADED_FEATURES", 16), slots[1]);
 }
 
+/* ENV.merge!/update(*hashes) [{ |key, old, new| }] → set each pair, block resolves
+ * conflicts for existing keys; returns ENV. */
+static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+        slots[0] = VALUE_SLICE_GET(a, k);
+        if (UNLIKELY(!KORB_HASH_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(slots[0]));
+        for (uint32_t i = 0; ; i++) {
+            const KorbHash *h = VAL2HASH(slots[0]);
+            if (i >= h->len) break;
+            slots[1] = h->items->data[2 * i];       /* key   (rooted) */
+            slots[2] = h->items->data[2 * i + 1];   /* value (rooted) */
+            if (block != NULL) {                    /* conflict → yield(key, old, new) when the key already exists */
+                RESULT er; const char *name = korb_env_name(c, slots + 3, slots[1], &er);
+                if (!name) return er;
+                const char *old = getenv(name);
+                if (old != NULL) {
+                    slots[3] = UNWRAP(korb_str_new(c, slots + 4, old, (uint32_t)strlen(old)));
+                    VALUE argv[3] = { slots[1], slots[3], slots[2] };
+                    RESULT yr = korb_block_yield(c, slots + 4, block, def_env, argv, 3, cself);
+                    if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+                    slots[2] = yr.value;
+                }
+            }
+            VALUE pair[2] = { slots[1], slots[2] };
+            CHECK(korb_m_env_aset(c, slots + 3, self, VALUE_SLICE_MAKE(pair, 2)));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 void korb_init_env(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "ENV", 3), KORB_NIL)).value;
@@ -204,6 +233,7 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVR("to_h", to_h, 0);       ENVR("to_hash", to_h, 0);
     ENVB("each", each, 0);       ENVB("each_pair", each, 0);
     ENVR("delete", delete, 1);
+    ENVB("merge!", merge_bang, -1);   ENVB("update", merge_bang, -1);
     ENVR("size", size, 0);       ENVR("length", size, 0);
     ENVR("empty?", empty_p, 0);
     ENVR("value?", value_p, 1);  ENVR("has_value?", value_p, 1);
