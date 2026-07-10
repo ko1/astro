@@ -32,3 +32,4 @@ bench/tmp.t
 
 # Code store
 code_store/
+libastrogre.so

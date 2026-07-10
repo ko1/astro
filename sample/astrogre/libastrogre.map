@@ -1,0 +1,12 @@
+# Exported symbols for libastrogre.so.  Only the public matcher API is visible;
+# every generic ASTro symbol (NODE / EVAL / HASH / OPTIMIZE / node_* dispatchers /
+# astro_cs_* / parser internals) stays local so the library can be linked or
+# dlopen'd alongside another ASTro-based object without symbol clashes.
+{
+  global:
+    astrogre_*;          # parse / search / pattern_* public API (parse.h)
+    OPTION;              # struct astrogre_option (embedder-tunable knobs)
+    backend_astrogre_ops;# backend.h ops table (compile/search/free abstraction)
+  local:
+    *;
+};

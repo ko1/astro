@@ -134,6 +134,40 @@ make bench-aot                              # AOT-favourable engine bench
 # Pattern AST inspection (dev flag, not in are --help)
 ./are/are --dump '/(a|b)*c/'
 ./are/are --verbose -e static file.txt      # phase-by-phase wall-clock
+```
+
+## Using astrogre as a library
+
+`make lib` builds **`libastrogre.so`**, the matcher engine as a shared library.
+It exports only the `astrogre_*` public API (plus the tunable `OPTION` and the
+`backend_astrogre_ops` table); every generic ASTro symbol (`NODE` / `EVAL` /
+`HASH` / the `node_*` dispatchers / the code-store internals) is kept local, so
+the library can be linked or `dlopen`'d (with `RTLD_LOCAL`) next to another
+ASTro-based object — e.g. another sample's interpreter — without symbol clashes.
+The library supplies a default `OPTION`, so a consumer that only links
+`-lastrogre` needs no definition of its own.
+
+```c
+#include "parse.h"      /* astrogre_parse / astrogre_search / astrogre_pattern_free */
+#include "context.h"    /* astrogre_match_t, ASTROGRE_MAX_GROUPS */
+
+astrogre_pattern *p = astrogre_parse("(\\w+)@(\\w+)", 11, /*flags*/0);
+astrogre_match_t m = {0};
+if (astrogre_search(p, str, len, &m)) {
+    /* m.starts[i]/m.ends[i]/m.valid[i] give per-group byte spans; group 0 is
+       the whole match.  astrogre_pattern_named_at enumerates named captures. */
+}
+astrogre_pattern_free(p);   /* releases the whole pattern (AST + buffers) */
+```
+
+`flags` are the prism `PR_FLAGS_*` bits (`IGNORE_CASE` 4, `EXTENDED` 8,
+`MULTI_LINE` 16).  A compiled pattern owns its entire AST; `astrogre_pattern_free`
+releases it with no per-pattern leak (verified under valgrind), so a long-running
+embedder can compile and free many patterns safely.
+
+```sh
+make lib                                     # → libastrogre.so
+cc app.c -I sample/astrogre -L sample/astrogre -lastrogre
 ./are/are --aot --cs-verbose -e foo file.txt
 ```
 

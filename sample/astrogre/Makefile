@@ -45,6 +45,20 @@ selftest_runner: $(SELFTEST_SRCS) $(NODE_GENFILES) Makefile node.h context.h \
 self-test: selftest_runner
 	./selftest_runner test
 
+# libastrogre.so — the matcher engine as a shared library.  Exports only the
+# astrogre_* public API (+ OPTION + backend_astrogre_ops) via the version script;
+# all generic ASTro symbols stay local so it can be linked / dlopen'd next to
+# another ASTro-based object without clashes.  A consumer links `-lastrogre` and
+# includes parse.h (+ context.h for astrogre_match_t/ASTROGRE_MAX_GROUPS); it need
+# not define OPTION (the library supplies a default).
+LIBASTROGRE_SRCS = $(ENGINE_SRCS) libastrogre_option.c
+libastrogre.so: $(LIBASTROGRE_SRCS) $(NODE_GENFILES) libastrogre.map Makefile \
+                node.h context.h backend.h parse.h aho_corasick.h $(ASTROGRE_DEPS)
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,--version-script=libastrogre.map \
+	    -o $@ $(LIBASTROGRE_SRCS) $(LDFLAGS) $(LIBS)
+.PHONY: lib
+lib: libastrogre.so
+
 # Engine microbench (per-pattern ns/match — internal numbers).
 bench: selftest_runner
 	./selftest_runner bench
