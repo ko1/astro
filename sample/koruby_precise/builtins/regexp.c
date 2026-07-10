@@ -444,9 +444,27 @@ static RESULT korb_re_scan_elem(CTX *c, VALUE *slots, VALUE subj, VALUE mdv, con
     for (int i = 1; i <= m->n_groups; i++) { slots[2] = UNWRAP(korb_md_group(c, slots + 2, slots[0], i)); CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2])); }
     return RESULT_OK(slots[1]);
 }
+/* Coerce a String#scan pattern: a Regexp as-is, but a String matches LITERALLY
+ * (unlike #match, which reads it as a regex source), so escape it first. */
+static RESULT korb_re_coerce_pat_literal(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
+    if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
+    if (KORB_STRING_P(pv) || SYMBOL_P(pv)) {
+        const char *b; uint32_t n;
+        if (SYMBOL_P(pv)) { const char *nm = korb_sym_name(c->vm, SYM2ID(pv)); b = nm; n = (uint32_t)strlen(nm); }
+        else { b = VAL2STR(pv)->buf->data; n = VAL2STR(pv)->len; }
+        char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
+        for (uint32_t i = 0; i < n; i++) { unsigned char ch = (unsigned char)b[i]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); }
+        fclose(ms);
+        slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
+        *out = UNWRAP(korb_regexp_new(c, slots + 1, slots[0], 0));
+        return RESULT_OK(KORB_TRUE);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_re_arg_type(pv));
+}
 static RESULT korb_m_str_scan(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    VALUE re; RESULT cr = korb_re_coerce_pat(c, slots, VALUE_SLICE_GET(a, 0), &re);
+    VALUE re = KORB_NIL; RESULT cr = korb_re_coerce_pat_literal(c, slots, VALUE_SLICE_GET(a, 0), &re);
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    korb_re_set_lastmatch(c, KORB_NIL);              /* $~ ← nil, then last match (or stays nil if none) */
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
     slots[2] = block ? KORB_NIL : UNWRAP(korb_ary_new(c, slots + 2, 0));
     long off = 0;
