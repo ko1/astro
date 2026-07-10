@@ -8364,7 +8364,14 @@ korb_fprint_user_inspect(CTX *c, VALUE *slots, FILE *fp, VALUE v)
     if (slots == NULL || !KORB_OBJECT_P(v) || VAL2OBJ(v)->klass == KORB_NIL) return false;
     slots[0] = v;                                                /* root across the dispatch */
     RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
-    if (r.state != KORB_NORMAL || !KORB_STRING_P(r.value)) return false;   /* error / non-String → default */
+    if (r.state != KORB_NORMAL) return false;
+    if (!KORB_STRING_P(r.value)) {                               /* non-String #inspect → coerce via #to_s (never #to_str) */
+        slots[0] = r.value;
+        RESULT r2 = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+        if (r2.state != KORB_NORMAL || !KORB_STRING_P(r2.value)) return false;   /* → default representation */
+        fwrite(VAL2STR(r2.value)->buf->data, 1, VAL2STR(r2.value)->len, fp);
+        return true;
+    }
     fwrite(VAL2STR(r.value)->buf->data, 1, VAL2STR(r.value)->len, fp);
     return true;
 }
