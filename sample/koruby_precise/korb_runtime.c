@@ -1488,7 +1488,11 @@ static inline int32_t korb_shape_index_cached(struct korb_vm *vm, uint32_t shape
     struct korb_shidx_ent *const e = &korb_shidx_cache[h];
     if (LIKELY(e->shape == shape && e->sym == sym)) return e->slot;
     const int32_t idx = korb_shape_index(vm, shape, sym);
-    if (idx >= 0) { e->shape = shape; e->sym = sym; e->slot = idx; }   /* cache hits only (idx<0 = absent ivar, rare) */
+    /* Cache both present and absent (idx==-1) results — shapes are immutable, so an
+     * absent (shape,sym) stays absent forever.  The ivar-SET path on a fresh object
+     * always probes an absent ivar before transitioning (hot for `@x = ...` in
+     * initialize), so caching -1 avoids re-walking the shape each time. */
+    e->shape = shape; e->sym = sym; e->slot = idx;
     return idx;
 }
 
