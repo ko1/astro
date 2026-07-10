@@ -506,6 +506,11 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
         fputc(rep[i], ms);
     }
 }
+/* String/Symbol → a literal (all-metachars-escaped) Regexp, for String-pattern
+ * gsub/sub/split routed through the engine (so $~ / MatchData behave). */
+RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
+    return korb_re_coerce_pat_literal(c, slots, pv, out);
+}
 /* Emit v into ms as a String, dispatching a user-defined #to_s (CRuby coerces
  * gsub block results and Hash-replacement values with #to_s). */
 static RESULT korb_emit_to_s(CTX *c, VALUE *slots, FILE *ms, VALUE v) {
@@ -523,11 +528,24 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     char *const src = malloc(sn ? sn : 1); memcpy(src, s0->buf->data, sn);
     char *rep = NULL; uint32_t rn = 0; VALUE hashrep = KORB_NIL;
     if (block == NULL) {
-        if (VALUE_SLICE_LEN(a) < 2) { free(src); return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub without a replacement is not supported"); }
+        if (VALUE_SLICE_LEN(a) < 2) {   /* sub → ArgumentError; gsub(pat) → Enumerator (unsupported) */
+            free(src);
+            if (!global) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 1, expected 2)");
+            return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub without a replacement (Enumerator) is not supported");
+        }
         VALUE rv = VALUE_SLICE_GET(a, 1);
         if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn); }
         else if (KORB_HASH_P(rv)) { hashrep = rv; slots[2] = rv; }
-        else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
+        else {                          /* coerce replacement via #to_str */
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(rv) && korb_responds_to_coerce_p(c, slots + 3, &rv, to_str)) {
+                slots[3] = rv;
+                RESULT sr = korb_send_impl(c, slots + 4, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { free(src); return sr; }
+                if (!KORB_STRING_P(sr.value)) { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
+                const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn);
+            } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
+        }
     }
     char *buf = NULL; size_t bz = 0; FILE *ms = open_memstream(&buf, &bz);
     long off = 0; bool replaced = false;

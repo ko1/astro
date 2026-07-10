@@ -953,6 +953,15 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             slots[1] = sr.value; pv = slots[1];
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
     }
+    /* String pattern → route through the engine as an escaped literal Regexp so
+     * $~ / MatchData / block-$~ behave exactly as CRuby.  Falls back to the byte
+     * path below when the regex engine can't be loaded. */
+    if (korb_re_load(c->vm) != NULL) {
+        VALUE litre; RESULT cr = korb_re_literal_regexp(c, slots, pv, &litre);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        NODE *const eff_block = (VALUE_SLICE_LEN(a) >= 2) ? NULL : block;   /* a replacement arg wins over a block */
+        return korb_re_str_gsub(c, slots, self, a, litre, global, in_place, eff_block, def_env, cself);
+    }
     if (block != NULL && VALUE_SLICE_LEN(a) < 2) {    /* gsub(pat) { |match| ... } — block yields (a replacement arg wins over a block) */
         const KorbString *ps = VAL2STR(pv);
         const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
