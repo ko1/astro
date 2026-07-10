@@ -9,7 +9,24 @@ class Exception
     return (highlight ? "\e[1m#{m}\e[m" : m) if cn.nil?
     highlight ? "\e[1m#{m} (\e[1;4m#{cn}\e[m\e[1m)\e[m" : "#{m} (#{cn})"
   end
-  def full_message(**opts); "#{message} (#{self.class})"; end
+  def full_message(highlight: nil, order: nil)
+    hl = highlight.nil? ? false : (highlight ? true : false)
+    order = (hl ? :top : :bottom) if order.nil?
+    bt = backtrace
+    bt = (caller(1) || []) if bt.nil? || bt.empty?
+    dm = detailed_message(highlight: hl)
+    body = bt[0] ? "#{bt[0]}: #{dm}" : dm
+    rest = bt.length > 1 ? bt[1..-1] : []
+    if order == :bottom
+      lines = [hl ? "\e[1mTraceback\e[m (most recent call last):" : "Traceback (most recent call last):"]
+      rest.reverse_each { |l| lines << "\tfrom #{l}" }
+      lines << body
+    else
+      lines = [body]
+      rest.each { |l| lines << "\tfrom #{l}" }
+    end
+    lines.join("\n") + "\n"
+  end
   # no arg → self; with a message → a new exception of the same class (CRuby clones + replaces).
   def exception(*args); args.empty? ? self : self.class.new(*args); end
   def self.exception(*args); new(*args); end   # Class-level Exception.exception(msg) == new(msg)
