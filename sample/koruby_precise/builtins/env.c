@@ -268,6 +268,33 @@ static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* ENV.each_key { |k| } / each_value { |v| } → ENV (want_key selects which). */
+static RESULT korb_m_env_each_kv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool want_key) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        slots[0] = want_key ? UNWRAP(korb_str_new(c, slots, key, klen))
+                            : UNWRAP(korb_str_new(c, slots, val, (uint32_t)strlen(val)));
+        CHECK(korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_env_each_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_m_env_each_kv(c, slots, self, a, block, def_env, cself, true); }
+static RESULT korb_m_env_each_value(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_each_kv(c, slots, self, a, block, def_env, cself, false); }
+/* ENV.key(value) → the first key whose value == value, or nil. */
+static RESULT korb_m_env_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE want = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(want))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(want));
+    const KorbString *ws = VAL2STR(want);
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        if (strlen(val) == ws->len && memcmp(val, ws->buf->data, ws->len) == 0)
+            return korb_str_new(c, slots, key, klen);
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* ENV.assoc(key) → [key, value] or nil. */
 static RESULT korb_m_env_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -397,6 +424,8 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVR("invert", invert, 0);        ENVR("values_at", values_at, -1);
     ENVR("slice", slice, -1);         ENVR("except", except, -1);
     ENVR("clear", clear, 0);
+    ENVB("each_key", each_key, 0);    ENVB("each_value", each_value, 0);
+    ENVR("key", key, 1);
     ENVR("size", size, 0);       ENVR("length", size, 0);
     ENVR("empty?", empty_p, 0);
     ENVR("value?", value_p, 1);  ENVR("has_value?", value_p, 1);
