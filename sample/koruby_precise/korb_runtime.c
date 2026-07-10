@@ -8318,7 +8318,7 @@ korb_sym_inspect_bare(const char *nm)
     }
     static const char *const ops[] = {
         "+","-","*","/","%","**","==","!=","<","<=",">",">=","<=>","<<",">>",
-        "&","|","^","~","!","[]","[]=","+@","-@","===","=~","!~", NULL };
+        "&","|","^","~","!","[]","[]=","+@","-@","===","=~","!~","`", NULL };
     for (int i = 0; ops[i]; i++) if (strcmp(nm, ops[i]) == 0) return true;
     return false;
 }
