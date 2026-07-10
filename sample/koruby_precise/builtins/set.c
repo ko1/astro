@@ -650,24 +650,51 @@ static RESULT korb_m_catch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
 }
 /* runtime attr_reader/writer/accessor (the dynamic `attr_reader id` form that
  * the parser can't desugar at parse time; self is the class). */
-static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {
+/* Define reader/writer accessors for a[0..n). Names may be Symbol/String, or a
+ * #to_str-coercible object (TypeError otherwise). cls is kept rooted in slots[0]. */
+static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint32_t n, int reader, int writer) {
     struct korb_vm *const vm = c->vm;
-    VALUE cls = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "attr on a non-class");
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+    slots[0] = VALUE_REF_GET(self);                          /* cls (rooted) */
+    if (UNLIKELY(!KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "attr on a non-class");
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n * 2));    /* defined method names → return value */
+    VALUE_REF res = VALUE_REF_AT(&slots[1]);
+    for (uint32_t i = 0; i < n; i++) {
         VALUE sym = VALUE_SLICE_GET(a, i);
+        if (!SYMBOL_P(sym) && !KORB_STRING_P(sym)) {          /* coerce name via #to_str */
+            const uint32_t to_str = korb_intern(vm, "to_str", 6);
+            VALUE nv = sym;
+            if (KORB_OBJECT_P(nv) && korb_responds_to_coerce_p(c, slots + 2, &nv, to_str)) {
+                slots[2] = nv;
+                RESULT sr = korb_send_impl(c, slots + 3, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+                sym = sr.value;
+            } else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(sym));
+        }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
-        if (!SYMBOL_P(sym)) continue;
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256]; snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
-        if (reader) korb_class_def_attr(c, cls, korb_intern(vm, nm, strlen(nm)), ivar, 0);
-        if (writer) { snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, cls, korb_intern(vm, buf, strlen(buf)), ivar, 1); }
+        if (reader) { const uint32_t rid = korb_intern(vm, nm, strlen(nm)); korb_class_def_attr(c, slots[0], rid, ivar, 0); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(rid))); }
+        if (writer) { snprintf(buf, sizeof buf, "%s=", nm); const uint32_t wid = korb_intern(vm, buf, strlen(buf)); korb_class_def_attr(c, slots[0], wid, ivar, 1); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(wid))); }
     }
-    return RESULT_OK(KORB_NIL);
+    return RESULT_OK(VALUE_REF_GET(res));
+}
+static RESULT korb_m_class_attr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int reader, int writer) {
+    return korb_m_class_attr_n(c, slots, self, a, VALUE_SLICE_LEN(a), reader, writer);
 }
 static RESULT korb_m_class_attr_reader(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_m_class_attr(c, slots, self, a, 1, 0); }
 static RESULT korb_m_class_attr_writer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_m_class_attr(c, slots, self, a, 0, 1); }
 static RESULT korb_m_class_attr_accessor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_class_attr(c, slots, self, a, 1, 1); }
+/* Module#attr — like attr_reader, but a trailing true/false makes it also (or not) a writer. */
+static RESULT korb_m_class_attr1(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t n = VALUE_SLICE_LEN(a);
+    int writer = 0;
+    if (n >= 1) {                                             /* attr(name, true|false) */
+        const VALUE last = VALUE_SLICE_GET(a, n - 1);
+        if (last == KORB_TRUE || last == KORB_FALSE) { writer = (last == KORB_TRUE) ? 1 : 0; n--; }
+    }
+    return korb_m_class_attr_n(c, slots, self, a, n, 1, writer);
+}
 /* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
 static RESULT korb_m_class_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;

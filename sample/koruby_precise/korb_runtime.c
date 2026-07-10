@@ -7825,7 +7825,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "attr_reader", korb_m_class_attr_reader, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_writer", korb_m_class_attr_writer, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attr_accessor", korb_m_class_attr_accessor, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "attr", korb_m_class_attr_reader, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "attr", korb_m_class_attr1, -1);
     /* The above are registered on Class, but Module-level methods must also be on
      * Module (Class < Module) so runtime *module values* (m.name, mods.map(&:name),
      * m.ancestors, m.module_eval, …) dispatch them — not just const-ref `M.name`.
@@ -7870,7 +7870,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("attr_reader", korb_m_class_attr_reader, -1);
     MOD_CFN("attr_writer", korb_m_class_attr_writer, -1);
     MOD_CFN("attr_accessor", korb_m_class_attr_accessor, -1);
-    MOD_CFN("attr", korb_m_class_attr_reader, -1);
+    MOD_CFN("attr", korb_m_class_attr1, -1);
     MOD_CFN("private", korb_m_private, -1);
     MOD_CFN("public", korb_m_public, -1);
     MOD_CFN("protected", korb_m_protected, -1);
