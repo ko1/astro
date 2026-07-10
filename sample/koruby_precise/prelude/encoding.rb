@@ -125,7 +125,14 @@ class String
     senc = args[1] ? (args[1].is_a?(Encoding) ? args[1] : Encoding.find(args[1].to_s)) : encoding
     replace_undef = [:undef, :invalid, :replace, :fallback, :xml].any? { |k| opts.key?(k) }
     r = dup
-    if tenc == senc || (ascii_only? && tenc.ascii_compatible?)
+    if opts[:universal_newline]                   # \r\n and \r → \n
+      r = r.gsub(/\r\n|\r/, "\n")
+    elsif opts[:cr_newline]                       # \n → \r
+      r = r.gsub("\n", "\r")
+    elsif opts[:crlf_newline]                     # \n → \r\n
+      r = r.gsub("\n", "\r\n")
+    end
+    if tenc == senc || (r.ascii_only? && tenc.ascii_compatible?)
       return r.force_encoding(tenc.name)          # identity / ASCII-only → tag change only
     end
     # US-ASCII / BINARY targets can't hold non-ASCII source content.
