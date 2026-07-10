@@ -455,11 +455,21 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
 }
 static RESULT korb_m_str_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_re_match_set(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self)); }
 static RESULT korb_m_re_match_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_re_match_set(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); }
-static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* match? — no $~ */
+static RESULT korb_m_re_match_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {   /* match?(str[, pos]) — no $~ */
     VALUE subj; slots[0] = VALUE_REF_GET(self);
     if (UNWRAP(korb_re_subject(c, slots + 1, VALUE_SLICE_GET(a, 0), &subj)) != KORB_TRUE) return RESULT_OK(KORB_FALSE);
-    slots[1] = subj; korb_re_match_t m;
-    RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], 0, &m);
+    slots[1] = subj;
+    size_t startb = 0;
+    if (VALUE_SLICE_LEN(a) >= 2) {                    /* optional char start position */
+        intptr_t pos = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &pos)) {
+            const KorbString *s = VAL2STR(slots[1]); const long ncp = (long)korb_utf8_count(s->buf->data, s->len);
+            if (pos < 0) pos += ncp;
+            if (pos < 0 || pos > ncp) return RESULT_OK(KORB_FALSE);
+            startb = (pos == 0) ? 0 : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)pos);
+        }
+    }
+    korb_re_match_t m;
+    RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     return RESULT_OK(rr.value == KORB_TRUE ? KORB_TRUE : KORB_FALSE);
 }

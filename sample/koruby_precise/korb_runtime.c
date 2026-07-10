@@ -7742,7 +7742,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "unpack", korb_m_str_unpack, 1);
     korb_def_cmethod(c, KORB_C_STRING, "unpack1", korb_m_str_unpack1, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "=~", korb_m_re_match_op, 1);
-    korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, 1);
+    korb_def_cmethod(c, KORB_C_REGEXP, "match?", korb_m_re_match_q, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_REGEXP, "match", korb_m_re_match, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
