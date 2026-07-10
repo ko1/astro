@@ -90,13 +90,17 @@ static int korb_md_name_idx(CTX *c, VALUE mdv, const char *name, uint32_t nlen) 
     if (nf == NULL) return -1;
     const KorbString *pat = VAL2STR(VAL2RE(md->regexp)->source);
     const uint32_t flags = VAL2RE(md->regexp)->flags;
+    int best = -1, last_defined = -1;   /* duplicate names → the last group that participated (else last defined → nil) */
     for (int k = 0; ; k++) {
         int gi = -1;
         const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
         if (gn == NULL) break;
-        if (strlen(gn) == nlen && memcmp(gn, name, nlen) == 0) return gi;
+        if (strlen(gn) == nlen && memcmp(gn, name, nlen) == 0) {
+            last_defined = gi;
+            if (korb_md_off(md, gi, 0) >= 0) best = gi;
+        }
     }
-    return -1;
+    return best >= 0 ? best : last_defined;
 }
 /* Collect groups [lo, hi) into a fresh Array (out-of-range → nil elements). */
 static RESULT korb_md_group_slice(CTX *c, VALUE *slots, VALUE mdv, long lo, long len) {
@@ -238,16 +242,35 @@ static RESULT korb_m_md_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_md_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 1, false); }
 static RESULT korb_m_md_bytebegin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 0, true); }
 static RESULT korb_m_md_byteend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 1, true); }
-static RESULT korb_m_md_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
+/* offset(n)/byteoffset(n) → [begin, end] (char- resp. byte-based), accepting an
+ * Integer index or a Symbol/String named-capture reference. */
+static RESULT korb_md_offset_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE arg, bool bytes) {
+    int gi = 0; RESULT r = korb_md_arg_gi(c, slots, VALUE_REF_GET(self), arg, &gi);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     KorbMatchData *md = VAL2MD(VALUE_REF_GET(self));
-    const long b = korb_md_off(md, (int)i, 0), e = korb_md_off(md, (int)i, 1);
+    const long b = korb_md_off(md, gi, 0), e = korb_md_off(md, gi, 1);
     slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
     if (b < 0) { CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL)); CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL)); }
     else { const KorbString *s = VAL2STR(VAL2MD(slots[0])->subject);
-           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_re_bchar(s, b))));
-           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_re_bchar(s, e)))); }
+           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? b : korb_re_bchar(s, b))));
+           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? e : korb_re_bchar(s, e)))); }
     return RESULT_OK(slots[1]);
+}
+static RESULT korb_m_md_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_offset_impl(c, slots, self, VALUE_SLICE_GET(a, 0), false); }
+static RESULT korb_m_md_byteoffset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_offset_impl(c, slots, self, VALUE_SLICE_GET(a, 0), true); }
+/* match(n) → the nth match substring (or nil); match_length(n) → its length. */
+static RESULT korb_m_md_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int gi = 0; RESULT r = korb_md_arg_gi(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &gi);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return korb_md_group(c, slots, VALUE_REF_GET(self), gi);
+}
+static RESULT korb_m_md_match_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    int gi = 0; RESULT r = korb_md_arg_gi(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &gi);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    slots[0] = UNWRAP(korb_md_group(c, slots, VALUE_REF_GET(self), gi));
+    if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
+    const KorbString *g = VAL2STR(slots[0]);
+    return RESULT_OK(LONG2FIX((long)korb_utf8_count(g->buf->data, g->len)));
 }
 static RESULT korb_m_md_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_md_ngroups(VAL2MD(VALUE_REF_GET(self))))); }
 static RESULT korb_m_md_string(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -260,8 +283,9 @@ static RESULT korb_md_names_into(CTX *c, VALUE *slots, VALUE mdv_or_re, bool is_
     VALUE rev = is_md ? VAL2MD(mdv_or_re)->regexp : mdv_or_re;
     if (!nf || !KORB_REGEXP_P(rev)) return RESULT_OK(VALUE_REF_GET(dst_ary));
     slots[0] = rev;
-    const KorbString *pat = VAL2STR(VAL2RE(slots[0])->source); const uint32_t flags = VAL2RE(slots[0])->flags;
     for (int k = 0; ; k++) {
+        const KorbString *pat = VAL2STR(VAL2RE(slots[0])->source);   /* re-fetch (korb_str_new below moves GC) */
+        const uint32_t flags = VAL2RE(slots[0])->flags;
         int gi = -1; const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
         if (!gn) break;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, gn, (uint32_t)strlen(gn)));
@@ -273,19 +297,96 @@ static RESULT korb_m_md_names(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)a; slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
     return korb_md_names_into(c, slots + 2, slots[0], true, VALUE_REF_AT(&slots[1]));
 }
+/* Read a trailing `name: true/false` kwarg Hash (Symbol-keyed); default when absent. */
+static bool korb_kw_bool(CTX *c, VALUE_SLICE a, const char *name, bool dflt) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n == 0 || !KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) return dflt;
+    const VALUE key = ID2SYM(korb_intern(c->vm, name, (uint32_t)strlen(name)));
+    int32_t idx = korb_hash_find(VAL2HASH(VALUE_SLICE_GET(a, n - 1)), key);
+    if (idx < 0) return dflt;
+    return KORB_TRUTHY(VAL2HASH(VALUE_SLICE_GET(a, n - 1))->items->data[2 * idx + 1]);
+}
 static RESULT korb_m_md_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 0));
+    const bool symkeys = korb_kw_bool(c, a, "symbolize_names", false);
+    slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 0));
     KorbMatchData *md = VAL2MD(slots[0]);
     korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
     if (nf && KORB_REGEXP_P(md->regexp)) {
-        const KorbString *pat = VAL2STR(VAL2RE(md->regexp)->source); const uint32_t flags = VAL2RE(md->regexp)->flags;
         for (int k = 0; ; k++) {
+            /* re-fetch pattern bytes each iteration: korb_md_group below allocates
+             * and the moving GC can relocate the Regexp's source string. */
+            const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);
+            const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
             int gi = -1; const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
             if (!gn) break;
-            slots[2] = UNWRAP(korb_str_new(c, slots + 2, gn, (uint32_t)strlen(gn)));
+            /* duplicate names → the value of the last group that participated */
+            const int best = korb_md_name_idx(c, slots[0], gn, (uint32_t)strlen(gn));
+            if (symkeys) slots[2] = ID2SYM(korb_intern(c->vm, gn, (uint32_t)strlen(gn)));
+            else slots[2] = UNWRAP(korb_str_new(c, slots + 2, gn, (uint32_t)strlen(gn)));
+            slots[3] = UNWRAP(korb_md_group(c, slots + 3, slots[0], best));
+            CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
+        }
+    }
+    return RESULT_OK(slots[1]);
+}
+static RESULT korb_m_md_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
+    if (!KORB_MATCHDATA_P(o)) return RESULT_OK(KORB_FALSE);
+    const KorbMatchData *m1 = VAL2MD(s), *m2 = VAL2MD(o);
+    const KorbString *s1 = VAL2STR(m1->subject), *s2 = VAL2STR(m2->subject);
+    if (s1->len != s2->len || memcmp(s1->buf->data, s2->buf->data, s1->len) != 0) return RESULT_OK(KORB_FALSE);
+    if (KORB_REGEXP_P(m1->regexp) && KORB_REGEXP_P(m2->regexp)) {
+        if (VAL2RE(m1->regexp)->flags != VAL2RE(m2->regexp)->flags) return RESULT_OK(KORB_FALSE);
+        const KorbString *p1 = VAL2STR(VAL2RE(m1->regexp)->source), *p2 = VAL2STR(VAL2RE(m2->regexp)->source);
+        if (p1->len != p2->len || memcmp(p1->buf->data, p2->buf->data, p1->len) != 0) return RESULT_OK(KORB_FALSE);
+    } else if (m1->regexp != m2->regexp) return RESULT_OK(KORB_FALSE);
+    const KorbArray *o1 = VAL2ARY(m1->offsets), *o2 = VAL2ARY(m2->offsets);
+    if (o1->len != o2->len) return RESULT_OK(KORB_FALSE);
+    for (uint32_t i = 0; i < o1->len; i++) if (o1->items->data[i] != o2->items->data[i]) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_m_md_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    const KorbMatchData *md = VAL2MD(VALUE_REF_GET(self));
+    const KorbString *s = VAL2STR(md->subject);
+    uint64_t h = 1469598103934665603ULL;                 /* FNV-1a over subject + offsets */
+    for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)s->buf->data[i]; h *= 1099511628211ULL; }
+    const KorbArray *o = VAL2ARY(md->offsets);
+    for (uint32_t i = 0; i < o->len; i++) { h ^= (uint64_t)FIX2LONG(o->items->data[i]); h *= 1099511628211ULL; }
+    return RESULT_OK(LONG2FIX((long)(h & 0x3fffffffffffffffULL)));
+}
+/* deconstruct_keys(keys) → named captures as a Symbol-keyed Hash (keys: nil = all,
+ * or an Array selecting a subset; returns {} early if a requested key is absent). */
+static RESULT korb_m_md_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE keys = VALUE_SLICE_GET(a, 0);
+    if (keys != KORB_NIL && !KORB_ARRAY_P(keys)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Array)", korb_re_arg_type(keys));
+    slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 0));
+    KorbMatchData *md = VAL2MD(slots[0]);
+    korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
+    if (!nf || !KORB_REGEXP_P(md->regexp)) return RESULT_OK(slots[1]);
+    if (keys != KORB_NIL) {                               /* subset by the given Symbol keys */
+        const uint32_t klen = VAL2ARY(VALUE_SLICE_GET(a, 0))->len;   /* re-fetch: korb_hash_new above moved GC */
+        for (uint32_t i = 0; i < klen; i++) {
+            const VALUE kv = VAL2ARY(VALUE_SLICE_GET(a, 0))->items->data[i];   /* re-fetch (moving GC) */
+            if (!SYMBOL_P(kv)) break;
+            const char *nm = korb_sym_name(c->vm, SYM2ID(kv)); const uint32_t nl = (uint32_t)strlen(nm);
+            const int gi = korb_md_name_idx(c, slots[0], nm, nl);
+            if (gi < 0) break;                            /* unknown key → stop (partial match) */
+            slots[2] = kv;
             slots[3] = UNWRAP(korb_md_group(c, slots + 3, slots[0], gi));
             CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
         }
+        return RESULT_OK(slots[1]);
+    }
+    for (int k = 0; ; k++) {
+        const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);   /* re-fetch (GC-moving) */
+        const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
+        int gi = -1; const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
+        if (!gn) break;
+        const int best = korb_md_name_idx(c, slots[0], gn, (uint32_t)strlen(gn));
+        slots[2] = ID2SYM(korb_intern(c->vm, gn, (uint32_t)strlen(gn)));
+        slots[3] = UNWRAP(korb_md_group(c, slots + 3, slots[0], best));
+        CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
     }
     return RESULT_OK(slots[1]);
 }

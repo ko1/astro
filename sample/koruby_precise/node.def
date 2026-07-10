@@ -586,7 +586,8 @@ node_eq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
         if (UNLIKELY(KORB_FLOAT_P(l))) { const double d_ = korb_float_val(l); if (d_ != d_) return RESULT_OK(KORB_FALSE); }   /* d_ != d_ ⇔ NaN */
         return RESULT_OK(KORB_TRUE);
     }
-    if (KORB_OBJECT_P(l) || KORB_METHOD_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)) {   /* user instance / Method / Hash / Array (value ==) → dispatch */
+    if (KORB_OBJECT_P(l) || KORB_METHOD_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
+        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)) {   /* user instance / Method / Hash / Array / Regexp / MatchData (value ==) → dispatch */
         slots[0] = l; slots[1] = rhs;
         return korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
     }
@@ -612,7 +613,8 @@ node_neq(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child)
         if (UNLIKELY(KORB_FLOAT_P(l))) { const double d_ = korb_float_val(l); if (d_ != d_) return RESULT_OK(KORB_TRUE); }   /* d_ != d_ ⇔ NaN */
         return RESULT_OK(KORB_FALSE);
     }
-    if (KORB_OBJECT_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)) {      /* user instance / Hash / Array → != is the negation of == */
+    if (KORB_OBJECT_P(l) || KORB_EXC_P(l) || KORB_HASH_P(l) || KORB_ARRAY_P(l)
+        || KORB_REGEXP_P(l) || KORB_MATCHDATA_P(l)) {      /* user instance / Hash / Array / Regexp / MatchData → != is the negation of == */
         slots[0] = l; slots[1] = rhs;
         RESULT r = korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;

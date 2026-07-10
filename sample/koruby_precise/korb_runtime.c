@@ -7756,8 +7756,15 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_s", korb_m_md_to_s, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "to_a", korb_m_md_to_a, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "captures", korb_m_md_captures, 0);
-    korb_def_cmethod(c, KORB_C_MATCHDATA, "named_captures", korb_m_md_named_captures, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "named_captures", korb_m_md_named_captures, -1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "names", korb_m_md_names, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "byteoffset", korb_m_md_byteoffset, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "match", korb_m_md_match, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "match_length", korb_m_md_match_length, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "==", korb_m_md_eq, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "eql?", korb_m_md_eq, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "hash", korb_m_md_hash, 0);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "deconstruct_keys", korb_m_md_deconstruct_keys, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "values_at", korb_m_md_values_at, -1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "pre_match", korb_m_md_pre, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "post_match", korb_m_md_post, 0);
