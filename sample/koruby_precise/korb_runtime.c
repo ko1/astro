@@ -2930,6 +2930,7 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     m->kind = KORB_METHOD_DM;
     m->dm_proc = slots[1];
     m->owner = slots[0];
+    m->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;   /* honor the current private/protected scope */
     m->params_cnt = -1;                                  /* lenient arity (block semantics) */
     m->uses_block = 0; m->rest_slot = -1; m->post_cnt = 0;
     m->param_info = (KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->iseq)   /* carry the block's params for Method#parameters */
