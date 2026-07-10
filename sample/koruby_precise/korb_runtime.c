@@ -2352,6 +2352,7 @@ static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Data#inspect → "#<data Name member=val, ...>" (anonymous → no Name). */
 /* "#<KIND[ Name] m1=v1, m2=v2>" — shared by Data#inspect and Struct#inspect/to_s. */
 static void korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth);   /* fwd (defined far below) */
+static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls);                         /* fwd */
 static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, const char *kind) {
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     const KorbClass *const k = VAL2CLASS(klass);
@@ -2359,7 +2360,7 @@ static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, con
     FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     fputc('#', ms); fputc('<', ms); fputs(kind, ms);
-    if (k->name_sym) { fputc(' ', ms); fputs(korb_sym_name(c->vm, k->name_sym), ms); }
+    if (k->name_sym) { fputc(' ', ms); korb_fprint_class_qname(c, ms, klass); }   /* qualified name (not the #name method) */
     const KorbArray *const mem = VAL2ARY(k->members);
     for (uint32_t i = 0; i < mem->len; i++) {                 /* no GC in this loop (fprint writes to FILE) */
         const VALUE msym = mem->items->data[i];
