@@ -51,17 +51,25 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
     const VALUE s = VALUE_REF_GET(self);
     if (UNLIKELY(korb_str_is_frozen(s)))
         return korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen String: %s", "");
-    const VALUE enc = VALUE_SLICE_GET(a, 0);
+    VALUE enc = VALUE_SLICE_GET(a, 0);
     char nbuf[64] = {0};
-    if (KORB_STRING_P(enc)) {
-        const KorbString *es = VAL2STR(enc);
-        uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1;
-        memcpy(nbuf, es->buf->data, l);
-    } else {                                  /* an Encoding: read its @name ivar */
-        const VALUE nm = korb_ivar_get(c, enc, ID2SYM(korb_intern(c->vm, "@name", 5)));
-        if (KORB_STRING_P(nm)) { const KorbString *es = VAL2STR(nm);
-            uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1; memcpy(nbuf, es->buf->data, l); }
+    if (!KORB_STRING_P(enc)) {                 /* a #to_str-coercible object, or an Encoding (read @name) */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(enc) && korb_responds_to_coerce_p(c, slots, &enc, to_str)) {   /* Encoding has no #to_str → skipped */
+            slots[0] = enc;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            enc = sr.value;
+        } else {
+            const VALUE nm = KORB_OBJECT_P(enc) ? korb_ivar_get(c, enc, ID2SYM(korb_intern(c->vm, "@name", 5))) : KORB_NIL;
+            if (!KORB_STRING_P(nm)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(enc));
+            enc = nm;
+        }
     }
+    { const KorbString *es = VAL2STR(enc);
+      uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1;
+      memcpy(nbuf, es->buf->data, l); }
     KORB_STR_ENC_SET(VALUE_REF_GET(self), korb_enc_index_for_name(c->vm, nbuf));
     return RESULT_OK(VALUE_REF_GET(self));
 }
