@@ -598,37 +598,60 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
 }
 
 /* ---- String#split with a Regexp (forward-declared for string.c) ---------- */
+/* Emit a field [beg, beg+len) of subj into res, deferring empty fields when
+ * empty_count >= 0 (limit omitted/0 → trailing empties suppressed).  Mirrors
+ * MRI's split_string()/SPLIT_STR: on a non-empty field, flush any deferred
+ * empties first, then push the substring. */
+static RESULT korb_re_split_emit(CTX *c, VALUE *slots, VALUE_REF res, VALUE *subj, long beg, long len, long *empty_count) {
+    if (*empty_count >= 0 && len == 0) { (*empty_count)++; return RESULT_OK(KORB_NIL); }
+    while (*empty_count > 0) { slots[0] = UNWRAP(korb_str_new(c, slots, "", 0)); CHECK(korb_ary_push_val(c, slots + 1, res, slots[0])); (*empty_count)--; }
+    slots[0] = UNWRAP(korb_re_slice(c, slots, subj, beg, beg + len));
+    CHECK(korb_ary_push_val(c, slots + 1, res, slots[0]));
+    return RESULT_OK(KORB_NIL);
+}
 RESULT korb_re_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long limit) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re; slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 0));
     VALUE_REF res = VALUE_REF_AT(&slots[2]);
-    long last = 0, off = 0, count = 0;
+    const long len0 = (long)VAL2STR(slots[0])->len;
+    if (len0 == 0) return RESULT_OK(VALUE_REF_GET(res));      /* "".split(x) → [] (any limit) */
+    /* empty_count: 0 → defer/suppress trailing empties (limit omitted/0);
+     * -1 → push all empties immediately (negative or positive limit). */
+    long empty_count = (limit == 0) ? 0 : -1;
+    long beg = 0, start = 0, i = 1;
+    int last_null = 0;
     for (;;) {
-        if (limit > 0 && count == limit - 1) break;
-        const KorbString *s = VAL2STR(slots[0]); if (off > (long)s->len) break;
-        korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)off, &m);
+        const KorbString *s = VAL2STR(slots[0]); const long len = (long)s->len;
+        if (start > len) break;
+        korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 5, slots[1], slots[0], (size_t)start, &m);
         if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
         if (rr.value != KORB_TRUE) break;
-        long ms0 = m.starts[0], me0 = m.ends[0];
-        if (me0 == ms0) {
-            if (ms0 >= (long)VAL2STR(slots[0])->len) break;
-            const KorbString *s2 = VAL2STR(slots[0]);
-            uint32_t cl = korb_utf8_seq_len((const unsigned char *)s2->buf->data, (uint32_t)ms0, s2->len); if (!cl) cl = 1;
-            if ((long)(ms0 + cl) <= last) { off = ms0 + cl; continue; }
-            slots[3] = UNWRAP(korb_re_slice(c, slots + 3, &slots[0], last, ms0 + cl));
-            CHECK(korb_ary_push_val(c, slots + 4, res, slots[3])); count++;
-            last = ms0 + cl; off = ms0 + cl; continue;
+        const long b0 = m.starts[0], e0 = m.ends[0];
+        if (start == b0 && b0 == e0) {                       /* zero-width match at the search start */
+            const unsigned char *d = (const unsigned char *)VAL2STR(slots[0])->buf->data;
+            if (last_null == 1) {
+                uint32_t cl = korb_utf8_seq_len(d, (uint32_t)beg, (uint32_t)len); if (!cl) cl = 1;
+                CHECK(korb_re_split_emit(c, slots + 5, res, &slots[0], beg, cl, &empty_count));
+                beg = start;
+            } else {
+                if (start == len) start++;
+                else { uint32_t cl = korb_utf8_seq_len(d, (uint32_t)start, (uint32_t)len); if (!cl) cl = 1; start += cl; }
+                last_null = 1;
+                continue;
+            }
+        } else {
+            CHECK(korb_re_split_emit(c, slots + 5, res, &slots[0], beg, b0 - beg, &empty_count));
+            beg = start = e0;
         }
-        slots[3] = UNWRAP(korb_re_slice(c, slots + 3, &slots[0], last, ms0));
-        CHECK(korb_ary_push_val(c, slots + 4, res, slots[3])); count++;
-        for (int g = 1; g <= m.n_groups; g++) { slots[3] = UNWRAP(korb_re_slice(c, slots + 3, &slots[0], m.starts[g], m.ends[g])); CHECK(korb_ary_push_val(c, slots + 4, res, slots[3])); }
-        last = me0; off = me0;
+        last_null = 0;
+        for (int g = 1; g <= m.n_groups; g++) {              /* captures (non-participating omitted) */
+            if (m.starts[g] < 0) continue;
+            CHECK(korb_re_split_emit(c, slots + 5, res, &slots[0], m.starts[g], m.ends[g] - m.starts[g], &empty_count));
+        }
+        if (limit > 0 && limit <= ++i) break;
     }
-    slots[3] = UNWRAP(korb_re_slice(c, slots + 3, &slots[0], last, (long)VAL2STR(slots[0])->len));
-    CHECK(korb_ary_push_val(c, slots + 4, res, slots[3]));
-    if (limit == 0) {
-        KorbArray *ra = VAL2ARY(VALUE_REF_GET(res));
-        while (ra->len > 0 && KORB_STRING_P(ra->items->data[ra->len - 1]) && VAL2STR(ra->items->data[ra->len - 1])->len == 0) { ra->len--; ra = VAL2ARY(VALUE_REF_GET(res)); }
-    }
+    const long len = (long)VAL2STR(slots[0])->len;          /* trailing field */
+    if (len > 0 && (limit != 0 || len > beg))
+        CHECK(korb_re_split_emit(c, slots + 5, res, &slots[0], beg, len - beg, &empty_count));
     return RESULT_OK(VALUE_REF_GET(res));
 }
 

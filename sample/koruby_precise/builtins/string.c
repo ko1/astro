@@ -1713,10 +1713,17 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         uint32_t slen = s->len;
         bool last_field = (limit > 0 && VAL2ARY(VALUE_REF_GET(dst))->len == (uint32_t)limit - 1);
         if (ws) {
+            uint32_t ws_start = pos;
             while (pos < slen && korb_is_ws((unsigned char)s->buf->data[pos])) pos++;
-            if (pos >= slen) break;
+            if (last_field) {   /* positive limit: remainder (incl. any trailing ws) is the last field, even if empty */
+                CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos)))); break;
+            }
+            if (pos >= slen) {  /* end reached; a negative limit keeps one trailing "" when trailing ws followed ≥1 field */
+                if (limit < 0 && pos > ws_start && VAL2ARY(VALUE_REF_GET(dst))->len > 0)
+                    CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_new(c, slots + 1, "", 0))));
+                break;
+            }
             uint32_t start = pos;
-            if (last_field) { CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, slen - start)))); break; }
             while (pos < slen && !korb_is_ws((unsigned char)s->buf->data[pos])) pos++;
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, pos - start))));
         } else {
