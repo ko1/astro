@@ -27,6 +27,13 @@ static struct {
     size_t cnt, cap;
 } astrogre_all_nodes;
 
+/* Node-ownership hook (defined in parse.c).  When a pattern is being built the
+ * new node is recorded on it (so astrogre_pattern_free can release the tree);
+ * otherwise it falls to the global registry (shared singletons, grep CLI). */
+struct astrogre_pattern;
+extern struct astrogre_pattern *astrogre_g_building;
+extern void astrogre_pattern_add_node(struct astrogre_pattern *p, NODE *n);
+
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
@@ -36,6 +43,10 @@ node_allocate(size_t size)
         exit(EXIT_FAILURE);
     }
     astrogre_node_cnt++;
+    if (astrogre_g_building) {                 /* pattern build → owned by that pattern */
+        astrogre_pattern_add_node(astrogre_g_building, n);
+        return n;
+    }
     if (astrogre_all_nodes.cnt == astrogre_all_nodes.cap) {
         size_t cap = astrogre_all_nodes.cap ? astrogre_all_nodes.cap * 2 : 64;
         astrogre_all_nodes.arr = (NODE **)realloc(astrogre_all_nodes.arr, cap * sizeof(NODE *));

@@ -63,7 +63,26 @@ typedef struct astrogre_pattern {
     struct Node **entries;
     int           n_entries;
     int           entries_cap;
+
+    /* Every AST node allocated while building this pattern is recorded here so
+     * astrogre_pattern_free can release the whole tree (nodes are otherwise never
+     * freed — a per-process leak that grows with each compiled pattern).  Shared
+     * singletons (rep_cont) are NOT owned here — they are allocated outside a
+     * pattern build and stay in the global registry.  `owned` holds the misc
+     * malloc'd buffers a node points at (literal bytes, the memmem needle). */
+    NODE   **nodes;
+    size_t   n_nodes, cap_nodes;
+    void   **owned;
+    size_t   n_owned, cap_owned;
 } astrogre_pattern;
+
+/* Node-ownership hook: while `astrogre_g_building` is set (during a pattern
+ * build), node_allocate records each new node on that pattern; otherwise the
+ * node goes to the global registry.  `astrogre_own` records a node-owned
+ * malloc'd buffer for release in astrogre_pattern_free. */
+extern astrogre_pattern *astrogre_g_building;
+void astrogre_pattern_add_node(astrogre_pattern *p, struct Node *n);
+void astrogre_own(void *ptr);
 
 /* Match result (filled by astrogre_search / astrogre_search_from). */
 typedef struct astrogre_match {

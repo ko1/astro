@@ -1800,6 +1800,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     case IRE_EMPTY:    return tail;
     case IRE_LIT: {
         char *bytes = (char *)malloc(n->u.lit.len + 1);
+        astrogre_own(bytes);           /* node-owned literal bytes → freed in astrogre_pattern_free */
         memcpy(bytes, n->u.lit.bytes, n->u.lit.len);
         bytes[n->u.lit.len] = 0;
         if (n->u.lit.ci) {
@@ -1996,6 +1997,45 @@ static void ire_free(ire_node_t *n) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Node ownership (per-pattern) — see node.c node_allocate.            */
+/* ------------------------------------------------------------------ */
+
+astrogre_pattern *astrogre_g_building = NULL;
+
+void
+astrogre_pattern_add_node(astrogre_pattern *p, NODE *n)
+{
+    if (p->n_nodes == p->cap_nodes) {
+        p->cap_nodes = p->cap_nodes ? p->cap_nodes * 2 : 32;
+        p->nodes = (NODE **)realloc(p->nodes, p->cap_nodes * sizeof(NODE *));
+    }
+    p->nodes[p->n_nodes++] = n;
+}
+
+void
+astrogre_own(void *ptr)
+{
+    astrogre_pattern *const p = astrogre_g_building;
+    if (!p || !ptr) return;
+    if (p->n_owned == p->cap_owned) {
+        p->cap_owned = p->cap_owned ? p->cap_owned * 2 : 8;
+        p->owned = (void **)realloc(p->owned, p->cap_owned * sizeof(void *));
+    }
+    p->owned[p->n_owned++] = ptr;
+}
+
+/* Release the parser's named-capture scratch (only when NOT transferred to a
+ * pattern — i.e. on a parse error before the transfer). */
+static void
+re_parser_free_names(re_parser_t *q)
+{
+    for (int i = 0; i < q->n_names; i++) free(q->names[i]);
+    free(q->names);    q->names = NULL;
+    free(q->name_idx); q->name_idx = NULL;
+    q->n_names = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Public entry points                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -2021,11 +2061,13 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     if (q.error) {
         fprintf(stderr, "%s\n", q.errbuf);
         ire_free(ir);
+        free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
     }
     if (q.p != q.end) {
         fprintf(stderr, "regex parse: trailing input at offset %ld\n", (long)(q.p - (const uint8_t *)pat));
         ire_free(ir);
+        free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
     }
 
@@ -2035,12 +2077,19 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
      * the alt shape. */
     ire_optimize(ir);
 
+    /* Allocate the pattern up-front and route every node built below onto it
+     * (via astrogre_g_building) so astrogre_pattern_free releases the whole AST.
+     * The rep_cont singleton is fetched BEFORE arming the hook so it stays
+     * globally owned (shared across patterns). */
     lower_ctx_t L = {0};
     L.q = &q;
     L.ci = q.case_insensitive;
     L.ml = q.multiline;
     L.enc = q.encoding;
     L.rep_cont = astrogre_rep_cont_singleton();
+
+    astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
+    astrogre_g_building = p;
 
     NODE *succ = ALLOC_node_re_succ();
     /* Wrap the whole pattern in capture group 0 so the matcher records
@@ -2055,6 +2104,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
         fprintf(stderr, "%s\n", q.errbuf);
         ire_free(ir);
         free(L.sub_needed);
+        astrogre_g_building = NULL; free(q.groups_by_idx); re_parser_free_names(&q);
+        astrogre_pattern_free(p);   /* releases the partial AST built so far */
         return NULL;
     }
 
@@ -2091,6 +2142,9 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
             free(sub_chains);
             free(L.sub_needed);
             ire_free(ir);
+            astrogre_g_building = NULL; free(q.groups_by_idx); re_parser_free_names(&q);
+            free(L.entries);
+            astrogre_pattern_free(p);   /* releases the AST built so far */
             return NULL;
         }
     }
@@ -2141,6 +2195,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     if (consumes && !fp.ci && fp.len >= 4) {
         char *needle = (char *)malloc(fp.len + 1);
         memcpy(needle, fp.bytes, fp.len); needle[fp.len] = 0;
+        astrogre_own(needle);                          /* node-owned → freed in astrogre_pattern_free */
         root = ALLOC_node_grep_search_memmem(body, needle, (uint32_t)fp.len, a);
         if (ac_handle) { astrogre_ac_free(ac_handle); ac_handle = NULL; }  /* memmem wins */
     }
@@ -2197,7 +2252,8 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     const bool memo_eligible = ire_memo_eligible(ir);
     ire_free(ir);
 
-    astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
+    /* `p` was allocated up-front (nodes routed onto it); fill in the rest. */
+    astrogre_g_building = NULL;         /* end of node-ownership window */
     p->root = root;
     p->n_groups = n_groups;
     p->case_insensitive = q.case_insensitive;
@@ -2238,6 +2294,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     p->entries[p->n_entries++] = p->root;
 
     free(L.sub_needed);
+    free(q.groups_by_idx);             /* parse-time \g<> resolution scratch (not owned by p) */
     return p;
 }
 
@@ -2258,6 +2315,10 @@ astrogre_parse_fixed(const char *bytes, size_t len, uint32_t flags)
         }
     }
 
+    astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
+    astrogre_g_building = p;             /* own the nodes + lit bytes built below */
+    astrogre_own(buf);
+
     NODE *succ = ALLOC_node_re_succ();
     NODE *cap_end = ALLOC_node_re_cap_end(0, succ);
     NODE *lit = ci ? ALLOC_node_re_lit_ci(buf, (uint32_t)len, cap_end)
@@ -2265,7 +2326,7 @@ astrogre_parse_fixed(const char *bytes, size_t len, uint32_t flags)
     NODE *body = ALLOC_node_re_cap_start(0, lit);
     NODE *root = ALLOC_node_grep_search(body, 0);
 
-    astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
+    astrogre_g_building = NULL;
     p->root = root;
     p->n_groups = 0;
     p->case_insensitive = ci;
@@ -2319,9 +2380,15 @@ astrogre_pattern_free(astrogre_pattern *p)
     for (int i = 0; i < p->n_named; i++) free(p->group_names[i]);
     free(p->group_names);
     free(p->group_name_idx);
-    free(p->sub_chains);  /* node memory owned by framework's side array */
-    free(p->entries);     /* pointer array; nodes themselves owned by framework */
+    free(p->sub_chains);  /* pointer array; the chain nodes are in p->nodes */
+    free(p->entries);     /* pointer array; the nodes are in p->nodes */
     astrogre_ac_free((ac_t *)p->ac);
+    /* Release the AST this pattern owns: node-owned buffers first, then every
+     * node recorded during the build (each once — no traversal/dedup needed). */
+    for (size_t i = 0; i < p->n_owned; i++) free(p->owned[i]);
+    free(p->owned);
+    for (size_t i = 0; i < p->n_nodes; i++) free(p->nodes[i]);
+    free(p->nodes);
     free(p);
 }
 
@@ -2547,6 +2614,8 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
         fprintf(stderr, "astrogre: cs_compile h=%016lx /%s/\n",
                 (unsigned long)HASH(p->root), p->pat ? p->pat : "");
     }
+    /* Any nodes built lazily below (count_lines variant) belong to this pattern. */
+    astrogre_g_building = p;
 
     /* Register every node that's dispatched at runtime via the generic
      * EVAL(c, X) macro (i.e. its dispatcher is read indirectly from a
@@ -2596,6 +2665,10 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
     astro_cs_reload();
     /* Re-resolve every node so this very run picks up the freshly-baked
      * SDs (otherwise only the *next* invocation benefits, since the
-     * inner nodes' dispatchers were locked in at allocation time). */
+     * inner nodes' dispatchers were locked in at allocation time).  This
+     * pattern's nodes now live on p->nodes (per-pattern ownership); the
+     * global registry still holds the shared singletons. */
+    for (size_t i = 0; i < p->n_nodes; i++) astro_cs_load(p->nodes[i], NULL);
     astrogre_reload_all_dispatchers();
+    astrogre_g_building = NULL;
 }
