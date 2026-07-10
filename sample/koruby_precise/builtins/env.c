@@ -397,6 +397,22 @@ static RESULT korb_m_env_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* ENV.replace(hash) → clear ENV, then set every pair from hash; returns ENV. */
+static RESULT korb_m_env_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE hv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_HASH_P(hv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(hv));
+    { RESULT cr = korb_m_env_clear(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    slots[0] = hv;                                           /* root the source hash */
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *h = VAL2HASH(slots[0]);
+        if (i >= h->len) break;
+        slots[1] = h->items->data[2 * i];
+        slots[2] = h->items->data[2 * i + 1];
+        VALUE pair[2] = { slots[1], slots[2] };
+        CHECK(korb_m_env_aset(c, slots + 3, self, VALUE_SLICE_MAKE(pair, 2)));
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 void korb_init_env(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "ENV", 3), KORB_NIL)).value;
@@ -423,7 +439,7 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVR("assoc", assoc, 1);          ENVR("rassoc", rassoc, 1);
     ENVR("invert", invert, 0);        ENVR("values_at", values_at, -1);
     ENVR("slice", slice, -1);         ENVR("except", except, -1);
-    ENVR("clear", clear, 0);
+    ENVR("clear", clear, 0);      ENVR("replace", replace, 1);
     ENVB("each_key", each_key, 0);    ENVB("each_value", each_value, 0);
     ENVR("key", key, 1);
     ENVR("size", size, 0);       ENVR("length", size, 0);
