@@ -759,8 +759,14 @@ static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * to a placeholder rather than nil. */
 static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    if (VAL2CLASS(VALUE_REF_GET(self))->name_sym == 0) return korb_str_new(c, slots, "#<Class>", 8);
-    return korb_class_qname_str(c, slots, VALUE_REF_GET(self));
+    const VALUE cls = VALUE_REF_GET(self);
+    const KorbClass *const k = VAL2CLASS(cls);
+    if (k->name_sym == 0) {                                        /* anonymous → #<Class:0x…> / #<Module:0x…> */
+        char buf[48];
+        const int n = snprintf(buf, sizeof buf, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+        return korb_str_new(c, slots, buf, (uint32_t)n);
+    }
+    return korb_class_qname_str(c, slots, cls);
 }
 /* Module#constants — the constant names defined directly in this module/class
  * (owner-tagged in the VM const table).  Globals ($) and cvars (@) share the
