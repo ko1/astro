@@ -506,6 +506,17 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
         fputc(rep[i], ms);
     }
 }
+/* Emit v into ms as a String, dispatching a user-defined #to_s (CRuby coerces
+ * gsub block results and Hash-replacement values with #to_s). */
+static RESULT korb_emit_to_s(CTX *c, VALUE *slots, FILE *ms, VALUE v) {
+    if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); fwrite(r->buf->data, 1, r->len, ms); return RESULT_OK(KORB_NIL); }
+    slots[0] = v;
+    RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); fwrite(r->buf->data, 1, r->len, ms); }
+    else korb_fprint_to_s(c, ms, sr.value);
+    return RESULT_OK(KORB_NIL);
+}
 RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VALUE re, bool global, bool in_place, NODE *block, VALUE *def_env, VALUE *cself) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
     const KorbString *s0 = VAL2STR(slots[0]); const uint32_t sn = s0->len;
@@ -520,10 +531,12 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     }
     char *buf = NULL; size_t bz = 0; FILE *ms = open_memstream(&buf, &bz);
     long off = 0; bool replaced = false;
+    korb_re_match_t last_m; bool have_last = false;   /* POD copy of the final match → $~ after the loop */
     while (off <= (long)sn) {
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)off, &m);
         if (UNLIKELY(rr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return rr; }
         if (rr.value != KORB_TRUE) break;
+        last_m = m; have_last = true;
         const long ms0 = m.starts[0], me0 = m.ends[0];
         fwrite(src + off, 1, (size_t)(ms0 - off), ms);
         if (block) {
@@ -532,13 +545,18 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself);
             if (UNLIKELY(yr.state != KORB_NORMAL)) { free(src); fclose(ms); free(buf); return yr; }
             slots[4] = yr.value;
-            if (KORB_STRING_P(slots[4])) { const KorbString *r = VAL2STR(slots[4]); fwrite(r->buf->data, 1, r->len, ms); }
-            else korb_fprint_to_s(c, ms, slots[4]);
+            RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);
+            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
         } else if (hashrep != KORB_NIL) {
             const uint32_t ml = (uint32_t)(me0 - ms0);
-            slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));
-            int32_t idx = korb_hash_find(VAL2HASH(slots[2]), slots[3]);
-            if (idx >= 0) korb_fprint_to_s(c, ms, VAL2HASH(slots[2])->items->data[2 * idx + 1]);
+            slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));   /* whole match = hash key */
+            slots[4] = slots[2];                                            /* hash recv     (base[-1]) */
+            slots[5] = slots[3];                                           /* key arg       */
+            RESULT hr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, KORB_NIL);  /* respects default / default_proc */
+            if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return hr; }
+            slots[4] = hr.value;
+            RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);        /* nil → "", else #to_s */
+            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
         } else {
             korb_re_expand_repl(c, ms, rep, rn, src, sn, &m, slots[1]);
         }
@@ -549,6 +567,9 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     }
     if (off <= (long)sn) fwrite(src + off, 1, (size_t)(sn - off), ms);
     fclose(ms); free(src); free(rep);
+    /* $~ = MatchData of the last match (nil if none), for access after gsub returns */
+    if (have_last) { slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[3]); }
+    else korb_re_set_lastmatch(c, KORB_NIL);
     RESULT nr = korb_str_new(c, slots + 3, buf ? buf : "", (uint32_t)bz); free(buf);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
     if (!in_place) return nr;
