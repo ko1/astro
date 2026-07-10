@@ -6469,6 +6469,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_enum_gen_new(c, slots + 1, slots[0], gsize);   /* store the block + known size; terminals drive it (bounded) */
         }
         if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
+            if (argc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)argc);
+            if (block != NULL && argc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
             if (block != NULL) {                            /* default_proc: called on [] miss with (hash, key) */
                 slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
