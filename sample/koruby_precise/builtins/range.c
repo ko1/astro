@@ -741,6 +741,31 @@ static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_range_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
+    /* Bounded range: decide via a single begin<=>end, no iteration.
+     *   inclusive  → begin>end ? [nil,nil] : [begin, end]
+     *   exclusive  → begin>=end ? [nil,nil] : (non-empty → min/max path: the max
+     *                is the predecessor of end, needs Integer step / iteration)   */
+    {
+        const KorbRange *r = VAL2RANGE(VALUE_REF_GET(self));
+        if (r->rbegin != KORB_NIL && r->rend != KORB_NIL) {
+            slots[0] = VALUE_REF_GET(self);
+            int cmp = 0;
+            RESULT cr = korb_cmp_spaceship(c, slots + 1, VAL2RANGE(slots[0])->rbegin, VAL2RANGE(slots[0])->rend, &cmp);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            const KorbRange *rr = VAL2RANGE(slots[0]);
+            const bool empty = rr->exclude_end ? (cmp >= 0) : (cmp > 0);
+            if (empty || !rr->exclude_end) {                 /* inclusive fully resolved; exclusive only when empty */
+                slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+                VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+                rr = VAL2RANGE(slots[0]);
+                const VALUE lo = empty ? KORB_NIL : rr->rbegin, hi = empty ? KORB_NIL : rr->rend;
+                slots[2] = lo; CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+                slots[2] = hi; CHECK(korb_ary_push_val(c, slots + 3, dst, slots[2]));
+                return RESULT_OK(VALUE_REF_GET(dst));
+            }
+            /* non-empty exclusive → fall through to the min/max path */
+        }
+    }
     /* [min, max] via #min/#max so endless/beginless raise RangeError (not iterate). */
     RESULT mn = korb_m_range_min(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
     if (UNLIKELY(mn.state != KORB_NORMAL)) return mn;
