@@ -15,7 +15,12 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
     if (startb > s->len) { m->matched = 0; return RESULT_OK(KORB_FALSE); }
-    const int rc = fn(pat->buf->data, pat->len, VAL2RE(re)->flags, s->buf->data, s->len, startb, m);
+    /* Encoding: a /n regex, or a single-byte subject (BINARY / US-ASCII), matches
+     * byte-wise (astrogre PR_FLAGS_ASCII_8BIT=128); UTF-8 subjects match by
+     * codepoint.  So `.` on a binary string consumes one byte, not a codepoint. */
+    unsigned eff_flags = VAL2RE(re)->flags;
+    if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(subj))) eff_flags |= 128u;
+    const int rc = fn(pat->buf->data, pat->len, eff_flags, s->buf->data, s->len, startb, m);
     if (UNLIKELY(rc < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid regular expression");
     return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
