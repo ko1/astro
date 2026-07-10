@@ -187,6 +187,58 @@ void korb_define_argv(CTX *c, int n, char *const *args, const char *prog) {
     korb_const_define(c, korb_intern(c->vm, "$LOADED_FEATURES", 16), slots[1]);
 }
 
+/* ENV.select/filter (sel=true) / reject (sel=false) { |k,v| } → a Hash of the
+ * (non-)matching pairs.  Iterates a snapshot so the block may mutate ENV. */
+static RESULT korb_m_env_selrej(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool sel) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 16));           /* result */
+    slots[1] = UNWRAP(korb_m_env_to_h(c, slots + 1, self, VALUE_SLICE_MAKE(NULL, 0)));   /* snapshot */
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *snap = VAL2HASH(slots[1]);
+        if (i >= snap->len) break;
+        slots[2] = snap->items->data[2 * i];
+        slots[3] = snap->items->data[2 * i + 1];
+        VALUE argv[2] = { slots[2], slots[3] };
+        RESULT yr = korb_block_yield(c, slots + 4, block, def_env, argv, 2, cself);
+        if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+        if (KORB_TRUTHY(yr.value) == sel) CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[3]));
+    }
+    return RESULT_OK(slots[0]);
+}
+static RESULT korb_m_env_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_selrej(c, slots, self, a, block, def_env, cself, true); }
+static RESULT korb_m_env_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_selrej(c, slots, self, a, block, def_env, cself, false); }
+/* ENV.keep_if/select! (keep=true) / delete_if/reject! (keep=false) — mutating.
+ * bang variants return nil when nothing changed. */
+static RESULT korb_m_env_keepdel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool keep, bool bang) {
+    (void)a;
+    if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    slots[0] = UNWRAP(korb_m_env_to_h(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));       /* snapshot */
+    bool changed = false;
+    for (uint32_t i = 0; ; i++) {
+        const KorbHash *snap = VAL2HASH(slots[0]);
+        if (i >= snap->len) break;
+        slots[1] = snap->items->data[2 * i];
+        slots[2] = snap->items->data[2 * i + 1];
+        VALUE argv[2] = { slots[1], slots[2] };
+        RESULT yr = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
+        if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+        const bool remove = keep ? !KORB_TRUTHY(yr.value) : KORB_TRUTHY(yr.value);
+        if (remove) {
+            RESULT er; const char *name = korb_env_name(c, slots + 3, slots[1], &er);
+            if (!name) return er;
+            char nm[1024]; size_t nl = strlen(name); if (nl >= sizeof nm) nl = sizeof nm - 1;
+            memcpy(nm, name, nl); nm[nl] = '\0';
+            unsetenv(nm); changed = true;
+        }
+    }
+    if (bang) return RESULT_OK(changed ? VALUE_REF_GET(self) : KORB_NIL);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_m_env_keep_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_m_env_keepdel(c, slots, self, a, block, def_env, cself, true, false); }
+static RESULT korb_m_env_delete_if(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_keepdel(c, slots, self, a, block, def_env, cself, false, false); }
+static RESULT korb_m_env_select_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_keepdel(c, slots, self, a, block, def_env, cself, true, true); }
+static RESULT korb_m_env_reject_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_env_keepdel(c, slots, self, a, block, def_env, cself, false, true); }
 /* ENV.merge!/update(*hashes) [{ |key, old, new| }] → set each pair, block resolves
  * conflicts for existing keys; returns ENV. */
 static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -234,6 +286,11 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVB("each", each, 0);       ENVB("each_pair", each, 0);
     ENVR("delete", delete, 1);
     ENVB("merge!", merge_bang, -1);   ENVB("update", merge_bang, -1);
+    ENVB("select", select, 0);        ENVB("filter", select, 0);
+    ENVB("reject", reject, 0);
+    ENVB("keep_if", keep_if, 0);      ENVB("delete_if", delete_if, 0);
+    ENVB("select!", select_bang, 0);  ENVB("filter!", select_bang, 0);
+    ENVB("reject!", reject_bang, 0);
     ENVR("size", size, 0);       ENVR("length", size, 0);
     ENVR("empty?", empty_p, 0);
     ENVR("value?", value_p, 1);  ENVR("has_value?", value_p, 1);
