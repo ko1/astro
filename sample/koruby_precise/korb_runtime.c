@@ -2240,9 +2240,9 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
             const KorbHash *const h = VAL2HASH(sym);
-            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed; any other → the Hash isn't valid options (TypeError) */
+            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed (koruby can't tell keyword-syntax from an explicit Hash → ArgumentError, matching the keyword case) */
                 if (h->items->data[2 * j] != kw_sym)
-                    return korb_raise(c, slots, KORB_E_TYPE, 0, "unknown keyword: :%s",
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
                                       SYMBOL_P(h->items->data[2 * j]) ? korb_sym_name(vm, SYM2ID(h->items->data[2 * j])) : korb_type_name(h->items->data[2 * j]));
             int32_t ki = korb_hash_find(h, kw_sym);
             if (ki >= 0) kwinit = KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1]) ? 1 : 2;
