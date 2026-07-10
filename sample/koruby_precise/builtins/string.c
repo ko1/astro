@@ -1336,7 +1336,7 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* index(regexp[, start]) → char index of the match (builtins/regexp.c) */
         long startc = 0;
         if (VALUE_SLICE_LEN(a) >= 2) { intptr_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) startc = (long)st; }
-        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc);
+        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc, false);
     }
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* index(substr, start): range-check start first */
         intptr_t start;

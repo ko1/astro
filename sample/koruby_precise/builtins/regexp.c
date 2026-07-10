@@ -863,17 +863,41 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
     }
     return korb_md_group(c, slots, slots[2], gi);
 }
-RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc) {
+RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc, bool bytes) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re;
     const KorbString *s = VAL2STR(slots[0]);
-    if (startc < 0) startc += (long)korb_utf8_count(s->buf->data, s->len);
-    if (startc < 0) return RESULT_OK(KORB_NIL);
-    size_t startb = (startc == 0) ? 0 : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)startc);
+    const long ncp = bytes ? (long)s->len : (long)korb_utf8_count(s->buf->data, s->len);
+    if (startc < 0) startc += ncp;
+    if (startc < 0 || startc > ncp) return RESULT_OK(KORB_NIL);
+    size_t startb = bytes ? (size_t)startc : ((startc == 0) ? 0 : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)startc));
     korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[2]);
-    return RESULT_OK(LONG2FIX(korb_re_bchar(VAL2STR(slots[0]), m.starts[0])));
+    return RESULT_OK(LONG2FIX(bytes ? m.starts[0] : korb_re_bchar(VAL2STR(slots[0]), m.starts[0])));
+}
+/* rindex/byterindex with a Regexp: last match starting at position <= stop
+ * (char position for rindex, byte for byterindex). Considers overlapping starts. */
+RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long stop, bool bytes, bool have_stop) {
+    slots[0] = VALUE_REF_GET(self); slots[1] = re;
+    const KorbString *s0 = VAL2STR(slots[0]); const long slen = (long)s0->len;
+    const long ncp = bytes ? slen : (long)korb_utf8_count(s0->buf->data, slen);
+    if (!have_stop) stop = ncp;
+    if (stop < 0) stop += ncp;
+    if (stop < 0) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    const long stopb = bytes ? stop : (stop >= ncp ? slen : (long)korb_utf8_byteoff(s0->buf->data, slen, (uint32_t)stop));
+    korb_re_match_t last_m; bool have = false; long off = 0;
+    while (off <= slen) {
+        korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], (size_t)off, &m);
+        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+        if (rr.value != KORB_TRUE) break;
+        if (m.starts[0] > stopb) break;                  /* start past the limit → later ones are too */
+        last_m = m; have = true;
+        off = m.starts[0] + 1;                            /* allow overlapping starts (progress: starts[0] >= off) */
+    }
+    if (!have) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[2]);
+    return RESULT_OK(LONG2FIX(bytes ? last_m.starts[0] : korb_re_bchar(VAL2STR(slots[0]), last_m.starts[0])));
 }
 
 /* ---- Regexp class methods ------------------------------------------------ */

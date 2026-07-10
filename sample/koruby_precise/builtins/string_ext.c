@@ -758,6 +758,11 @@ static bool korb_str_search_coerce(CTX *c, VALUE *slots) {
     return KORB_STRING_P(slots[0]);
 }
 static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* byteindex(regexp[, start_byte]) */
+        long startc = 0;
+        if (VALUE_SLICE_LEN(a) >= 2) { intptr_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) startc = (long)st; }
+        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc, true);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
     if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
     intptr_t start = 0;
@@ -780,6 +785,11 @@ static RESULT korb_m_str_byteindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(off + (uint32_t)b));
 }
 static RESULT korb_m_str_byterindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* byterindex(regexp[, stop_byte]) */
+        long stop = 0; bool have_stop = false;
+        if (VALUE_SLICE_LEN(a) >= 2) { intptr_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) { stop = (long)st; have_stop = true; } }
+        return korb_re_str_rindex(c, slots, self, VALUE_SLICE_GET(a, 0), stop, true, have_stop);
+    }
     slots[0] = VALUE_SLICE_GET(a, 0);                 /* search (coerce via #to_str) */
     if (!korb_str_search_coerce(c, slots)) return RESULT_OK(KORB_NIL);
     intptr_t stop; bool have_stop = false;
@@ -832,6 +842,19 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX((intptr_t)cp));
 }
 static RESULT korb_m_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* rindex(regexp[, stop_char]) */
+        long stop = 0; bool have_stop = false;
+        if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+            intptr_t st;
+            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &st))) {
+                VALUE ov = VALUE_SLICE_GET(a, 1); RESULT cr = korb_coerce_to_int(c, slots, &ov);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(ov, &st)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            }
+            stop = (long)st; have_stop = true;
+        }
+        return korb_re_str_rindex(c, slots, self, VALUE_SLICE_GET(a, 0), stop, false, have_stop);
+    }
     VALUE sv = VALUE_SLICE_GET(a, 0);
     /* the position arg (2-arg form) is validated BEFORE the pattern: an out-of-
      * range stop returns nil even for a non-String pattern (CRuby order). */

@@ -6964,7 +6964,8 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
 RESULT korb_re_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long limit);
 RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE group_or_nil);
 RESULT korb_re_str_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE group_or_nil, bool *found, uint32_t *bs, uint32_t *be);
-RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc);
+RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc, bool bytes);
+RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long stop, bool bytes, bool have_stop);
 RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out);   /* String → escaped literal Regexp */
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
