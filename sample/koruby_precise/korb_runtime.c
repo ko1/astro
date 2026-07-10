@@ -7749,6 +7749,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "options", korb_m_re_options, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "casefold?", korb_m_re_casefold, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "names", korb_m_re_names, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "named_captures", korb_m_re_named_captures, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "==", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "eql?", korb_m_re_eq, 1);
     korb_def_cmethod(c, KORB_C_REGEXP, "hash", korb_m_re_hash, 0);

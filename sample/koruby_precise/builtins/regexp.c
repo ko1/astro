@@ -295,6 +295,7 @@ static RESULT korb_m_md_string(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_md_regexp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2MD(VALUE_REF_GET(self))->regexp); }
 static RESULT korb_md_names_into(CTX *c, VALUE *slots, VALUE mdv_or_re, bool is_md, VALUE_REF dst_ary) {
+    if (c->vm->re_named_fn == NULL) korb_re_load(c->vm);   /* ensure the engine is loaded (names before any match) */
     korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
     VALUE rev = is_md ? VAL2MD(mdv_or_re)->regexp : mdv_or_re;
     if (!nf || !KORB_REGEXP_P(rev)) return RESULT_OK(VALUE_REF_GET(dst_ary));
@@ -474,15 +475,44 @@ static RESULT korb_m_re_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     (void)a; slots[0] = VALUE_REF_GET(self);
     const uint32_t f = VAL2RE(slots[0])->flags; const KorbString *src = VAL2STR(VAL2RE(slots[0])->source);
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
-    fputc('/', ms); fwrite(src->buf->data, 1, src->len, ms); fputc('/', ms);
+    fputc('/', ms);
+    /* escape bare forward slashes; pass through existing "\x" escape pairs verbatim */
+    const char *p = src->buf->data; const char *const end = p + src->len;
+    while (p < end) {
+        if (*p == '\\' && p + 1 < end) { fputc('\\', ms); fputc(p[1], ms); p += 2; continue; }
+        if (*p == '/') { fputc('\\', ms); fputc('/', ms); p++; continue; }
+        fputc(*p++, ms);
+    }
+    fputc('/', ms);
     if (f & 16u) fputc('m', ms);
     if (f & 4u) fputc('i', ms);
     if (f & 8u) fputc('x', ms);
+    if (f & 128u) fputc('n', ms);   /* NOENCODING (/n) */
     fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z); free(buf); return r;
 }
 static RESULT korb_m_re_names(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 0));
     return korb_md_names_into(c, slots + 2, slots[0], false, VALUE_REF_AT(&slots[1]));
+}
+/* Regexp#named_captures → { "name" => [group numbers] } (dup names accumulate). */
+static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (c->vm->re_named_fn == NULL) korb_re_load(c->vm);
+    slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_hash_new(c, slots + 1, 0));
+    korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
+    if (!nf) return RESULT_OK(slots[1]);
+    for (int k = 0; ; k++) {
+        const KorbString *pat = VAL2STR(VAL2RE(slots[0])->source);   /* re-fetch (GC-moving) */
+        const uint32_t flags = VAL2RE(slots[0])->flags;
+        int gi = -1; const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
+        if (!gn) break;
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, gn, (uint32_t)strlen(gn)));   /* name key */
+        int32_t idx = korb_hash_find(VAL2HASH(slots[1]), slots[2]);
+        if (idx >= 0) slots[3] = VAL2HASH(slots[1])->items->data[2 * idx + 1];     /* existing array */
+        else { slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 1)); CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3])); }
+        CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), LONG2FIX(gi)));
+    }
+    return RESULT_OK(slots[1]);
 }
 static RESULT korb_m_re_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
