@@ -268,6 +268,108 @@ static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* ENV.assoc(key) → [key, value] or nil. */
+static RESULT korb_m_env_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    RESULT er; const char *name0 = korb_env_name(c, slots, VALUE_SLICE_GET(a, 0), &er);
+    if (!name0) return er;
+    char nm[1024]; size_t nl = strlen(name0); if (nl >= sizeof nm) nl = sizeof nm - 1; memcpy(nm, name0, nl); nm[nl] = '\0';
+    const char *v = getenv(nm);
+    if (!v) return RESULT_OK(KORB_NIL);
+    slots[0] = UNWRAP(korb_str_new(c, slots, nm, (uint32_t)nl));
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, v, (uint32_t)strlen(v)));
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    return RESULT_OK(slots[2]);
+}
+/* ENV.rassoc(value) → [key, value] of the first entry with that value, or nil. */
+static RESULT korb_m_env_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE want = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(want)) return RESULT_OK(KORB_NIL);
+    const KorbString *ws = VAL2STR(want);
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        if (strlen(val) == ws->len && memcmp(val, ws->buf->data, ws->len) == 0) {
+            slots[0] = UNWRAP(korb_str_new(c, slots, key, klen));
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));
+            slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+            CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+            return RESULT_OK(slots[2]);
+        }
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* ENV.invert → { value => key } Hash. */
+static RESULT korb_m_env_invert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 16));
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));   /* new key = value */
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, key, klen));                    /* new value = key */
+        CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(slots[0]);
+}
+/* ENV.values_at(*keys) → [ENV[k], ...] (nil for missing). */
+static RESULT korb_m_env_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_ary_new(c, slots, VALUE_SLICE_LEN(a)));
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE one = VALUE_SLICE_GET(a, i);
+        RESULT r = korb_m_env_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&one, 1));
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[1] = r.value;
+        CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
+    }
+    return RESULT_OK(slots[0]);
+}
+/* ENV.slice(*keys) → { k => ENV[k] } for present keys. */
+static RESULT korb_m_env_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = UNWRAP(korb_hash_new(c, slots, VALUE_SLICE_LEN(a)));
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+        VALUE one = VALUE_SLICE_GET(a, i);
+        RESULT r = korb_m_env_aref(c, slots + 1, self, VALUE_SLICE_MAKE(&one, 1));
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (r.value == KORB_NIL) continue;
+        slots[1] = one; slots[2] = r.value;
+        CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(slots[0]);
+}
+/* ENV.except(*keys) → to_h minus the given keys. */
+static RESULT korb_m_env_except(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 16));
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        bool excluded = false;                              /* skip keys named in the args */
+        for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
+            const VALUE one = VALUE_SLICE_GET(a, i);
+            if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(VAL2STR(one)->buf->data, key, klen) == 0) { excluded = true; break; }
+        }
+        if (excluded) continue;
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+        CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(slots[0]);
+}
+/* ENV.clear → remove every variable, returns ENV. */
+static RESULT korb_m_env_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_m_env_to_h(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));   /* snapshot the keys */
+    const KorbHash *snap = VAL2HASH(slots[0]);
+    for (uint32_t i = 0; i < snap->len; i++) {
+        const VALUE key = snap->items->data[2 * i];
+        if (!KORB_STRING_P(key)) continue;
+        char nm[1024]; uint32_t kl; const char *kc = korb_str_cstr_len(key, &kl); if (kl >= sizeof nm) kl = sizeof nm - 1;
+        memcpy(nm, kc, kl); nm[kl] = '\0'; unsetenv(nm);
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 void korb_init_env(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "ENV", 3), KORB_NIL)).value;
@@ -291,6 +393,10 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVB("keep_if", keep_if, 0);      ENVB("delete_if", delete_if, 0);
     ENVB("select!", select_bang, 0);  ENVB("filter!", select_bang, 0);
     ENVB("reject!", reject_bang, 0);
+    ENVR("assoc", assoc, 1);          ENVR("rassoc", rassoc, 1);
+    ENVR("invert", invert, 0);        ENVR("values_at", values_at, -1);
+    ENVR("slice", slice, -1);         ENVR("except", except, -1);
+    ENVR("clear", clear, 0);
     ENVR("size", size, 0);       ENVR("length", size, 0);
     ENVR("empty?", empty_p, 0);
     ENVR("value?", value_p, 1);  ENVR("has_value?", value_p, 1);
