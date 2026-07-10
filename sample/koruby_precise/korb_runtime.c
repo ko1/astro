@@ -1974,8 +1974,10 @@ static RESULT korb_m_struct_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE
  * non-member, so a partial pattern-match fails as in CRuby). */
 static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE keys = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (keys == KORB_NIL || !KORB_ARRAY_P(keys))
+    if (keys == KORB_NIL)
         return korb_m_struct_to_h(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    if (!KORB_ARRAY_P(keys))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Array or nil)", korb_type_name(keys));
     slots[0] = STRUCT_MEMBERS(self);                           /* members (symbols), rooted */
     slots[1] = keys;                                           /* requested keys, rooted */
     const uint32_t nk = VAL2ARY(slots[1])->len;
@@ -1996,9 +1998,20 @@ static RESULT korb_m_struct_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF sel
             if (idx < 0 || (uint32_t)idx >= mem->len) break;
             msym = mem->items->data[idx];
         }
-        else break;
+        else {                                                 /* other key → #to_int index, else TypeError */
+            VALUE kv = key;
+            RESULT cr = korb_coerce_to_int(c, slots + 5, &kv);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            intptr_t idx;
+            if (UNLIKELY(!korb_to_index(kv, &idx))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(key));
+            const KorbArray *const mem2 = VAL2ARY(slots[0]);   /* re-read after coerce GC */
+            if (idx < 0) idx += mem2->len;
+            if (idx < 0 || (uint32_t)idx >= mem2->len) break;
+            msym = mem2->items->data[idx];
+        }
         bool found = false;
-        for (uint32_t m = 0; m < mem->len; m++) if (mem->items->data[m] == msym) { found = true; break; }
+        { const KorbArray *const memf = VAL2ARY(slots[0]);     /* re-read (coerce path may have GC'd) */
+          for (uint32_t m = 0; m < memf->len; m++) if (memf->items->data[m] == msym) { found = true; break; } }
         if (!found) break;
         slots[3] = key;                                        /* hash uses the original key */
         slots[4] = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, msym));
