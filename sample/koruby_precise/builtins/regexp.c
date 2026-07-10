@@ -191,7 +191,19 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             continue;
         }
         intptr_t i = 0; VALUE g = KORB_NIL;
-        if (korb_to_index(arg, &i)) { if (i < 0) i += n; if (i >= 0 && i < n) g = UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)i)); }
+        if (SYMBOL_P(arg) || KORB_STRING_P(arg)) {        /* named-capture reference */
+            const char *nm; uint32_t nl;
+            if (SYMBOL_P(arg)) { nm = korb_sym_name(c->vm, SYM2ID(arg)); nl = (uint32_t)strlen(nm); }
+            else { nm = VAL2STR(arg)->buf->data; nl = VAL2STR(arg)->len; }
+            const int gi = korb_md_name_idx(c, slots[0], nm, nl);
+            if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
+            g = UNWRAP(korb_md_group(c, slots + 2, slots[0], gi));
+        } else if (korb_to_index(arg, &i)) {              /* Integer index (out-of-range → nil) */
+            if (i < 0) i += n;
+            if (i >= 0 && i < n) g = UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)i));
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(arg));
+        }
         slots[2] = g;
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
     }
