@@ -541,6 +541,10 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
+    if (KORB_REGEXP_P(idx)) {                          /* str[re] / str[re, capture] → matched byte span (sets $~) */
+        (void)write;
+        return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be);
+    }
     if (!KORB_STRING_P(idx) && !KORB_RANGE_P(idx)) {   /* coerce a non-String/Range index via #to_int (before reading self) */
         RESULT cr = korb_coerce_to_int(c, slots, &idx);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;

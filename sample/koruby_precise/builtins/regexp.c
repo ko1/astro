@@ -825,6 +825,27 @@ RESULT korb_re_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long li
 }
 
 /* ---- String#[] / index with a Regexp (forward-declared) ------------------ */
+/* Byte span [*bs, *be) of a Regexp match on self (optional capture group by
+ * index or name); sets $~ and *found. Used by String#[]= and String#slice!. */
+RESULT korb_re_str_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE group_or_nil, bool *found, uint32_t *bs, uint32_t *be) {
+    slots[0] = VALUE_REF_GET(self); slots[1] = re; korb_re_match_t m;
+    RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], 0, &m);
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); *found = false; return RESULT_OK(KORB_NIL); }
+    slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[2]);
+    int gi = 0;
+    if (group_or_nil != KORB_NIL) {
+        if (SYMBOL_P(group_or_nil) || KORB_STRING_P(group_or_nil)) {
+            const char *nm; uint32_t nl;
+            if (SYMBOL_P(group_or_nil)) { nm = korb_sym_name(c->vm, SYM2ID(group_or_nil)); nl = (uint32_t)strlen(nm); } else { nm = VAL2STR(group_or_nil)->buf->data; nl = VAL2STR(group_or_nil)->len; }
+            gi = korb_md_name_idx(c, slots[2], nm, nl);
+            if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
+        } else { intptr_t g = 0; korb_to_index(group_or_nil, &g); gi = (int)g; }
+    }
+    if (gi < 0 || gi > m.n_groups || m.starts[gi] < 0) { *found = false; return RESULT_OK(KORB_NIL); }
+    *bs = (uint32_t)m.starts[gi]; *be = (uint32_t)m.ends[gi]; *found = true;
+    return RESULT_OK(KORB_TRUE);
+}
 RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE group_or_nil) {
     slots[0] = VALUE_REF_GET(self); slots[1] = re; korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], 0, &m);
