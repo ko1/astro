@@ -1083,6 +1083,9 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(id == UINT32_MAX))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    const char *const cname = korb_sym_name(c->vm, id);   /* constant names must start with an uppercase letter */
+    if (UNLIKELY(!((cname[0] >= 'A' && cname[0] <= 'Z') || (unsigned char)cname[0] >= 0x80)))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
     const VALUE val = VALUE_SLICE_GET(a, 1);
     const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
     korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
