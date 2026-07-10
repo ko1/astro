@@ -2191,6 +2191,16 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, KP_SEND0_SC, (str = build_dstr(tc, in->parts.nodes, in->parts.size)));
         return kp_send0(to_sym, kp_line(tc, node), str);
       }
+      case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {   /* /...#{ }.../ → Regexp(dstr, flags) */
+        extern const struct NodeKind kind_node_regexp_dyn;
+        const pm_interpolated_regular_expression_node_t *in = (const pm_interpolated_regular_expression_node_t *)node;
+        uint32_t flags = in->base.flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE |
+                                           PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
+                                           PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE);
+        NODE *src;
+        WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr(tc, in->parts.nodes, in->parts.size)));
+        return ALLOC_node_regexp_dyn(flags, src);
+      }
       case PM_EMBEDDED_STATEMENTS_NODE: {
         const pm_embedded_statements_node_t *en = (const pm_embedded_statements_node_t *)node;
         if (!en->statements) return ALLOC_node_lit(KORB_NIL);   /* #{} → "" via nil.to_s */

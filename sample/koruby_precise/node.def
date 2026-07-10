@@ -56,6 +56,15 @@ node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint
     return korb_regexp_new(c, slots + 1, slots[0], flags);
 }
 
+// Interpolated Regexp `/...#{ }.../` — the source String is built at runtime by
+// the child (a dstr), then compiled to a fresh Regexp with the baked flags.
+NODE_DEF
+node_regexp_dyn(CTX *c, NODE *n, VALUE *slots, uint32_t flags, VALUE src@child)
+{
+    (void)n;
+    return korb_regexp_new(c, slots, src, flags);
+}
+
 // Special regex global reads: $1..$9 (kind 100+n), $& (0), $` (1), $' (2), $+ (3).
 // Reads the last MatchData ($~) and returns the corresponding piece (or nil).
 NODE_DEF
