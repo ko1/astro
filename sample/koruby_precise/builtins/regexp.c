@@ -870,7 +870,7 @@ RESULT korb_re_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
             if (SYMBOL_P(group_or_nil)) { nm = korb_sym_name(c->vm, SYM2ID(group_or_nil)); nl = (uint32_t)strlen(nm); } else { nm = VAL2STR(group_or_nil)->buf->data; nl = VAL2STR(group_or_nil)->len; }
             gi = korb_md_name_idx(c, slots[2], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
-        } else { intptr_t g = 0; korb_to_index(group_or_nil, &g); gi = (int)g; }
+        } else { intptr_t g = 0; korb_to_index(group_or_nil, &g); if (g < 0) g += korb_md_ngroups(VAL2MD(slots[2])); gi = (int)g; }   /* negative capture index counts from the last group */
     }
     return korb_md_group(c, slots, slots[2], gi);
 }
