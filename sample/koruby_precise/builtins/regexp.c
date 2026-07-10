@@ -428,7 +428,21 @@ static RESULT korb_re_subject(CTX *c, VALUE *slots, VALUE v, VALUE *out) {
 }
 /* `re =~ str` / `str =~ re` core: set $~, return match CHAR index (or nil). */
 static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
-    if (!KORB_REGEXP_P(re) || !KORB_STRING_P(str)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    if (!KORB_REGEXP_P(re)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+    if (!KORB_STRING_P(str)) {                            /* coerce Symbol / #to_str; else no match */
+        slots[0] = re;                                    /* root re across the coercion alloc */
+        if (SYMBOL_P(str)) {
+            const char *nm = korb_sym_name(c->vm, SYM2ID(str));
+            str = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm)));
+        } else if (KORB_OBJECT_P(str) && korb_responds_to_coerce_p(c, slots + 1, &str, korb_intern(c->vm, "to_str", 6))) {
+            slots[1] = str;
+            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (!KORB_STRING_P(sr.value)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+            str = sr.value;
+        } else { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+        re = slots[0];
+    }
     slots[0] = re; slots[1] = str;
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], 0, &m);
@@ -514,16 +528,19 @@ static RESULT korb_m_re_named_captures(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(slots[1]);
 }
+/* == and hash ignore the /n (NOENCODING, 128) flag — CRuby treats it as
+ * encoding metadata, not part of the compiled-pattern identity. */
+#define KORB_RE_ID_FLAGS(f) ((f) & ~128u)
 static RESULT korb_m_re_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0), s = VALUE_REF_GET(self);
-    if (!KORB_REGEXP_P(o) || VAL2RE(s)->flags != VAL2RE(o)->flags) return RESULT_OK(KORB_FALSE);
+    if (!KORB_REGEXP_P(o) || KORB_RE_ID_FLAGS(VAL2RE(s)->flags) != KORB_RE_ID_FLAGS(VAL2RE(o)->flags)) return RESULT_OK(KORB_FALSE);
     const KorbString *a1 = VAL2STR(VAL2RE(s)->source), *b1 = VAL2STR(VAL2RE(o)->source);
     if (a1->len != b1->len || memcmp(a1->buf->data, b1->buf->data, a1->len) != 0) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_re_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; const KorbString *src = VAL2STR(VAL2RE(VALUE_REF_GET(self))->source);
-    uint32_t h = korb_str_hash(src->buf->data, src->len) ^ (VAL2RE(VALUE_REF_GET(self))->flags * 2654435761u);
+    uint32_t h = korb_str_hash(src->buf->data, src->len) ^ (KORB_RE_ID_FLAGS(VAL2RE(VALUE_REF_GET(self))->flags) * 2654435761u);
     return RESULT_OK(LONG2FIX((long)h));
 }
 /* Regexp#match(str[,pos]) → MatchData|nil (sets $~); block form yields it. */
