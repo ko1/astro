@@ -809,7 +809,7 @@ static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (!korb_str_sets_match(a, ch)) r->buf->data[w++] = (char)ch;
     }
     r->len = w; r->buf->data[w] = '\0';
-    if (!in_place) return RESULT_OK((VALUE)r);
+    if (!in_place) { KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self))); return RESULT_OK((VALUE)r); }
     bool changed = (w != n);
     slots[0] = (VALUE)r;
     KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
@@ -873,6 +873,7 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));
     return r;
 }
 /* tr_s: like tr, but runs of *translated* chars that map to the same output are
@@ -1253,7 +1254,7 @@ static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         prev = squeezable ? (int)ch : -1;
     }
     r->len = w; r->buf->data[w] = '\0';
-    if (!in_place) return RESULT_OK((VALUE)r);
+    if (!in_place) { KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self))); return RESULT_OK((VALUE)r); }
     /* copy back into self */
     slots[0] = (VALUE)r;
     bool changed = (w != n);
@@ -1953,6 +1954,7 @@ static RESULT korb_m_str_succ(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         r = korb_str_new(c, slots, buf, n);
     }
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));   /* succ preserves encoding */
     return r;
 }
 /* In-place mutate self from a computed new-string `newr`.  nil_if_unchanged:

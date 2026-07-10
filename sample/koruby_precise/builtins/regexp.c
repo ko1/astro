@@ -769,6 +769,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     else korb_re_set_lastmatch(c, KORB_NIL);
     RESULT nr = korb_str_new(c, slots + 3, buf ? buf : "", (uint32_t)bz); free(buf);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    KORB_STR_ENC_SET(nr.value, KORB_STR_ENC(VALUE_REF_GET(self)));   /* gsub/sub preserve self's encoding */
     if (!in_place) return nr;
     slots[3] = nr.value; const KorbString *res = VAL2STR(slots[3]); const uint32_t w = res->len;
     KorbString *s2 = korb_str_ensure(c, slots + 4, self, w); res = VAL2STR(slots[3]);

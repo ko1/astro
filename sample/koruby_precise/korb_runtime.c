@@ -930,6 +930,19 @@ korb_str_plus_ref(CTX *c, VALUE *slots, VALUE_REF a, VALUE_REF b)
     const KorbString *bs = VAL2STR(VALUE_REF_GET(b));
     memcpy(s->buf->data, as->buf->data, alen);
     memcpy(s->buf->data + alen, bs->buf->data, blen);
+    /* result encoding: same enc → that; else the non-ASCII-only side's (US-ASCII yields). */
+    const uint32_t ea = KORB_STR_ENC(VALUE_REF_GET(a)), eb = KORB_STR_ENC(VALUE_REF_GET(b));
+    uint32_t renc = ea;
+    if (ea != eb) {
+        bool aa = true, ab = true;
+        for (uint32_t i = 0; i < alen; i++) if ((unsigned char)as->buf->data[i] >= 0x80) { aa = false; break; }
+        for (uint32_t i = 0; i < blen; i++) if ((unsigned char)bs->buf->data[i] >= 0x80) { ab = false; break; }
+        if (aa && ab) renc = (ea == KORB_ENC_USASCII) ? eb : ea;
+        else if (ab)  renc = ea;
+        else if (aa)  renc = eb;
+        /* else incompatible → keep ea (proper Encoding::CompatibilityError TODO) */
+    }
+    KORB_STR_ENC_SET((VALUE)s, renc);
     return RESULT_OK((VALUE)s);
 }
 

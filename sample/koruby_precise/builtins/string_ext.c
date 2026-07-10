@@ -951,6 +951,7 @@ static RESULT korb_m_str_swapcase(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));     /* re-read after GC */
     korb_case_transform(s->buf->data, r->buf->data, len, 3, ascii_only);   /* swapcase (ASCII + Latin-1) */
+    KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve source encoding */
     return RESULT_OK((VALUE)r);
 }
 /* ljust(0)/rjust(1)/center(2) — char-width padding via a transient buffer */
@@ -992,6 +993,7 @@ static RESULT korb_str_pad(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, 
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve self's encoding (ASCII pad) */
     return r;
 }
 static RESULT korb_m_str_ljust(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_str_pad(c, slots, self, a, 0); }
