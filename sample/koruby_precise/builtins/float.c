@@ -41,6 +41,18 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const VALUE ov = VALUE_SLICE_GET(a, 0);
     double o;
     if (!korb_num_to_d(ov, &o)) {                            /* coercible object → a, b = o.coerce(self); a <=> b */
+        const double si = SELF_FLT;
+        if (isinf(si) && KORB_OBJECT_P(ov)) {                /* ±Inf <=> obj#infinite? (1=+Inf, -1=-Inf, nil=finite) */
+            const uint32_t inf_mid = korb_intern(c->vm, "infinite?", 9);
+            if (korb_responds_to(c, ov, inf_mid)) {
+                slots[0] = ov;
+                RESULT ir = korb_send_impl(c, slots + 1, inf_mid, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                const int self_level = si > 0 ? 1 : -1;
+                const int other_level = (ir.value == LONG2FIX(1)) ? 1 : (ir.value == LONG2FIX(-1)) ? -1 : 0;
+                return RESULT_OK(LONG2FIX((self_level > other_level) - (self_level < other_level)));
+            }
+        }
         if (KORB_OBJECT_P(ov)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), ov, "<=>", 0, &h); if (h) return cr; }
         return RESULT_OK(KORB_NIL);
     }
