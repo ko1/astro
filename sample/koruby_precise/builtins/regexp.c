@@ -471,6 +471,7 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
             char nx = rep[i + 1];
             if (nx >= '0' && nx <= '9') { int g = nx - '0'; if (g <= m->n_groups && m->starts[g] >= 0) fwrite(subj + m->starts[g], 1, (size_t)(m->ends[g] - m->starts[g]), ms); i++; continue; }
             else if (nx == '&') { if (m->starts[0] >= 0) fwrite(subj + m->starts[0], 1, (size_t)(m->ends[0] - m->starts[0]), ms); i++; continue; }
+            else if (nx == '+') { for (int g = m->n_groups; g >= 1; g--) if (m->starts[g] >= 0) { fwrite(subj + m->starts[g], 1, (size_t)(m->ends[g] - m->starts[g]), ms); break; } i++; continue; }
             else if (nx == '`') { fwrite(subj, 1, (size_t)m->starts[0], ms); i++; continue; }
             else if (nx == '\'') { fwrite(subj + m->ends[0], 1, (size_t)(slen - m->ends[0]), ms); i++; continue; }
             else if (nx == '\\') { fputc('\\', ms); i++; continue; }

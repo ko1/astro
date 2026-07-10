@@ -919,13 +919,41 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return r;
 }
 /* gsub/sub with a literal String pattern + String|Hash replacement (no regex/block). */
+/* Expand a String-pattern gsub/sub replacement's backrefs.  A literal-string
+ * match has no capture groups, so only \0/\& (the match), \` (pre), \' (post)
+ * and \\ are meaningful; \1..\9 and \+ expand to empty. */
+static void korb_str_gsub_emit(FILE *ms, const char *rep, uint32_t rn, const char *src, uint32_t ms0, uint32_t me0, uint32_t sn) {
+    for (uint32_t k = 0; k < rn; k++) {
+        if (rep[k] == '\\' && k + 1 < rn) {
+            const char nx = rep[k + 1];
+            if (nx == '0' || nx == '&') { fwrite(src + ms0, 1, me0 - ms0, ms); k++; continue; }
+            if (nx == '`')  { fwrite(src, 1, ms0, ms); k++; continue; }
+            if (nx == '\'') { fwrite(src + me0, 1, sn - me0, ms); k++; continue; }
+            if (nx == '\\') { fputc('\\', ms); k++; continue; }
+            if ((nx >= '1' && nx <= '9') || nx == '+') { k++; continue; }   /* no captures → empty */
+        }
+        fputc(rep[k], ms);
+    }
+}
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (KORB_REGEXP_P(pv))                             /* regex pattern → astrogre engine (builtins/regexp.c) */
-        return korb_re_str_gsub(c, slots, self, a, pv, global, in_place, block, def_env, cself);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
-    if (block != NULL) {                              /* gsub(pat) { |match| ... } — block yields the replacement */
+    if (KORB_REGEXP_P(pv)) {                            /* regex pattern → astrogre engine (builtins/regexp.c) */
+        NODE *const eff_block = (VALUE_SLICE_LEN(a) >= 2) ? NULL : block;   /* a replacement arg wins over a block */
+        return korb_re_str_gsub(c, slots, self, a, pv, global, in_place, eff_block, def_env, cself);
+    }
+    if (UNLIKELY(!KORB_STRING_P(pv))) {                /* coerce a non-String/Regexp pattern via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots, &pv, to_str)) {
+            slots[0] = VALUE_REF_GET(self);            /* root self across the dispatch */
+            slots[1] = pv;
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            self = VALUE_REF_AT(&slots[0]);
+            slots[1] = sr.value; pv = slots[1];
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
+    }
+    if (block != NULL && VALUE_SLICE_LEN(a) < 2) {    /* gsub(pat) { |match| ... } — block yields (a replacement arg wins over a block) */
         const KorbString *ps = VAL2STR(pv);
         const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
         const KorbString *s0 = VAL2STR(VALUE_REF_GET(self));
@@ -968,10 +996,11 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     /* snapshot pattern + replacement bytes into stable C buffers (survive grows) */
     const KorbString *ps = VAL2STR(pv);
     uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
-    char *rep; uint32_t rn;
+    char *rep; uint32_t rn; bool rep_backref = false;
     if (KORB_STRING_P(rv)) {
         const KorbString *rs = VAL2STR(rv);
         rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, rs->buf->data, rn);
+        rep_backref = memchr(rep, '\\', rn) != NULL;  /* expand \0/\&/\`/\'/\\ per match (CRuby does this for String patterns too) */
     } else if (KORB_HASH_P(rv)) {                     /* hash: matched substring → hash[match].to_s ("" if absent) */
         int32_t idx = korb_hash_find(VAL2HASH(rv), pv);   /* literal pattern → key is the whole match */
         if (idx < 0) { rn = 0; rep = malloc(1); }
@@ -994,7 +1023,9 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         const bool hit = pn == 0 ? (global || !replaced)
                                  : (i + pn <= sn && memcmp(s->buf->data + i, pat, pn) == 0 && (global || !replaced));
         if (hit) {
-            fwrite(rep, 1, rn, ms); replaced = true;
+            if (rep_backref) korb_str_gsub_emit(ms, rep, rn, s->buf->data, i, i + pn, sn);
+            else fwrite(rep, 1, rn, ms);
+            replaced = true;
             if (pn == 0) { if (i < sn) fputc(s->buf->data[i], ms); i++; }   /* empty match: emit the replacement then advance a char */
             else i += pn;
         } else {
