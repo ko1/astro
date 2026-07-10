@@ -145,30 +145,45 @@ static const char *korb_coerce_name(CTX *c, VALUE v) {
     }
     return korb_type_name(v);                       /* builtins: String / Integer / ... */
 }
-/* Coerce a shift argument to an intptr via #to_int (CRuby's rb_to_int).
- * to_int dispatch may GC, so the caller's self is held behind a VALUE_REF. */
-static RESULT korb_arg_to_index(CTX *c, VALUE *slots, VALUE o, intptr_t *out) {
-    if (LIKELY(korb_to_index(o, out))) return RESULT_OK(KORB_NIL);
-    const uint32_t mid = korb_intern(c->vm, "to_int", 6);
-    if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, mid))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, o));
-    slots[0] = o;
-    RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    o = slots[0];                                 /* re-read: to_int dispatch may have moved o */
-    if (UNLIKELY(!KORB_INTEGER_P(r.value))) {
-        const char *on = korb_coerce_name(c, o);
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)",
-                          on, on, korb_type_name(r.value));
+/* Coerce a shift amount to an Integer (Fixnum/Bignum) via #to_int, rooting self
+ * in slots[0].  A Bignum amount that doesn't fit a word is an extreme shift:
+ * right by a huge count → 0 (or -1 for negative self); left by a huge count of a
+ * nonzero value → RangeError.  dir = +1 for `<<`, -1 for `>>`. */
+static RESULT korb_int_shift_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, int dir, intptr_t *sh_out, bool *extreme, VALUE *ext_val) {
+    slots[0] = VALUE_REF_GET(self);
+    *extreme = false;
+    for (;;) {
+#ifdef KORB_HAVE_GMP
+        if (KORB_BIGNUM_P(o)) {                          /* amount doesn't fit a word → extreme shift */
+            const int osign = mpz_sgn(VAL2BIG(o)->z);
+            const bool right = (osign * dir) < 0;        /* left<<neg or right>>pos → shrink toward 0/-1 */
+            const bool self_neg = KORB_BIGNUM_P(slots[0]) ? (mpz_sgn(VAL2BIG(slots[0])->z) < 0) : (FIX2LONG(slots[0]) < 0);
+            const bool self_zero = !KORB_BIGNUM_P(slots[0]) && FIX2LONG(slots[0]) == 0;
+            *extreme = true;
+            if (right) { *ext_val = self_neg ? LONG2FIX(-1) : LONG2FIX(0); return RESULT_OK(KORB_NIL); }
+            if (self_zero) { *ext_val = LONG2FIX(0); return RESULT_OK(KORB_NIL); }
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "shift width too big");
+        }
+#endif
+        if (LIKELY(korb_to_index(o, sh_out))) return RESULT_OK(KORB_NIL);   /* Fixnum / Float / ... */
+        /* otherwise coerce once via #to_int, then re-check (Bignum/Fixnum) */
+        const uint32_t mid = korb_intern(c->vm, "to_int", 6);
+        if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, mid))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, o));
+        slots[1] = o;
+        RESULT r = korb_send_impl(c, slots + 2, mid, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (UNLIKELY(!KORB_INTEGER_P(r.value))) {
+            const char *on = korb_coerce_name(c, slots[1]);
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Integer (%s#to_int gives %s)", on, on, korb_type_name(r.value));
+        }
+        o = r.value;                                     /* Fixnum or Bignum → loop once more */
     }
-    if (UNLIKELY(!korb_to_index(r.value, out)))   /* huge Bignum amount (rare) */
-        return korb_raise(c, slots, KORB_E_RANGE, 0, "shift width too big");
-    return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    intptr_t sh;
-    { RESULT cr = korb_arg_to_index(c, slots, o, &sh); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    intptr_t sh; bool extreme = false; VALUE ext = KORB_NIL;
+    { RESULT cr = korb_int_shift_arg(c, slots, self, VALUE_SLICE_GET(a, 0), +1, &sh, &extreme, &ext); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    if (extreme) return RESULT_OK(ext);
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) return korb_int_shift(c, slots, VALUE_REF_GET(self), sh);
 #endif
@@ -183,9 +198,9 @@ static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(LONG2FIX(r));
 }
 static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE o = VALUE_SLICE_GET(a, 0);
-    intptr_t sh;
-    { RESULT cr = korb_arg_to_index(c, slots, o, &sh); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    intptr_t sh; bool extreme = false; VALUE ext = KORB_NIL;
+    { RESULT cr = korb_int_shift_arg(c, slots, self, VALUE_SLICE_GET(a, 0), -1, &sh, &extreme, &ext); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+    if (extreme) return RESULT_OK(ext);
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) return korb_int_shift(c, slots, VALUE_REF_GET(self), -sh);   /* x >> sh == shift by -sh */
 #endif
