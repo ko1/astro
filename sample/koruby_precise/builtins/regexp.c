@@ -8,6 +8,8 @@
  * byte offsets [b0,e0,b1,e1,...] (-1 for a group that didn't participate).  $~
  * (and thus $1..$9, $&, $`, $') is kept in the flat const table under "$~". */
 
+static const char *korb_re_arg_type(VALUE v);   /* fwd (defined below) */
+
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m) {
     if (UNLIKELY(!KORB_REGEXP_P(re) || !KORB_STRING_P(subj))) return RESULT_OK(KORB_FALSE);
@@ -96,10 +98,22 @@ static int korb_md_name_idx(CTX *c, VALUE mdv, const char *name, uint32_t nlen) 
     }
     return -1;
 }
+/* Collect groups [lo, hi) into a fresh Array (out-of-range → nil elements). */
+static RESULT korb_md_group_slice(CTX *c, VALUE *slots, VALUE mdv, long lo, long len) {
+    slots[0] = mdv;
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)(len > 0 ? len : 0)));
+    const int n = korb_md_ngroups(VAL2MD(slots[0]));
+    for (long j = 0; j < len; j++) {
+        const long gi = lo + j;
+        slots[2] = (gi >= 0 && gi < n) ? UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi)) : KORB_NIL;
+        CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
+    }
+    return RESULT_OK(slots[1]);
+}
 static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE mdv = VALUE_REF_GET(self);
     const VALUE k = VALUE_SLICE_GET(a, 0);
-    if (SYMBOL_P(k) || KORB_STRING_P(k)) {
+    if (SYMBOL_P(k) || KORB_STRING_P(k)) {                /* [name] → named group */
         const char *nm; uint32_t nl;
         if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
         else { nm = VAL2STR(k)->buf->data; nl = VAL2STR(k)->len; }
@@ -107,9 +121,26 @@ static RESULT korb_m_md_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         return korb_md_group(c, slots, mdv, gi);
     }
-    intptr_t i = 0;
-    if (!korb_to_index(k, &i)) return RESULT_OK(KORB_NIL);
     const int n = korb_md_ngroups(VAL2MD(mdv));
+    if (VALUE_SLICE_LEN(a) >= 2) {                        /* [start, length] → Array */
+        intptr_t st = 0, ln = 0;
+        if (!korb_to_index(k, &st) || !korb_to_index(VALUE_SLICE_GET(a, 1), &ln)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        if (st < 0) st += n;
+        if (st < 0 || st > n || ln < 0) return RESULT_OK(KORB_NIL);
+        return korb_md_group_slice(c, slots, mdv, st, ln);
+    }
+    if (KORB_RANGE_P(k)) {                                /* [range] → Array */
+        const KorbRange *r = VAL2RANGE(k);
+        intptr_t b = 0, e;
+        if (r->rbegin != KORB_NIL) { if (!korb_to_index(r->rbegin, &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); }
+        if (b < 0) b += n;
+        if (r->rend == KORB_NIL) e = n; else { if (!korb_to_index(r->rend, &e)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
+        if (b < 0 || b > n) return RESULT_OK(KORB_NIL);
+        long len = e - b; if (len < 0) len = 0;
+        return korb_md_group_slice(c, slots, mdv, b, len);
+    }
+    intptr_t i = 0;                                       /* [int] → single group */
+    if (!korb_to_index(k, &i)) return RESULT_OK(KORB_NIL);
     if (i < 0) i += n;
     if (i < 0 || i >= n) return RESULT_OK(KORB_NIL);
     return korb_md_group(c, slots, mdv, (int)i);
@@ -141,8 +172,22 @@ static RESULT korb_m_md_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, VALUE_SLICE_LEN(a)));
     const int n = korb_md_ngroups(VAL2MD(slots[0]));
     for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const VALUE arg = VALUE_SLICE_GET(a, j);
+        if (KORB_RANGE_P(arg)) {                          /* a Range arg expands to its indices */
+            const KorbRange *r = VAL2RANGE(arg);
+            intptr_t b = 0, e;
+            if (r->rbegin != KORB_NIL) korb_to_index(r->rbegin, &b);
+            if (b < 0) b += n;
+            if (r->rend == KORB_NIL) e = n; else { e = 0; korb_to_index(r->rend, &e); if (e < 0) e += n; if (!r->exclude_end) e += 1; }
+            if (UNLIKELY(b < 0 || b > n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%d..%d out of range", (int)b, (int)e);
+            for (long gi = b; gi < e; gi++) {
+                slots[2] = (gi >= 0 && gi < n) ? UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi)) : KORB_NIL;
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
+            }
+            continue;
+        }
         intptr_t i = 0; VALUE g = KORB_NIL;
-        if (korb_to_index(VALUE_SLICE_GET(a, j), &i)) { if (i < 0) i += n; if (i >= 0 && i < n) g = UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)i)); }
+        if (korb_to_index(arg, &i)) { if (i < 0) i += n; if (i >= 0 && i < n) g = UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)i)); }
         slots[2] = g;
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
     }
@@ -162,16 +207,37 @@ static RESULT korb_m_md_post(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     slots[0] = md->subject;
     return korb_re_slice(c, slots + 1, &slots[0], e0, slen);
 }
-static RESULT korb_m_md_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; intptr_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
-    KorbMatchData *md = VAL2MD(VALUE_REF_GET(self)); const long b = korb_md_off(md, (int)i, 0);
-    return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(korb_re_bchar(VAL2STR(md->subject), b)));
+/* Resolve a begin/end/offset arg (Integer, or Symbol/String name) to a group
+ * index; raises IndexError on an unknown name or out-of-range index. */
+static RESULT korb_md_arg_gi(CTX *c, VALUE *slots, VALUE mdv, VALUE arg, int *gi_out) {
+    if (SYMBOL_P(arg) || KORB_STRING_P(arg)) {
+        const char *nm; uint32_t nl;
+        if (SYMBOL_P(arg)) { nm = korb_sym_name(c->vm, SYM2ID(arg)); nl = (uint32_t)strlen(nm); }
+        else { nm = VAL2STR(arg)->buf->data; nl = VAL2STR(arg)->len; }
+        int gi = korb_md_name_idx(c, mdv, nm, nl);
+        if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
+        *gi_out = gi; return RESULT_OK(KORB_TRUE);
+    }
+    intptr_t i = 0;
+    if (!korb_to_index(arg, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(arg));
+    const int n = korb_md_ngroups(VAL2MD(mdv));
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %d out of matches", (int)i);
+    *gi_out = (int)i; return RESULT_OK(KORB_TRUE);
 }
-static RESULT korb_m_md_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; intptr_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
-    KorbMatchData *md = VAL2MD(VALUE_REF_GET(self)); const long e = korb_md_off(md, (int)i, 1);
-    return RESULT_OK(e < 0 ? KORB_NIL : LONG2FIX(korb_re_bchar(VAL2STR(md->subject), e)));
+/* which: 0=begin 1=end; bytes=false → char offset, true → byte offset. */
+static RESULT korb_md_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE arg, int which, bool bytes) {
+    int gi = 0; RESULT r = korb_md_arg_gi(c, slots, VALUE_REF_GET(self), arg, &gi);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    KorbMatchData *md = VAL2MD(VALUE_REF_GET(self));
+    const long o = korb_md_off(md, gi, which);
+    if (o < 0) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX(bytes ? o : korb_re_bchar(VAL2STR(md->subject), o)));
 }
+static RESULT korb_m_md_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 0, false); }
+static RESULT korb_m_md_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 1, false); }
+static RESULT korb_m_md_bytebegin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 0, true); }
+static RESULT korb_m_md_byteend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 1, true); }
 static RESULT korb_m_md_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t i = 0; korb_to_index(VALUE_SLICE_GET(a, 0), &i);
     KorbMatchData *md = VAL2MD(VALUE_REF_GET(self));

@@ -7762,6 +7762,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_MATCHDATA, "post_match", korb_m_md_post, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "begin", korb_m_md_begin, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "end", korb_m_md_end, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "bytebegin", korb_m_md_bytebegin, 1);
+    korb_def_cmethod(c, KORB_C_MATCHDATA, "byteend", korb_m_md_byteend, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "offset", korb_m_md_offset, 1);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "size", korb_m_md_size, 0);
     korb_def_cmethod(c, KORB_C_MATCHDATA, "length", korb_m_md_size, 0);
