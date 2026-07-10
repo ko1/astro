@@ -2330,6 +2330,22 @@ static bool korb_data_all_keys_members(const struct korb_vm *vm, const KorbClass
 static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VAL2OBJ(VALUE_REF_GET(self))->klass;          /* the data class (rooted) */
     slots[1] = (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    if (slots[1] != KORB_NIL) {                              /* normalize String keyword keys → Symbols */
+        const KorbHash *const h0 = VAL2HASH(slots[1]);
+        bool has_str = false;
+        for (uint32_t j = 0; j < h0->len; j++) if (KORB_STRING_P(h0->items->data[2 * j])) { has_str = true; break; }
+        if (has_str) {
+            slots[3] = slots[1];
+            slots[4] = UNWRAP(korb_hash_new(c, slots + 4, VAL2HASH(slots[3])->len));
+            for (uint32_t j = 0; j < VAL2HASH(slots[3])->len; j++) {
+                const VALUE k = VAL2HASH(slots[3])->items->data[2 * j];
+                slots[5] = KORB_STRING_P(k) ? ID2SYM(korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len)) : k;
+                slots[6] = VAL2HASH(slots[3])->items->data[2 * j + 1];
+                CHECK(korb_hash_set(c, slots + 7, VALUE_REF_AT(&slots[4]), VALUE_REF_AT(&slots[5]), slots[6]));
+            }
+            slots[1] = slots[4];
+        }
+    }
     slots[2] = UNWRAP(korb_obj_new(c, slots + 2, slots[0]));  /* new instance (rooted) */
     for (uint32_t i = 0; ; i++) {
         const KorbArray *mem = VAL2ARY(VAL2CLASS(slots[0])->members);   /* re-read (ivar_set may GC) */
