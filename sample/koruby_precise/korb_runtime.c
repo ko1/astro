@@ -4178,6 +4178,21 @@ korb_recv_desc(CTX *c, VALUE v, char *buf, size_t sz)
     return korb_a_type_name(v);
 }
 
+/* Coerce a method-name argument (Symbol / String / #to_str object) to an
+ * interned mid; TypeError otherwise.  Uses slots[0..] as scratch (roots nothing
+ * of the caller's — call with a scratch window). */
+static RESULT korb_arg_to_mid(CTX *c, VALUE *slots, VALUE v, uint32_t *mid_out) {
+    const uint32_t mid = korb_bind_argsym(c, v);
+    if (LIKELY(mid != UINT32_MAX)) { *mid_out = mid; return RESULT_OK(KORB_NIL); }
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
+        slots[0] = v;
+        RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (KORB_STRING_P(sr.value)) { *mid_out = korb_intern(c->vm, VAL2STR(sr.value)->buf->data, VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+}
 /* ---------------------------------------------------------------------------
  * Equality / comparison.
  * ------------------------------------------------------------------------- */

@@ -564,9 +564,8 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     slots[0] = mod;                                            /* root module across singleton alloc */
     slots[1] = UNWRAP(korb_obj_singleton(c, slots + 2, slots[0]));   /* module's singleton (rooted) */
     for (uint32_t i = 0; i < argc; i++) {
-        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, i));
-        if (UNLIKELY(mid == UINT32_MAX))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
+        uint32_t mid = 0;
+        { RESULT mr = korb_arg_to_mid(c, slots + 3, VALUE_SLICE_GET(a, i), &mid); if (UNLIKELY(mr.state != KORB_NORMAL)) return mr; }   /* #to_str coercion; slots[0]/[1] preserved */
         VALUE mdef = KORB_NIL;
         const struct korb_method *src = korb_class_find_method(slots[0], mid, &mdef);
         if (UNLIKELY(src == NULL))
@@ -1349,9 +1348,18 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 /* Module#const_defined?(sym|str) — flat table membership. */
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots;
-    VALUE name = VALUE_SLICE_GET(a, 0);
     struct korb_vm *const vm = c->vm;
+    VALUE name = VALUE_SLICE_GET(a, 0);
+    if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {         /* coerce a non-Symbol/String name via #to_str */
+        const uint32_t to_str = korb_intern(vm, "to_str", 6);
+        if (KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str)) {
+            slots[0] = name;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (UNLIKELY(!KORB_STRING_P(sr.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            name = sr.value;
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
+    }
     uint32_t id;
     if (SYMBOL_P(name)) id = SYM2ID(name);
     else if (KORB_STRING_P(name)) {
