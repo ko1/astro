@@ -102,14 +102,15 @@ static int korb_md_name_idx(CTX *c, VALUE mdv, const char *name, uint32_t nlen) 
     }
     return best >= 0 ? best : last_defined;
 }
-/* Collect groups [lo, hi) into a fresh Array (out-of-range → nil elements). */
+/* Collect groups [lo, lo+len) into a fresh Array, Array#[start,length]-style:
+ * clamp the upper bound to the group count (no trailing nils beyond the end). */
 static RESULT korb_md_group_slice(CTX *c, VALUE *slots, VALUE mdv, long lo, long len) {
     slots[0] = mdv;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, (uint32_t)(len > 0 ? len : 0)));
     const int n = korb_md_ngroups(VAL2MD(slots[0]));
-    for (long j = 0; j < len; j++) {
-        const long gi = lo + j;
-        slots[2] = (gi >= 0 && gi < n) ? UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi)) : KORB_NIL;
+    long hi = lo + len; if (hi > n) hi = n;
+    for (long gi = lo; gi < hi; gi++) {
+        slots[2] = UNWRAP(korb_md_group(c, slots + 2, slots[0], (int)gi));   /* participating→str, else nil */
         CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), slots[2]));
     }
     return RESULT_OK(slots[1]);
@@ -235,9 +236,12 @@ static RESULT korb_md_arg_gi(CTX *c, VALUE *slots, VALUE mdv, VALUE arg, int *gi
         *gi_out = gi; return RESULT_OK(KORB_TRUE);
     }
     intptr_t i = 0;
-    if (!korb_to_index(arg, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(arg));
-    const int n = korb_md_ngroups(VAL2MD(mdv));
-    if (i < 0) i += n;
+    if (!korb_to_index(arg, &i)) {                        /* coerce via #to_int */
+        VALUE av = arg; RESULT cr = korb_coerce_to_int(c, slots, &av);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(av, &i)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_re_arg_type(arg));
+    }
+    const int n = korb_md_ngroups(VAL2MD(mdv));           /* begin/end/offset take no negative index */
     if (i < 0 || i >= n) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %d out of matches", (int)i);
     *gi_out = (int)i; return RESULT_OK(KORB_TRUE);
 }
@@ -300,7 +304,12 @@ static RESULT korb_md_names_into(CTX *c, VALUE *slots, VALUE mdv_or_re, bool is_
         const uint32_t flags = VAL2RE(slots[0])->flags;
         int gi = -1; const char *gn = nf(pat->buf->data, pat->len, flags, k, &gi);
         if (!gn) break;
-        slots[1] = UNWRAP(korb_str_new(c, slots + 1, gn, (uint32_t)strlen(gn)));
+        const uint32_t gnl = (uint32_t)strlen(gn);
+        bool dup = false;                                /* each name only once */
+        const KorbArray *da = VAL2ARY(VALUE_REF_GET(dst_ary));
+        for (uint32_t j = 0; j < da->len; j++) { const KorbString *e = VAL2STR(da->items->data[j]); if (e->len == gnl && memcmp(e->buf->data, gn, gnl) == 0) { dup = true; break; } }
+        if (dup) continue;
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, gn, gnl));
         CHECK(korb_ary_push_val(c, slots + 2, dst_ary, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst_ary));
