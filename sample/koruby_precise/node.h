@@ -133,7 +133,9 @@ static inline RESULT korb_flo(CTX *c, VALUE *slots, double d) {
 RESULT korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den);
 RESULT korb_rat_new_v(CTX *c, VALUE *slots, VALUE num, VALUE den);   /* num/den Integer (Fixnum or Bignum) */
 RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);
-RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint8_t ci);
+RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags);
+/* $~ backref accessor: kind 0=$& 1=$` 2=$' 3=$+ 100+n=$n (from the last match). */
+RESULT korb_backref(CTX *c, VALUE *slots, int kind);
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid);
 bool   korb_num_to_d(VALUE v, double *out);
 /* numeric arithmetic with a Float operand.  op: 0=+ 1=- 2=* 3=/ 4=% */
@@ -375,6 +377,7 @@ enum korb_etype {
     KORB_E_SYNTAX,
     KORB_E_LOADERR,
     KORB_E_IOERROR,
+    KORB_E_REGEXP,
 };
 
 /* class names for messages: "Integer" / "an instance of String" forms */

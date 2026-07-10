@@ -46,13 +46,23 @@ node_bignum(CTX *c, NODE *n, VALUE *slots, const char *digits, uint32_t len)
 }
 
 // Regexp literal `/pat/` — fresh Regexp(source, flags) per evaluation.
+// `flags` carries the prism regex bits (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16).
 NODE_DEF
-node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t ci)
+node_regexp(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t flags)
 {
     (void)n;
     VALUE src = UNWRAP(korb_str_new(c, slots, bytes, len));
     slots[0] = src;
-    return korb_regexp_new(c, slots + 1, slots[0], (uint8_t)ci);
+    return korb_regexp_new(c, slots + 1, slots[0], flags);
+}
+
+// Special regex global reads: $1..$9 (kind 100+n), $& (0), $` (1), $' (2), $+ (3).
+// Reads the last MatchData ($~) and returns the corresponding piece (or nil).
+NODE_DEF
+node_backref(CTX *c, NODE *n, VALUE *slots, uint32_t kind)
+{
+    (void)n;
+    return korb_backref(c, slots, (int)kind);
 }
 
 // Float literal (immediate flonum when representable, else heap-boxed).

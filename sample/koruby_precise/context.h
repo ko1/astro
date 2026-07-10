@@ -321,13 +321,18 @@ typedef struct KorbSet {
 typedef struct KorbRegexp {
     AroObjectHeader head;            /* KORB_OBJ_REGEXP */
     VALUE ARO_GC_EDGE source;        /* the pattern as a String */
-    uint8_t ci;                      /* case-insensitive flag */
+    uint8_t ci;                      /* case-insensitive flag (== flags & 4) */
+    uint32_t flags;                  /* prism regex flags (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16) */
 } KorbRegexp;
 
-/* MatchData (whole-match only; group captures need astrogre). */
+/* MatchData: the subject, the source Regexp, and per-group byte spans.
+ * `offsets` is a KorbArray of Integers [b0,e0,b1,e1,...] (byte offsets into
+ * `subject`, -1 for a group that did not participate). */
 typedef struct KorbMatchData {
     AroObjectHeader head;            /* KORB_OBJ_MATCHDATA */
-    VALUE ARO_GC_EDGE matched;       /* the matched substring (group 0) */
+    VALUE ARO_GC_EDGE subject;       /* the string that was matched against */
+    VALUE ARO_GC_EDGE regexp;        /* the source Regexp (or nil) */
+    VALUE ARO_GC_EDGE offsets;       /* KorbArray of Integer byte offsets, 2*(n_groups+1) */
 } KorbMatchData;
 
 /* Binding: a captured local scope.  `env` is the frame's closure env (open →
@@ -706,9 +711,12 @@ struct korb_vm {
      * (clean even pointer, GC-rooted via the slot scan); closed (slots->vals
      * copied) by that frame's return.  No global registry. */
 
-    /* Regexp engine: lazily dlopen'd koruby_regex.so (astrogre).  re_fn is the
-     * koruby_re_search entry, or (void*)-1 if the .so failed to load. */
-    void     *re_fn;
+    /* Regexp engine: lazily dlopen'd koruby_regex.so (→ libastrogre.so).  re_fn is
+     * the koruby_re_exec entry, or (void*)-1 if the .so failed to load; the named/
+     * valid helpers share the same handle. */
+    void     *re_fn;         /* koruby_re_exec */
+    void     *re_named_fn;   /* koruby_re_named */
+    void     *re_valid_fn;   /* koruby_re_valid */
 
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */
@@ -1061,7 +1069,9 @@ struct CTX_struct {
       }                                                                      \
       case KORB_OBJ_MATCHDATA: {                                             \
         KorbMatchData *_md = (KorbMatchData *)(payload);                    \
-        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_md->matched);               \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_md->subject);               \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_md->regexp);                \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_md->offsets);              \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

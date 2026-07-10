@@ -921,8 +921,10 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* gsub/sub with a literal String pattern + String|Hash replacement (no regex/block). */
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))                 /* regex pattern → deferred (astrogre) */
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub/sub supports only a String pattern");
+    if (KORB_REGEXP_P(pv))                             /* regex pattern → astrogre engine (builtins/regexp.c) */
+        return korb_re_str_gsub(c, slots, self, a, pv, global, in_place, block, def_env, cself);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
     if (block != NULL) {                              /* gsub(pat) { |match| ... } — block yields the replacement */
         const KorbString *ps = VAL2STR(pv);
         const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, ps->buf->data, pn);
@@ -1287,6 +1289,11 @@ static uint32_t korb_str_char_to_byte(const KorbString *s, intptr_t cidx) {
 }
 static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t boff = 0;
+    if (KORB_REGEXP_P(VALUE_SLICE_GET(a, 0))) {       /* index(regexp[, start]) → char index of the match (builtins/regexp.c) */
+        long startc = 0;
+        if (VALUE_SLICE_LEN(a) >= 2) { intptr_t st = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &st)) startc = (long)st; }
+        return korb_re_str_index(c, slots, self, VALUE_SLICE_GET(a, 0), startc);
+    }
     if (VALUE_SLICE_LEN(a) >= 2) {                    /* index(substr, start): range-check start first */
         intptr_t start;
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 1), &start))) {   /* coerce start via #to_int */
@@ -1621,6 +1628,12 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (slen > 0) CHECK(korb_ary_push_val(c, slots + 1, d1, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, slen))));
         return korb_split_finish(c, slots + 1, self, d1, block, def_env, cself);
     }
+    if (KORB_REGEXP_P(sepv)) {                                /* regex separator → astrogre (builtins/regexp.c) */
+        RESULT sr = korb_re_str_split(c, slots, self, sepv, (long)limit);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[0] = sr.value;
+        return korb_split_finish(c, slots + 1, self, VALUE_REF_AT(&slots[0]), block, def_env, cself);
+    }
     bool ws = (sepv == KORB_NIL);
     if (!ws) {
         if (UNLIKELY(!KORB_STRING_P(sepv))) {                /* coerce a non-String pattern via #to_str */
@@ -1735,6 +1748,8 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
  * codepoints; results are fresh strings (or nil). */
 static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE i0 = VALUE_SLICE_GET(a, 0);
+    if (KORB_REGEXP_P(i0))                              /* s[regexp] / s[regexp, group] → matched text (builtins/regexp.c) */
+        return korb_re_str_aref(c, slots, self, i0, VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL);
     if (!KORB_STRING_P(i0) && !KORB_RANGE_P(i0)) {     /* coerce a non-String/Range index via #to_int (before reading self) */
         RESULT cr = korb_coerce_to_int(c, slots, &i0);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;

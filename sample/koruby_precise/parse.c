@@ -2016,8 +2016,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_regular_expression_node_t *rn = (const pm_regular_expression_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&rn->unescaped, &len);
-        uint32_t ci = (rn->base.flags & PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE) ? 1u : 0u;
-        return ALLOC_node_regexp(bytes, len, ci);
+        /* Pass prism regex flags straight through (astrogre reads the same bits:
+         * IGNORE_CASE=4 / EXTENDED=8 / MULTI_LINE=16). */
+        uint32_t flags = rn->base.flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE |
+                                           PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
+                                           PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE);
+        return ALLOC_node_regexp(bytes, len, flags);
       }
       case PM_SYMBOL_NODE: {
         const pm_symbol_node_t *sn = (const pm_symbol_node_t *)node;
@@ -2864,6 +2868,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name);
         if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
         return ALLOC_node_const(gn, 0);
+      }
+      case PM_NUMBERED_REFERENCE_READ_NODE: {   /* $1..$9 → group n of the last match ($~) */
+        const uint32_t num = ((const pm_numbered_reference_read_node_t *)node)->number;
+        return ALLOC_node_backref(100u + num);
+      }
+      case PM_BACK_REFERENCE_READ_NODE: {       /* $& / $` / $' / $+ */
+        const uint32_t nm = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)node)->name);
+        uint32_t kind = 0;
+        if      (nm == korb_intern(tc->c->vm, "$&", 2)) kind = 0;
+        else if (nm == korb_intern(tc->c->vm, "$`", 2)) kind = 1;
+        else if (nm == korb_intern(tc->c->vm, "$'", 2)) kind = 2;
+        else if (nm == korb_intern(tc->c->vm, "$+", 2)) kind = 3;
+        return ALLOC_node_backref(kind);
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
