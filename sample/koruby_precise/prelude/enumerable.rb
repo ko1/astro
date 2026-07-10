@@ -73,7 +73,16 @@ module Enumerable
   def any?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return true if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return hit; else; __each_el { |x| return true if x }; end; false; end
   def none?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; pt = a[0]; __each_el { |x| return false if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return !hit; else; __each_el { |x| return false if x }; end; true; end
   def one?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; n = 0; if a.size > 0; pt = a[0]; __each_el { |x| (n += 1; break if n > 1) if pt === x }; elsif blk; each { |*ar| (n += 1; break if n > 1) if blk.call(*ar) }; else; __each_el { |x| (n += 1; break if n > 1) if x }; end; n == 1; end
-  def cycle(n = nil, &blk); n.nil? ? to_a.cycle(&blk) : to_a.cycle(n, &blk); end   # delegate to Array#cycle (no-block Enumerator + break both handled there)
+  def cycle(n = nil, &blk)                                          # delegate to Array#cycle (break handled there)
+    return to_enum(:cycle, n) unless blk                           # no block → Enumerator (each not called until iterated)
+    return to_a.cycle(&blk) if n.nil?
+    ni = if n.is_a?(Integer) then n
+         elsif n.respond_to?(:to_int) then n.to_int
+         else raise TypeError, "no implicit conversion of #{n.class} into Integer"
+         end
+    return nil if ni <= 0                                          # non-positive count → nil, without iterating
+    to_a.cycle(ni, &blk)
+  end
   def each_with_object(o); return to_enum(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
   def each_with_index; return to_enum(:each_with_index) unless block_given?; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
   def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
