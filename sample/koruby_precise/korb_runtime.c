@@ -6377,6 +6377,22 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
          * onto subclasses), so the receiver class itself carries them. */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
+            if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {   /* normalize String keyword keys → Symbols (dup String/Symbol → last wins) */
+                const KorbHash *const h0 = VAL2HASH(slots[-(intptr_t)argc]);
+                bool has_str = false;
+                for (uint32_t j = 0; j < h0->len; j++) if (KORB_STRING_P(h0->items->data[2 * j])) { has_str = true; break; }
+                if (has_str) {
+                    slots[0] = slots[-(intptr_t)argc];
+                    slots[1] = UNWRAP(korb_hash_new(c, slots + 1, VAL2HASH(slots[0])->len));
+                    for (uint32_t j = 0; j < VAL2HASH(slots[0])->len; j++) {
+                        const VALUE k = VAL2HASH(slots[0])->items->data[2 * j];
+                        slots[2] = KORB_STRING_P(k) ? ID2SYM(korb_intern(vm, VAL2STR(k)->buf->data, VAL2STR(k)->len)) : k;
+                        slots[3] = VAL2HASH(slots[0])->items->data[2 * j + 1];
+                        CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
+                    }
+                    slots[-(intptr_t)argc] = slots[1];
+                }
+            }
             /* Data kwargs: a single Hash of all-symbol keys is taken as keyword form,
              * so validate it against the members (unknown / missing keyword). */
             if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {
