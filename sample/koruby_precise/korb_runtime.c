@@ -2206,7 +2206,16 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     struct korb_vm *const vm = c->vm;
     uint32_t mstart = 0, name_id = 0; bool has_name = false;   /* String/nil first arg = the constant name slot */
     if (VALUE_SLICE_LEN(a) >= 1) {
-        const VALUE first = VALUE_SLICE_GET(a, 0);
+        VALUE first = VALUE_SLICE_GET(a, 0);
+        if (!KORB_STRING_P(first) && first != KORB_NIL && !SYMBOL_P(first) && KORB_OBJECT_P(first)) {   /* coerce a #to_str first arg → constant name */
+            const uint32_t to_str = korb_intern(vm, "to_str", 6);
+            if (korb_responds_to_coerce_p(c, slots, &first, to_str)) {
+                slots[0] = first;
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (KORB_STRING_P(sr.value)) first = sr.value;
+            }
+        }
         if (KORB_STRING_P(first)) {
             const KorbString *const ns = VAL2STR(first);
             bool valid = ns->len > 0 && ns->buf->data[0] >= 'A' && ns->buf->data[0] <= 'Z';
@@ -2231,9 +2240,9 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
             const KorbHash *const h = VAL2HASH(sym);
-            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed */
+            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed; any other → the Hash isn't valid options (TypeError) */
                 if (h->items->data[2 * j] != kw_sym)
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "unknown keyword: :%s",
                                       SYMBOL_P(h->items->data[2 * j]) ? korb_sym_name(vm, SYM2ID(h->items->data[2 * j])) : korb_type_name(h->items->data[2 * j]));
             int32_t ki = korb_hash_find(h, kw_sym);
             if (ki >= 0) kwinit = KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1]) ? 1 : 2;
@@ -2255,7 +2264,10 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
     }
-    if (has_name) korb_const_define(c, name_id, VALUE_REF_GET(cls));   /* Struct.new("Name",..) → Struct::Name */
+    if (has_name) {                                                   /* Struct.new("Name",..) → Struct::Name (nested under Struct) */
+        const VALUE struct_cls = korb_const_get(vm, korb_intern(vm, "Struct", 6));
+        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(struct_cls) ? struct_cls : KORB_NIL);
+    }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     /* common Struct instance methods (read members + @ivars generically).
      * korb_class_def_cfn interns the name → may GC → re-read the class from the
