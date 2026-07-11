@@ -46,10 +46,13 @@ class MSpecError < StandardError; end
 # describe blocks: just run the body in a fresh context.  Save any
 # before/after hooks so subsequent `it` runs can fire them.
 def describe(name, *opts, &blk)
-  # Shared spec: `describe :name, shared: true do ... end` — drop on
-  # the floor (it_behaves_like is a no-op anyway).
+  # Shared spec: `describe :name, shared: true do ... end` — store the block so
+  # `it_behaves_like :name, meth` can replay it into the current describe.
   shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
-  return if shared
+  if shared
+    $ms_shared_specs[name] = blk
+    return
+  end
   # Push prev state onto a stack instead of using begin/ensure locals:
   # the latter triggers a koruby bug where `name` / locals become nil
   # at ensure time when an inner `it`'s rescue body contains a block
@@ -1004,13 +1007,26 @@ def touch(file, mode = "w")
 end
 def mkdir_p(path); Dir.mkdir(path) rescue nil; path; end
 
-# Shared spec inclusion — opening a Pandora's box by actually running
-# shared spec blocks adds a lot of failure modes (cross-file fixtures,
-# Thread/Fiber etc. references inside shared specs).  Keep no-op for
-# now; rubyspec's coverage of shared-spec-driven tests is small enough
-# to not be worth the regressions.
+# Shared spec inclusion.  `it_behaves_like :name, meth, obj` replays the stored
+# shared block into the CURRENT describe: it prepends a before(:each) that sets
+# @method/@object (which shared blocks reference) and then runs the shared block,
+# so its own `before :each` + `it`s register into the current context (and the
+# @method/@object + shared-before persist for the enclosing describe's own `it`s,
+# exactly as real mspec does).  A shared block that errors at replay time is
+# reported and skipped without aborting the file.
 $ms_shared_specs = {}
-def it_behaves_like(*_args, &_blk); end
+def it_behaves_like(name, meth = nil, obj = nil, &_blk)
+  blk = $ms_shared_specs[name]
+  return unless blk
+  ($ms_before_each ||= []) << proc { @method = meth; @object = obj }
+  begin
+    blk.call
+  rescue => e
+    $ms_error += 1
+    puts "  ERR it_behaves_like #{name} (replay): #{e.class}: #{e.message}"
+  end
+end
+def it_should_behave_like(name, meth = nil, obj = nil, &blk); it_behaves_like(name, meth, obj, &blk); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
