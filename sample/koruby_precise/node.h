@@ -548,7 +548,7 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             c->return_target = NULL;
         }
     }
-    else if (UNLIKELY(r.state == KORB_RAISE)) {
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {   /* non-exception RAISE payload (thread kill / throw) → no backtrace */
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
         e->line = line;

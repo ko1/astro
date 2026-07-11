@@ -484,7 +484,9 @@ static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = VALUE_REF_GET(self);
-    const uint32_t f = VAL2RE(slots[0])->flags; const KorbString *src = VAL2STR(VAL2RE(slots[0])->source);
+    const uint32_t f = VAL2RE(slots[0])->flags;
+    const VALUE srcv = VAL2RE(slots[0])->source;                /* nil for an allocate'd / never-compiled Regexp */
+    const KorbString *const src = KORB_STRING_P(srcv) ? VAL2STR(srcv) : NULL;
     char on[4]; int no = 0; char off[4]; int nf = 0;
     if (f & 16u) on[no++]='m'; else off[nf++]='m';
     if (f & 4u)  on[no++]='i'; else off[nf++]='i';
@@ -492,16 +494,18 @@ static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     fputs("(?", ms); fwrite(on, 1, (size_t)no, ms);
     if (nf) { fputc('-', ms); fwrite(off, 1, (size_t)nf, ms); }
-    fputc(':', ms); fwrite(src->buf->data, 1, src->len, ms); fputc(')', ms);
+    fputc(':', ms); if (src) fwrite(src->buf->data, 1, src->len, ms); fputc(')', ms);
     fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z); free(buf); return r;
 }
 static RESULT korb_m_re_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = VALUE_REF_GET(self);
-    const uint32_t f = VAL2RE(slots[0])->flags; const KorbString *src = VAL2STR(VAL2RE(slots[0])->source);
+    const uint32_t f = VAL2RE(slots[0])->flags;
+    const VALUE srcv = VAL2RE(slots[0])->source;                /* nil for an allocate'd / never-compiled Regexp */
+    const KorbString *const src = KORB_STRING_P(srcv) ? VAL2STR(srcv) : NULL;
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     fputc('/', ms);
     /* escape bare forward slashes; pass through existing "\x" escape pairs verbatim */
-    const char *p = src->buf->data; const char *const end = p + src->len;
+    const char *p = src ? src->buf->data : ""; const char *const end = p + (src ? src->len : 0);
     while (p < end) {
         if (*p == '\\' && p + 1 < end) { fputc('\\', ms); fputc(p[1], ms); p += 2; continue; }
         if (*p == '/') { fputc('\\', ms); fputc('/', ms); p++; continue; }

@@ -3244,7 +3244,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
             c->return_target = NULL;
         }
     }
-    else if (UNLIKELY(r.state == KORB_RAISE)) {
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
         KorbException *e = VAL2EXC(r.value);
         korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
         e->line = line;
@@ -3343,7 +3343,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
     NODE *const body = m->body;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
     if (r.state == KORB_RETURN) { if (c->return_target == NULL || c->return_target == base) { r.state = KORB_NORMAL; c->return_target = NULL; } }
-    else if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
+    else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
     korb_frame_magic_check(base, KORB_FT_METHOD, "korb_invoke");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(base))) r = korb_close_ret(c, base + locals_cnt, base, r);
     return r;
@@ -5276,7 +5276,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         if (UNLIKELY(m->params_cnt >= 0 && (uint32_t)m->params_cnt != argc))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
-        if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid)); e->line = line; }
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid)); e->line = line; }
         return r;
       }
       case KORB_METHOD_ATTR_R:
@@ -5298,7 +5298,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         const VALUE_SLICE args = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
         RESULT r = m->uses_block ? m->rbfn(c, slots, recv, args, block, def_env, captured_self)
                                  : m->rfn(c, slots, recv, args);
-        if (UNLIKELY(r.state == KORB_RAISE)) {
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
             KorbException *e = VAL2EXC(r.value);
             korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
             e->line = line;
@@ -5329,7 +5329,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                     &slots[-(intptr_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
         if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
-        else if (UNLIKELY(r.state == KORB_RAISE)) {
+        else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {   /* a non-exception RAISE payload (e.g. thread kill) carries no line */
             KorbException *e = VAL2EXC(r.value);
             korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
             e->line = line;
@@ -5472,7 +5472,7 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                               argc, m->params_cnt);
         }
         RESULT r = m->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
-        if (UNLIKELY(r.state == KORB_RAISE)) {
+        if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
             KorbException *e = VAL2EXC(r.value);
             korb_bt_append(vm, e->line, korb_sym_name(vm, m->mid));
             e->line = line;
@@ -6168,7 +6168,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 if (UNLIKELY(gm->params_cnt >= 0 && (uint32_t)gm->params_cnt != argc))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %d)", argc, gm->params_cnt);
                 RESULT r = gm->bfn(c, slots, VALUE_SLICE_MAKE(base, argc));
-                if (UNLIKELY(r.state == KORB_RAISE)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
+                if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) { KorbException *e = VAL2EXC(r.value); korb_bt_append(vm, e->line, korb_sym_name(vm, mid)); e->line = line; }
                 return r;
             }
             if (gm->kind == KORB_METHOD_ISEQ)                                 /* global ISEQ (top-level def) */
@@ -6988,7 +6988,7 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
             LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
             RESULT r = m->rfn(c, slots, VALUE_REF_AT(&slots[-(intptr_t)argc - 1]),
                               VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
-            if (UNLIKELY(r.state == KORB_RAISE)) {
+            if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {
                 KorbException *e = VAL2EXC(r.value);
                 korb_bt_append(vm, e->line, korb_sym_name(vm, mid));
                 e->line = line;
