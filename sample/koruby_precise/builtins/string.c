@@ -550,6 +550,7 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     *v = r.value;
     return RESULT_OK(KORB_TRUE);
 }
+static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, intptr_t *out);   /* fwd: index→long, Bignum too big → RangeError */
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
     if (KORB_REGEXP_P(idx)) {                          /* str[re] / str[re, capture] → matched byte span (sets $~) */
         (void)write;
@@ -583,9 +584,9 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         const bool endless   = (r->rend   == KORB_NIL);
         intptr_t b, e;
         if (beginless) b = 0;
-        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else { RESULT cr = korb_str_idx_conv(c, slots, r->rbegin, &b); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         if (endless) e = (intptr_t)ncp;
-        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         if (b < 0) b += ncp;
         if (!endless && e < 0) e += ncp;
         st = b; ln = ((endless || r->exclude_end) ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
@@ -1849,6 +1850,13 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 
 /* String#[] — int index, (int,len), Range, or substring match.  Indices are
  * codepoints; results are fresh strings (or nil). */
+/* Index/length → intptr_t for String#[]: an Integer (Bignum) too big for a long
+ * is a RangeError; a genuinely non-Integer value is a TypeError. */
+static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, intptr_t *out) {
+    if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_NIL);
+    if (KORB_BIGNUM_P(v)) return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+}
 static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE i0 = VALUE_SLICE_GET(a, 0);
     if (KORB_REGEXP_P(i0))                              /* s[regexp] / s[regexp, group] → matched text (builtins/regexp.c) */
@@ -1875,9 +1883,9 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const bool endless   = (r->rend   == KORB_NIL);   /* s[b..] → to the end */
         intptr_t b, e;                                     /* Float/to_int bounds coerce via korb_to_index */
         if (beginless) b = 0;
-        else if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else { RESULT cr = korb_str_idx_conv(c, slots, r->rbegin, &b); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         if (endless) e = (intptr_t)ncp;
-        else if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         if (b < 0) b += ncp;
         if (!endless && e < 0) e += ncp;
         if (b < 0 || b > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
@@ -1890,7 +1898,7 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_str_slice_new(c, slots, self, bs, es - bs);
     }
     intptr_t i;
-    if (UNLIKELY(!korb_to_index(i0, &i))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
+    { RESULT cr = korb_str_idx_conv(c, slots, i0, &i); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (i < 0) i += ncp;
 
     if (VALUE_SLICE_LEN(a) >= 2) {                  /* s[start, len] */
@@ -1899,7 +1907,7 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(!korb_to_index(lv, &len))) {   /* coerce length via #to_int */
             RESULT cr = korb_coerce_to_int(c, slots, &lv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!korb_to_index(lv, &len)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 1)));
+            { RESULT icr = korb_str_idx_conv(c, slots, lv, &len); if (UNLIKELY(icr.state != KORB_NORMAL)) return icr; }
             s = SELF_STR;                           /* re-read after dispatch */
         }
         if (len < 0 || i < 0 || i > (intptr_t)ncp) return RESULT_OK(KORB_NIL);
