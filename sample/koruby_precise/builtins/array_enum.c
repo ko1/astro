@@ -1552,18 +1552,19 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     const VALUE limv0 = na >= 1 ? VALUE_SLICE_GET(a, 0) : kwlim;                       /* limit (nil ⇒ endless) */
     const VALUE stepv0 = na >= 2 ? VALUE_SLICE_GET(a, 1) : (kwstep != KORB_NIL ? kwstep : LONG2FIX(1));
+    /* a non-nil non-Numeric step — a String (even a numeric-looking "1") — is an
+     * ArgumentError in CRuby.  nil is allowed and means a default step of 1 (but
+     * is preserved verbatim for the ArithmeticSequence's inspect). */
+    #define KORB_NUM_P(v) (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v))
+    if (stepv0 != KORB_NIL && !KORB_NUM_P(stepv0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step requires numeric arguments");
+    #undef KORB_NUM_P
     if (block == NULL) {                                  /* no block → lazy ArithmeticSequence */
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), limv0, stepv0, (uint8_t)((kw || na >= 2) ? 2 : na), 0);
     }
     VALUE selfv = VALUE_REF_GET(self);
     VALUE limv = limv0;
-    VALUE stepv = stepv0;
-    /* step / limit must be Numeric — a String (even a numeric-looking "1") is an
-     * ArgumentError in CRuby, not a silent no-op / TypeError. */
-    #define KORB_NUM_P(v) (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v))
-    if (!KORB_NUM_P(stepv) || (limv != KORB_NIL && !KORB_NUM_P(limv)))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step requires numeric arguments");
-    #undef KORB_NUM_P
+    VALUE stepv = (stepv0 == KORB_NIL) ? LONG2FIX(1) : stepv0;   /* nil step ⇒ 1 for iteration */
     bool use_float = KORB_FLOAT_P(selfv) || KORB_FLOAT_P(limv) || KORB_FLOAT_P(stepv);
     const bool collect = (block == NULL);             /* no block → materialize into an Enumerator */
     VALUE_REF dst = {0};
@@ -1577,7 +1578,7 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
          * the start at most once.  An infinite/NaN *start* yields nothing at all
          * (CRuby: `Float::INFINITY.step(Float::INFINITY, 1) { }` never yields). */
         const bool once_only = isinf(st) || isnan(st);
-        const bool no_yield  = isinf(s)  || isnan(s);
+        const bool no_yield  = (isinf(s) || isnan(s)) && !once_only;   /* Inf start + Inf step still yields once */
         for (long i = 0; !no_yield; i++) {
             double d = (i == 0) ? s : s + (double)i * st;
             if (once_only && i > 0) break;               /* only the start element */
