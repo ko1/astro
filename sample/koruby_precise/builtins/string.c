@@ -2138,8 +2138,26 @@ static bool korb_line_chomp(CTX *c, VALUE_SLICE a) {
     }
     return false;
 }
+/* Coerce a non-String / non-nil line separator via #to_str (in place in `a`);
+ * a Symbol or other non-convertible value → TypeError.  A trailing Hash is the
+ * chomp: kwarg, not a separator, so it is left alone. */
+static RESULT korb_line_coerce_sep(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) < 1) return RESULT_OK(KORB_NIL);
+    VALUE s0 = VALUE_SLICE_GET(a, 0);
+    if (s0 == KORB_NIL || KORB_STRING_P(s0) || KORB_HASH_P(s0)) return RESULT_OK(KORB_NIL);
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (KORB_OBJECT_P(s0) && korb_responds_to_coerce_p(c, slots, &s0, to_str)) {
+        slots[0] = s0;                                   /* root receiver across the dispatch */
+        RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); return RESULT_OK(KORB_NIL); }
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(s0));
+}
 static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_lines, "each_line", a);
+    if (SELF_STR->len > 0)
+        { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil separator → yield the whole string once */
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, 0, SELF_STR->len));
         CHECK(korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self));
@@ -2161,6 +2179,8 @@ static RESULT korb_m_str_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return RESULT_OK(VALUE_REF_GET(self));
 }
 static RESULT korb_m_str_lines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (SELF_STR->len > 0)   /* an empty string short-circuits to [] without validating the separator (CRuby) */
+        { RESULT cr = korb_line_coerce_sep(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* nil sep → whole string as one line */
         VALUE_REF d = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 1)));
         CHECK(korb_ary_push_val(c, slots + 1, d, UNWRAP(korb_str_slice_new(c, slots + 1, self, 0, VAL2STR(VALUE_REF_GET(self))->len))));
