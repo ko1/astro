@@ -91,15 +91,18 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const char d = t->buf->data[ti++];
         if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
         if (d == '#') { while (ti < t->len && t->buf->data[ti] != '\n') ti++; continue; }   /* comment to EOL */
-        bool bang = false, force_little = false, force_big = false;   /* `!`=native size, `<`=little-endian, `>`=big-endian (any order) */
+        bool bang = false, force_little = false, force_big = false; char bangch = 0;   /* `!`/`_`=native size, `<`=little, `>`=big (any order) */
         for (;;) {
-            if (ti < t->len && (t->buf->data[ti] == '!' || t->buf->data[ti] == '_')) { bang = true; ti++; }   /* `!` and `_` = native size */
+            if (ti < t->len && (t->buf->data[ti] == '!' || t->buf->data[ti] == '_')) { bang = true; bangch = t->buf->data[ti]; ti++; }
             else if (ti < t->len && t->buf->data[ti] == '<') { force_little = true; ti++; }
             else if (ti < t->len && t->buf->data[ti] == '>') { force_big = true; ti++; }
             else break;
         }
         if ((force_little || force_big) && !strchr("sSiIlLqQjJ", d)) {   /* `<`/`>` only after integer types */
             errtype = KORB_E_ARGUMENT; errmsg = "'<' allowed only after types sSiIlLqQjJ"; break;
+        }
+        if (bang && !strchr("sSiIlLqQjJ", d)) {                         /* `!`/`_` only after integer types (not floats/strings) */
+            errtype = KORB_E_ARGUMENT; errmsg = (bangch == '_') ? "'_' allowed only after types sSiIlLqQjJ" : "'!' allowed only after types sSiIlLqQjJ"; break;
         }
         bool star = false, has_cnt = false; long cnt = 1;
         if (ti < t->len && t->buf->data[ti] == '*') { star = true; ti++; }
@@ -152,7 +155,8 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = ary->items->data[ai++];
-                const double dv = KORB_FLOAT_P(e) ? korb_float_val(e) : (FIXNUM_P(e) ? (double)FIX2LONG(e) : 0.0);
+                double dv;
+                if (!korb_num_to_d(e, &dv)) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion to float"; break; }   /* nil/true/false/String → TypeError */
                 unsigned char tmp[8];
                 if (sz == 4) { float f = (float)dv; memcpy(tmp, &f, 4); } else memcpy(tmp, &dv, 8);
                 for (int b = 0; b < sz; b++) PK_PUT(tmp[big ? (sz - 1 - b) : b]);
