@@ -1567,12 +1567,13 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             return korb_raise(c, slots, KORB_E_TYPE, 0, "step requires numeric arguments");
         if (st == 0.0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
         if (collect) { slots[0] = UNWRAP(korb_ary_new(c, slots, 8)); dst = VALUE_REF_AT(&slots[0]); }  /* after reading the doubles */
-        /* an infinite (or NaN) step yields the start at most once — otherwise
-         * `s + 0*Inf = NaN` and `NaN > lim` is false, looping forever. */
-        const bool inf_step = isinf(st) || isnan(st);
+        /* Yields the start at most once when it can't make progress toward lim:
+         * an infinite/NaN step (`s + 0*Inf = NaN`), or an infinite start
+         * (`±Inf + i*finite = ±Inf` forever) — otherwise the loop never ends. */
+        const bool once_only = isinf(st) || isnan(st) || isinf(s);
         for (long i = 0; ; i++) {
             double d = (i == 0) ? s : s + (double)i * st;
-            if (inf_step && i > 0) break;                /* only the start element */
+            if (once_only && i > 0) break;               /* only the start element */
             if (isnan(d) || (st > 0 ? d > lim : d < lim)) break;
             if (collect) { slots[1] = UNWRAP(korb_float_new(c, slots + 1, d)); CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); continue; }
             slots[0] = UNWRAP(korb_float_new(c, slots, d));
