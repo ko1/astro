@@ -58,38 +58,69 @@ static RESULT korb_range_cmp(CTX *c, VALUE *slots, VALUE a, VALUE b, int *out) {
     if (fast != 2) { *out = fast; return RESULT_OK(KORB_NIL); }
     return korb_comparable_cmp(c, slots, a, b, out);   /* dispatch a.<=>(b) */
 }
+/* Does the range [beg,end] (excl for right-open) cover the single value x?
+ * nil begin/end = unbounded on that side.  slots[0..] are scratch; beg/end/x
+ * must be caller-rooted (this only dispatches #<=>, which may GC).  *out set. */
+static RESULT korb_range_cover_value(CTX *c, VALUE *slots, VALUE beg, VALUE end, bool excl, VALUE x, bool *out) {
+    int lc = -1, uc = -1;
+    if (beg != KORB_NIL) { RESULT cl = korb_range_cmp(c, slots, beg, x, &lc); if (UNLIKELY(cl.state != KORB_NORMAL)) return cl; }
+    if (end != KORB_NIL) { RESULT cu = korb_range_cmp(c, slots, x, end, &uc); if (UNLIKELY(cu.state != KORB_NORMAL)) return cu; }
+    if (lc == 2 || uc == 2) { *out = false; return RESULT_OK(KORB_NIL); }
+    const bool lower = (lc <= 0);
+    const bool upper = (end == KORB_NIL) ? true : (excl ? (uc < 0) : (uc <= 0));
+    *out = (lower && upper);
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     const bool excl = r->exclude_end;
-    slots[0] = r->rbegin; slots[1] = r->rend; slots[2] = VALUE_SLICE_GET(a, 0);   /* root across dispatch */
-    if (KORB_RANGE_P(slots[2])) {                /* cover?(other_range): self contains the whole range */
-        const KorbRange *o = VAL2RANGE(slots[2]);
-        const bool o_excl = o->exclude_end;
-        slots[3] = o->rbegin; slots[4] = o->rend;
-        int bc, ec;
-        RESULT c1 = korb_range_cmp(c, slots + 5, slots[0], slots[3], &bc);   /* self.begin <=> other.begin */
-        if (UNLIKELY(c1.state != KORB_NORMAL)) return c1;
-        RESULT c2 = korb_range_cmp(c, slots + 5, slots[4], slots[1], &ec);   /* other.end <=> self.end */
-        if (UNLIKELY(c2.state != KORB_NORMAL)) return c2;
-        if (bc == 2 || ec == 2) return RESULT_OK(KORB_FALSE);
-        const bool lo_ok = bc <= 0;
-        const bool hi_ok = (excl && !o_excl) ? (ec < 0) : (ec <= 0);
-        return RESULT_OK((lo_ok && hi_ok) ? KORB_TRUE : KORB_FALSE);
+    slots[0] = r->rbegin; slots[1] = r->rend; slots[2] = VALUE_SLICE_GET(a, 0);   /* [0]beg [1]end [2]arg — rooted */
+    if (KORB_RANGE_P(slots[2])) {                /* cover?(other_range): self contains the whole range (CRuby r_cover_range_p) */
+        const bool o_excl = VAL2RANGE(slots[2])->exclude_end;
+        slots[3] = VAL2RANGE(slots[2])->rbegin; slots[4] = VAL2RANGE(slots[2])->rend;   /* [3]val_beg [4]val_end */
+        const bool beg_nil = slots[0] == KORB_NIL, end_nil = slots[1] == KORB_NIL;
+        const bool vb_nil  = slots[3] == KORB_NIL, ve_nil  = slots[4] == KORB_NIL;
+        if (!end_nil && ve_nil) return RESULT_OK(KORB_FALSE);   /* self bounded above, other endless */
+        if (!beg_nil && vb_nil) return RESULT_OK(KORB_FALSE);   /* self bounded below, other beginless */
+        if (!vb_nil && !ve_nil) {                                /* other empty / backward → false */
+            int cbe; RESULT cc = korb_range_cmp(c, slots + 5, slots[3], slots[4], &cbe);
+            if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
+            if (cbe == 2 || cbe > (o_excl ? -1 : 0)) return RESULT_OK(KORB_FALSE);
+        }
+        if (!vb_nil) {                                           /* other.begin must fall inside self */
+            bool cov; RESULT cc = korb_range_cover_value(c, slots + 5, slots[0], slots[1], excl, slots[3], &cov);
+            if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
+            if (!cov) return RESULT_OK(KORB_FALSE);
+        }
+        int cmp_end;                                            /* self.end <=> other.end (nil handled per CRuby r_less) */
+        if (!ve_nil && !end_nil) {
+            RESULT cc = korb_range_cmp(c, slots + 5, slots[1], slots[4], &cmp_end);
+            if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
+            if (cmp_end == 2) return RESULT_OK(KORB_FALSE);     /* incomparable ends */
+        } else if (end_nil && ve_nil) cmp_end = 0;              /* both endless */
+        else cmp_end = 1;                                       /* endless self vs bounded other → +∞ */
+        bool res;
+        if (excl == o_excl)      res = (cmp_end >= 0);
+        else if (excl)           res = (cmp_end > 0);
+        else if (cmp_end >= 0)   res = true;
+        else {                                                   /* incl self, excl other, self.end < other.end: cover other.max */
+            slots[5] = slots[2];                                 /* root the other range */
+            RESULT mr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "max", 3), 0, 0, NULL, NULL, KORB_NIL);
+            if (mr.state == KORB_RAISE && KORB_EXC_P(mr.value) && VAL2EXC(mr.value)->etype == KORB_E_TYPE) res = false;   /* max undeterminable → false */
+            else if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+            else if (mr.value == KORB_NIL) res = false;
+            else {
+                slots[6] = mr.value; int ce;
+                RESULT cc = korb_range_cmp(c, slots + 7, slots[1], slots[6], &ce);
+                if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
+                res = (ce != 2 && ce >= 0);
+            }
+        }
+        return RESULT_OK(res ? KORB_TRUE : KORB_FALSE);
     }
-    /* nil begin/end = unbounded on that side (beginless/endless range). */
-    int lc = -1, uc = -1;
-    if (slots[0] != KORB_NIL) {
-        RESULT cl = korb_range_cmp(c, slots + 3, slots[0], slots[2], &lc);   /* begin <=> x */
-        if (UNLIKELY(cl.state != KORB_NORMAL)) return cl;
-    }
-    if (slots[1] != KORB_NIL) {
-        RESULT cu = korb_range_cmp(c, slots + 3, slots[2], slots[1], &uc);   /* x <=> end */
-        if (UNLIKELY(cu.state != KORB_NORMAL)) return cu;
-    }
-    if (lc == 2 || uc == 2) return RESULT_OK(KORB_FALSE);
-    const bool lower = (lc <= 0);
-    const bool upper = (slots[1] == KORB_NIL) ? true : (excl ? (uc < 0) : (uc <= 0));
-    return RESULT_OK((lower && upper) ? KORB_TRUE : KORB_FALSE);
+    bool cov; RESULT cc = korb_range_cover_value(c, slots + 3, slots[0], slots[1], excl, slots[2], &cov);
+    if (UNLIKELY(cc.state != KORB_NORMAL)) return cc;
+    return RESULT_OK(cov ? KORB_TRUE : KORB_FALSE);
 }
 
 /* include?/member?: membership of a single value (a Range/other container is not an element). */
