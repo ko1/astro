@@ -384,10 +384,12 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
     if (KORB_STRING_P(o)) return korb_str_append_str(c, slots, self, oref);
     if (FIXNUM_P(o)) {
         intptr_t cp = FIX2LONG(o);
-        if (cp < 0 || cp > 0x10FFFF) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%ld out of char range", (long)cp);
+        if (cp < 0 || cp > 0x10FFFF) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
         char buf[4]; uint32_t n = korb_utf8_encode((uint32_t)cp, buf);   /* stable C buffer */
         return korb_str_cat(c, slots, self, buf, n);
     }
+    if (KORB_BIGNUM_P(o))   /* a Bignum codepoint is always out of char range (0..0x10FFFF) */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum out of char range");
     { const uint32_t to_str = korb_intern(c->vm, "to_str", 6);   /* coerce a #to_str object → String */
       if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
           slots[0] = o;                                          /* receiver, rooted across dispatch */
