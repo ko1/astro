@@ -102,10 +102,14 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE a, bool utc) {
     struct tm tm; memset(&tm, 0, sizeof tm);
     intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
+    double subsec = 0.0;                                     /* fractional seconds (Float/Rational sec arg) */
     const intptr_t defs = (intptr_t)VALUE_SLICE_LEN(a);
     for (intptr_t i = 0; i < 6 && i < defs; i++) {
         const VALUE cv = VALUE_SLICE_GET(a, i);
-        if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
+        if (i == 5 && !FIXNUM_P(cv)) {                       /* seconds may be fractional (Float/Rational) */
+            double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (intptr_t)sv; subsec = sv - (double)comp[5]; }
+        }
+        else if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
         else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
     }
     /* CRuby raises ArgumentError for out-of-range components (no mktime rollover). */
@@ -116,7 +120,7 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
     tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5];
     tm.tm_isdst = -1;
     const time_t e = utc ? timegm(&tm) : mktime(&tm);
-    return korb_time_make(c, slots, cls, (double)e, utc);
+    return korb_time_make(c, slots, cls, (double)e + subsec, utc);
 }
 static RESULT korb_m_time_utc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, true);
@@ -245,8 +249,43 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (fl >= sizeof fmt) fl = sizeof fmt - 1;
     memcpy(fmt, VAL2STR(VALUE_SLICE_GET(a, 0))->buf->data, fl); fmt[fl] = 0;   /* copy off the movable source */
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    const bool is_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
+    if (is_utc) tm.tm_zone = "UTC";                          /* CRuby reports "UTC" (%Z), not libc's "GMT" */
+    /* Nanosecond part, for the Ruby-only %L / %N sub-second directives. */
+    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
+    long nsec = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
+    if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
+    const long gmtoff = tm.tm_gmtoff;
+    /* Pre-expand the directives libc strftime does not know (%L, %[w]N, %:z /
+     * %::z, %v); everything else is copied verbatim for the strftime call. */
+    char efmt[1024]; size_t o = 0;
+    for (uint32_t i = 0; i < fl && o + 32 < sizeof efmt; i++) {
+        if (fmt[i] != '%') { efmt[o++] = fmt[i]; continue; }
+        const uint32_t pct = i; i++;
+        while (i < fl && strchr("-_0^#", fmt[i])) i++;        /* flags */
+        int ncolon = 0; while (i < fl && fmt[i] == ':') { ncolon++; i++; }   /* %:z colons */
+        int width = -1; { int w = 0; bool any = false; while (i < fl && isdigit((unsigned char)fmt[i])) { w = w*10 + (fmt[i]-'0'); any = true; i++; } if (any) width = w; }
+        if (i >= fl) { efmt[o++] = '%'; break; }
+        const char spec = fmt[i];
+        if (spec == 'N' || spec == 'L') {                    /* fractional seconds */
+            char nb[16]; snprintf(nb, sizeof nb, "%09ld", nsec);   /* 9 digits */
+            int wd = width >= 0 ? width : (spec == 'L' ? 3 : 9);
+            for (int k = 0; k < wd && o + 1 < sizeof efmt; k++) efmt[o++] = (k < 9) ? nb[k] : '0';   /* truncate / right-pad */
+        } else if (spec == 'z' && ncolon > 0) {              /* %:z / %::z offset with colons */
+            long ao = gmtoff < 0 ? -gmtoff : gmtoff; int hh = (int)(ao/3600), mm = (int)((ao%3600)/60), ss = (int)(ao%60);
+            char zb[16];
+            if (ncolon >= 2) snprintf(zb, sizeof zb, "%c%02d:%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm, ss);
+            else             snprintf(zb, sizeof zb, "%c%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm);
+            for (const char *p = zb; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
+        } else if (spec == 'v') {                            /* VMS date: " 3-FEB-2001" */
+            for (const char *p = "%e-%^b-%Y"; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
+        } else {                                             /* copy the whole directive verbatim for strftime */
+            for (uint32_t k = pct; k <= i && o + 1 < sizeof efmt; k++) efmt[o++] = fmt[k];
+        }
+    }
+    efmt[o] = 0;
     char out[1024];
-    const size_t n = strftime(out, sizeof out, fmt, &tm);
+    const size_t n = strftime(out, sizeof out, efmt, &tm);
     return korb_str_new(c, slots, out, (uint32_t)n);
 }
 /* asctime / ctime → the fixed C-locale "Www Mmm dd hh:mm:ss yyyy" form (day
