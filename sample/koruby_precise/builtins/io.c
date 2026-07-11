@@ -84,6 +84,22 @@ static RESULT korb_m_io_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (fstat(fileno(fp), &st) != 0) return korb_raise_errno(c, slots, errno, "fstat", "");
     return korb_stat_make(c, slots, &st);
 }
+static RESULT korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args);   /* fwd (korb_runtime.c) */
+/* IO#printf(format, *args) → nil: write the sprintf-formatted string to self
+ * (was falling back to Kernel#printf, which writes to $stdout, not the file). */
+static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no format string given");
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    KORB_IO_NEED_WRITE(c, slots, self);
+    slots[0] = VALUE_REF_GET(self);                      /* root self across the format dispatch (may GC) */
+    RESULT fr = korb_bi_format(c, slots + 1, a);
+    if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+    fp = korb_io_fp(c, slots[0]);                        /* re-fetch after possible GC */
+    if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(s->buf->data, 1, s->len, fp); }
+    return RESULT_OK(KORB_NIL);
+}
 /* IO#write(*args) → total bytes written. */
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
@@ -409,6 +425,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
 #define IOM(nm, fn, ar)  korb_class_def_cfn(c, io_cls, nm, korb_m_io_##fn, ar)
 #define IOB(nm, fn, ar)  korb_class_def_cfn_blk(c, io_cls, nm, korb_m_io_##fn, ar)
     IOM("write", write, -1);     IOM("print", print, -1);   IOM("<<", lshift, 1);
+    IOM("printf", printf, -1);
     IOM("puts", puts, -1);       IOM("read", read, -1);     IOM("gets", gets, -1);
     IOM("readlines", readlines, -1);                        IOB("each_line", each_line, -1);
     IOB("each", each_line, -1);

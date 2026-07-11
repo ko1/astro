@@ -268,7 +268,19 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         TRY_NAMED(); if (err) break;                       /* %flagsWIDTH.PREC<name>type */
         #undef TRY_NAMED
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
-        char conv = fmt[i];
+        char conv;
+        if (fmt[i] == '{') {                               /* %[flags][width][.prec]{name}: named value to_s (implicit 's') */
+            i++; const uint32_t nstart = i;
+            while (i < flen && fmt[i] != '}') i++;
+            const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
+            if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
+            const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+            if (UNLIKELY(hidx < 0)) {
+                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+                has_coerce_err = true; err = true; break;
+            }
+            named_arg = VAL2HASH(nh)->items->data[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
+        } else conv = fmt[i];
         const bool sequential = (!has_named && explicit_idx < 0);
         if (sequential && conv != '%' && ai >= argn) { err = true; errmsg = "too few arguments"; break; }
         VALUE arg = has_named ? named_arg
