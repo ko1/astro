@@ -9792,28 +9792,40 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
         const KorbString *s = VAL2STR(a0);
         char buf[64];
         if (s->len >= sizeof(buf)) FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
-        /* Copy, dropping Ruby-legal `_` (a decimal float allows a single `_`
-         * between two decimal digits only; leading/trailing/double `_`, `_`
-         * adjacent to 'e'/'.'/sign, and any `_` in a hex literal are invalid →
-         * leave them in so strtod then rejects the whole string). */
+        for (uint32_t k = 0; k < s->len; k++)                                /* an embedded NUL is invalid (CRuby raises) */
+            if (s->buf->data[k] == '\0') FLT_FAIL(KORB_E_ARGUMENT, 0, "string contains null byte");
+        /* Copy, dropping a Ruby-legal `_` between two digits (decimal digits for
+         * a decimal float, hex digits for a 0x float — `0x1_0`, `0x1_0p10`);
+         * leading/trailing/double `_` and `_` adjacent to a non-digit stay so
+         * strtod then rejects the whole string. */
         const char *sp = s->buf->data; uint32_t sl = s->len;
         while (sl && isspace((unsigned char)*sp)) { sp++; sl--; }             /* skip leading ws for the hex test */
         const bool hex = sl >= 2 && sp[0] == '0' && (sp[1] == 'x' || sp[1] == 'X');
         uint32_t bl = 0;
         for (uint32_t k = 0; k < s->len; k++) {
             const char ch = s->buf->data[k];
-            if (ch == '_' && !hex && k > 0 && k + 1 < s->len &&
-                isdigit((unsigned char)s->buf->data[k - 1]) && isdigit((unsigned char)s->buf->data[k + 1]))
-                continue;                                    /* valid decimal separator → skip */
+            if (ch == '_' && k > 0 && k + 1 < s->len) {
+                const unsigned char pv = (unsigned char)s->buf->data[k - 1], nx = (unsigned char)s->buf->data[k + 1];
+                if (hex ? (isxdigit(pv) && isxdigit(nx)) : (isdigit(pv) && isdigit(nx))) continue;   /* valid digit separator */
+            }
             buf[bl++] = ch;
         }
         buf[bl] = '\0';
         char *endp; errno = 0;
         double d = strtod(buf, &endp);
+        if (UNLIKELY(endp == buf))                                           /* no digits consumed (empty / whitespace-only) */
+            FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
         while (*endp && isspace((unsigned char)*endp)) endp++;
-        if (UNLIKELY(endp == buf || *endp != '\0'))
+        if (UNLIKELY(*endp != '\0'))
             FLT_FAIL(KORB_E_ARGUMENT, 0, "invalid value for Float(): \"%.*s\"", (int)s->len, s->buf->data);
         return korb_float_new(c, slots, d);
+    }
+    if (KORB_COMPLEX_P(a0)) {                                                 /* real-only Complex → its real part; else RangeError */
+        const VALUE im = VAL2CPX(a0)->im;
+        if (im == LONG2FIX(0) || (KORB_FLOAT_P(im) && korb_float_val(im) == 0.0)) {
+            double d; (void)korb_num_to_d(VAL2CPX(a0)->re, &d); return korb_float_new(c, slots, d);
+        }
+        FLT_FAIL(KORB_E_RANGE, 0, "can't convert %s into Float", korb_type_name(a0));
     }
     if (KORB_OBJECT_P(a0)) {                                  /* object with #to_f → use it (nil/true/false excluded: not objects) */
         const uint32_t to_f = korb_intern(c->vm, "to_f", 4);
