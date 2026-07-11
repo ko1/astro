@@ -41,6 +41,7 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
         digits = mpz_get_str(NULL, base, z);
     }
     size_t dlen = strlen(digits);
+    if (has_prec && prec == 0 && mpz_sgn(z) == 0) dlen = 0;   /* %.0x/%.0o/%.0b of 0 → no digits (CRuby) */
     const char fill = base == 16 ? 'f' : base == 8 ? '7' : '1';
     if (upper) for (size_t k = 0; k < dlen; k++) digits[k] = (char)toupper((unsigned char)digits[k]);
     const char ufill = upper ? (char)toupper((unsigned char)fill) : fill;
