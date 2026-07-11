@@ -432,7 +432,11 @@ class MSpecExpectation
            # so for `should complain(...)` claim true (the warning was
            # 'expected') and for `should_not complain` claim false (no
            # warning was emitted, which is what the spec is asserting).
-           @actual.call rescue nil
+           # A *real* exception raised by the block is NOT a warning — it
+           # must propagate (e.g. `-> { @method.call("%c", nil) }` wraps
+           # the call in `should_not complain`, and the TypeError has to
+           # reach an outer `should raise_error`).
+           @actual.call
            negate ? false : true
          when :have_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg) || @actual.respond_to?(m.arg)
          when :have_instance_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg)

@@ -108,6 +108,32 @@ static RESULT korb_fmt_float(CTX *c, VALUE *slots, VALUE arg, double *out) {
     return r;
 }
 
+/* Parse a `%<name>` reference at fmt[*pi] (which must be '<').  The named
+ * value comes from args[0] (a Hash).  Returns 1 and sets *out_arg on success
+ * (advancing *pi past '>'); returns -1 with *out_err set on a bad-hash or
+ * missing-key error.  `<name>` may appear anywhere in a directive (before or
+ * after flags/width/precision), so this is called at each parse point. */
+static int korb_fmt_named_arg(CTX *c, VALUE *slots, const char *fmt, uint32_t flen,
+                              uint32_t *const pi, const VALUE *args, uint32_t argn,
+                              VALUE *const out_arg, RESULT *const out_err) {
+    uint32_t i = *pi;
+    i++; const uint32_t nstart = i;                      /* caller guarantees fmt[i] == '<' */
+    while (i < flen && fmt[i] != '>') i++;
+    const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
+    if (i >= flen || !KORB_HASH_P(nh)) {
+        *out_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "one hash required");
+        return -1;
+    }
+    const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+    if (UNLIKELY(hidx < 0)) {
+        *out_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key<%.*s> not found", (int)(i - nstart), fmt + nstart);
+        return -1;
+    }
+    *out_arg = VAL2HASH(nh)->items->data[2 * hidx + 1];
+    *pi = i + 1;                                          /* step past '>' */
+    return 1;
+}
+
 static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE single = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     if (VALUE_SLICE_LEN(a) == 1 && !KORB_ARRAY_P(single) && KORB_OBJECT_P(single)) {   /* a single non-Array arg is coerced via #to_ary (before caching fmt → GC-safe) */
@@ -163,31 +189,33 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         char spec[80]; int si = 0; spec[si++] = '%';
         i++;
         if (i < flen && fmt[i] == '%') { fputc('%', ms); continue; }
-        /* %<name>spec / %{name}: pull the arg from a Hash by name. */
+        /* %<name>spec / %{name}: pull the arg from a Hash by name.  A `<name>`
+         * reference may sit anywhere in the directive (before/after any of
+         * flags, width, precision) — see TRY_NAMED, applied at each stage. */
         VALUE named_arg = KORB_NIL; bool has_named = false;
-        if (i < flen && (fmt[i] == '<' || fmt[i] == '{')) {
-            const char close = (fmt[i] == '<') ? '>' : '}';
-            const bool bare = (fmt[i] == '{');
+        #define TRY_NAMED() do { \
+            if (!has_named && i < flen && fmt[i] == '<') { \
+                int _nr = korb_fmt_named_arg(c, slots, fmt, flen, &i, args, argn, &named_arg, &coerce_err); \
+                if (_nr < 0) { has_coerce_err = true; err = true; } \
+                else if (_nr > 0) has_named = true; \
+            } \
+        } while (0)
+        if (i < flen && fmt[i] == '{') {                   /* %{name}: to_s, no type/width/precision */
             i++; const uint32_t nstart = i;
-            while (i < flen && fmt[i] != close) i++;
-            /* named source = args[0] (a Hash): String#% passes it as `single`; Kernel#format
-             * collects values into an Array so the hash is unwrapped into args[0]. Same slot. */
+            while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
             if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
-            if (UNLIKELY(hidx < 0)) {                      /* a missing named key raises KeyError, not "" */
-                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key%c%.*s%c not found", bare ? '{' : '<', (int)(i - nstart), fmt + nstart, bare ? '}' : '>');
+            if (UNLIKELY(hidx < 0)) {                       /* a missing named key raises KeyError, not "" */
+                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
                 has_coerce_err = true; err = true; break;
             }
             named_arg = VAL2HASH(nh)->items->data[2 * hidx + 1];
-            has_named = true;                              /* i is at the close char */
-            if (bare) {                                    /* %{name} → to_s, no conversion */
-                if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
-                else korb_fprint_to_s(c, ms, named_arg);
-                continue;                                  /* for-loop i++ steps past the close */
-            }
-            i++;                                           /* %<name>spec: past close, parse the spec below */
+            if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
+            else korb_fprint_to_s(c, ms, named_arg);
+            continue;                                      /* for-loop i++ steps past the close */
         }
+        TRY_NAMED(); if (err) break;                       /* %<name> right after '%' */
         /* %N$ positional index (1-based); only when not named. */
         int explicit_idx = -1;
         if (!has_named) {
@@ -197,6 +225,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             else i = save;                                 /* plain width digits → reparse below */
         }
         while (i < flen && strchr("-+ 0#", fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        TRY_NAMED(); if (err) break;                       /* %flags<name>… */
         if (i < flen && fmt[i] == '*') {                   /* dynamic width: `*` (next arg) or `*N$` (positional) */
             i++;
             VALUE wv;
@@ -209,6 +238,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (w < 0) { if (si < 70) spec[si++] = '-'; w = -w; }                           /* negative width → left-justify */
             si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)w);
         } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
+        TRY_NAMED(); if (err) break;                       /* %flagsWIDTH<name>… */
         if (i < flen && fmt[i] == '.') {
             i++;
             if (i < flen && fmt[i] == '*') {               /* dynamic precision: `*` or `*N$` */
@@ -235,6 +265,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (i < flen && fmt[i] == '$') { explicit_idx = num - 1; i++; }
             else i = save;
         }
+        TRY_NAMED(); if (err) break;                       /* %flagsWIDTH.PREC<name>type */
+        #undef TRY_NAMED
         if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
         char conv = fmt[i];
         const bool sequential = (!has_named && explicit_idx < 0);
@@ -375,9 +407,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (FIXNUM_P(arg)) cp = FIX2LONG(arg);
             else if (KORB_STRING_P(arg)) {
                 const KorbString *cs = VAL2STR(arg);
-                if (cs->len == 0) { coerce_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "%%c requires a character"); has_coerce_err = true; err = true; break; }
-                cnbytes = (int)korb_utf8_seq_len((const unsigned char *)cs->buf->data, 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
-                cbytes = cs->buf->data;
+                if (cs->len == 0) { cbytes = ""; cnbytes = 0; }   /* %c of "" → no character (still pads to width) */
+                else { cnbytes = (int)korb_utf8_seq_len((const unsigned char *)cs->buf->data, 0, cs->len); if (cnbytes <= 0) cnbytes = 1;
+                       cbytes = cs->buf->data; }
             }
             else if (KORB_OBJECT_P(arg) && fmt_stable) {
                 /* Root arg in slots[1] across the (GC-point) respond_to?/coerce
