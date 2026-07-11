@@ -133,10 +133,34 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
         }
         return denr;                                       /* huge denom: best-effort (rare) */
     }
+    mpz_t zb; korb_to_mpz(base, zb);
+    const int base_mag = mpz_cmpabs_ui(zb, 1);            /* <0: |base|=0, ==0: |base|=1, >0: |base|>=2 */
+    if (base_mag <= 0) {                                  /* 0/1/-1 ** e is trivial even for a huge e */
+        int res;
+        if (mpz_sgn(zb) == 0)      res = (expv == LONG2FIX(0)) ? 1 : 0;   /* 0**0 = 1, else 0 ** (e>0) = 0 */
+        else if (base_mag == 0 && mpz_sgn(zb) > 0) res = 1;   /* 1 ** e = 1 */
+        else { bool even = FIXNUM_P(expv) ? (FIX2LONG(expv) % 2 == 0)   /* -1 ** e */
+                                          : ({ mpz_t ze; korb_to_mpz(expv, ze); bool ev = mpz_even_p(ze); mpz_clear(ze); ev; });
+               res = even ? 1 : -1; }
+        mpz_clear(zb);
+        return RESULT_OK(LONG2FIX(res));
+    }
     unsigned long e;
     if (FIXNUM_P(expv)) e = (unsigned long)FIX2LONG(expv);
-    else { mpz_t ze; korb_to_mpz(expv, ze); e = mpz_get_ui(ze); mpz_clear(ze); }
-    mpz_t zb, zr; korb_to_mpz(base, zb); mpz_init(zr);
+    else {
+        mpz_t ze; korb_to_mpz(expv, ze);
+        const bool fits = mpz_fits_ulong_p(ze) != 0;
+        if (fits) e = mpz_get_ui(ze);
+        mpz_clear(ze);
+        if (!fits) { mpz_clear(zb); return korb_raise(c, slots, KORB_E_ARGUMENT, line, "exponent is too large"); }
+    }
+    /* |base|>=2: guard against an astronomically large result (CRuby raises rather
+     * than trying to allocate it) — estimated result is e * bit_length(base) bits. */
+    if ((double)e * (double)mpz_sizeinbase(zb, 2) > 1073741824.0) {   /* > 2^30 bits (~128 MB) */
+        mpz_clear(zb);
+        return korb_raise(c, slots, KORB_E_ARGUMENT, line, "exponent is too large");
+    }
+    mpz_t zr; mpz_init(zr);
     mpz_pow_ui(zr, zb, e);
     mpz_clear(zb);
     RESULT r = korb_big_from_mpz(c, slots, zr);
