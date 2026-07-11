@@ -1772,8 +1772,8 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (last_field) {   /* positive limit: remainder (incl. any trailing ws) is the last field, even if empty */
                 CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos)))); break;
             }
-            if (pos >= slen) {  /* end reached; a negative limit keeps one trailing "" when trailing ws followed ≥1 field */
-                if (limit < 0 && pos > ws_start && VAL2ARY(VALUE_REF_GET(dst))->len > 0)
+            if (pos >= slen) {  /* end reached; a non-zero limit (+ or -) keeps one trailing "" when trailing ws followed ≥1 field */
+                if (limit != 0 && pos > ws_start && VAL2ARY(VALUE_REF_GET(dst))->len > 0)
                     CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_new(c, slots + 1, "", 0))));
                 break;
             }
