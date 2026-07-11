@@ -731,6 +731,13 @@ struct korb_vm {
     /* Enumerator::Yielder class (block arg of Enumerator.new); KORB_NIL until
      * the enum init runs.  A GC root (forwarded in AROH_VISIT_ROOTS). */
     VALUE     yielder_class;
+    /* Active streaming-each sink for a (possibly infinite) generator enumerator.
+     * When non-NULL, Enumerator::Yielder#<< feeds each value straight to a user
+     * block and honours break/StopIteration instead of materializing into an
+     * array.  Points at a C struct on the driving frame's stack (save/restore
+     * for nesting); the pointer is not GC-visited — the sink's break value is
+     * written to a rooted slot the struct references. */
+    struct korb_gen_sink *gen_sink;
     /* Enumerator::Lazy class (reported as the class of lazy-mode enumerators);
      * set once at init.  A GC root (forwarded in AROH_VISIT_ROOTS). */
     VALUE     lazy_class;

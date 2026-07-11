@@ -1,5 +1,19 @@
 /* koruby_precise — enumerator.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
+/* Streaming-each sink (see korb_vm::gen_sink): the yielder feeds each generated
+ * value to `block` (evaluated in def_env/cself).  On a block-level break the
+ * value is parked in *break_slot and `broke` is set so the driver returns it.
+ * kind 0 = each (block for side effects); kind 1 = take_while (collect the
+ * value into *collect while the block is truthy, stop at the first falsy). */
+struct korb_gen_sink {
+    NODE  *block;
+    VALUE *def_env;
+    VALUE *cself;
+    VALUE *break_slot;   /* rooted slot on the driver's frame for the break value */
+    VALUE *collect;      /* take_while: rooted slot holding the result Array */
+    int    kind;
+    bool   broke;
+};
 /* ---- Enumerator (eager): values materialized at creation ----------------- */
 /* Build from a values Array + a desc String (or nil).  vals/desc must be rooted
  * by the caller's slots region; we root-copy into the new object. */
@@ -50,6 +64,23 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         v = slots[3];                                         /* possibly mapped */
         slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), csym);   /* re-read after op dispatch GC */
         slots[0] = VAL2ARY(slots[1])->items->data[0];
+    }
+    if (keep && FIXNUM_P(limv) && FIX2LONG(limv) == -2 && c->vm->gen_sink) {
+        /* streaming-each sink: hand the value to the user block instead of
+         * collecting.  A block break / StopIteration stops the whole drive. */
+        struct korb_gen_sink *const sink = c->vm->gen_sink;
+        slots[2] = v;                                         /* root across the yield */
+        RESULT yr = korb_block_yield(c, slots + 3, sink->block, sink->def_env, &slots[2], 1, sink->cself);
+        if (yr.state == KORB_BREAK) { sink->broke = true; *sink->break_slot = yr.value;
+            return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit"); }
+        if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
+        if (sink->kind == 1) {                                /* take_while: collect while truthy */
+            if (!KORB_TRUTHY(yr.value))
+                return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit");
+            slots[3] = slots[2];                              /* the value (block result was the predicate) */
+            CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(sink->collect), slots[3]));
+        }
+        return RESULT_OK(VALUE_REF_GET(self));
     }
     if (keep) {
         slots[2] = v;                                         /* root across the push alloc */
@@ -117,6 +148,27 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t l
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
     if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     return RESULT_OK(slots[2]);                               /* finished naturally (finite) */
+}
+/* Stream a (possibly infinite) generator's values straight to `block`, stopping
+ * on a block break or StopIteration.  Uses the limit=-2 sink protocol so the
+ * yielder feeds the block per value without materializing — this is what lets
+ * `Enumerator.produce{…}.each{ … break }` / take_while / detect terminate. */
+static RESULT korb_enum_gen_drive_block(CTX *c, VALUE *slots, VALUE_REF self, int kind,
+                                        NODE *block, VALUE *def_env, VALUE *cself) {
+    slots[0] = KORB_NIL;                                      /* [0] = rooted break-value slot */
+    slots[1] = (kind == 1) ? UNWRAP(korb_ary_new(c, slots + 1, 8)) : KORB_NIL;   /* [1] = take_while collector */
+    struct korb_gen_sink sink = { block, def_env, cself, &slots[0], &slots[1], kind, false };
+    struct korb_gen_sink *const prev = c->vm->gen_sink;       /* save (nesting) */
+    c->vm->gen_sink = &sink;
+    RESULT r = korb_enum_gen_run(c, slots + 2, self, -2);
+    c->vm->gen_sink = prev;                                   /* restore */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (kind == 1) return RESULT_OK(slots[1]);               /* take_while → the collected Array */
+    return sink.broke ? RESULT_OK(slots[0]) : RESULT_OK(VALUE_REF_GET(self));
+}
+static RESULT korb_enum_gen_each_stream(CTX *c, VALUE *slots, VALUE_REF self,
+                                        NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_enum_gen_drive_block(c, slots, self, 0, block, def_env, cself);
 }
 /* ---- lazy / cycle enumerators (deferred, possibly-infinite source) -------- */
 /* A lazy enumerator carries a `source` (Array/Range) + a chain of deferred `ops`
@@ -318,6 +370,8 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
+    if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4)   /* generator: stream (break/StopIteration safe on infinite sources) */
+        return korb_enum_gen_each_stream(c, slots, self, block, def_env, cself);
     if (SELF_ENUM->mode != 0) {                       /* lazy/cycle: force (finite), then yield each — no materialized `values` to read */
         RESULT vr = korb_lazy_drive(c, slots, self, -1);
         if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
@@ -468,7 +522,11 @@ static RESULT korb_m_enum_filter_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     (void)a; return korb_lazy_op(c, slots, self, "filter_map", false, block, def_env, cself);
 }
 static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a; return korb_lazy_op(c, slots, self, "take_while", false, block, def_env, cself);
+    (void)a;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy take_while without a block");
+    if (SELF_ENUM->mode == 3)                                    /* plain generator: eager, but self-bounded — stream + collect (infinite-safe) */
+        return korb_enum_gen_drive_block(c, slots, self, 1, block, def_env, cself);
+    return korb_lazy_op(c, slots, self, "take_while", false, block, def_env, cself);
 }
 static RESULT korb_m_enum_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
