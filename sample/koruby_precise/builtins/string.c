@@ -1534,45 +1534,86 @@ static RESULT korb_m_str_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 /* parse one base-10 number (int or decimal float) at d[*pi]; store its VALUE into
  * *outslot (rooted there), advance *pi, return true.  false if no digits. */
-static bool korb_str_parse_num(CTX *c, VALUE *outslot, const char *const d, uint32_t len, uint32_t *pi) {
-    uint32_t i = *pi; intptr_t sg = 1;
-    if (i < len && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sg = -1; i++; }
-    intptr_t ip = 0; bool dg = false;
-    while (i < len && d[i] >= '0' && d[i] <= '9') { ip = ip * 10 + (d[i] - '0'); i++; dg = true; }
-    intptr_t frac = 0, fden = 1; bool isf = false;
-    if (i < len && d[i] == '.') {
-        uint32_t j = i + 1; bool fdg = false;
-        while (j < len && d[j] >= '0' && d[j] <= '9') { frac = frac * 10 + (d[j] - '0'); fden *= 10; j++; fdg = true; }
-        if (fdg) { isf = true; i = j; }
+/* Parse one Complex number-part (int / float / rational) at d[*pi] for
+ * String#to_c: a leading sign, digit-group underscores, a decimal point,
+ * scientific notation (e/E), and an integer `p/q` rational.  Sets *outslot +
+ * advances *pi on success. */
+static bool korb_str_parse_c_num(CTX *c, VALUE *outslot, const char *d, uint32_t len, uint32_t *pi) {
+    uint32_t i = *pi;
+    char buf[80]; int bi = 0; bool digit = false, isf = false;
+    if (i < len && (d[i] == '+' || d[i] == '-')) buf[bi++] = d[i++];
+    while (i < len && (isdigit((unsigned char)d[i]) || d[i] == '_')) { if (d[i] != '_') { if (bi < 78) buf[bi++] = d[i]; digit = true; } i++; }
+    if (i + 1 < len && d[i] == '.' && isdigit((unsigned char)d[i+1])) {   /* decimal fraction */
+        isf = true; if (bi < 78) buf[bi++] = '.'; i++;
+        while (i < len && (isdigit((unsigned char)d[i]) || d[i] == '_')) { if (d[i] != '_' && bi < 78) buf[bi++] = d[i]; i++; }
     }
-    if (!dg && !isf) return false;
-    if (isf) *outslot = korb_float_new(c, outslot, (double)sg * ((double)ip + (double)frac / (double)fden)).value;
-    else     *outslot = LONG2FIX(sg * ip);
+    if (!digit) return false;
+    if (i < len && (d[i] == 'e' || d[i] == 'E')) {                        /* scientific notation */
+        uint32_t j = i + 1; if (j < len && (d[j] == '+' || d[j] == '-')) j++;
+        if (j < len && isdigit((unsigned char)d[j])) {
+            isf = true; if (bi < 78) buf[bi++] = 'e'; i++;
+            if (i < len && (d[i] == '+' || d[i] == '-')) { if (bi < 78) buf[bi++] = d[i]; i++; }
+            while (i < len && isdigit((unsigned char)d[i])) { if (bi < 78) buf[bi++] = d[i]; i++; }
+        }
+    }
+    buf[bi] = '\0';
+    if (!isf && i + 1 < len && d[i] == '/' && isdigit((unsigned char)d[i+1])) {   /* integer p/q rational */
+        uint32_t j = i + 1; char db[40]; int dbi = 0;
+        while (j < len && (isdigit((unsigned char)d[j]) || d[j] == '_')) { if (d[j] != '_' && dbi < 38) db[dbi++] = d[j]; j++; }
+        db[dbi] = '\0'; i = j; *pi = i;
+        const intptr_t num = (intptr_t)strtoll(buf, NULL, 10), den = (intptr_t)strtoll(db, NULL, 10);
+        *outslot = den ? korb_rat_new(c, outslot, num, den).value : LONG2FIX(0);
+        return true;
+    }
     *pi = i;
+    if (isf) *outslot = korb_float_new(c, outslot, strtod(buf, NULL)).value;
+    else     *outslot = LONG2FIX((intptr_t)strtoll(buf, NULL, 10));
     return true;
 }
-/* String#to_c — parse real[+imag i] / imag-only "Ni"; non-numeric → (0+0i). */
+/* String#to_c — real[±imag(i|j)] / pure "Ni" / bare "±i" / polar "m@a"; a
+ * non-numeric string → (0+0i). */
 static RESULT korb_m_str_to_c(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
-    const char *const d = s->buf->data; const uint32_t len = s->len; uint32_t i = 0;
+    const uint32_t len = s->len; uint32_t i = 0;
+    /* Copy the bytes to the stack: parsing allocates (Float/Rational/Complex),
+     * so a raw pointer into the String's buffer would go stale under moving GC. */
+    char sbuf[512];
+    slots[0] = LONG2FIX(0); slots[1] = LONG2FIX(0);
+    if (len >= sizeof(sbuf)) return korb_cpx_new(c, slots + 2, slots[0], slots[1]);   /* too long for a Complex literal → (0+0i) */
+    memcpy(sbuf, s->buf->data, len);
+    const char *const d = sbuf;
     while (i < len && isspace((unsigned char)d[i])) i++;
-    slots[0] = LONG2FIX(0);                                  /* re */
-    slots[1] = LONG2FIX(0);                                  /* im */
-    if (korb_str_parse_num(c, &slots[2], d, len, &i)) {      /* first number → slots[2] */
-        if (i < len && (d[i] | 0x20) == 'i') {               /* "Ni" → pure imaginary */
-            slots[1] = slots[2]; i++;
-        } else {
-            slots[0] = slots[2];                             /* real part */
-            if (i < len && (d[i] == '+' || d[i] == '-')) {   /* "+Ni" / "-Ni" imaginary */
-                uint32_t save = i;
-                if (korb_str_parse_num(c, &slots[2], d, len, &i) && i < len && (d[i] | 0x20) == 'i') {
-                    slots[1] = slots[2]; i++;
-                } else i = save;
-            }
+    #define IMAG_UNIT(ch) (((ch) | 0x20) == 'i' || ((ch) | 0x20) == 'j')
+    if (!korb_str_parse_c_num(c, &slots[2], d, len, &i)) {   /* no leading number: bare ±i */
+        uint32_t j = i; intptr_t sg = 1;
+        if (j < len && (d[j] == '+' || d[j] == '-')) { if (d[j] == '-') sg = -1; j++; }
+        if (j < len && IMAG_UNIT(d[j])) slots[1] = LONG2FIX(sg);
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    if (i < len && d[i] == '@') {                            /* polar form: modulus @ argument */
+        i++;
+        if (korb_str_parse_c_num(c, &slots[3], d, len, &i)) {
+            double m = 0, arg = 0; korb_num_to_d(slots[2], &m); korb_num_to_d(slots[3], &arg);
+            slots[0] = korb_float_new(c, slots + 4, m * cos(arg)).value;
+            slots[1] = korb_float_new(c, slots + 4, m * sin(arg)).value;
+        }
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
+    if (i < len && IMAG_UNIT(d[i])) {                        /* "Ni" → pure imaginary */
+        slots[1] = slots[2];
+    } else {
+        slots[0] = slots[2];                                /* real part */
+        if (i < len && (d[i] == '+' || d[i] == '-')) {      /* ±imag suffix */
+            const uint32_t save = i;
+            const intptr_t sg = (d[i] == '-') ? -1 : 1;
+            if (i + 1 < len && IMAG_UNIT(d[i+1])) slots[1] = LONG2FIX(sg);       /* "a±i" → imag ±1 */
+            else if (korb_str_parse_c_num(c, &slots[3], d, len, &i) && i < len && IMAG_UNIT(d[i])) slots[1] = slots[3];
+            else i = save;
         }
     }
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    #undef IMAG_UNIT
 }
 
 /* trim: mode 0=both 1=left 2=right */
