@@ -4298,15 +4298,19 @@ korb_value_eq(VALUE a, VALUE b)
         return x->len == y->len && memcmp(x->buf->data, y->buf->data, x->len) == 0;
     }
     if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {         /* Array#==: same length, element-wise == */
-        const KorbArray *x = VAL2ARY(a), *y = VAL2ARY(b);
+        KorbArray *const x = VAL2ARY(a); const KorbArray *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
+        if (x->head.flags & KORB_FL_JOIN_VISITING) return true;   /* recursive comparison → CRuby assumes equal */
+        x->head.flags |= KORB_FL_JOIN_VISITING;
+        bool eq = true;
         for (uint32_t i = 0; i < x->len; i++) {
             const VALUE xi = x->items->data[i], yi = y->items->data[i];   /* inline the common element cases (skip the recursive call) */
             if (xi == yi) continue;                                       /* identical: Fixnum / Symbol / same object */
-            if (FIXNUM_P(xi) && FIXNUM_P(yi)) return false;               /* two distinct Fixnums */
-            if (!korb_value_eq(xi, yi)) return false;                     /* heap / mixed: recurse */
+            if (FIXNUM_P(xi) && FIXNUM_P(yi)) { eq = false; break; }      /* two distinct Fixnums */
+            if (!korb_value_eq(xi, yi)) { eq = false; break; }            /* heap / mixed: recurse */
         }
-        return true;
+        x->head.flags &= ~KORB_FL_JOIN_VISITING;
+        return eq;
     }
     if (KORB_SET_P(a) && KORB_SET_P(b)) {             /* Set#==: same members (order-independent) */
         const KorbArray *x = VAL2ARY(VAL2SET(a)->elems), *y = VAL2ARY(VAL2SET(b)->elems);
@@ -4319,13 +4323,17 @@ korb_value_eq(VALUE a, VALUE b)
         return true;
     }
     if (KORB_HASH_P(a) && KORB_HASH_P(b)) {           /* Hash#==: same pairs (order-independent) */
-        const KorbHash *x = VAL2HASH(a), *y = VAL2HASH(b);
+        KorbHash *const x = VAL2HASH(a); const KorbHash *const y = VAL2HASH(b);
         if (x->len != y->len) return false;
+        if (x->head.flags & KORB_FL_JOIN_VISITING) return true;   /* recursive comparison → CRuby assumes equal */
+        x->head.flags |= KORB_FL_JOIN_VISITING;
+        bool eq = true;
         for (uint32_t i = 0; i < x->len; i++) {
             int32_t j = korb_hash_find(y, x->items->data[2*i]);
-            if (j < 0 || !korb_value_eq(x->items->data[2*i+1], y->items->data[2*j+1])) return false;
+            if (j < 0 || !korb_value_eq(x->items->data[2*i+1], y->items->data[2*j+1])) { eq = false; break; }
         }
-        return true;
+        x->head.flags &= ~KORB_FL_JOIN_VISITING;
+        return eq;
     }
     if (KORB_RANGE_P(a) && KORB_RANGE_P(b)) {         /* Range#==: == begin/end + same exclude_end */
         const KorbRange *const x = VAL2RANGE(a), *const y = VAL2RANGE(b);
