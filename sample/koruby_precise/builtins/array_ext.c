@@ -225,6 +225,19 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 ed = VAL2STR(slots[1])->buf->data; elen = VAL2STR(slots[1])->len;
                 ary = SELF_ARY; t = VAL2STR(slots[0]);    /* re-read: the dispatch may have moved them */
             }
+            else if (coerce) {                            /* M/m/u: coerce any other value via #to_s (Bignum/Array/object) */
+                slots[1] = e;
+                RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { free(ob); return sr; }
+                if (KORB_STRING_P(sr.value)) { slots[1] = sr.value; ed = VAL2STR(slots[1])->buf->data; elen = VAL2STR(slots[1])->len; }
+                else {                                    /* #to_s gave a non-String → the default object representation */
+                    char *db = NULL; size_t dsz = 0; FILE *dms = open_memstream(&db, &dsz);
+                    if (dms) { korb_fprint_to_s(c, dms, e); fclose(dms); }
+                    elen = (uint32_t)dsz; if (elen >= sizeof cobuf) elen = sizeof cobuf - 1;
+                    memcpy(cobuf, db ? db : "", elen); free(db); ed = cobuf;
+                }
+                ary = SELF_ARY; t = VAL2STR(slots[0]);
+            }
             else { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
             if (d == 'a' || d == 'A') {
                 uint32_t want = star ? elen : (uint32_t)cnt;
