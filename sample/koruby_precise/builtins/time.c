@@ -59,6 +59,24 @@ static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool
     CHECK(korb_ivar_set(c, slots + 2, tref, korb_time_utc_sym(c->vm), utc ? KORB_TRUE : KORB_FALSE));
     return RESULT_OK(VALUE_REF_GET(tref));
 }
+/* @__ns: the exact nanosecond sub-second (0..999_999_999), set at construction
+ * when it is known precisely — the double @__t epoch cannot hold sub-second
+ * precision for present-day timestamps, so sub-second accessors read this. */
+static VALUE korb_time_ns_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__ns", 5)); }
+static long korb_time_nsec_of(CTX *c, VALUE t) {
+    const VALUE nv = korb_ivar_get(c, t, korb_time_ns_sym(c->vm));
+    if (FIXNUM_P(nv)) return (long)FIX2LONG(nv);
+    const double e = korb_time_epoch(c, t);            /* fallback: reconstruct from the (lossy) epoch */
+    long ns = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
+    return ns < 0 ? 0 : ns > 999999999 ? 999999999 : ns;
+}
+/* korb_time_make + an exact nanosecond sub-second (computed from the small
+ * fractional part, not the large epoch, so `Rational(100,1000)` → 100_000_000). */
+static RESULT korb_time_make_ns(CTX *c, VALUE *slots, VALUE cls, double sec_int, long nsec, bool utc) {
+    slots[0] = UNWRAP(korb_time_make(c, slots, cls, sec_int + (double)nsec / 1e9, utc));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_ns_sym(c->vm), LONG2FIX((intptr_t)nsec)));
+    return RESULT_OK(slots[0]);
+}
 
 /* broken-down time for a Time value (UTC or local per its flag). */
 static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
@@ -92,11 +110,29 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(VALUE_SLICE_GET(a, 0)));
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(v));
     }
-    if (VALUE_SLICE_LEN(a) >= 2) {                                /* Time.at(sec, usec) → add microseconds */
-        double usec = 0; korb_num_to_d(VALUE_SLICE_GET(a, 1), &usec);
-        e += usec / 1e6;
+    const bool first_is_time = KORB_OBJECT_P(v) && korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL;
+    int64_t sec = (int64_t)floor(e);
+    long nsec = (long)((e - floor(e)) * 1e9 + 0.5);              /* sub-second from a fractional sec arg */
+    if (VALUE_SLICE_LEN(a) >= 2 && !(VALUE_SLICE_LEN(a) == 2 && KORB_HASH_P(VALUE_SLICE_GET(a, 1)))) {   /* Time.at(sec, subsec[, unit]); a lone trailing Hash is kwargs */
+        if (first_is_time)                                       /* Time.at(time, subsec) is a TypeError */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert Time into an exact number");
+        const VALUE sv2 = VALUE_SLICE_GET(a, 1);
+        double subv;
+        if (!korb_num_to_d(sv2, &subv))                          /* nil / String / non-Numeric → TypeError */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(sv2));
+        double per_ns = 1000.0;                                  /* default unit = :microsecond */
+        if (VALUE_SLICE_LEN(a) >= 3 && VALUE_SLICE_GET(a, 2) != KORB_NIL) {
+            const VALUE u = VALUE_SLICE_GET(a, 2);
+            const char *un = SYMBOL_P(u) ? korb_sym_name(c->vm, SYM2ID(u)) : (KORB_STRING_P(u) ? VAL2STR(u)->buf->data : "");
+            if (!strcmp(un, "millisecond")) per_ns = 1e6;
+            else if (!strcmp(un, "microsecond") || !strcmp(un, "usec")) per_ns = 1000.0;
+            else if (!strcmp(un, "nanosecond") || !strcmp(un, "nsec")) per_ns = 1.0;
+            else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected unit: %s", un);
+        }
+        nsec += (long)(subv * per_ns + 0.5);
     }
-    return korb_time_make(c, slots, VALUE_REF_GET(self), e, false);
+    sec += nsec / 1000000000; nsec %= 1000000000;                /* carry overflow into seconds */
+    return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, false);
 }
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */
 static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE a, bool utc) {
@@ -120,7 +156,10 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
     tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5];
     tm.tm_isdst = -1;
     const time_t e = utc ? timegm(&tm) : mktime(&tm);
-    return korb_time_make(c, slots, cls, (double)e + subsec, utc);
+    /* exact nsec from the small fractional part (accurate), not the large epoch. */
+    long nsec = (long)(subsec * 1e9 + 0.5);
+    if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
+    return korb_time_make_ns(c, slots, cls, (double)e, nsec, utc);
 }
 static RESULT korb_m_time_utc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, true);
@@ -186,19 +225,23 @@ TIME_COMPONENT(wday,  tm_wday, 0)
 TIME_COMPONENT(yday,  tm_yday, 1)
 static RESULT korb_m_time_usec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
-    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
-    /* truncate toward zero (CRuby), with a tiny epsilon to absorb the float
-     * reconstruction error for exact integer microseconds. */
-    return RESULT_OK(LONG2FIX((intptr_t)((e - (double)(time_t)e) * 1e6 + 1e-6)));
+    return RESULT_OK(LONG2FIX(korb_time_nsec_of(c, VALUE_REF_GET(self)) / 1000));   /* microseconds (truncated) */
 }
 /* Time#nsec / #tv_nsec — the nanosecond part (0..999_999_999). */
 static RESULT korb_m_time_nsec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
-    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
-    intptr_t ns = (intptr_t)((e - (double)(time_t)e) * 1e9 + 0.5);
-    if (ns < 0) ns = 0;
-    if (ns > 999999999) ns = 999999999;
-    return RESULT_OK(LONG2FIX(ns));
+    return RESULT_OK(LONG2FIX(korb_time_nsec_of(c, VALUE_REF_GET(self))));
+}
+/* Time#subsec → the fractional second as a Rational (nsec/1e9), or 0. */
+static RESULT korb_m_time_subsec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const long ns = korb_time_nsec_of(c, VALUE_REF_GET(self));
+    return ns == 0 ? RESULT_OK(LONG2FIX(0)) : korb_rat_new(c, slots, ns, 1000000000);
+}
+/* Time#to_r → the epoch as a Rational: seconds + nsec/1e9. */
+static RESULT korb_m_time_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const VALUE t = VALUE_REF_GET(self);
+    const int64_t sec = (int64_t)korb_time_epoch(c, t);
+    return korb_rat_new(c, slots, (intptr_t)(sec * 1000000000 + korb_time_nsec_of(c, t)), 1000000000);
 }
 static RESULT korb_m_time_utc_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_time_is_utc(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
@@ -252,9 +295,7 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const bool is_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
     if (is_utc) tm.tm_zone = "UTC";                          /* CRuby reports "UTC" (%Z), not libc's "GMT" */
     /* Nanosecond part, for the Ruby-only %L / %N sub-second directives. */
-    const double e = korb_time_epoch(c, VALUE_REF_GET(self));
-    long nsec = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
-    if (nsec < 0) nsec = 0; else if (nsec > 999999999) nsec = 999999999;
+    const long nsec = korb_time_nsec_of(c, VALUE_REF_GET(self));
     const long gmtoff = tm.tm_gmtoff;
     /* Pre-expand the directives libc strftime does not know (%L, %[w]N, %:z /
      * %::z, %v); everything else is copied verbatim for the strftime call. */
@@ -378,6 +419,8 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "tv_usec", korb_m_time_usec, 0);
     korb_class_def_cfn(c, t, "nsec",  korb_m_time_nsec,  0);
     korb_class_def_cfn(c, t, "tv_nsec", korb_m_time_nsec, 0);
+    korb_class_def_cfn(c, t, "subsec", korb_m_time_subsec, 0);
+    korb_class_def_cfn(c, t, "to_r",  korb_m_time_to_r,  0);
     korb_class_def_cfn(c, t, "tv_sec", korb_m_time_to_i, 0);
     korb_class_def_cfn(c, t, "to_a",  korb_m_time_to_a,  0);
     korb_class_def_cfn(c, t, "zone",       korb_m_time_zone,       0);
