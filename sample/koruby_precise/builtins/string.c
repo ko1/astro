@@ -557,12 +557,16 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be);
     }
     if (!KORB_STRING_P(idx) && !KORB_RANGE_P(idx)) {   /* coerce a non-String/Range index via #to_int (before reading self) */
+        const char *onm = korb_type_name(idx);
         RESULT cr = korb_coerce_to_int(c, slots, &idx);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value == KORB_FALSE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", onm);   /* no #to_int, or it gave a non-Integer */
     }
     if (len_v != KORB_NIL) {
+        const char *onm = korb_type_name(len_v);
         RESULT cr = korb_coerce_to_int(c, slots, &len_v);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value == KORB_FALSE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", onm);
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
@@ -587,7 +591,10 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rbegin, &b); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         if (endless) e = (intptr_t)ncp;
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
+        const intptr_t b_raw = b;
         if (b < 0) b += ncp;
+        if (write && (b < 0 || b > (intptr_t)ncp))       /* []= : an out-of-range Range begin is a RangeError (not IndexError) */
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld%s out of range", (long)b_raw, endless ? "..." : "..");
         if (!endless && e < 0) e += ncp;
         st = b; ln = ((endless || r->exclude_end) ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
     } else {
