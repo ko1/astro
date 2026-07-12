@@ -171,28 +171,28 @@ class MSpecExpectation
   def initialize(actual)
     @actual = actual
   end
-  def =~(other)
-    # See raise_error matcher for the rationale: /regex/ literals are
-    # Strings in koruby, so use substring matching as the proxy.  Strip
-    # common backslash escapes (\. \[ \] \( \) \? \+ \* \^ \$ \|) and
-    # ignore $ / ^ anchors so patterns like /begin_file\.rb$/ still
-    # match the actual filename ending with begin_file.rb.
-    matched = if other.is_a?(String) && @actual.is_a?(String)
-                other.split('|').any? { |alt|
-                  s = alt.dup
-                  %w(\\. \\[ \\] \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
-                    s = s.gsub(esc, esc[1])
-                  end
-                  s = s.delete('$^')
-                  @actual.include?(s)
-                }
-              else
-                @actual =~ other
-              end
-    if matched then $ms_pass += 1
+  # /regex/ literals are Strings in koruby, so use substring matching as the
+  # proxy.  Strip common backslash escapes (\. \[ \] \( \) \? \+ \* \^ \$ \|)
+  # and ignore $ / ^ anchors so patterns like /begin_file\.rb$/ still match.
+  def __re_match?(other)
+    if other.is_a?(String) && @actual.is_a?(String)
+      other.split('|').any? { |alt|
+        s = alt.dup
+        %w(\\. \\[ \\] \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each { |esc| s = s.gsub(esc, esc[1]) }
+        @actual.include?(s.delete('$^'))
+      }
     else
-      $ms_fail += 1
-      fail MSpecError, "expected #{@actual.inspect} =~ #{other.inspect}"
+      @actual =~ other
+    end
+  end
+  def =~(other)
+    if __re_match?(other) then $ms_pass += 1
+    else $ms_fail += 1; fail MSpecError, "expected #{@actual.inspect} =~ #{other.inspect}"
+    end
+  end
+  def !~(other)
+    if !__re_match?(other) then $ms_pass += 1
+    else $ms_fail += 1; fail MSpecError, "expected #{@actual.inspect} !~ #{other.inspect}"
     end
   end
   def ==(expected)
