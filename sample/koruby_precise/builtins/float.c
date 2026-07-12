@@ -107,21 +107,35 @@ static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
 /* round()'s `half:` keyword → 0=up (default, ties away from zero), 1=even
  * (banker's), 2=down (ties toward zero).  *npos = positional arg count with any
  * trailing keyword Hash excluded. */
-static int korb_round_half(CTX *c, VALUE_SLICE a, uint32_t *npos) {
+/* npos = positional count (excl. trailing kwargs Hash).  *bad ← the invalid
+ * `half:` value if any (else KORB_NIL), for the caller to raise ArgumentError. */
+static int korb_round_half_v(CTX *c, VALUE_SLICE a, uint32_t *npos, VALUE *bad) {
+    *bad = KORB_NIL;
     const uint32_t n = VALUE_SLICE_LEN(a);
     *npos = n;
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {     /* trailing kwargs Hash */
         *npos = n - 1;
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
-        if (idx >= 0 && SYMBOL_P(h->items->data[2 * idx + 1])) {
-            const uint32_t id = SYM2ID(h->items->data[2 * idx + 1]);
-            if (id == korb_intern(c->vm, "even", 4)) return 1;
-            if (id == korb_intern(c->vm, "down", 4)) return 2;
+        if (idx >= 0) {
+            const VALUE hv = h->items->data[2 * idx + 1];
+            const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
+                           : (KORB_STRING_P(hv) ? VAL2STR(hv)->buf->data : NULL);
+            if (nm) {
+                if (!strcmp(nm, "even")) return 1;
+                if (!strcmp(nm, "down")) return 2;
+                if (!strcmp(nm, "up"))   return 0;
+                *bad = hv;                                     /* unknown mode name → ArgumentError */
+            } else if (hv != KORB_NIL) *bad = hv;              /* non-Symbol/String → ArgumentError */
         }
     }
     return 0;
 }
+static int korb_round_half(CTX *c, VALUE_SLICE a, uint32_t *npos) { VALUE bad; return korb_round_half_v(c, a, npos, &bad); }
+#define KORB_ROUND_CHECK_HALF(c, slots, a, npos) do { \
+    VALUE _bad; (void)korb_round_half_v((c), (a), (npos), &_bad); \
+    if (UNLIKELY(_bad != KORB_NIL)) return korb_raise((c), (slots), KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", korb_type_name(_bad)); \
+} while (0)
 /* round v to an integer-valued double under the given half mode. */
 static double korb_round_half_apply(double v, int half) {
     if (half == 1) return nearbyint(v);                        /* :even (FP default mode = round-half-even) */
@@ -129,7 +143,7 @@ static double korb_round_half_apply(double v, int half) {
     return round(v);                                           /* :up — ties away from zero */
 }
 static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
-    uint32_t npos; const int half = korb_round_half(c, a, &npos);
+    uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
     intptr_t ndig = 0;
     if (npos >= 1) {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
@@ -260,7 +274,7 @@ static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Integer round/floor/ceil/truncate(ndigits). ndig>=0 → self; ndig<0 → snap to 10^-ndig.
  * kind: 0=floor 1=ceil 2=round 3=trunc */
 static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALUE_SLICE a) {
-    uint32_t npos; const int half = korb_round_half(c, a, &npos);
+    uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
     intptr_t ndig = 0;
     if (npos >= 1) {
         VALUE dv = VALUE_SLICE_GET(a, 0);
@@ -306,7 +320,7 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
  * 1 ceil, 2 round, 3 truncate). */
 static RESULT korb_bigint_round_to(CTX *c, VALUE *slots, VALUE bigself, int kind, VALUE_SLICE a) {
     slots[0] = bigself;                                  /* root across a possible #to_int digit coercion */
-    uint32_t npos; const int half = korb_round_half(c, a, &npos);
+    uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
     intptr_t ndig = 0;
     if (npos >= 1) {
         VALUE dv = VALUE_SLICE_GET(a, 0);
