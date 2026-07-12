@@ -191,8 +191,13 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             for (uint32_t rr = 0; rr < emit; rr++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = ary->items->data[ai++];
-                uintptr_t v = FIXNUM_P(e) ? (uintptr_t)FIX2LONG(e) : 0;
-                uint8_t tmp[12]; int n = 0;
+                int64_t iv;
+                RESULT ir = korb_pack_int_val(c, slots + 2, e, &iv);   /* #to_int; nil/true/false → TypeError */
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
+                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                if (iv < 0) { errtype = KORB_E_ARGUMENT; errmsg = "can't compress negative numbers"; break; }
+                uint64_t v = (uint64_t)iv;
+                uint8_t tmp[16]; int n = 0;
                 tmp[n++] = (uint8_t)(v & 0x7f); v >>= 7;
                 while (v) { tmp[n++] = (uint8_t)((v & 0x7f) | 0x80); v >>= 7; }
                 while (n) PK_PUT(tmp[--n]);                /* big-endian, high bit on all but last */
