@@ -672,7 +672,7 @@ static RESULT korb_m_ary_chunk_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 /* chunk{|e| key} → Enumerator of [key, [consecutive elems with == key]] runs. */
 static RESULT korb_m_ary_chunk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
-    if (UNLIKELY(block == NULL)) {
+    if (UNLIKELY(block == NULL)) {                      /* chunk's block is a key-fn, not an iterator → plain enum */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "chunk"));
         return korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
     }

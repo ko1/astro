@@ -88,7 +88,25 @@ module Enumerable
   def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
   def group_by; return to_enum(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
   def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
-  def chunk; r = []; lastk = nil; f = true; __each_el { |x| k = yield(x); if k.nil? || k == :_separator; f = true; next; end; if f || k != lastk; r << [k, [x]]; f = false; else; r.last[1] << x; end; lastk = k }; r; end
+  def chunk
+    return to_enum(:chunk) unless block_given?
+    r = []; lastk = nil; f = true
+    __each_el { |x|
+      k = yield(x)
+      if k.nil? || k == :_separator; f = true; lastk = nil; next; end
+      if k.is_a?(Symbol) && k.to_s.start_with?("_") && k != :_alone
+        raise RuntimeError, "symbols beginning with an underscore are reserved"
+      end
+      if k == :_alone
+        r << [k, [x]]; f = true; lastk = nil
+      elsif f || k != lastk
+        r << [k, [x]]; f = false; lastk = k
+      else
+        r.last[1] << x; lastk = k
+      end
+    }
+    r
+  end
   def chunk_while; raise ArgumentError, "tried to create Proc object without a block" unless block_given?; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); cur << x; else; r << cur; cur = [x]; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_when; raise ArgumentError, "tried to create Proc object without a block" unless block_given?; r = []; cur = nil; f = true; prev = nil; __each_el { |x| if f; cur = [x]; f = false; elsif yield(prev, x); r << cur; cur = [x]; else; cur << x; end; prev = x }; r << cur unless cur.nil?; r; end
   def slice_before(*pat, &b)
