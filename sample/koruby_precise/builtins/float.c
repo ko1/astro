@@ -27,6 +27,23 @@ static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
 }
+/* Rational#rationalize(eps=nil): the simplest rational within eps of self (no
+ * eps → self unchanged); >1 arg → ArgumentError. */
+static RESULT korb_m_rat_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
+    if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) return RESULT_OK(VALUE_REF_GET(self));
+    double f = 0, eps = 0;
+    korb_num_to_d(VALUE_REF_GET(self), &f);
+    if (UNLIKELY(!korb_num_to_d(VALUE_SLICE_GET(a, 0), &eps))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a real");
+    eps = fabs(eps);
+    if (eps == 0.0) return RESULT_OK(VALUE_REF_GET(self));
+    const bool neg = f < 0.0; const double af = neg ? -f : f;
+    int64_t n, d;
+    if (!korb_rationalize_internal(af - eps, af + eps, &n, &d)) return RESULT_OK(VALUE_REF_GET(self));
+    if (neg) n = -n;
+    return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
+}
 static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->num);
 }

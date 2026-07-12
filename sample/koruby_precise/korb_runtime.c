@@ -8160,7 +8160,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RATIONAL, "**", korb_m_rat_pow, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "pow", korb_m_rat_pow, 1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "to_r", korb_m_rat_self, 0);
-    korb_def_cmethod(c, KORB_C_RATIONAL, "rationalize", korb_m_rat_self, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "rationalize", korb_m_rat_rationalize, -1);
     korb_def_cmethod(c, KORB_C_RATIONAL, "abs", korb_m_rat_abs, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "magnitude", korb_m_rat_abs, 0);
     korb_def_cmethod(c, KORB_C_RATIONAL, "-@", korb_m_rat_neg, 0);
