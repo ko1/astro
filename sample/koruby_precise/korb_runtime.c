@@ -9902,7 +9902,7 @@ korb_bi_raise_core(CTX *c, VALUE *slots, VALUE_SLICE args)
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n >= 1) {
         VALUE a0 = VALUE_SLICE_GET(args, 0);
-        if (KORB_STRING_P(a0)) {
+        if (KORB_STRING_P(a0) && n == 1) {               /* raise "msg" → RuntimeError; `raise "m", extra` is a TypeError (String is not a class) */
             const KorbString *s = VAL2STR(a0);
             return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, s->buf->data);
         }
@@ -9963,7 +9963,11 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool has_cause_kw = false; VALUE cause_val = KORB_NIL;
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {   /* a lone {cause: …} trailing kwargs hash */
+    /* A lone trailing {cause: …} is taken as the cause keyword.  koruby can't
+     * distinguish `cause: x` (kwargs) from an explicit `{cause: x}` (positional),
+     * and the `raise("msg", cause: e)` form is far more common than the rare
+     * explicit-hash case, so we always extract it. */
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t ci = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "cause", 5)));
         if (ci >= 0 && h->len == 1) { cause_val = h->items->data[2 * ci + 1]; has_cause_kw = true; n--; }
