@@ -378,10 +378,16 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     uint32_t base = block ? 0 : 1;                        /* position args start here */
     if (UNLIKELY(!block && VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+    if (UNLIKELY(!block && VALUE_SLICE_LEN(a) > 3))        /* filler + start + length */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..3)", VALUE_SLICE_LEN(a));
+    if (UNLIKELY(block && VALUE_SLICE_LEN(a) > 2))         /* start + length */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", VALUE_SLICE_LEN(a));
     VALUE v = block ? KORB_NIL : VALUE_SLICE_GET(a, 0);
     /* compute fill region [beg, beg+len) following MRI rb_ary_fill order */
     intptr_t beg = 0, len = n; bool have_len = false;
     VALUE pos0 = VALUE_SLICE_LEN(a) > base ? VALUE_SLICE_GET(a, base) : KORB_NIL;
+    if (UNLIKELY(KORB_RANGE_P(pos0) && VALUE_SLICE_LEN(a) > base + 1))   /* fill(x, range, length) is invalid */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "length invalid with range");
     if (KORB_RANGE_P(pos0)) {
         const KorbRange *r = VAL2RANGE(pos0);
         intptr_t b = 0, e;
