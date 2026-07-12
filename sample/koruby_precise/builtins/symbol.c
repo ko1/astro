@@ -399,13 +399,18 @@ static RESULT korb_m_proc_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
  * never on the call/yield hot path).  A non-lambda proc reports a required
  * positional as :opt (CRuby semantics); keyreq/rest/block keep their kind. */
 static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
     /* Capture everything off the proc BEFORE the first alloc — korb_ary_new GCs
      * and may move the KorbObject, so `p` must not be dereferenced afterwards.
      * pi (node param_info) and the booleans are all stable values. */
     const KorbProc *const p = VAL2PROC(VALUE_REF_GET(self));
     const struct korb_param_info *const pi = p->iseq ? (const struct korb_param_info *)p->iseq->u.node_entry.param_info : NULL;
-    const bool lam = p->is_lambda;
+    bool lam = p->is_lambda;
+    /* `lambda:` keyword overrides required-vs-optional treatment (nil = ignore). */
+    if (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1));
+        const int32_t li = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "lambda", 6)));
+        if (li >= 0 && h->items->data[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(h->items->data[2 * li + 1]);
+    }
     const bool symproc = (p->iseq == NULL);
     static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };
     const uint32_t n = pi ? pi->n : 0;

@@ -7775,7 +7775,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_PROC, "===", korb_m_proc_call, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
-    korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, -1);
     korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "name", korb_m_meth_name, 0);
