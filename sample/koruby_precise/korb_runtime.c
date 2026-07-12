@@ -6434,7 +6434,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (cname == vm->class_name[KORB_C_CLASS] || cname == vm->name_module) {   /* Class.new([super]) / Module.new [do…end] */
             const bool is_mod = (cname == vm->name_module);
             slots[0] = (!is_mod && argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
-            if (UNLIKELY(!is_mod && !KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));
+            if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
+                return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));   /* a Module or a metaclass is not a valid superclass */
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
