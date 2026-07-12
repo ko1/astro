@@ -997,27 +997,28 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
-    { unsigned char rlo, rhi;
-      if (UNLIKELY(korb_charset_bad_range(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range(ts->buf->data, ts->len, &rlo, &rhi)))
-          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", rlo, rhi); }
+    { uint32_t rlo, rhi;
+      if (UNLIKELY(korb_charset_bad_range_cp(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range_cp(ts->buf->data, ts->len, &rlo, &rhi)))
+          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range in string transliteration"); }
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
-    unsigned char fromx[512], tox[512];
-    uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
-    uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
+    uint32_t fromx[1024], tox[1024];
+    uint32_t fn = korb_tr_expand_cp(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024);
+    uint32_t tn = korb_tr_expand_cp(ts->buf->data, ts->len, tox, 1024);
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));      /* no GC during the scan */
-    bool prev_tr = false; int prev_out = -1;
-    for (uint32_t i = 0; i < s->len; i++) {
-        unsigned char ch = (unsigned char)s->buf->data[i];
+    bool prev_tr = false; int64_t prev_out = -1;
+    for (uint32_t i = 0; i < s->len; ) {
+        uint32_t cl; const uint32_t cp = korb_utf8_dec1(s->buf->data + i, s->len - i, &cl);
         int idx = -1;
-        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
+        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == cp) { idx = (int)k; break; }
         bool match = neg ? (idx < 0) : (idx >= 0);
-        if (!match) { fputc(ch, ms); prev_tr = false; prev_out = -1; continue; }
+        if (!match) { fwrite(s->buf->data + i, 1, cl, ms); i += cl; prev_tr = false; prev_out = -1; continue; }
+        i += cl;
         if (tn == 0) { prev_tr = false; prev_out = -1; continue; }   /* delete */
-        int outc = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
-        if (prev_tr && prev_out == outc) continue;                   /* squeeze translated run */
-        fputc(outc, ms); prev_tr = true; prev_out = outc;
+        const uint32_t outc = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
+        if (prev_tr && prev_out == (int64_t)outc) continue;          /* squeeze translated run */
+        char enc[4]; fwrite(enc, 1, korb_utf8_encode(outc, enc), ms); prev_tr = true; prev_out = (int64_t)outc;
     }
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
