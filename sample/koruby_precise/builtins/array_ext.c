@@ -161,16 +161,23 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 if (sz == 4) { float f = (float)dv; memcpy(tmp, &f, 4); } else memcpy(tmp, &dv, 8);
                 for (int b = 0; b < sz; b++) PK_PUT(tmp[big ? (sz - 1 - b) : b]);
             }
-        } else if (d == 'U') {                            /* UTF-8: codepoints → bytes */
+        } else if (d == 'U') {                            /* UTF-8: codepoints → bytes (extended, up to 6) */
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
             for (uint32_t k = 0; k < emit; k++) {
                 if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
                 VALUE e = ary->items->data[ai++];
-                uint32_t cp = FIXNUM_P(e) ? (uint32_t)FIX2LONG(e) : 0;
+                int64_t cpv;
+                RESULT ir = korb_pack_int_val(c, slots + 2, e, &cpv);   /* #to_int coercion / TypeError */
+                if (UNLIKELY(ir.state != KORB_NORMAL)) { free(ob); return ir; }
+                ary = SELF_ARY;                          /* re-read after a possible #to_int GC */
+                if (cpv < 0 || cpv > 0x7FFFFFFF) { errtype = KORB_E_RANGE; errmsg = "pack(U): value out of range"; break; }
+                const uint32_t cp = (uint32_t)cpv;
                 if (cp < 0x80) PK_PUT(cp);
                 else if (cp < 0x800) { PK_PUT(0xC0 | (cp >> 6)); PK_PUT(0x80 | (cp & 0x3F)); }
                 else if (cp < 0x10000) { PK_PUT(0xE0 | (cp >> 12)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
-                else { PK_PUT(0xF0 | (cp >> 18)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x200000) { PK_PUT(0xF0 | (cp >> 18)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x4000000) { PK_PUT(0xF8 | (cp >> 24)); PK_PUT(0x80 | ((cp >> 18) & 0x3F)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
+                else { PK_PUT(0xFC | (cp >> 30)); PK_PUT(0x80 | ((cp >> 24) & 0x3F)); PK_PUT(0x80 | ((cp >> 18) & 0x3F)); PK_PUT(0x80 | ((cp >> 12) & 0x3F)); PK_PUT(0x80 | ((cp >> 6) & 0x3F)); PK_PUT(0x80 | (cp & 0x3F)); }
             }
         } else if (d == 'x') {
             uint32_t emit = star ? 0 : (uint32_t)cnt;
