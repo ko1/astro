@@ -855,8 +855,9 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
     const uint32_t mid_init = c->vm->mid_initialize;
     /* Compute the "bare module" test up front, while start_class is still fresh —
      * the collection loop below allocs (GC), after which start_class is stale. */
-    const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module &&
-                                start_class != korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+    const VALUE kernel_mod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+    const bool is_kernel = KORB_CLASS_P(start_class) && start_class == kernel_mod;
+    const bool is_bare_module = KORB_CLASS_P(start_class) && VAL2CLASS(start_class)->is_module && !is_kernel;
     slots[1] = start_class;                                         /* MRO cursor (rooted) — set before any alloc */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 8));              /* result (rooted at slots[0]) */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
@@ -886,7 +887,7 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
      * module (its ancestors are just itself + its own includes, not Kernel).
      * Kernel itself is the exception: it owns them. (is_bare_module computed at
      * function entry — start_class is stale here after the loop's GCs.) */
-    if (inherit && (vis_mask & (1u << 1)) && !is_bare_module) {
+    if ((vis_mask & (1u << 1)) && (inherit ? !is_bare_module : is_kernel)) {   /* inherit=false lists only Kernel's OWN builtins */
         for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
             if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
             const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
