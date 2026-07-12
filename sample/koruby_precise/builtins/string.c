@@ -902,6 +902,34 @@ static uint32_t korb_tr_expand(const char *s, uint32_t n, unsigned char *out, ui
     }
     return k;
 }
+/* Codepoint-level tr set expansion: `a-z` ranges into individual codepoints,
+ * multibyte chars preserved.  Skips a leading '^' if `skip_caret`. */
+static uint32_t korb_tr_expand_cp(const char *s, uint32_t n, uint32_t *out, uint32_t cap) {
+    uint32_t k = 0, i = 0;
+    while (i < n && k < cap) {
+        uint32_t cl; const uint32_t lo = korb_utf8_dec1(s + i, n - i, &cl); const uint32_t ni = i + cl;
+        if (ni < n && s[ni] == '-' && ni + 1 < n) {          /* lo-hi range */
+            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(s + ni + 1, n - ni - 1, &cl2);
+            for (uint32_t ch = lo; ch <= hi && k < cap; ch++) out[k++] = ch;
+            i = ni + 1 + cl2;
+        } else { out[k++] = lo; i = ni; }
+    }
+    return k;
+}
+/* True if a tr set has a descending codepoint range; reports lo/hi. */
+static bool korb_charset_bad_range_cp(const char *s, uint32_t n, uint32_t *lo_out, uint32_t *hi_out) {
+    uint32_t i = 0;
+    if (n > 1 && s[0] == '^') i = 1;
+    while (i < n) {
+        uint32_t cl; const uint32_t lo = korb_utf8_dec1(s + i, n - i, &cl); const uint32_t ni = i + cl;
+        if (ni < n && s[ni] == '-' && ni + 1 < n) {
+            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(s + ni + 1, n - ni - 1, &cl2);
+            if (lo > hi) { *lo_out = lo; *hi_out = hi; return true; }
+            i = ni + 1 + cl2;
+        } else i = ni;
+    }
+    return false;
+}
 /* String#tr(from, to) — byte-level translate; `^` negation, ranges, to-empty
  * deletes, to-shorter repeats its last char.  (UTF-8 chars beyond ASCII pass.) */
 static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -922,24 +950,26 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE fv = slots[0], tv = slots[1];
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
-    { unsigned char rlo, rhi;
-      if (UNLIKELY(korb_charset_bad_range(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range(ts->buf->data, ts->len, &rlo, &rhi)))
-          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", rlo, rhi); }
+    { uint32_t rlo, rhi;
+      if (UNLIKELY(korb_charset_bad_range_cp(fs->buf->data, fs->len, &rlo, &rhi) || korb_charset_bad_range_cp(ts->buf->data, ts->len, &rlo, &rhi)))
+          return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range in string transliteration"); }
     bool neg = fs->len > 1 && fs->buf->data[0] == '^';   /* a lone "^" is the literal char, not a complement */
-    unsigned char fromx[512], tox[512];
-    uint32_t fn = korb_tr_expand(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
-    uint32_t tn = korb_tr_expand(ts->buf->data, ts->len, tox, 512);
+    uint32_t fromx[1024], tox[1024];
+    uint32_t fn = korb_tr_expand_cp(fs->buf->data + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024);
+    uint32_t tn = korb_tr_expand_cp(ts->buf->data, ts->len, tox, 1024);
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));      /* no GC during the scan */
-    for (uint32_t i = 0; i < s->len; i++) {
-        unsigned char ch = (unsigned char)s->buf->data[i];
+    for (uint32_t i = 0; i < s->len; ) {
+        uint32_t cl; const uint32_t cp = korb_utf8_dec1(s->buf->data + i, s->len - i, &cl);
         int idx = -1;
-        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
+        for (uint32_t k = 0; k < fn; k++) if (fromx[k] == cp) { idx = (int)k; break; }
         bool match = neg ? (idx < 0) : (idx >= 0);
-        if (!match) { fputc(ch, ms); continue; }
+        if (!match) { fwrite(s->buf->data + i, 1, cl, ms); i += cl; continue; }   /* pass through verbatim */
+        i += cl;
         if (tn == 0) continue;                              /* delete */
-        fputc(neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1], ms);
+        char enc[4]; const uint32_t out_cp = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
+        fwrite(enc, 1, korb_utf8_encode(out_cp, enc), ms);
     }
     fclose(ms);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)sz);
