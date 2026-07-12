@@ -3047,37 +3047,39 @@ korb_class_def_attr(CTX *c, VALUE klass, uint32_t mid, uint32_t ivar_sym, int is
 
 /* lookup mid up the superclass chain; *out_def (if non-NULL) gets the class
  * that defines the found method (for `super`). */
+/* Search ONE class/module's local MRO segment — its prepended modules (reverse,
+ * recursively so a prepended module's own prepends/includes join the chain),
+ * then its own methods, then its included modules (reverse, recursively).  Does
+ * NOT follow `superclass` (the caller walks that).  `depth` bounds pathological
+ * cycles. */
+static struct korb_method *korb_mro_seg_find(VALUE klass, uint32_t mid, VALUE *out_def, int depth) {
+    if (!KORB_CLASS_P(klass) || depth > 64) return NULL;
+    KorbClass *const k = VAL2CLASS(klass);
+    if (k->prepended != KORB_NIL) {                          /* prepended: most-recently-prepended first */
+        const KorbArray *pre = VAL2ARY(k->prepended);
+        for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
+            struct korb_method *m = korb_mro_seg_find(pre->items->data[j], mid, out_def, depth + 1);
+            if (m) return m;
+        }
+    }
+    for (uint32_t i = 0; i < k->method_cnt; i++)
+        if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
+    if (k->included != KORB_NIL) {                           /* included: most-recently-included first */
+        const KorbArray *inc = VAL2ARY(k->included);
+        for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
+            struct korb_method *m = korb_mro_seg_find(inc->items->data[j], mid, out_def, depth + 1);
+            if (m) return m;
+        }
+    }
+    return NULL;
+}
 static struct korb_method *
 korb_class_find_method(VALUE klass, uint32_t mid, VALUE *out_def)
 {
     while (KORB_CLASS_P(klass)) {
-        KorbClass *k = VAL2CLASS(klass);
-        /* prepended modules come BEFORE the class's own methods in the MRO
-         * (most-recently-prepended first). */
-        if (k->prepended != KORB_NIL) {
-            const KorbArray *pre = VAL2ARY(k->prepended);
-            for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
-                VALUE mod = pre->items->data[j];
-                if (!KORB_CLASS_P(mod)) continue;
-                KorbClass *mk = VAL2CLASS(mod);
-                for (uint32_t i = 0; i < mk->method_cnt; i++)
-                    if (mk->methods[i]->mid == mid) { if (out_def) *out_def = mod; return mk->methods[i]; }
-            }
-        }
-        for (uint32_t i = 0; i < k->method_cnt; i++)
-            if (k->methods[i]->mid == mid) { if (out_def) *out_def = klass; return k->methods[i]; }
-        /* included modules, most-recently-included first (nearest ancestor) */
-        if (k->included != KORB_NIL) {
-            const KorbArray *inc = VAL2ARY(k->included);
-            for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
-                VALUE mod = inc->items->data[j];
-                if (!KORB_CLASS_P(mod)) continue;
-                KorbClass *mk = VAL2CLASS(mod);
-                for (uint32_t i = 0; i < mk->method_cnt; i++)
-                    if (mk->methods[i]->mid == mid) { if (out_def) *out_def = mod; return mk->methods[i]; }
-            }
-        }
-        klass = k->superclass;
+        struct korb_method *m = korb_mro_seg_find(klass, mid, out_def, 0);
+        if (m) return m;
+        klass = VAL2CLASS(klass)->superclass;
     }
     return NULL;
 }
