@@ -425,7 +425,16 @@ static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE o = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(o));
+    if (UNLIKELY(!KORB_STRING_P(o))) {                 /* coerce other via #to_str */
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
+            slots[0] = VALUE_REF_GET(self); slots[1] = o;   /* root self + receiver across the dispatch */
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); o = sr.value; self = VALUE_REF_AT(&slots[0]); }
+        }
+        if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
     return korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, 0));
 }
