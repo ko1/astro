@@ -1672,13 +1672,32 @@ static bool korb_reduce_op(CTX *c, VALUE v, uint32_t *op_mid) {
     if (KORB_STRING_P(v))  { *op_mid = korb_intern(c->vm, VAL2STR(v)->buf->data, VAL2STR(v)->len); return true; }
     return false;
 }
+/* Resolve a reduce/inject operator arg → mid: Symbol/String, or #to_str-coercible
+ * (else TypeError).  *ok set false only on the raise path. */
+static RESULT korb_reduce_resolve_op(CTX *c, VALUE *slots, VALUE v, uint32_t *op_mid, bool *ok) {
+    *ok = true;
+    if (korb_reduce_op(c, v, op_mid)) return RESULT_OK(KORB_NIL);
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
+        slots[0] = v;
+        RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) { *ok = false; return sr; }
+        if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern(c->vm, VAL2STR(sr.value)->buf->data, VAL2STR(sr.value)->len); return RESULT_OK(KORB_NIL); }
+    }
+    *ok = false;
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+}
 static RESULT korb_m_ary_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     uint32_t op_mid;
-    /* The operator Symbol/String form applies ONLY when no block is given; with a
-     * block, every argument is an initial value (CRuby: inject(:+){} treats :+ as
-     * the initial accumulator, not the operator). */
+    /* argc 2 → sym form (op=a[1], init=a[0]), block IGNORED; argc 1 + no block →
+     * sym form (op=a[0]); argc 1 + block → block form with init; argc 0 → block. */
     const uint32_t na0 = VALUE_SLICE_LEN(a);
-    const bool sym_form = block == NULL && na0 >= 1 && korb_reduce_op(c, VALUE_SLICE_GET(a, na0 - 1), &op_mid);
+    bool sym_form = false;
+    if (na0 >= 2 || (na0 == 1 && block == NULL)) {
+        bool ok; RESULT rr = korb_reduce_resolve_op(c, slots, VALUE_SLICE_GET(a, na0 - 1), &op_mid, &ok);
+        if (UNLIKELY(!ok)) return rr;
+        sym_form = true;
+    }
     if (block == NULL && !sym_form)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block or operator symbol given");
     if (sym_form) {                                        /* reduce(:+) / reduce(init, :+) [block ignored] */
