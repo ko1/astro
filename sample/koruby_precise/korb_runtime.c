@@ -9771,12 +9771,16 @@ korb_bi_array(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (KORB_ARRAY_P(a0)) return RESULT_OK(a0);
     slots[0] = a0;                                        /* root across to_ary/to_a dispatch + alloc */
     const uint32_t conv[2] = { korb_intern(c->vm, "to_ary", 6), korb_intern(c->vm, "to_a", 4) };
+    const char *const cname[2] = { "to_ary", "to_a" };
     for (int k = 0; k < 2; k++) {                         /* CRuby: to_ary, then to_a; an Array result wins */
         if (korb_responds_to(c, slots[0], conv[k])) {
             slots[1] = slots[0];                          /* receiver */
+            const char *const onm = korb_type_name(slots[0]);
             const RESULT r = korb_send_impl(c, slots + 2, conv[k], 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_ARRAY_P(r.value)) return RESULT_OK(r.value);
+            if (r.value != KORB_NIL)                      /* non-Array, non-nil result → TypeError */
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#%s gives %s)", onm, onm, cname[k], korb_type_name(r.value));
         }
     }
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));     /* otherwise wrap: [a0] */
