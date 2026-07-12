@@ -8692,11 +8692,16 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
             fprintf(fp, "#<Proc:0x%016lx%s>", (unsigned long)(uintptr_t)v, lam);
         return;
       }
-      case KORB_OBJ_METHOD: {                          /* #<Method: Recv#name> / #<UnboundMethod: Owner#name> */
+      case KORB_OBJ_METHOD: {                          /* #<Method: Recv(DefiningModule)#name> */
         const KorbMethod *const m = (const KorbMethod *)(uintptr_t)v;
-        const VALUE owner = m->unbound ? m->recv : korb_class_obj_of(c, m->recv);
-        const char *const cname = KORB_CLASS_P(owner) ? korb_sym_name(c->vm, VAL2CLASS(owner)->name_sym) : "Object";
-        fprintf(fp, "#<%s: %s#%s>", m->unbound ? "UnboundMethod" : "Method", cname, korb_sym_name(c->vm, m->mid));
+        const VALUE recv_cls = m->unbound ? m->recv : korb_class_obj_of(c, m->recv);
+        fprintf(fp, "#<%s: ", m->unbound ? "UnboundMethod" : "Method");
+        if (KORB_CLASS_P(recv_cls)) korb_fprint_class_qname(c, fp, recv_cls); else fputs("Object", fp);
+        /* the module/class that actually defines the method, if different from the receiver class */
+        VALUE def_cls = KORB_NIL;
+        if (KORB_CLASS_P(recv_cls)) (void)korb_class_find_method(recv_cls, m->mid, &def_cls);
+        if (KORB_CLASS_P(def_cls) && def_cls != recv_cls) { fputc('(', fp); korb_fprint_class_qname(c, fp, def_cls); fputc(')', fp); }
+        fprintf(fp, "#%s>", korb_sym_name(c->vm, m->mid));
         return;
       }
     }
