@@ -721,6 +721,61 @@ static bool korb_str_sets_match(VALUE_SLICE a, unsigned char ch) {
     }
     return true;
 }
+/* Decode one UTF-8 codepoint, but treat an invalid lead / truncated / bad
+ * continuation as a single raw byte (so byte-range sets like "\x00-\xFF" and
+ * binary strings work).  Sets *clen (>=1). */
+static uint32_t korb_utf8_dec1(const char *p, uint32_t avail, uint32_t *clen) {
+    const unsigned char b0 = (unsigned char)p[0];
+    if (b0 < 0x80) { *clen = 1; return b0; }
+    const int len = (b0 & 0xE0) == 0xC0 ? 2 : (b0 & 0xF0) == 0xE0 ? 3 : (b0 & 0xF8) == 0xF0 ? 4 : 1;
+    if (len == 1 || (uint32_t)len > avail) { *clen = 1; return b0; }
+    for (int k = 1; k < len; k++) if (((unsigned char)p[k] & 0xC0) != 0x80) { *clen = 1; return b0; }
+    uint32_t cp = b0 & (0x7Fu >> len);
+    for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)p[k] & 0x3F);
+    *clen = (uint32_t)len; return cp;
+}
+/* Codepoint-aware charset match: parse the set as UTF-8 codepoints, honouring
+ * `a-b` ranges and a leading `^` complement (a lone "^" is literal). */
+static bool korb_charset_match_cp(const char *set, uint32_t n, uint32_t cp) {
+    bool neg = false; uint32_t i = 0;
+    if (n > 1 && set[0] == '^') { neg = true; i = 1; }
+    bool in = false;
+    while (i < n) {
+        uint32_t cl; const uint32_t lo = korb_utf8_dec1(set + i, n - i, &cl); i += cl;
+        if (i < n && set[i] == '-' && i + 1 < n) {   /* lo-hi range */
+            i++;
+            uint32_t cl2; const uint32_t hi = korb_utf8_dec1(set + i, n - i, &cl2); i += cl2;
+            if (lo <= cp && cp <= hi) in = true;
+        } else if (lo == cp) in = true;
+    }
+    return neg ? !in : in;
+}
+/* All set args must match (intersection), by codepoint. */
+static bool korb_str_sets_match_cp(VALUE_SLICE a, uint32_t cp) {
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        const VALUE sv = VALUE_SLICE_GET(a, j);
+        if (!KORB_STRING_P(sv)) continue;
+        const KorbString *set = VAL2STR(sv);
+        if (!korb_charset_match_cp(set->buf->data, set->len, cp)) return false;
+    }
+    return true;
+}
+/* Coerce every set arg to a String via #to_str (in place), TypeError otherwise. */
+static RESULT korb_str_sets_coerce(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    for (uint32_t j = 0; j < VALUE_SLICE_LEN(a); j++) {
+        VALUE sv = VALUE_SLICE_GET(a, j);
+        if (KORB_STRING_P(sv)) continue;
+        if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_str)) {
+            slots[0] = sv;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, j), sr.value); continue; }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, j)));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* A charset spec with a descending range "b-a" (b > a) is invalid in Ruby.
  * Returns the offending pair via lo and hi (else false). Skips a leading '^'. */
 static bool korb_charset_bad_range(const char *set, uint32_t n, unsigned char *lo, unsigned char *hi) {
@@ -809,15 +864,20 @@ static RESULT korb_str_delete_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (VAL2STR(VALUE_REF_GET(self))->len != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
         return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
     }
+    if (VAL2STR(VALUE_REF_GET(self))->len == 0)          /* empty → ""/nil, args unvalidated (CRuby) */
+        return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
+    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
     KorbString *r = korb_str_alloc(c, slots, n);
     s = VAL2STR(VALUE_REF_GET(self));                   /* re-read after alloc */
     uint32_t w = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        unsigned char ch = (unsigned char)s->buf->data[i];
-        if (!korb_str_sets_match(a, ch)) r->buf->data[w++] = (char)ch;
+    for (uint32_t i = 0; i < n; ) {                     /* iterate by UTF-8 codepoint */
+        uint32_t cl; const uint32_t cp = korb_utf8_dec1(s->buf->data + i, n - i, &cl);
+        if (cl == 0) cl = 1;
+        if (!korb_str_sets_match_cp(a, cp)) { memcpy(r->buf->data + w, s->buf->data + i, cl); w += cl; }
+        i += cl;
     }
     r->len = w; r->buf->data[w] = '\0';
     if (!in_place) { KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self))); return RESULT_OK((VALUE)r); }
@@ -1229,11 +1289,16 @@ static RESULT korb_m_str_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_str_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+    if (VAL2STR(VALUE_REF_GET(self))->len == 0) return RESULT_OK(LONG2FIX(0));   /* empty → 0, args unvalidated (CRuby) */
+    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     intptr_t cnt = 0;
-    for (uint32_t i = 0; i < s->len; i++)
-        if (korb_str_sets_match(a, (unsigned char)s->buf->data[i])) cnt++;
+    for (uint32_t i = 0; i < s->len; ) {                  /* iterate by UTF-8 codepoint */
+        uint32_t cl; const uint32_t cp = korb_utf8_dec1(s->buf->data + i, s->len - i, &cl);
+        if (korb_str_sets_match_cp(a, cp)) cnt++;
+        i += cl ? cl : 1;
+    }
     return RESULT_OK(LONG2FIX(cnt));
 }
 static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1249,6 +1314,9 @@ static RESULT korb_m_str_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* squeeze: collapse runs of identical chars (only those in the sets, if given). */
 static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool in_place) {
     if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* squeeze! checks frozen upfront */
+    if (VAL2STR(VALUE_REF_GET(self))->len == 0)          /* empty → ""/nil, args unvalidated (CRuby) */
+        return in_place ? RESULT_OK(KORB_NIL) : korb_str_slice_new(c, slots, self, 0, 0);
+    { RESULT cr = korb_str_sets_coerce(c, slots, a); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     { RESULT v = korb_str_sets_validate(c, slots, a); if (UNLIKELY(v.state != KORB_NORMAL)) return v; }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t n = s->len;
@@ -1256,13 +1324,14 @@ static RESULT korb_str_squeeze_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     /* build squeezed bytes into the dst string */
     KorbString *r = korb_str_alloc(c, slots, n);          /* capacity n (worst case) */
     s = VAL2STR(VALUE_REF_GET(self));                      /* re-read after alloc */
-    uint32_t w = 0; int prev = -1;
-    for (uint32_t i = 0; i < n; i++) {
-        unsigned char ch = (unsigned char)s->buf->data[i];
-        bool squeezable = !has_set || korb_str_sets_match(a, ch);
-        if (squeezable && (int)ch == prev) continue;
-        r->buf->data[w++] = (char)ch;
-        prev = squeezable ? (int)ch : -1;
+    uint32_t w = 0; int64_t prev = -1;
+    for (uint32_t i = 0; i < n; ) {                        /* iterate by UTF-8 codepoint */
+        uint32_t cl; const uint32_t cp = korb_utf8_dec1(s->buf->data + i, n - i, &cl);
+        if (cl == 0) cl = 1;
+        bool squeezable = !has_set || korb_str_sets_match_cp(a, cp);
+        if (!(squeezable && (int64_t)cp == prev)) { memcpy(r->buf->data + w, s->buf->data + i, cl); w += cl; }
+        prev = squeezable ? (int64_t)cp : -1;
+        i += cl;
     }
     r->len = w; r->buf->data[w] = '\0';
     if (!in_place) { KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self))); return RESULT_OK((VALUE)r); }
