@@ -595,12 +595,15 @@ class MSpecExpectation
   # matcher.  Defined explicitly so it overrides the (public) Kernel#raise that
   # would otherwise just re-raise the class.  msg is ignored (koruby /re/ are
   # Strings — see raise_error); an optional block gets the caught exception.
-  def raise(klass = StandardError, msg = nil, &blk)
+  def raise(klass = StandardError, msg = nil, cause: :__unset, &blk)
     begin
       @actual.call
     rescue ::Exception => e
       classes = klass.is_a?(::Array) ? klass : [klass]
       if classes.any? { |k| k.nil? || e.is_a?(k) }
+        if cause != :__unset && e.cause != cause
+          fail MSpecError, "expected cause #{cause.inspect}, got #{e.cause.inspect}"
+        end
         blk.call(e) if blk
         $ms_pass += 1
         return self
@@ -653,7 +656,7 @@ class MSpecNegatedExpectation < MSpecExpectation
     end
   end
   # `-> { ... }.should_not.raise(X)` — passes unless X is raised.
-  def raise(klass = StandardError, msg = nil, &blk)
+  def raise(klass = StandardError, msg = nil, cause: :__unset, &blk)
     begin
       @actual.call
     rescue ::Exception => e

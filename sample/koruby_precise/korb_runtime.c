@@ -9897,7 +9897,7 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 /* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
  * Exception hierarchy, not yet present.) */
 static RESULT
-korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_bi_raise_core(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n >= 1) {
@@ -9955,6 +9955,35 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (KORB_EXC_P(cur)) return RESULT_RAISE_(cur);
     }
     return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* bare raise, no $! → RuntimeError "" */
+}
+/* Kernel#raise: handle a trailing `cause:` keyword (override the automatic
+ * $!-chaining), then delegate the exception construction to _core. */
+static RESULT
+korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    uint32_t n = VALUE_SLICE_LEN(args);
+    bool has_cause_kw = false; VALUE cause_val = KORB_NIL;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {   /* a lone {cause: …} trailing kwargs hash */
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
+        const int32_t ci = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "cause", 5)));
+        if (ci >= 0 && h->len == 1) { cause_val = h->items->data[2 * ci + 1]; has_cause_kw = true; n--; }
+    }
+    if (has_cause_kw) {
+        if (cause_val != KORB_NIL && !KORB_EXC_P(cause_val))     /* cause must be an Exception or nil */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
+        if (n == 0)                                             /* raise(cause: …) with no exception */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "only cause is given with no arguments");
+    }
+    slots[0] = cause_val;                                       /* root across _core's allocs */
+    RESULT rr = korb_bi_raise_core(c, slots + 1, VALUE_SLICE_MAKE(args.p, n));
+    if (has_cause_kw && rr.state == KORB_RAISE && KORB_EXC_P(rr.value)) {
+        slots[1] = rr.value;                                   /* the raised exception (rooted) */
+        for (VALUE cc = slots[0]; KORB_EXC_P(cc); cc = VAL2EXC(cc)->cause)   /* reject a circular cause chain */
+            if (cc == slots[1]) return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "circular causes");
+        ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->cause, slots[0]);   /* override (incl. explicit nil) */
+        return RESULT_RAISE_(slots[1]);
+    }
+    return rr;
 }
 
 /* ---------------------------------------------------------------------------
