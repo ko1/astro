@@ -3503,15 +3503,22 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->included, arr);
     }
     const uint32_t included_mid = korb_intern(c->vm, "included", 8);
+    const uint32_t append_features_mid = korb_intern(c->vm, "append_features", 15);
     for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
         if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))   /* mod already has us as an ancestor → cycle */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic include detected");
-        slots[2] = VALUE_SLICE_GET(mods, i);                   /* mod (rooted across collect + hook) */
-        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;   /* destination list (rooted) */
-        CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));   /* mod + its transitive includes */
+        slots[2] = mv;                                         /* mod (rooted across the dispatch + hook) */
+        if (LIKELY(korb_responds_to(c, mv, append_features_mid))) {   /* overridable insertion (skipped pre-registration at init) */
+            slots[3] = mv; slots[4] = VALUE_REF_GET(kref);     /* mod.append_features(base) */
+            RESULT fr = korb_send_impl(c, slots + 5, append_features_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        } else {                                               /* default insertion (init, before Module methods exist) */
+            slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->included;
+            CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
+        }
         if (UNLIKELY(korb_responds_to(c, slots[2], included_mid))) {   /* fire Module#included(base) hook (direct module only) */
             slots[3] = slots[2];                               /* recv = mod */
             slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
@@ -3538,15 +3545,22 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
         ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->prepended, arr);
     }
     const uint32_t prepended_mid = korb_intern(c->vm, "prepended", 9);
+    const uint32_t prepend_features_mid = korb_intern(c->vm, "prepend_features", 16);
     for (int32_t i = (int32_t)VALUE_SLICE_LEN(mods) - 1; i >= 0; i--) {   /* reverse: `include A, B` → A nearest */
         const VALUE mv = VALUE_SLICE_GET(mods, i);
         if (UNLIKELY(!KORB_CLASS_P(mv) || !VAL2CLASS(mv)->is_module))   /* a Class (not Module) → TypeError, like CRuby */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(mv));
         if (UNLIKELY(korb_class_has_ancestor(mv, VALUE_REF_GET(kref))))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cyclic prepend detected");
-        slots[2] = VALUE_SLICE_GET(mods, i);                    /* mod (rooted across collect + hook) */
-        slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;   /* destination list (rooted) */
-        CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));   /* mod + its transitive includes */
+        slots[2] = mv;                                         /* mod (rooted across the dispatch + hook) */
+        if (LIKELY(korb_responds_to(c, mv, prepend_features_mid))) {   /* overridable insertion (skipped pre-registration at init) */
+            slots[3] = mv; slots[4] = VALUE_REF_GET(kref);     /* mod.prepend_features(base) */
+            RESULT fr = korb_send_impl(c, slots + 5, prepend_features_mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        } else {                                               /* default insertion (init, before Module methods exist) */
+            slots[1] = VAL2CLASS(VALUE_REF_GET(kref))->prepended;
+            CHECK(korb_include_collect(c, slots + 3, kref, VALUE_REF_AT(&slots[1]), slots[2]));
+        }
         if (UNLIKELY(korb_responds_to(c, slots[2], prepended_mid))) {   /* fire Module#prepended(base) hook */
             slots[3] = slots[2];                               /* recv = mod */
             slots[4] = VALUE_REF_GET(kref);                    /* arg0 = base class */
@@ -3557,6 +3571,31 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
     c->vm->method_serial++;                      /* MRO changed → flush method caches */
     return RESULT_OK(VALUE_REF_GET(kref));
 }
+
+/* Module#append_features(base) / #prepend_features(base): the overridable step
+ * that actually inserts self (+ its transitive includes) into base's ancestor
+ * chain.  korb_do_include / _do_prepend dispatch these (so a user override runs)
+ * and then fire the #included / #prepended callback. */
+static RESULT korb_mod_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool prepend) {
+    const VALUE base = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_CLASS_P(base)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Module)", korb_type_name(base));
+    slots[0] = base;                             /* [0] base (rooted) */
+    slots[1] = VALUE_REF_GET(self);              /* [1] self = the module */
+    VALUE *const listp = prepend ? (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->prepended
+                                 : (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->included;
+    if (*listp == KORB_NIL) {
+        VALUE arr = UNWRAP(korb_ary_new(c, slots + 2, 4));
+        ARO_STORE(c, VAL2CLASS(slots[0]), prepend ? (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->prepended
+                                                  : (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->included, arr);
+    }
+    slots[2] = prepend ? VAL2CLASS(slots[0])->prepended : VAL2CLASS(slots[0])->included;   /* [2] dst */
+    CHECK(korb_include_collect(c, slots + 3, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[2]), slots[1]));
+    c->vm->method_serial++;                      /* MRO changed → flush caches */
+    return RESULT_OK(slots[1]);
+}
+static RESULT korb_m_mod_append_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_mod_features(c, slots, self, a, false); }
+static RESULT korb_m_mod_prepend_features(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_mod_features(c, slots, self, a, true); }
 
 static VALUE korb_dispatch_class(CTX *c, VALUE self);
 
@@ -7953,6 +7992,8 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("include?", korb_m_class_include_q, 1);
     MOD_CFN("include", korb_m_class_include, -1);
     MOD_CFN("prepend", korb_m_class_prepend, -1);
+    MOD_CFN("append_features", korb_m_mod_append_features, 1);
+    MOD_CFN("prepend_features", korb_m_mod_prepend_features, 1);
     MOD_CFN("const_set", korb_m_class_const_set, 2);
     MOD_CFN("const_get", korb_m_class_const_get, -1);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
