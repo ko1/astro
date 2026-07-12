@@ -8039,6 +8039,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "yield_self", korb_m_obj_then, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "tap", korb_m_obj_tap, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "lambda", korb_m_kernel_lambda, 0);
+    korb_def_cmethod_blk(c, KORB_C_OBJECT, "proc", korb_m_kernel_proc, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_exec", korb_m_obj_instance_exec, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "instance_eval", korb_m_obj_instance_eval, -1);
     /* instance_eval/instance_exec are BasicObject instance methods in CRuby, so a

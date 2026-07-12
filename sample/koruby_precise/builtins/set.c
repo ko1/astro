@@ -1456,6 +1456,16 @@ static RESULT korb_m_obj_tap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Kernel#lambda / #proc — turn the given block into a Proc (lambda-flavoured for
+ * #lambda).  No block → ArgumentError. */
+static RESULT korb_m_kernel_makeproc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, uint32_t is_lambda) {
+    (void)a; (void)self;
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
+    VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env arrives tagged (base|1) */
+    return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
+}
+static RESULT korb_m_kernel_lambda(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) { return korb_m_kernel_makeproc(c, slots, self, a, block, def_env, cself, 1); }
+static RESULT korb_m_kernel_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself)   { return korb_m_kernel_makeproc(c, slots, self, a, block, def_env, cself, 0); }
 
 /* instance_exec(*args) { |*args| ... } — run the block with self rebound to the
  * receiver; the block's lexical env (def_env) is preserved so closures still work.
