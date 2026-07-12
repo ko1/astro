@@ -901,7 +901,24 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
 }
 /* Object#*: walk the object's dispatch class (singleton + class + …). */
 static RESULT korb_m_obj_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)           { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)|(1u<<2)); }
-static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<0)); }
+static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE sv = VALUE_REF_GET(self);
+    RESULT r = korb_collect_methods_from(c, slots, korb_dispatch_class(c, sv), a, (1u << 0));
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (sv == korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6))) {   /* Kernel.Array/.puts/... are public singleton methods */
+        slots[0] = r.value;
+        const VALUE_REF res = VALUE_REF_AT(&slots[0]);
+        for (uint32_t i = 0; i < c->vm->method_cnt; i++) {
+            if (c->vm->methods[i]->kind != KORB_METHOD_BUILTIN) continue;
+            const VALUE sym = ID2SYM(c->vm->methods[i]->mid);
+            bool dup = false; const KorbArray *const rr = VAL2ARY(VALUE_REF_GET(res));
+            for (uint32_t j = 0; j < rr->len; j++) if (rr->items->data[j] == sym) { dup = true; break; }
+            if (!dup) CHECK(korb_ary_push_val(c, slots + 1, res, sym));
+        }
+        return RESULT_OK(VALUE_REF_GET(res));
+    }
+    return r;
+}
 static RESULT korb_m_obj_private_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<1)); }
 static RESULT korb_m_obj_protected_methods(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_collect_methods_from(c, slots, korb_dispatch_class(c, VALUE_REF_GET(self)), a, (1u<<2)); }
 /* Object#singleton_methods(all=true) → only the object's singleton class methods
