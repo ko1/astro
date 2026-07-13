@@ -1059,6 +1059,7 @@ static void korb_str_gsub_emit(FILE *ms, const char *rep, uint32_t rn, const cha
     }
 }
 static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, bool global, bool in_place, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (in_place) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));   /* gsub!/sub! on a frozen string → FrozenError, even when nothing matches */
     VALUE pv = VALUE_SLICE_GET(a, 0);
     if (KORB_REGEXP_P(pv)) {                            /* regex pattern → astrogre engine (builtins/regexp.c) */
         NODE *const eff_block = (VALUE_SLICE_LEN(a) >= 2) ? NULL : block;   /* a replacement arg wins over a block */
