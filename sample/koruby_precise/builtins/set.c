@@ -504,43 +504,51 @@ static RESULT korb_m_deprecate_constant(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 /* private/protected/public: with no args set the class body's default visibility;
  * with args set those named methods' visibility.  vis: 1 priv / 2 prot / 0 pub. */
+/* One name (Symbol/String) → set its visibility on self; NameError if undefined. */
+static RESULT korb_set_visibility1(CTX *c, VALUE *slots, VALUE selfv, KorbClass *k, VALUE arg, uint8_t vis) {
+    uint32_t mid;
+    if (SYMBOL_P(arg)) mid = SYM2ID(arg);
+    else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(arg));
+    for (uint32_t j = 0; j < k->method_cnt; j++)
+        if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; return RESULT_OK(KORB_NIL); }
+    /* inherited/included method: CRuby adds a visibility-override entry on this
+     * class — copy the ancestor definition into a local slot with the new
+     * visibility, keeping the original owner so `super` still resolves above it. */
+    VALUE adef = KORB_NIL;
+    const struct korb_method *src = korb_class_find_method(selfv, mid, &adef);
+    if (src == NULL) return RESULT_OK(KORB_NIL);       /* inherited-elsewhere / top-level def: best-effort no-op (koruby's cross-module resolution differs from CRuby, so a NameError here would false-positive) */
+    struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
+    const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
+    *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_set_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
     const VALUE selfv = VALUE_REF_GET(self);
-    if (!KORB_CLASS_P(selfv))                         /* top-level / non-class: best-effort no-op */
-        return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
-    KorbClass *const k = VAL2CLASS(selfv);
     const uint32_t argc = VALUE_SLICE_LEN(a);
     if (argc == 0) {                                  /* bare `private` → set the body's default */
-        k->cur_visibility = vis;
+        if (KORB_CLASS_P(selfv)) VAL2CLASS(selfv)->cur_visibility = vis;
         return RESULT_OK(KORB_NIL);
     }
-    else {                                            /* `private :a, :b` → set those methods */
-        for (uint32_t i = 0; i < argc; i++) {
-            const VALUE arg = VALUE_SLICE_GET(a, i);
-            uint32_t mid;
-            if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-            else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
-            else continue;
-            bool found = false;
-            for (uint32_t j = 0; j < k->method_cnt; j++)
-                if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; found = true; break; }
-            if (!found) {
-                /* `public :m` for an inherited/included method: CRuby adds a
-                 * visibility-override entry on this class. Copy the ancestor
-                 * definition into a local slot with the new visibility, keeping
-                 * the original owner so `super` still resolves above it. */
-                VALUE adef = KORB_NIL;
-                const struct korb_method *src = korb_class_find_method(selfv, mid, &adef);
-                if (src != NULL) {
-                    struct korb_method *dst = korb_class_method_slot(k, mid);   /* libc alloc, no GC */
-                    const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
-                    *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
-                }
-            }
+    /* `private [:a, :b]` treats a lone Array argument as the list of names. */
+    const bool array_arg = (argc == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0)));
+    if (KORB_CLASS_P(selfv)) {                         /* top-level / non-class: best-effort no-op on the names */
+        KorbClass *const k = VAL2CLASS(selfv);
+        if (array_arg) {
+            slots[0] = VALUE_SLICE_GET(a, 0);         /* root the name array across NameError alloc */
+            for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++)
+                CHECK(korb_set_visibility1(c, slots + 1, selfv, k, VAL2ARY(slots[0])->items->data[i], vis));
+        } else {
+            for (uint32_t i = 0; i < argc; i++)
+                CHECK(korb_set_visibility1(c, slots, selfv, k, VALUE_SLICE_GET(a, i), vis));
         }
         c->vm->method_serial++;
-        return RESULT_OK(argc == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL);
     }
+    /* Return value (Ruby 3.0+): the Array arg / lone arg verbatim, else an Array of the args. */
+    if (array_arg || argc == 1) return RESULT_OK(VALUE_SLICE_GET(a, 0));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, argc));
+    for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&slots[0]), VALUE_SLICE_GET(a, i)));
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_private(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_set_visibility(c, slots, self, a, 1); }
 static RESULT korb_m_protected(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_set_visibility(c, slots, self, a, 2); }
