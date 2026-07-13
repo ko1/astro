@@ -432,7 +432,12 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
         const VALUE h = VALUE_SLICE_GET(a, n - 1);
         const int32_t fi = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "freeze", 6)));
-        if (fi >= 0) { const VALUE fv = VAL2HASH(h)->items->data[2 * fi + 1]; fmode = (fv == KORB_NIL) ? -1 : (KORB_TRUTHY(fv) ? 1 : 0); }
+        if (fi >= 0) {
+            const VALUE fv = VAL2HASH(h)->items->data[2 * fi + 1];
+            if (UNLIKELY(fv != KORB_NIL && fv != KORB_TRUE && fv != KORB_FALSE))   /* clone(freeze:) accepts only true/false/nil */
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected value for freeze: %s", korb_type_name(fv));
+            fmode = (fv == KORB_NIL) ? -1 : (KORB_TRUTHY(fv) ? 1 : 0);
+        }
     }
     const VALUE sv = VALUE_REF_GET(self);
     const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
