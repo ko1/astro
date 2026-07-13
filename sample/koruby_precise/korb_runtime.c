@@ -2257,7 +2257,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         if (KORB_HASH_P(sym)) {                               /* trailing keyword_init: true */
             const VALUE kw_sym = ID2SYM(korb_intern(vm, "keyword_init", 12));
             const KorbHash *const h = VAL2HASH(sym);
-            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed (koruby can't tell keyword-syntax from an explicit Hash → ArgumentError, matching the keyword case) */
+            for (uint32_t j = 0; j < h->len; j++)             /* only keyword_init: is allowed. koruby can't tell keyword-syntax (`b: 2` → ArgumentError) from an explicit Hash literal (`{b: 2}` → CRuby TypeError), so it uses ArgumentError for both (the corpus form is keyword-syntax) */
                 if (h->items->data[2 * j] != kw_sym)
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
                                       SYMBOL_P(h->items->data[2 * j]) ? korb_sym_name(vm, SYM2ID(h->items->data[2 * j])) : korb_type_name(h->items->data[2 * j]));
