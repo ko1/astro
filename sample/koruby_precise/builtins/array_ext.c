@@ -836,12 +836,17 @@ static RESULT korb_m_ary_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         }
     }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
-    uint32_t sn = VAL2ARY(VALUE_REF_GET(self))->len;
-    for (uint32_t i = 0; i < sn; i++) { VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i]; if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e)); }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* e, rooted across #eql? dispatch + push */
+        bool has; CHECK(korb_arr_member_eql(c, slots + 2, dst, slots[1], &has));
+        if (!has) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+    }
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* union(*others) */
-        VALUE ov = VALUE_SLICE_GET(a, k);
-        uint32_t on = VAL2ARY(ov)->len;
-        for (uint32_t i = 0; i < on; i++) { VALUE e = VAL2ARY(VALUE_SLICE_GET(a, k))->items->data[i]; if (!korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e)); }
+        for (uint32_t i = 0; i < VAL2ARY(VALUE_SLICE_GET(a, k))->len; i++) {
+            slots[1] = VAL2ARY(VALUE_SLICE_GET(a, k))->items->data[i];
+            bool has; CHECK(korb_arr_member_eql(c, slots + 2, dst, slots[1], &has));
+            if (!has) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
+        }
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
@@ -857,13 +862,17 @@ static RESULT korb_m_ary_intersect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     bool no_args = VALUE_SLICE_LEN(a) == 0;             /* intersection() → plain copy of self, no dedup */
-    uint32_t sn = VAL2ARY(VALUE_REF_GET(self))->len;
-    for (uint32_t i = 0; i < sn; i++) {
-        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
-        if (no_args) { CHECK(korb_ary_push_val(c, slots + 1, dst, e)); continue; }
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* e, rooted across #eql? dispatch + push */
+        if (no_args) { CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1])); continue; }
         bool in_all = true;                              /* element must be in every other array */
-        for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) if (!korb_arr_has(VAL2ARY(VALUE_SLICE_GET(a, k)), e)) { in_all = false; break; }
-        if (in_all && !korb_arr_has(VAL2ARY(VALUE_REF_GET(dst)), e)) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+        for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+            bool has; CHECK(korb_arr_member_eql(c, slots + 2, VALUE_SLICE_REF(a, k), slots[1], &has));
+            if (!has) { in_all = false; break; }
+        }
+        if (!in_all) continue;
+        bool dup; CHECK(korb_arr_member_eql(c, slots + 2, dst, slots[1], &dup));
+        if (!dup) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }

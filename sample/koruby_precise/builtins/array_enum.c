@@ -1153,10 +1153,12 @@ static RESULT korb_elem_hash(CTX *c, VALUE *slots, VALUE v, uint64_t *out) {
     else *out = korb_value_hash(r.value);
     return RESULT_OK(KORB_NIL);
 }
-static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd */
+static RESULT korb_m_ary_uniq_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const uint32_t before = SELF_ARY->len;
-    const RESULT ur = korb_m_ary_uniq(c, slots, self, a);   /* CTX-aware (dispatches eql? for user objects) */
+    const RESULT ur = block ? korb_m_ary_uniq_b(c, slots, self, a, block, def_env, cself)
+                            : korb_m_ary_uniq(c, slots, self, a);   /* CTX-aware (dispatches eql? for user objects) */
     if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;
     slots[0] = ur.value;                                    /* the deduped array (rooted) */
     const uint32_t after = VAL2ARY(slots[0])->len;
@@ -1185,6 +1187,7 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         for (uint32_t j = 0; j < d->len; j++) {
             if (hashes[j] != he) continue;               /* hash mismatch → never call #eql? */
             const VALUE existing = d->items->data[j];
+            if (existing == slots[0]) { seen = true; break; }   /* identity short-circuit (CRuby rb_any_cmp), even when #eql? is non-reflexive */
             if (KORB_OBJECT_P(existing) || KORB_OBJECT_P(slots[0])) {   /* same hash → e.eql?(existing) */
                 slots[1] = slots[0]; slots[2] = slots[0]; slots[3] = existing;
                 const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, KORB_NIL);
@@ -1204,6 +1207,32 @@ static RESULT korb_m_ary_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 done:
     free(hashes);
     return ret;
+}
+/* Membership test for the set operations (|, &): CRuby collects values through an
+ * intermediate hash, so equivalence is by #hash + #eql? for user objects.  Non-object
+ * elements fall to type-strict value/identity equality (the fast path).  *out ← found. */
+static RESULT korb_arr_member_eql(CTX *c, VALUE *slots, VALUE_REF ary, VALUE elem, bool *out) {
+    *out = false;
+    slots[0] = elem;                                     /* root elem across #hash / #eql? dispatch */
+    const bool elem_obj = KORB_OBJECT_P(elem);
+    const uint32_t eqm = korb_intern(c->vm, "eql?", 4);
+    uint64_t eh = 0; bool have_eh = false;
+    for (uint32_t j = 0; j < VAL2ARY(VALUE_REF_GET(ary))->len; j++) {
+        const VALUE cand = VAL2ARY(VALUE_REF_GET(ary))->items->data[j];
+        if (cand == slots[0]) { *out = true; return RESULT_OK(KORB_NIL); }   /* identity short-circuit (CRuby rb_any_cmp), even when #eql? is non-reflexive */
+        if (elem_obj || KORB_OBJECT_P(cand)) {           /* dispatch: same #hash then elem.eql?(cand) */
+            if (!have_eh) { const RESULT hr = korb_elem_hash(c, slots + 1, slots[0], &eh); if (UNLIKELY(hr.state != KORB_NORMAL)) return hr; have_eh = true; }
+            slots[1] = VAL2ARY(VALUE_REF_GET(ary))->items->data[j];   /* cand, rooted for the hash dispatch */
+            uint64_t ch; { const RESULT hr = korb_elem_hash(c, slots + 2, slots[1], &ch); if (UNLIKELY(hr.state != KORB_NORMAL)) return hr; }
+            if (ch != eh) continue;
+            slots[2] = slots[0];                          /* receiver = elem (base[-2]) */
+            slots[3] = slots[1];                          /* arg0     = cand (base[-1]) */
+            const RESULT r = korb_send_impl(c, slots + 4, eqm, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (KORB_TRUTHY(r.value)) { *out = true; return RESULT_OK(KORB_NIL); }
+        } else if (korb_value_eql(cand, slots[0])) { *out = true; return RESULT_OK(KORB_NIL); }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 /* Array#uniq — block form dedups by yield(x); keeps the first element per key. */
 static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -1460,10 +1489,12 @@ static RESULT korb_m_ary_intersect_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         }
         if (UNLIKELY(!KORB_ARRAY_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
-    slots[0] = ov;                                   /* root the (possibly coerced) other across nothing-but-defensive */
-    const KorbArray *me = VAL2ARY(VALUE_REF_GET(self)), *other = VAL2ARY(slots[0]);
-    for (uint32_t i = 0; i < me->len; i++)
-        if (korb_ary_has(other, me->items->data[i])) return RESULT_OK(KORB_TRUE);
+    slots[0] = ov;                                   /* root the (possibly coerced) other across #eql? dispatch */
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        bool has; CHECK(korb_arr_member_eql(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1], &has));
+        if (has) return RESULT_OK(KORB_TRUE);
+    }
     return RESULT_OK(KORB_FALSE);
 }
 /* bsearch: find-minimum (boolean block) or find-any (Integer block). Returns the

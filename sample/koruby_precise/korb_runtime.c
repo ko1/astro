@@ -7518,7 +7518,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "slice!", korb_m_ary_slice_bang, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "each_index", korb_m_ary_each_index, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "uniq", korb_m_ary_uniq_b, 0);
-    korb_def_cmethod(c, KORB_C_ARRAY, "uniq!", korb_m_ary_uniq_bang, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "uniq!", korb_m_ary_uniq_bang, 0);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten", korb_m_ary_flatten, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "flatten!", korb_m_ary_flatten_b, -1);
     korb_def_cmethod(c, KORB_C_ARRAY, "concat", korb_m_ary_concat, -1);
