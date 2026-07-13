@@ -427,10 +427,14 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {   /* trailing half: kwarg */
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
-        if (hx >= 0 && SYMBOL_P(h->items->data[2 * hx + 1])) {
-            const uint32_t hv = SYM2ID(h->items->data[2 * hx + 1]);
-            if (hv == korb_intern(c->vm, "even", 4)) mode = 4;
-            else if (hv == korb_intern(c->vm, "down", 4)) mode = 5;
+        if (hx >= 0) {
+            const VALUE hv = h->items->data[2 * hx + 1];
+            const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
+                           : (KORB_STRING_P(hv) ? VAL2STR(hv)->buf->data : NULL);
+            if (nm && !strcmp(nm, "even")) mode = 4;
+            else if (nm && !strcmp(nm, "down")) mode = 5;
+            else if (nm && !strcmp(nm, "up")) mode = 3;
+            else if (hv != KORB_NIL) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", korb_type_name(hv));   /* unknown half: mode */
         }
         n--;
     }
