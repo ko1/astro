@@ -775,8 +775,22 @@ static RESULT korb_m_hash_invert(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(dst));
 }
 /* Hash#rehash — our hash has no cached digests, so this is a no-op returning self. */
+static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_hash_rehash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self));
+    (void)a;
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    /* Recompute every key's hash (keys may have mutated) and drop duplicates:
+     * re-insert each pair, in order, into a fresh hash (korb_hash_set recomputes
+     * the hash and dedups by #eql?), then adopt those contents. */
+    const uint32_t n = VAL2HASH(VALUE_REF_GET(self))->len;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, n ? n : 4));
+    VALUE_REF tmp = VALUE_REF_AT(&slots[0]);
+    for (uint32_t i = 0; i < VAL2HASH(VALUE_REF_GET(self))->len; i++) {
+        slots[1] = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i];       /* key (rooted across set) */
+        const VALUE val = VAL2HASH(VALUE_REF_GET(self))->items->data[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 2, tmp, VALUE_REF_AT(&slots[1]), val));
+    }
+    return korb_m_hash_replace(c, slots + 1, self, VALUE_SLICE_MAKE(&slots[0], 1));   /* self ← recomputed copy */
 }
 /* Hash#replace(other) — replace self's contents with other's, in place; returns self. */
 static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
