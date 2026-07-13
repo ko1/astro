@@ -6630,7 +6630,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (block != NULL && argc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
             if (block != NULL) {                            /* default_proc: called on [] miss with (hash, key) */
-                slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+                if (def_env == KORB_BLK_FWD) slots[1] = KORB_CSELF_VAL(captured_self);   /* Hash.new(&pr) → keep pr's identity, don't re-wrap */
+                else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_proc, slots[1]);
             } else if (argc >= 1) {
                 ARO_STORE(c, VAL2HASH(slots[0]), (VALUE *)(uintptr_t)&VAL2HASH(slots[0])->default_val, slots[-(intptr_t)argc]);
