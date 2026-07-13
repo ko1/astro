@@ -820,10 +820,6 @@ static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(block != NULL ? KORB_NIL : VALUE_REF_GET(dst));
 }
 
-static bool korb_ary_has(const KorbArray *ar, VALUE v) {
-    for (uint32_t i = 0; i < ar->len; i++) if (korb_value_eql(ar->items->data[i], v)) return true;
-    return false;
-}
 /* `|` union (in self then other, deduped) / `&` intersection (in both, self order, deduped) */
 static RESULT korb_m_ary_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {  /* coerce each operand via #to_ary before building */

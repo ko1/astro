@@ -1435,7 +1435,6 @@ static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     return RESULT_OK(KORB_NIL);
 }
 
-static bool korb_ary_has(const KorbArray *ar, VALUE v);
 static RESULT korb_m_ary_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a; ARY_REQUIRE_BLOCK("Array#take_while");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));

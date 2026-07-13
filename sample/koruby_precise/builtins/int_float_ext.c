@@ -294,13 +294,15 @@ static RESULT korb_m_ary_difference(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             VALUE_REF_SET(VALUE_SLICE_REF(a, k), ov);
         }
     }
-    uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
-    for (uint32_t i = 0; i < n; i++) {
-        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
-        bool removed = false;
-        for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) if (korb_ary_has(VAL2ARY(VALUE_SLICE_GET(a, k)), e)) { removed = true; break; }
-        if (!removed) CHECK(korb_ary_push_val(c, slots + 1, dst, e));
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* e, rooted across #eql? dispatch + push */
+        bool removed = false;                            /* removed when present in any arg array (by #hash + #eql?) */
+        for (uint32_t k = 0; k < VALUE_SLICE_LEN(a); k++) {
+            bool has; CHECK(korb_arr_member_eql(c, slots + 2, VALUE_SLICE_REF(a, k), slots[1], &has));
+            if (has) { removed = true; break; }
+        }
+        if (!removed) CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
