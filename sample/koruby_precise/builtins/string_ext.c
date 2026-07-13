@@ -607,6 +607,11 @@ static void korb_range_desc(CTX *c, VALUE rng, char *buf, size_t sz) {
 }
 /* String#bytesplice(index, length, str) / (range, str) [+ str_range | str_index,str_length]
  * — replace bytes in place, return self. */
+/* A byte offset lands on a UTF-8 codepoint boundary iff it's the end, or the
+ * byte there is not a continuation byte (0b10xxxxxx). */
+static bool korb_str_bpos_ok(const KorbString *s, uint32_t p) {
+    return p >= s->len || ((unsigned char)s->buf->data[p] & 0xC0) != 0x80;
+}
 static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
@@ -640,6 +645,13 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)dellen);
     if (start + dellen > (intptr_t)bn) dellen = (intptr_t)bn - start;
+    if (KORB_STR_ENC(VALUE_REF_GET(self)) == KORB_ENC_UTF8) {   /* the deleted span must be whole codepoints */
+        s = VAL2STR(VALUE_REF_GET(self));
+        if (UNLIKELY(!korb_str_bpos_ok(s, (uint32_t)start)))
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld does not land on character boundary", (long)start);
+        if (UNLIKELY(!korb_str_bpos_ok(s, (uint32_t)(start + dellen))))
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld does not land on character boundary", (long)(start + dellen));
+    }
     if (UNLIKELY(!KORB_STRING_P(repl))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(repl));
     const KorbString *rs = VAL2STR(repl); uint32_t rn = rs->len, roff = 0;
     if (src_is_range) {                                    /* replacement sub-span given as a Range */
@@ -661,6 +673,12 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (UNLIKELY(sl < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)sl);
         if (si + sl > (intptr_t)rn) sl = (intptr_t)rn - si;
         roff = (uint32_t)si; rn = (uint32_t)sl;
+    }
+    if (KORB_STR_ENC(repl) == KORB_ENC_UTF8) {             /* the replacement sub-span must be whole codepoints */
+        if (UNLIKELY(!korb_str_bpos_ok(rs, roff)))
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %u does not land on character boundary", roff);
+        if (UNLIKELY(!korb_str_bpos_ok(rs, roff + rn)))
+            return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %u does not land on character boundary", roff + rn);
     }
     uint32_t sufoff = (uint32_t)(start + dellen), suflen = bn - sufoff;
     uint32_t newlen = (uint32_t)start + rn + suflen;
