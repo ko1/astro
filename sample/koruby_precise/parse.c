@@ -2537,17 +2537,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_WHILE_NODE: {
         const pm_while_node_t *wn = (const pm_while_node_t *)node;
-        uint32_t post = PM_NODE_FLAG_P(wn, PM_LOOP_FLAGS_BEGIN_MODIFIER) ? 1u : 0u;
+        const bool post = PM_NODE_FLAG_P(wn, PM_LOOP_FLAGS_BEGIN_MODIFIER);   /* begin..end while → post-test */
         NODE *cond = transduce(tc, wn->predicate);
         NODE *body = transduce_statements(tc, wn->statements);
-        return ALLOC_node_while(cond, body, 0, post);
+        return post ? ALLOC_node_post_while(cond, body, 0) : ALLOC_node_while(cond, body, 0);
       }
       case PM_UNTIL_NODE: {
         const pm_until_node_t *un = (const pm_until_node_t *)node;
-        uint32_t post = PM_NODE_FLAG_P(un, PM_LOOP_FLAGS_BEGIN_MODIFIER) ? 1u : 0u;
+        const bool post = PM_NODE_FLAG_P(un, PM_LOOP_FLAGS_BEGIN_MODIFIER);   /* begin..end until → post-test */
         NODE *cond = transduce(tc, un->predicate);
         NODE *body = transduce_statements(tc, un->statements);
-        return ALLOC_node_while(cond, body, 1, post);
+        return post ? ALLOC_node_post_while(cond, body, 1) : ALLOC_node_while(cond, body, 1);
       }
       case PM_LAMBDA_NODE: {   /* ->(args) { body } — a lambda Proc */
         const pm_lambda_node_t *ln = (const pm_lambda_node_t *)node;

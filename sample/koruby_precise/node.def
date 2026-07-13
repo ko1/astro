@@ -770,35 +770,40 @@ node_retry(CTX *c, NODE *n, VALUE *slots)
     return RESULT_RETRY_;
 }
 
-// while (negate=0) / until (negate=1).  `post`=1 → begin..end while (test after
-// the body, body always runs once).  Result is nil.
+// Pre-test while (negate=0) / until (negate=1): `while cond; body; end`.
+// The post-test form (`begin; body; end while cond`) is a distinct node,
+// node_post_while — the pre/post split is a parse-time control-flow shape, so
+// it is encoded as the node kind (no runtime `post` discriminator).  Result nil.
 NODE_DEF @nogc
-node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate, uint32_t post)
+node_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate)
 {
     (void)n;
-    /* `post` is loop-invariant — split the pre-test (while/until) and post-test
-     * (begin..end while) forms into separate loops so neither re-tests it each
-     * iteration.  Semantically identical to the merged form. */
-    if (!post) {
-        for (;;) {
-            VALUE cv = UNWRAP(EVAL_ARG(c, cond));
-            if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
-            RESULT br = EVAL_ARG(c, body);
-            if (UNLIKELY(br.state != KORB_NORMAL)) {
-                if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
-                if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
-            }
+    for (;;) {
+        VALUE cv = UNWRAP(EVAL_ARG(c, cond));
+        if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
+        RESULT br = EVAL_ARG(c, body);
+        if (UNLIKELY(br.state != KORB_NORMAL)) {
+            if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
+            if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
         }
-    } else {
-        for (;;) {
-            RESULT br = EVAL_ARG(c, body);
-            if (UNLIKELY(br.state != KORB_NORMAL)) {
-                if (br.state == KORB_BREAK) return RESULT_OK(br.value);
-                if (br.state != KORB_NEXT) return br;
-            }
-            VALUE cv = UNWRAP(EVAL_ARG(c, cond));
-            if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+// Post-test while (negate=0) / until (negate=1): `begin; body; end while cond`
+// — the body always runs at least once, the condition is tested after it.
+NODE_DEF @nogc
+node_post_while(CTX *c, NODE *n, VALUE *slots, NODE *cond, NODE *body, uint32_t negate)
+{
+    (void)n;
+    for (;;) {
+        RESULT br = EVAL_ARG(c, body);
+        if (UNLIKELY(br.state != KORB_NORMAL)) {
+            if (br.state == KORB_BREAK) return RESULT_OK(br.value);   /* `break [v]` exits the loop */
+            if (br.state != KORB_NEXT) return br;                      /* return / raise propagate; `next` → continue */
         }
+        VALUE cv = UNWRAP(EVAL_ARG(c, cond));
+        if (negate ? KORB_TRUTHY(cv) : !KORB_TRUTHY(cv)) break;
     }
     return RESULT_OK(KORB_NIL);
 }
