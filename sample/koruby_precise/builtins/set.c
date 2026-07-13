@@ -1243,8 +1243,13 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
     KorbClass *const k = VAL2CLASS(cls);
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
         const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));
-        if (UNLIKELY(mid == UINT32_MAX))
+        if (UNLIKELY(mid == UINT32_MAX))              /* bad arg type is checked before frozen-ness (CRuby order) */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
+        KORB_CHECK_FROZEN(c, slots, cls);             /* undef_method on a frozen class → FrozenError (even for a missing name) */
+        VALUE mdef = KORB_NIL;                         /* NameError only when the method exists nowhere (self/ancestors/global) */
+        if (UNLIKELY(korb_class_find_method(cls, mid, &mdef) == NULL && korb_method_lookup(c->vm, mid) == NULL))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
+                              korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", korb_type_name(cls));
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; break; }
     }

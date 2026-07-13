@@ -22,12 +22,12 @@ class Proc
   # Function composition: (f >> g).(x) == g(f(x)); (f << g).(x) == f(g(x)).
   # The result is a lambda iff the first-executed proc is (matches CRuby):
   # for >> that is self, for << that is the argument g.
-  def >>(g); f = self; lambda? ? ->(*a) { g.call(f.call(*a)) } : proc { |*a| g.call(f.call(*a)) }; end
-  def <<(g); f = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a) { f.call(g.call(*a)) } : proc { |*a| f.call(g.call(*a)) }; end
+  def >>(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); f = self; lambda? ? ->(*a, &b) { g.call(f.call(*a, &b)) } : proc { |*a, &b| g.call(f.call(*a, &b)) }; end
+  def <<(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); f = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a, &b) { f.call(g.call(*a, &b)) } : proc { |*a, &b| f.call(g.call(*a, &b)) }; end
 end
 class Method
-  def >>(g); m = self; ->(*a) { g.call(m.call(*a)) }; end
-  def <<(g); m = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a) { m.call(g.call(*a)) } : proc { |*a| m.call(g.call(*a)) }; end
+  def >>(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; ->(*a, &b) { g.call(m.call(*a, &b)) }; end
+  def <<(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a, &b) { m.call(g.call(*a, &b)) } : proc { |*a, &b| m.call(g.call(*a, &b)) }; end
   # Method#curry — curry the method's lambda form.  Uses the *method's* arity
   # (Method#to_proc wraps in a variadic forwarder, so its own arity is unreliable).
   def curry(*args)
