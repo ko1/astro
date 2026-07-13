@@ -2857,13 +2857,27 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
     c->vm->method_serial++;
     return RESULT_OK(ID2SYM(newm));
 }
+/* Resolve an alias_method name arg → mid: Symbol/String, or #to_str-coercible
+ * (a #to_str that raises — e.g. NoMethodError — propagates); else TypeError. */
+static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out) {
+    if (SYMBOL_P(v) || KORB_STRING_P(v)) { *out = korb_bind_argsym(c, v); return RESULT_OK(KORB_NIL); }
+    const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+    if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
+        slots[0] = v;
+        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_STRING_P(r.value)) { *out = korb_bind_argsym(c, r.value); return RESULT_OK(KORB_NIL); }
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(v));
+}
 /* Module#alias_method(new, old) → new name symbol. */
 static RESULT korb_m_class_alias_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t newm = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    const uint32_t oldm = korb_bind_argsym(c, VALUE_SLICE_GET(a, 1));
-    if (UNLIKELY(newm == UINT32_MAX || oldm == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "argument must be a symbol or string");
-    return korb_do_alias(c, slots, VALUE_REF_GET(self), newm, oldm);
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    slots[0] = VALUE_REF_GET(self);                       /* root self across the coercion dispatches */
+    uint32_t newm, oldm;
+    { RESULT r = korb_alias_argsym(c, slots + 1, VALUE_SLICE_GET(a, 0), &newm); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    { RESULT r = korb_alias_argsym(c, slots + 1, VALUE_SLICE_GET(a, 1), &oldm); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    return korb_do_alias(c, slots + 1, slots[0], newm, oldm);
 }
 static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     VALUE klass = VALUE_REF_GET(self);
