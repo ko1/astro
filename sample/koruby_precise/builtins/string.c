@@ -1978,6 +1978,8 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     VALUE i0 = VALUE_SLICE_GET(a, 0);
     if (KORB_REGEXP_P(i0))                              /* s[regexp] / s[regexp, group] → matched text (builtins/regexp.c) */
         return korb_re_str_aref(c, slots, self, i0, VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL);
+    if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2 && (KORB_STRING_P(i0) || KORB_RANGE_P(i0))))   /* the (start, len) form needs an Integer index, not a String/Range */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(i0));
     if (!KORB_STRING_P(i0) && !KORB_RANGE_P(i0)) {     /* coerce a non-String/Range index via #to_int (before reading self) */
         RESULT cr = korb_coerce_to_int(c, slots, &i0);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
