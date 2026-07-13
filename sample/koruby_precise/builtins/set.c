@@ -850,6 +850,20 @@ static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALU
 /* Walk the MRO from `start_class` (class → included modules → super …) collecting
  * visibility-matching method names.  With inherit=false: only the singleton
  * class(es) + the first real class's own methods. */
+/* Kernel's module_function block-methods (loop/catch/lambda/…) live on Object in
+ * koruby for dispatch, so add them to Kernel's own method introspection to match
+ * CRuby.  Private set = all; public-singleton set = the module_function subset. */
+static RESULT korb_append_names(CTX *c, VALUE *slots, VALUE_REF result, const char *const *names, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        const VALUE sym = ID2SYM(korb_intern(c->vm, names[i], (uint32_t)strlen(names[i])));
+        bool dup = false; const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
+        for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { dup = true; break; }
+        if (!dup) CHECK(korb_ary_push_val(c, slots, result, sym));
+    }
+    return RESULT_OK(KORB_NIL);
+}
+static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", "lambda", "proc", "block_given?", "iterator?" };
+static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
     const uint32_t mid_init = c->vm->mid_initialize;
@@ -896,6 +910,8 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
             for (uint32_t j = 0; j < r->len; j++) if (r->items->data[j] == sym) { dup = true; break; }
             if (!dup) CHECK(korb_ary_push_val(c, slots + 3, result, sym));
         }
+        if (is_kernel)   /* Kernel's own private module_function block-methods */
+            CHECK(korb_append_names(c, slots + 3, result, korb_kernel_priv_funcs, (uint32_t)(sizeof korb_kernel_priv_funcs / sizeof *korb_kernel_priv_funcs)));
     }
     return RESULT_OK(VALUE_REF_GET(result));
 }
@@ -915,6 +931,7 @@ static RESULT korb_m_obj_public_methods(CTX *c, VALUE *slots, VALUE_REF self, VA
             for (uint32_t j = 0; j < rr->len; j++) if (rr->items->data[j] == sym) { dup = true; break; }
             if (!dup) CHECK(korb_ary_push_val(c, slots + 1, res, sym));
         }
+        CHECK(korb_append_names(c, slots + 1, res, korb_kernel_pub_funcs, (uint32_t)(sizeof korb_kernel_pub_funcs / sizeof *korb_kernel_pub_funcs)));   /* module_function block-methods */
         return RESULT_OK(VALUE_REF_GET(res));
     }
     return r;
