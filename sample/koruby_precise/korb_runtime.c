@@ -5408,7 +5408,8 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
 
     /* implicit-self send / __send__ / public_send → re-dispatch with self as the
      * receiver (korb_send_impl shifts arg0 = the target method name). */
-    if (UNLIKELY(argc >= 1 && (mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))) {
+    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
+        if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         for (uint32_t j = 0; j < argc; j++) slots[1 + j] = slots[-(intptr_t)argc + j];
         slots[0] = self;                            /* recv below the args */
         return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
@@ -6176,7 +6177,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
 
     /* send / __send__ / public_send: redispatch by the symbol/string name in arg0.
      * Shift recv into arg0's slot so [recv | arg1..] forms an argc-1 call. */
-    if (UNLIKELY(argc >= 1 && (mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send))) {
+    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
+        if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             VALUE name = slots[-(intptr_t)argc];           /* arg0 */
             uint32_t rmid;
