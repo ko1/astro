@@ -992,3 +992,57 @@ method 名解決が O(n)/call を払っていた)。**open-addressing hash index
 cache(sym_lens[])** で O(1) 化(0.75 load で倍化 + 再挿入、遅延初期化で既存 symbol も index)。挙動不変。
 混合 bench(fib+float+symbol+truthy)で **28.4B→7.0B instructions / ~4.2s→~0.66s(約 4x)**。
 また VALUE 即値タグ再編(3c7b3f5a)で FLONUM_P が 4→2 ops、flonum の sign remap 撤廃 → float 判定が安価に。
+
+## 2026-07-13: post-test ループを別ノードに分離（node_post_while, 成功）
+
+`node_while` は `while cond;body;end`（前判定）と `begin;body;end while cond`（後判定）を
+1つのノードで `uint32_t post` フラグ分岐していた。`post` は**パース時に確定するループ構造**
+（実行時に変わらない）なので、ASTro 的にはノード種別で表現するのが素直:
+
+- **`node_while`** = 前判定専用（`post` operand を削除、単一ループ）。
+- **`node_post_while`**（新規）= 後判定専用。parser（parse.c の PM_WHILE/UNTIL）が
+  `PM_LOOP_FLAGS_BEGIN_MODIFIER` を見て振り分ける。`negate`（while/until）は安いので両ノード共有。
+
+結果、interp dispatcher が `post` を一切読まない/分岐しない単一ループになる。generator が
+`ALLOC_/DISPATCH_/SPECIALIZE_/HASH_/DUMP_/REPLACE_node_post_while` を node.def から自動生成
+（手を入れたのは node.def 本体2つと parse.c の2行のみ）。break/next は各ループノード本体が
+`KORB_BREAK`/`KORB_NEXT` を捕まえる RESULT 方式なので追加登録は不要。
+
+instruction count（pre-hoist baseline 比、`perf stat -e instructions`）:
+
+| bench | baseline | node_post_while | delta |
+|---|--:|--:|--:|
+| while2 | 6.259e9 | 6.059e9 | **−3.2%** |
+| nested_loop | 12.332e9 | 12.125e9 | **−1.7%** |
+| fib（再帰・while 非依存） | 7.226e9 | 7.218e9 | ±0 |
+
+**AOT では中立**: `post`/`negate` は SPECIALIZE_node_while が SD に整数リテラルで焼く
+（`fprintf(fp,"%u",n->u.node_while.post)`）→ `always_inline` の EVAL でコンパイル時に定数畳み込み
+→ 死枝 DCE。つまり AOT は元々 branch を消しており、この分離は interp 専用の効き（前段の
+「本体内でループを2分割」する版より更に良い＝dispatcher から post 読みが完全消滅）。
+検証: while/until/break/next/modifier/post-test すべて ruby 一致、corpus 93,399 green、
+AOT fresh compile + `--compiled-only` で正しく動作、STRESS+PURGE clean。
+
+## 2026-07-13: optcarrot / バイナリサイズ実測
+
+optcarrot 180 フレーム（checksum 59662, CRuby と完全一致）:
+
+| 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
+|---|---:|---:|---:|
+| koruby AOT | **73.4** | **2.40×** | 0.63× |
+| koruby interp (--plain) | 34.7 | 1.14× | 0.30× |
+| CRuby (no yjit) | 30.5 | 1.00× | — |
+| CRuby + YJIT | 115.8 | 3.79× | 1.00× |
+
+AOT は素の CRuby を 2.4×、interp 単体でも素の CRuby を上回る。YJIT には optcarrot
+（method-call/object 支配）で負ける（memo: マイクロベンチは多くで AOT>YJIT、再帰と object で負け）。
+6月ベースライン（copy backend best 60.6 fps）から **+21%**。
+
+バイナリサイズ:
+- 本体 koruby_precise: ファイル 9.15 MB だが **7.20 MB は DWARF デバッグ情報**（`-ggdb3`）。
+  **strip 後 1.77 MB**（.text 1.83 MB）。うち tree-walk dispatcher（`DISPATCH_/EVAL_/HASH_node_*`）は
+  **わずか 68 KB / 235 関数**、prism パーサ 167 KB。
+- optcarrot 全体の AOT `code_store/all.so` = **2.9 MB**（~943 SD / 523 TU）。中間物込みで code_store 全体 ~14.5 MB。
+
+「小さい共通インタプリタ（68 KB のコア）+ プログラム別の特殊化コード（AOT で ~2.9 MB）」という
+ASTro の構図がサイズにも表れている。

@@ -99,3 +99,47 @@ worst/whole-file 詳細は WORST=1 で再生成。
 - **実 SEGV を 0 に**: proc/curry の crash は env_size bug ではなく `instance_exec(&forwarded_proc)` が FWD captured_self を新 receiver で上書きして VAL2PROC(receiver)->env を読んでいたバグ。同系で `define_method(:x, &forwarded_proc)` も修正 (FWD なら cself の proc をそのまま使う)。crash 19→**0** (残 enumerator/new は timeout のみ)。
 - **Time class** (builtins/time.c): double epoch backing。Time.now/at/utc/gm/local/mktime/new、year/mon/day/hour/min/sec/wday/yday/usec、to_i/to_f、+ - <=> ==、Comparable、strftime、to_s、utc?/getutc/getlocal。tz は localtime/gmtime、leap sec 無視。corpus に time_basic.rb (deterministic UTC)。
 - make test 89406 / STRESS+PURGE / AOT green。
+
+---
+
+## 2026-07-13 現状サマリ（06-25 の ~56% から大幅前進）
+
+06-25 以降、複数セッションで core 全域を掃討し、**core example pass-rate 84.6%** に到達。
+
+```
+files=2097 (fully-clean = 873, 42%)
+examples: pass=44,673  fail=4,437  err=3,723
+example pass-rate (of pass+fail+err) = 84.6%
+```
+
+corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE / AOT すべて green を維持。
+
+### この間に入った主なもの
+- **本物の正規表現**（`libastrogre` 経由）: Regexp/MatchData、`=~`/`$~`/`$1..`、scan/match/split/sub/gsub
+  （`\1`+block）、名前付きキャプチャ、lookaround、POSIX class、`/i`・`/m`。**matchdata 96% / regexp 55.6%**
+  （残は encoding 依存 edge）。→ regex は「意図的除外」ではない（[[project_koruby_regexp_deferred]] 修正済）。
+- **数値**: bignum(GMP) 各種、Rational#rationalize/round(half:)、Complex、CRuby 互換 MT19937。
+- **Array 集合演算を #hash+#eql? プロトコル化**（&/|/-/uniq(!)/intersect?、identity short-circuit）。
+- **Hash**: rehash（recompute+dedup）、Hash.new(&pr) identity、default_proc 保持、merge。
+- **String**: count/delete/squeeze/tr codepoint 対応、bytesplice 境界、lines/each_line chomp `\r\n`、
+  `[]` の TypeError、to_c 文法、sprintf `%<name>`/`%{name}`。
+- **Module**: public/private/protected 戻り値+Array 引数、undef_method Frozen/Name、include? TypeError、
+  append_features/prepend_features、MRO 線形化 super、class method 継承。
+- **Kernel/Object**: send/public_send 無引数 ArgumentError、clone(freeze:) 検証、caller/backtrace、
+  Object#inspect(addr+ivars)、public_methods/private_methods（global builtin 含む）。
+- **stdlib**: ENV/ARGV/File/Dir/IO/StringIO/Marshal(一部)、Time sub-second、pack/unpack(P/p/U/w/M)。
+- mspec shim 修正が大きく効いた: `it_behaves_like`(+11.8k)、`should_not complain`。
+
+### 残りの失敗分布（dir 別 fail 合計, 2026-07-13）
+```
+string 743  module 443  kernel 419  [encoding 386]  [io 364]  [marshal 338]
+time 222  [file 146]  array 141  enumerator 99  exception 93  hash 73
+[thread 69]  proc 68  [dir 64]  [process 59]  regexp 57  enumerable 54
+```
+`[...]` = 意図的除外 / インフラ隣接（encoding 変換・Marshal byte format・IO/File/Dir・Thread/Fiber/Process/Signal）。
+string の多くも encoding 依存。**到達可能な伸びしろ**は module / kernel / array / enumerator / exception / proc の
+long tail（mock protocol、message 整形、deep-MRO nested super、sized Enumerator など、各々アーキテクチャ級）。
+
+### 意図的除外（rubyspec 100% から外す領域）
+encoding transcoding / Unicode case、真の並行性（Thread 同期モデル・Ractor・Fiber scheduler）、
+gem/require/autoload/native 拡張、Marshal byte-exact。encoding 依存 regex もここ（regex 本体は対応済み）。
