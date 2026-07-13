@@ -94,6 +94,34 @@ static RESULT korb_m_env_to_h(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return RESULT_OK(VALUE_REF_GET(h));
 }
+/* ENV.to_h { |k, v| [k2, v2] } → a Hash built from the block's returned pairs. */
+static RESULT korb_m_env_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, struct Node *block, VALUE *def_env, VALUE *cself) {
+    if (block == NULL) return korb_m_env_to_h(c, slots, self, a);
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 16));
+    VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (char **e = environ; *e; e++) {
+        uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 2, val, (uint32_t)strlen(val)));
+        RESULT r = korb_block_yield(c, slots + 3, block, def_env, &slots[1], 2, cself);   /* yield(k, v) as separate args */
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[1] = r.value;                              /* the returned pair (rooted) */
+        if (!KORB_ARRAY_P(slots[1])) {                   /* coerce via #to_ary only (not #to_a) */
+            VALUE pv = slots[1];
+            if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots + 3, &pv, korb_intern(c->vm, "to_ary", 6))) {
+                slots[3] = pv;
+                RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                slots[1] = ar.value;
+            }
+            if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(r.value));
+        }
+        if (UNLIKELY(VAL2ARY(slots[1])->len != 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(slots[1])->len);
+        slots[2] = VAL2ARY(slots[1])->items->data[0]; slots[3] = VAL2ARY(slots[1])->items->data[1];
+        CHECK(korb_hash_set(c, slots + 4, h, VALUE_REF_AT(&slots[2]), slots[3]));
+    }
+    return RESULT_OK(VALUE_REF_GET(h));
+}
 
 /* ENV.each / ENV.each_pair { |k, v| ... } → ENV. */
 static RESULT korb_m_env_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -427,7 +455,7 @@ void korb_init_env(CTX *c, VALUE *slots) {
     ENVR("include?", key_p, 1);  ENVR("member?", key_p, 1);
     ENVB("fetch", fetch, -1);
     ENVR("keys", keys, 0);       ENVR("values", values, 0);
-    ENVR("to_h", to_h, 0);       ENVR("to_hash", to_h, 0);
+    ENVB("to_h", to_h_blk, 0);   ENVR("to_hash", to_h, 0);
     ENVB("each", each, 0);       ENVB("each_pair", each, 0);
     ENVR("delete", delete, 1);
     ENVB("merge!", merge_bang, -1);   ENVB("update", merge_bang, -1);
