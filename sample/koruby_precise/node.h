@@ -529,8 +529,19 @@ korb_invoke_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         return korb_raise(c, slots, KORB_E_SYSSTACK, line, "stack level too deep");
     /* zero only the genuine locals (body locals + synth temps) that the body
      * may read/GC-scan; the top cell (method-entry) is set just below, so zeroing
-     * it is wasted (a hot-path win for arg-only methods like fib). */
-    if (locals_cnt - 1 > argc) memset(base + argc, 0, (locals_cnt - 1 - argc) * sizeof(VALUE));
+     * it is wasted (a hot-path win for arg-only methods like fib).  Inline the
+     * small counts (the vast majority of methods) to skip the __memset PLT call. */
+    if (locals_cnt - 1 > argc) {
+        const uint32_t nz = locals_cnt - 1 - argc;
+        VALUE *const z = base + argc;
+        switch (nz) {
+            case 4: z[3] = 0;   /* fallthrough */
+            case 3: z[2] = 0;   /* fallthrough */
+            case 2: z[1] = 0;   /* fallthrough */
+            case 1: z[0] = 0; break;
+            default: memset(z, 0, nz * sizeof(VALUE));
+        }
+    }
     base[locals_cnt - 1] = (VALUE)((uintptr_t)m | 1u);   /* method entry at frame top (tagged); super/__method__ source */
     korb_ep_set(base, 0);                                 /* EP cell (base[-2]): no open env yet */
     korb_frame_magic_set(base, KORB_FT_METHOD);           /* base[-3] integrity marker (no-op unless KORB_FRAME_MAGIC) */
