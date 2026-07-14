@@ -1067,11 +1067,17 @@ GC 中立（同じ zeroing）。deterministic instruction count:
 |---|--:|--:|--:|
 | method_call | 15.159e9 | 14.911e9 | **−1.6%** |
 | send | 12.116e9 | 11.965e9 | **−1.2%** |
-| optcarrot AOT | 25.704e9 | 25.403e9 | **−1.2%** |
+| optcarrot AOT (total, startup込) | 25.704e9 | 25.403e9 | **−1.2%** |
 | fib / nested_loop | — | — | ±0（arg-only / while に body-locals memset 無し） |
 
 `korb_invoke_simple` は `always_inline` なので AOT SD にも波及。corpus 93,399 green、
 STRESS+PURGE ALL_AUDIT_PASS、AOT fresh-compile 正常。
+
+**fps 相当（per-frame）で測り直し**: optcarrot の fps は emulation ループの定常フレームレートで
+startup（parse/code-store load/HASH）を含まない。per-frame = (instr₁₈₀ − instr₃₀)/150 で
+startup を差し引くと、frame-zero + alloc-zero 合算で **119.55M → 117.74M = −1.52%**（total の
+−1.26% は不変の startup 4.19B で薄まった値）。startup 自体は +0.05%(誤差) で不変。**memset 系
+最適化は per-frame を確かに縮めており fps に効く**。
 
 ### 見送り: 共有 runtime `aro_gc_alloc_raw` の memset（同 profile で 4.19%）
 `runtime/precise_gc/gc_copy.c` の `aro_gc_alloc_raw` も payload を毎 alloc memset で zero する
@@ -1097,8 +1103,11 @@ corruption」で怖く、共有 astro_node.c を使う 3 sample（ascheme/baruby
 影響する。安全にやるには (a) kind-mutation 全サイトに明示的 invalidation hook を通す、または
 (b) 「全 kind 確定後（cs_load 時点）に1回だけ bottom-up で全ハッシュを memo 化し、以後 execution
 は kind を変えない」ことを保証したうえで load-phase 限定 cache にする。いずれも要設計・要 3-sample
-検証なので、単独 push 前の即席変更にはしない。**startup-only なので長時間ランでは償却される**
-（実ゲームは数千フレーム）点も踏まえて優先度判断のこと。
+検証なので、単独 push 前の即席変更にはしない。**startup-only = optcarrot の fps を一切改善しない**（fps は emulation ループの定常フレーム
+レートで startup を含まない。per-frame 実測で確認済み）。効くのは total wall-clock / cold-start /
+短いスクリプトだけ。長時間ランでは償却される（実ゲームは数千フレーム）。**「fps で YJIT に迫る」
+目的では的外れ**なので、その目的なら per-frame ホット（optcarrot 自身の SD / Array#rotate! の
+memmove / korb_send_impl の CFUNC dispatch）を対象にすること。
 
 安全な小手先（型名ハッシュ `hash_cstr("node_X")` の定数畳み込み）は、コンパイラが既に fold
 している可能性 + recursion/hash_merge 支配で効果小、と判断し見送り。
