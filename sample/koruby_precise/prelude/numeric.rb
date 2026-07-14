@@ -39,6 +39,29 @@ class Numeric
   def ceil(ndigits = 0); to_f.ceil(ndigits); end
   def round(ndigits = 0); to_f.round(ndigits); end
   def truncate(ndigits = 0); to_f.truncate(ndigits); end
+  # Complex-number protocol for a real Numeric (Complex overrides these).
+  def real; self; end
+  def imaginary; 0; end
+  alias imag imaginary
+  def finite?; true; end        # Float's C impl overrides for NaN/Infinity
+  def infinite?; nil; end       # Float's C impl overrides
+  def +@; self; end             # unary plus is identity for every Numeric
+  # Numeric#step fallback (Integer/Float have C impls that take precedence).
+  # Supports positional (limit, step) and keyword (by:, to:) forms; without a
+  # block returns an Enumerator.
+  def step(limit = nil, step_by = nil, by: nil, to: nil, &block)
+    limit = to unless to.nil?
+    st = !by.nil? ? by : (step_by.nil? ? 1 : step_by)
+    return to_enum(:step, limit, st) unless block_given?
+    raise ArgumentError, "step can't be 0" if st == 0
+    i = self
+    if st > 0
+      while limit.nil? || i <= limit; yield i; i += st; end
+    else
+      while limit.nil? || i >= limit; yield i; i += st; end
+    end
+    self
+  end
 end
 
 # Rational sign predicates: a reduced Rational keeps den > 0, so the sign is the
@@ -68,6 +91,8 @@ class Complex
   def finite?; real.finite? && imaginary.finite?; end
   def infinite?; (real.infinite? || imaginary.infinite?) ? 1 : nil; end
   def real?; false; end
+  def +@; self; end
+  def -@; Complex(-real, -imaginary); end
   def coerce(other)
     case other
     when Complex then [other, self]
