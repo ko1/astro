@@ -1121,8 +1121,18 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
         /* global variables ($x) share this table but are nil (not NameError) when
          * unset; constants raise.  The interned name keeps the leading '$'. */
         if (owner_name == 0 && korb_sym_name(vm, name_sym)[0] == '$') return RESULT_OK(KORB_NIL);
-        if (owner_name != 0)
+        if (owner_name != 0) {
+            /* Fire the const_missing hook on the owning module: <owner>.const_missing(:name).
+             * The prelude default re-raises NameError (so an unhandled miss behaves as
+             * before); a user override returns a value. */
+            const VALUE owner_cls = korb_const_get(vm, owner_name);
+            if (KORB_CLASS_P(owner_cls)) {
+                slots[0] = owner_cls;
+                slots[1] = ID2SYM(name_sym);
+                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+            }
             return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
+        }
         return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
     }
     cache->idx_plus1 = idx + 1;
