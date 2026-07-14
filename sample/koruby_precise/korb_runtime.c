@@ -1765,6 +1765,20 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     return RESULT_OK((VALUE)k);
 }
 
+/* Record `sub` in `super`'s direct-subclass list (for Class#subclasses).  Called
+ * only from the user class-definition paths (class-body / Class.new), never from
+ * korb_class_new, so per-object singleton classes don't pollute the list. */
+static RESULT korb_register_subclass(CTX *c, VALUE *slots, VALUE super_cls, VALUE sub_cls) {
+    if (!KORB_CLASS_P(super_cls) || !KORB_CLASS_P(sub_cls)) return RESULT_OK(KORB_NIL);
+    slots[0] = super_cls; slots[1] = sub_cls;                       /* root across the Array alloc/grow */
+    VALUE ary = VAL2CLASS(slots[0])->subclasses;
+    if (ary == KORB_NIL) ary = UNWRAP(korb_ary_new(c, slots + 2, 4));
+    slots[2] = ary;
+    CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+    ARO_STORE(c, VAL2CLASS(slots[0]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[0])->subclasses, slots[2]);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* ---------------------------------------------------------------------------
  * Class variables (`@@x`).  Stored in a per-class KorbHash (sym→value) and
  * shared down the superclass chain: a read/write resolves to the nearest
@@ -3420,6 +3434,7 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
             ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, owner);
         korb_const_define_owned(c, name_sym, slots[1], owner);   /* owner = lexical module (nil top-level) → Module#constants + reopen */
         if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
+            CHECK(korb_register_subclass(c, slots + 2, slots[0], slots[1]));   /* record in super's subclass list */
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
             if (korb_responds_to(c, slots[0], inh)) {
                 slots[2] = slots[0]; slots[3] = slots[1];   /* recv = super, arg0 = new class */
@@ -6464,6 +6479,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             slots[1] = UNWRAP(korb_class_new(c, slots + 1, 0, is_mod ? KORB_NIL : slots[0]));   /* anonymous (name_sym 0) */
             if (is_mod) VAL2CLASS(slots[1])->is_module = 1;
             if (!is_mod) {                                  /* fire superclass.inherited(new_class) before the body block */
+                CHECK(korb_register_subclass(c, slots + 4, slots[0], slots[1]));   /* record in super's subclass list */
                 const uint32_t inh = korb_intern(vm, "inherited", 9);
                 if (korb_responds_to(c, slots[0], inh)) {
                     slots[2] = slots[0]; slots[3] = slots[1];
@@ -7860,6 +7876,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "initialize_clone", korb_m_obj_initialize_copy, -1);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "define_singleton_method", korb_m_obj_define_singleton_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "attached_object", korb_m_class_attached_object, 0);
+    korb_def_cmethod(c, KORB_C_CLASS, "subclasses", korb_m_class_subclasses, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "respond_to?", korb_m_obj_respond_to, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "methods", korb_m_obj_methods, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "public_methods", korb_m_obj_public_methods, -1);

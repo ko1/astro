@@ -467,6 +467,22 @@ static RESULT korb_m_class_attached_object(CTX *c, VALUE *slots, VALUE_REF self,
             if (vm->sklass_cls[i] == cls) return RESULT_OK(vm->sklass_obj[i]);
     return korb_raise(c, slots, KORB_E_TYPE, 0, "'attached_object' called on a non-singleton class");
 }
+/* Class#subclasses — direct (immediate) non-singleton subclasses, order unspecified. */
+static RESULT korb_m_class_subclasses(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    const VALUE list = KORB_CLASS_P(VALUE_REF_GET(self)) ? VAL2CLASS(VALUE_REF_GET(self))->subclasses : KORB_NIL;
+    if (list != KORB_NIL) {
+        slots[1] = list;                                   /* root the source list */
+        for (uint32_t i = 0; i < VAL2ARY(slots[1])->len; i++) {
+            const VALUE sub = VAL2ARY(slots[1])->items->data[i];
+            if (KORB_CLASS_P(sub) && !VAL2CLASS(sub)->is_singleton)
+                CHECK(korb_ary_push_val(c, slots + 2, dst, sub));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(dst));
+}
 /* Object#extend(*mods) — mix the modules into the object's singleton class. */
 static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_REF_GET(self);

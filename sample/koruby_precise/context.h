@@ -511,6 +511,7 @@ typedef struct KorbClass {
     VALUE ARO_GC_EDGE cvars;         /* class variables: KorbHash sym→value, or nil */
     VALUE ARO_GC_EDGE class_ivars;   /* the class object's own instance variables: KorbHash sym→value, or nil */
     VALUE ARO_GC_EDGE enclosing;     /* lexically-enclosing module/class (for M::C names), or nil (top-level / anonymous) */
+    VALUE ARO_GC_EDGE subclasses;    /* KorbArray of direct subclass class-objects (for Class#subclasses), or nil */
 } KorbClass;
 
 #define KORB_OBJ_TYPE(v)   (((AroObjectHeader *)(uintptr_t)(v))->flags & KORB_OBJ_TYPE_MASK)
@@ -1130,6 +1131,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->cvars);              \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->class_ivars);        \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->enclosing);          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->subclasses);         \
         /* method entries are immortal libc; forward each entry's owner edge. */ \
         for (uint32_t _mi = 0; _mi < _cl->method_cnt; _mi++) {              \
             ARO_GC_VISIT_EDGE((ctx), edge_visit, &_cl->methods[_mi]->owner); \
