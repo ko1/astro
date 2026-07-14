@@ -2948,6 +2948,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name);
         else if (parent && PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE))
             owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);   /* rightmost of the parent path */
+        else if (parent) {   /* dynamic owner (`expr::N = v`, e.g. a local holding an anon module) → expr.const_set(:N, v) so N nests under the runtime owner */
+            const uint32_t line = kp_line(tc, node);
+            NODE *r, *k, *v;
+            WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, parent),
+                                         k = ALLOC_node_lit(ID2SYM(name)),
+                                         v = transduce(tc, cpw->value)));
+            return kp_send2(korb_intern(tc->c->vm, "const_set", 9), line, r, k, v);
+        }
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));

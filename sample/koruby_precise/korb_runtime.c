@@ -3455,9 +3455,14 @@ korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls)
 {
     const KorbClass *const k = VAL2CLASS(cls);
     if (k->name_sym == 0) return false;
-    if (k->enclosing != KORB_NIL && KORB_CLASS_P(k->enclosing) &&
-        korb_fprint_class_qname(c, fp, k->enclosing))
-        fputs("::", fp);
+    if (k->enclosing != KORB_NIL && KORB_CLASS_P(k->enclosing)) {
+        if (korb_fprint_class_qname(c, fp, k->enclosing))
+            fputs("::", fp);
+        else {   /* named class under an ANONYMOUS namespace → CRuby shows #<Module:0x…>::Name */
+            const KorbClass *const e = VAL2CLASS(k->enclosing);
+            fprintf(fp, "#<%s:0x%016zx>::", e->is_module ? "Module" : "Class", (size_t)(uintptr_t)k->enclosing);
+        }
+    }
     fputs(korb_sym_name(c->vm, k->name_sym), fp);
     return true;
 }
