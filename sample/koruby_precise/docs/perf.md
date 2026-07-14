@@ -1046,3 +1046,35 @@ AOT は素の CRuby を 2.4×、interp 単体でも素の CRuby を上回る。Y
 
 「小さい共通インタプリタ（68 KB のコア）+ プログラム別の特殊化コード（AOT で ~2.9 MB）」という
 ASTro の構図がサイズにも表れている。
+
+## 2026-07-14: korb_invoke_simple の frame-locals zeroing を小カウント inline 化（成功）
+
+AOT optcarrot の profile で `__memset_avx2` が 4.19%。`korb_invoke_simple` は body locals
+（args を除く genuine locals）を毎 call `memset(base+argc, 0, nz*8)` で zero するが、`nz` は
+runtime 値なのでコンパイラは inline できず __memset を PLT 経由で呼んでいた。多くのメソッドは
+locals が少数（≤4）なので、fallthrough switch で inline store、それ以外だけ memset に落とす:
+
+```c
+switch (nz) {
+    case 4: z[3]=0; case 3: z[2]=0; case 2: z[1]=0; case 1: z[0]=0; break;
+    default: memset(z, 0, nz*sizeof(VALUE));
+}
+```
+
+GC 中立（同じ zeroing）。deterministic instruction count:
+
+| bench | 旧 | 新 | delta |
+|---|--:|--:|--:|
+| method_call | 15.159e9 | 14.911e9 | **−1.6%** |
+| send | 12.116e9 | 11.965e9 | **−1.2%** |
+| optcarrot AOT | 25.704e9 | 25.403e9 | **−1.2%** |
+| fib / nested_loop | — | — | ±0（arg-only / while に body-locals memset 無し） |
+
+`korb_invoke_simple` は `always_inline` なので AOT SD にも波及。corpus 93,399 green、
+STRESS+PURGE ALL_AUDIT_PASS、AOT fresh-compile 正常。
+
+### 見送り: 共有 runtime `aro_gc_alloc_raw` の memset（同 profile で 4.19%）
+`runtime/precise_gc/gc_copy.c` の `aro_gc_alloc_raw` も payload を毎 alloc memset で zero する
+（GC-required）。同じ小カウント inline 化で ~2-4% 見込みだが、**precise_gc を共有する 3 sample
+（ascheme_precise / baruby_precise / koruby_precise）全部の検証が要る cross-sample 変更**なので、
+単独 push 前には手を出さない。将来、3 sample の test/STRESS を揃えて回すときにまとめてやる候補。
