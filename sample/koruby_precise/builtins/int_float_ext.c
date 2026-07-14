@@ -443,10 +443,11 @@ static RESULT korb_m_obj_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
     RESULT r = korb_m_obj_dup(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    const VALUE sv2 = VALUE_REF_GET(self);   /* re-fetch: korb_m_obj_dup GC-moved the receiver; `sv` is stale */
     /* clone (unlike dup) carries the singleton class, so singleton methods survive. */
-    const bool self_sub = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS);
+    const bool self_sub = AROH_IS_GC_OBJECT(sv2) && (((const AroObjectHeader *)(uintptr_t)sv2)->flags & KORB_FL_HAS_KLASS);
     if (self_sub && AROH_IS_GC_OBJECT(r.value)) {
-        const VALUE ov = korb_klass_override_get(c->vm, sv);
+        const VALUE ov = korb_klass_override_get(c->vm, sv2);
         if (KORB_CLASS_P(ov) && VAL2CLASS(ov)->is_singleton) {
             slots[0] = r.value;
             korb_klass_override_set(c, slots[0], ov);
