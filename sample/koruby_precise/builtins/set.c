@@ -1288,8 +1288,8 @@ static RESULT korb_m_class_protected_method_defined(CTX *c, VALUE *slots, VALUE_
 static bool korb_valid_const_name(const char *p, uint32_t len) {
     if (len == 0 || !(p[0] >= 'A' && p[0] <= 'Z')) return false;
     for (uint32_t i = 1; i < len; i++) {
-        const char ch = p[i];
-        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+        const unsigned char ch = (unsigned char)p[i];   /* non-ASCII (>=0x80) allowed: CRuby permits unicode identifier chars */
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch >= 0x80)) return false;
     }
     return true;
 }
@@ -1415,7 +1415,12 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
     }
     uint32_t id;
-    if (SYMBOL_P(name)) id = SYM2ID(name);
+    if (SYMBOL_P(name)) {
+        id = SYM2ID(name);
+        const char *const sn = korb_sym_name(vm, id);      /* a Symbol name is atomic — validate the whole thing */
+        if (UNLIKELY(!korb_valid_const_name(sn, (uint32_t)strlen(sn))))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", sn);
+    }
     else if (KORB_STRING_P(name)) {
         const KorbString *const s = VAL2STR(name);
         const char *p = s->buf->data; uint32_t len = s->len;
@@ -1426,6 +1431,8 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         for (uint32_t i = 0; i <= len; i++) {
             if (i == len || (i + 1 < len && p[i] == ':' && p[i + 1] == ':')) {
                 if (i == seg) return RESULT_OK(KORB_FALSE);   /* empty segment */
+                if (UNLIKELY(!korb_valid_const_name(p + seg, i - seg)))
+                    return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)(i - seg), p + seg);
                 const uint32_t sid = korb_intern(vm, p + seg, i - seg);
                 bool found = false;
                 for (uint32_t k = 0; k < vm->const_cnt; k++) if (vm->const_names[k] == sid) { found = true; break; }
@@ -1438,7 +1445,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
     /* owner-aware: the receiver + (unless inherit=false) its ancestors, then a
      * top-level fallback for inherited/Object constants. */
-    const bool inherit = !(VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) == KORB_FALSE);
+    const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));   /* coerce the inherit flag to a boolean (nil/false → no inherit) */
     const VALUE owner = VALUE_REF_GET(self);
     if (KORB_CLASS_P(owner)) {
         for (VALUE o = owner; KORB_CLASS_P(o); o = VAL2CLASS(o)->superclass) {
