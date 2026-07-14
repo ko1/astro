@@ -380,7 +380,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         /* Preserve compare_by_identity: set the flag BEFORE inserting so
          * identity-distinct keys (e.g. two equal-but-distinct Strings) don't
          * collapse under the copy's default value-equality. */
-        if (VAL2HASH(v)->head.flags & KORB_FL_CMP_BY_ID)
+        if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* re-fetch: korb_hash_new above GC-moved the receiver; `v` is stale */
             ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_CMP_BY_ID;
         VALUE_REF dst = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < n; i++) {
