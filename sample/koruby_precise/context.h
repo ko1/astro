@@ -346,6 +346,7 @@ typedef struct KorbBinding {
     VALUE ARO_GC_EDGE extra;         /* Hash {sym=>val} of locals added after capture (nil until used) */
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
     uint32_t name_cnt;
+    const struct Node *src_node;     /* immortal: the `binding` call node (for #source_location); NULL if unknown */
 } KorbBinding;
 
 /* bound Method object (obj.method(:sym)): receiver + interned method id. */

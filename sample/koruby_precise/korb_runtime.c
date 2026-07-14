@@ -2670,6 +2670,13 @@ static uint32_t korb_bind_argsym(CTX *c, VALUE v) {
 static RESULT korb_m_bind_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2BIND(VALUE_REF_GET(self))->self);
 }
+static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd */
+static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const struct Node *const node = VAL2BIND(VALUE_REF_GET(self))->src_node;   /* the `binding` call site */
+    if (node == NULL) return RESULT_OK(KORB_NIL);
+    return korb_srcloc_result(c, slots, node);
+}
 static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
     const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
@@ -7851,6 +7858,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variables", korb_m_bind_lvars, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "receiver", korb_m_bind_recv, 0);
+    korb_def_cmethod(c, KORB_C_BINDING, "source_location", korb_m_bind_source_location, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "inherited", korb_m_lit_nil, 1);   /* default no-op hook (so user inherited can call super) */
     korb_def_cmethod(c, KORB_C_CLASS, "method_added", korb_m_lit_nil, 1);   /* default no-op (so user method_added can call super) */
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);

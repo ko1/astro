@@ -1146,6 +1146,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)syms, cnt);
         bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
         bake_add(tc, &nb->u.node_binding.self_off);       /* self at base[-1] (bottom header) */
+        korb_reg_srcloc(tc->c->vm, nb, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));  /* for Binding#source_location */
         return nb;
     }
 

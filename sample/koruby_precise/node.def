@@ -1745,8 +1745,10 @@ node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, 
 NODE_DEF
 node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_off, const char *name_syms, uint32_t name_cnt)
 {
-    (void)n;
-    return korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off]);
+    RESULT r = korb_make_binding(c, slots, &slots[def_env_off], (const uint32_t *)(const void *)name_syms, name_cnt, slots[self_off]);
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_OBJ_TYPE(r.value) == KORB_OBJ_BINDING)
+        VAL2BIND(r.value)->src_node = n;   /* record the call site for Binding#source_location */
+    return r;
 }
 
 // Receiver method call with a literal block (arr.each { ... }), any fixed arity.
