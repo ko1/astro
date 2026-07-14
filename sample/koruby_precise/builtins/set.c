@@ -765,14 +765,48 @@ static RESULT korb_m_class_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 }
 /* Module#to_s / #inspect → the (qualified) name; an anonymous class stringifies
  * to a placeholder rather than nil. */
+/* Class/Module #to_s into a memstream (no alloc — reads only): a named class →
+ * its qualified name; a singleton class → "#<Class:<attached>>" where <attached>
+ * is the attached class/module's own to_s (recursing) or, for an object, its
+ * default "#<ClassName:0xADDR>" (NOT dispatching #inspect); else the anonymous
+ * "#<Class:0xADDR>". */
+static void korb_fprint_class_tostr(CTX *c, FILE *ms, VALUE cls) {
+    const KorbClass *const k = VAL2CLASS(cls);
+    if (k->name_sym != 0) { korb_fprint_class_qname(c, ms, cls); return; }
+    if (k->is_singleton) {
+        VALUE att = KORB_NIL;
+        for (uint32_t i = 0; i < c->vm->sklass_cnt; i++)
+            if (c->vm->sklass_cls[i] == cls) { att = c->vm->sklass_obj[i]; break; }
+        if (att != KORB_NIL) {
+            fputs("#<Class:", ms);
+            if (KORB_CLASS_P(att)) korb_fprint_class_tostr(c, ms, att);   /* attached Class/Module/singleton → recurse */
+            else {                                                         /* attached object → #<ClassName:0xADDR> */
+                VALUE oc = korb_dispatch_class(c, att);
+                while (KORB_CLASS_P(oc) && VAL2CLASS(oc)->is_singleton) oc = VAL2CLASS(oc)->superclass;   /* real class */
+                fputs("#<", ms);
+                if (KORB_CLASS_P(oc)) korb_fprint_class_tostr(c, ms, oc);   /* named → qname, anonymous → #<Class:0x…> */
+                else fputs("Object", ms);
+                fprintf(ms, ":0x%016zx>", (size_t)(uintptr_t)att);
+            }
+            fputc('>', ms);
+            return;
+        }
+    }
+    fprintf(ms, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
+}
 static RESULT korb_m_class_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE cls = VALUE_REF_GET(self);
     const KorbClass *const k = VAL2CLASS(cls);
-    if (k->name_sym == 0) {                                        /* anonymous → #<Class:0x…> / #<Module:0x…> */
-        char buf[48];
-        const int n = snprintf(buf, sizeof buf, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls);
-        return korb_str_new(c, slots, buf, (uint32_t)n);
+    if (k->name_sym == 0) {                                        /* anonymous / singleton → formatted form */
+        char *buf = NULL; size_t sz = 0;
+        FILE *ms = open_memstream(&buf, &sz);
+        if (!ms) { char b[48]; int n = snprintf(b, sizeof b, "#<%s:0x%016zx>", k->is_module ? "Module" : "Class", (size_t)(uintptr_t)cls); return korb_str_new(c, slots, b, (uint32_t)n); }
+        korb_fprint_class_tostr(c, ms, cls);
+        fclose(ms);
+        RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)sz);
+        free(buf);
+        return r;
     }
     return korb_class_qname_str(c, slots, cls);
 }
