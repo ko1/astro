@@ -530,9 +530,20 @@ static RESULT korb_m_enum_take_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 static RESULT korb_m_enum_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    if (SELF_ENUM->mode == 0)                     /* only Enumerator::Lazy has #compact */
-        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'compact' for an instance of Enumerator");
-    return korb_lazy_chain(c, slots, self, "compact", KORB_NIL);   /* no-block: drop nils */
+    if (SELF_ENUM->mode != 0)
+        return korb_lazy_chain(c, slots, self, "compact", KORB_NIL);   /* lazy: chain the op (no-block: drop nils) */
+    /* eager Enumerator (Enumerable#compact): materialize the non-nil values into a new Array. */
+    slots[0] = SELF_ENUM->values;                                      /* root source */
+    RESULT ar = korb_ary_new(c, slots + 1, KORB_ARRAY_P(slots[0]) ? VAL2ARY(slots[0])->len : 0);
+    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    slots[1] = ar.value;
+    VALUE_REF dst = VALUE_REF_AT(&slots[1]);
+    if (KORB_ARRAY_P(slots[0]))
+        for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
+            const VALUE v = VAL2ARY(slots[0])->items->data[i];
+            if (v != KORB_NIL) CHECK(korb_ary_push_val(c, slots + 2, dst, v));
+        }
+    return RESULT_OK(VALUE_REF_GET(dst));
 }
 static RESULT korb_m_enum_drop_while(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_lazy_op(c, slots, self, "drop_while", false, block, def_env, cself);
