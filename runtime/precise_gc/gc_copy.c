@@ -339,10 +339,25 @@ aro_gc_alloc_raw(CTX *c, size_t payload_size)
         ? large_alloc(c, payload_size, aligned)
         : gc_bump    (c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    /* Zero the post-head region so a GC scan immediately after alloc
-     * sees no stale heap-pointer bits.  Head was init'd to zero above. */
-    memset((char *)payload + sizeof(AroObjectHeader), 0,
-           aligned - sizeof(AroObjectHeader));
+    /* Zero the post-head region so a GC scan immediately after alloc sees no
+     * stale heap-pointer bits.  `aligned` and the header are both 8-multiples,
+     * so the region is a whole number of 64-bit words.  Most objects are small
+     * (the variable-size buffers are separate allocs), so inline the word stores
+     * for <=8 words to skip the __memset PLT call; memset only the large tail. */
+    uint64_t *const zw = (uint64_t *)((char *)payload + sizeof(AroObjectHeader));
+    const size_t znw = (aligned - sizeof(AroObjectHeader)) / sizeof(uint64_t);
+    switch (znw) {
+        case 8: zw[7] = 0;  /* fallthrough */
+        case 7: zw[6] = 0;  /* fallthrough */
+        case 6: zw[5] = 0;  /* fallthrough */
+        case 5: zw[4] = 0;  /* fallthrough */
+        case 4: zw[3] = 0;  /* fallthrough */
+        case 3: zw[2] = 0;  /* fallthrough */
+        case 2: zw[1] = 0;  /* fallthrough */
+        case 1: zw[0] = 0;  /* fallthrough */
+        case 0: break;
+        default: memset(zw, 0, znw * sizeof(uint64_t));
+    }
 
     ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
