@@ -140,4 +140,10 @@ module Enumerable
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
   def each_entry; return to_enum(:each_entry) unless block_given?; __each_el { |x| yield x }; self; end
+  def compact; r = []; __each_el { |x| r << x unless x.nil? }; r; end
+end
+
+# MatchData pattern-matching support.
+class MatchData
+  def deconstruct; captures; end
 end

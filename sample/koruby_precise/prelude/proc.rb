@@ -1,5 +1,9 @@
 # Proc#curry — partial application.
 class Proc
+  def to_proc; self; end
+  # Mark this Proc so a bare kwargs Hash flows through *args (koruby already
+  # threads a trailing kwargs Hash through splat, so this is a no-op that returns self).
+  def ruby2_keywords; self; end
   def curry(n = (arity < 0 ? -arity - 1 : arity))
     # A lambda must be curried at exactly its required arity (or, for a variadic
     # lambda, at least its required count); CRuby raises ArgumentError otherwise.
