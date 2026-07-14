@@ -1078,3 +1078,27 @@ STRESS+PURGE ALL_AUDIT_PASS、AOT fresh-compile 正常。
 （GC-required）。同じ小カウント inline 化で ~2-4% 見込みだが、**precise_gc を共有する 3 sample
 （ascheme_precise / baruby_precise / koruby_precise）全部の検証が要る cross-sample 変更**なので、
 単独 push 前には手を出さない。将来、3 sample の test/STRESS を揃えて回すときにまとめてやる候補。
+
+## 2026-07-14: AOT startup コストの分析（HASH caching = 次の最大の的、ただし要設計）
+
+optcarrot AOT を frames で割ると、**固定 startup ≈ 4.19B instructions**（parse + code-store
+load）で、180 フレームでは **全体の 16.5%**（1 frame ≈ 117.7M instr）。この startup の大きな
+部分が **node の構造ハッシュ**（`HASH_node_*` が profile で合計 ~8%）。code-store load は
+各 SD を parse 済み AST に「構造ハッシュ一致」で結びつけるので、**全ノードに HASH() を呼ぶ**。
+
+`HASH()`（runtime/astro_node.c）は **caching 無効**（`has_hash_value` を誰も立てない）。理由は
+コメント通り: dispatcher patching が hash 後に node の `kind` を書き換える（ascheme_precise の
+`lref → lref_sp`）と、cached hash が stale 化し、無効化できない親 cache に伝播する。よって
+`hash_node()` は毎回 `HASH()` に落ちて **subtree を再計算** → load で全ノードに呼ぶと
+**O(n·depth)**。optcarrot の深い式木で startup を膨らませている。
+
+**次にやるなら**: hash caching の再導入。ただし失敗モードが「SD↔node 取り違え = silent code
+corruption」で怖く、共有 astro_node.c を使う 3 sample（ascheme/baruby/koruby_precise）全部に
+影響する。安全にやるには (a) kind-mutation 全サイトに明示的 invalidation hook を通す、または
+(b) 「全 kind 確定後（cs_load 時点）に1回だけ bottom-up で全ハッシュを memo 化し、以後 execution
+は kind を変えない」ことを保証したうえで load-phase 限定 cache にする。いずれも要設計・要 3-sample
+検証なので、単独 push 前の即席変更にはしない。**startup-only なので長時間ランでは償却される**
+（実ゲームは数千フレーム）点も踏まえて優先度判断のこと。
+
+安全な小手先（型名ハッシュ `hash_cstr("node_X")` の定数畳み込み）は、コンパイラが既に fold
+している可能性 + recursion/hash_merge 支配で効果小、と判断し見送り。
