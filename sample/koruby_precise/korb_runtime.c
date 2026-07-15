@@ -38,9 +38,18 @@ korb_alloc(CTX *c, VALUE *slots, size_t size, unsigned int type)
 {
     ASTRO_ASSERT(slots >= c->slots && slots <= c->slots_limit);
     c->slots_top = slots;                 /* publish: live values are below */
-    VALUE v = aro_gc_alloc(c, size);      /* may collect; scans [slots, slots_top) */
+    /* The copy GC overlays each forwarded object's new address at payload
+     * offset 0 (= object offset 8, sizeof(AroObjectHeader)).  An object smaller
+     * than header+8 = 16 bytes therefore has its forward overlay spill into the
+     * NEXT object's header, corrupting it (hit by a closed n=0 env's empty
+     * KORB_OBJ_VALUE_ARRAY, whose sizeof is just the 8-byte header).  Pad to 16
+     * and zero the tail so a VALUE_ARRAY's gc_size-derived edge scan reads a nil
+     * phantom slot rather than garbage. */
+    const size_t asize = size < 16 ? 16 : size;
+    VALUE v = aro_gc_alloc(c, asize);     /* may collect; scans [slots, slots_top) */
     AroObjectHeader *h = (AroObjectHeader *)(uintptr_t)v;
     h->flags = (uint16_t)type;
+    if (asize > size) memset((char *)h + size, 0, asize - size);
     return h;
 }
 
