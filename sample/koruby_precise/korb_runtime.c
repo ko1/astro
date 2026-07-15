@@ -4513,6 +4513,15 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
     return korb_value_eq(pat, val);
 }
 
+/* true iff `v` is a plain Array we can match directly.  CRuby calls #deconstruct
+ * even on arrays, but the default Array#deconstruct returns self, so only a
+ * singleton/extended override is observable → dispatch only when one may exist. */
+static inline bool
+korb_pat_plain_array(VALUE v)
+{
+    return KORB_ARRAY_P(v) && !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
+}
+
 /* Recursive pattern matcher (node_match_pred/req).  `base` is the match node's
  * frame view (binding writes land in its locals); `cur` is scratch above the
  * rooted subject.  Returns RESULT{KORB_TRUE|KORB_FALSE} (or a raise from a value
@@ -4527,6 +4536,17 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 1: {                                          /* value: pat === subject */
         RESULT pv = EVAL(c, p->value_node, cur);         /* may alloc; subject stays rooted */
         if (UNLIKELY(pv.state != KORB_NORMAL)) return pv;
+        /* A Proc/lambda or a user object may define a custom #=== (e.g.
+         * `in -> x { … }`); a Range may span user-comparable endpoints (e.g.
+         * `^(t1..t2)` of Times) whose <=> the no-alloc korb_case_eq can't
+         * dispatch → route these through the real #=== method.  Class/Regexp/
+         * literal patterns keep the fast path. */
+        if (KORB_PROC_P(pv.value) || KORB_OBJECT_P(pv.value) || KORB_RANGE_P(pv.value)) {
+            cur[0] = pv.value; cur[1] = VALUE_REF_GET(subjref);
+            RESULT er = korb_send(c, cur + 2, korb_intern(c->vm, "===", 3), 0, 1);
+            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+            return RESULT_OK(KORB_TRUTHY(er.value) ? KORB_TRUE : KORB_FALSE);
+        }
         return RESULT_OK(korb_case_eq(c, pv.value, VALUE_REF_GET(subjref)) ? KORB_TRUE : KORB_FALSE);
       }
       case 7: {                                          /* pin `^var`: EVAL in the match frame (base) so the
@@ -4540,7 +4560,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 2: {                                          /* array pattern [e0..en) — Array, else #deconstruct'd to one */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…]` → Const === subject */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);   /* Struct/Data/custom hook */
@@ -4548,7 +4568,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             cur[0] = VALUE_REF_GET(subjref);                                  /* receiver */
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
             cur[0] = dr.value;
         }
         if (VAL2ARY(cur[0])->len != p->n) return RESULT_OK(KORB_FALSE);
@@ -4571,12 +4591,24 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
         else {
             const uint32_t mid_dk = korb_intern(c->vm, "deconstruct_keys", 16);
             if (!korb_responds_to(c, VALUE_REF_GET(subjref), mid_dk)) return RESULT_OK(KORB_FALSE);
-            cur[0] = VALUE_REF_GET(subjref); cur[1] = KORB_NIL;   /* recv, arg(nil → all keys) */
+            cur[0] = VALUE_REF_GET(subjref);              /* recv (scanned slot) */
+            /* CRuby passes the pattern's keys as an Array so the object may build
+             * a minimal hash; a *named* **rest needs every key → pass nil. */
+            if (p->npost == 1 && p->bind_off != INT32_MIN) {
+                cur[1] = KORB_NIL;
+            } else {
+                cur[1] = UNWRAP(korb_ary_new(c, cur + 1, p->n));
+                VALUE_REF kh = VALUE_REF_AT(&cur[1]);
+                for (uint32_t i = 0; i < p->n; i++) { cur[2] = p->keys[i]; CHECK(korb_ary_push_val(c, cur + 3, kh, cur[2])); }
+            }
             RESULT dr = korb_send(c, cur + 2, mid_dk, 0, 1);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_HASH_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            if (!KORB_HASH_P(dr.value))                   /* CRuby: TypeError, not a plain non-match */
+                return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct_keys must return Hash (%s given)", korb_type_name(dr.value));
             cur[0] = dr.value;
         }
+        if (p->n == 0 && p->npost == 0)                   /* `in {}` matches only an empty hash */
+            return RESULT_OK(VAL2HASH(cur[0])->len == 0 ? KORB_TRUE : KORB_FALSE);
         for (uint32_t i = 0; i < p->n; i++) {
             const int32_t idx = korb_hash_find(VAL2HASH(cur[0]), p->keys[i]);
             if (idx < 0) return RESULT_OK(KORB_FALSE);
@@ -4606,7 +4638,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 8: {                                          /* find pattern [*left, mid..., *right] */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[*, …, *]` */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
@@ -4614,7 +4646,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             cur[0] = VALUE_REF_GET(subjref);
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
             cur[0] = dr.value;
         }
         const uint32_t len = VAL2ARY(cur[0])->len;
@@ -4663,7 +4695,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
       case 6: {                                          /* array w/ rest: [pre..., *rest, post...] — Array or #deconstruct'd */
         if (p->value_node) { RESULT cv = EVAL(c, p->value_node, cur); if (UNLIKELY(cv.state != KORB_NORMAL)) return cv;   /* `Const[…, *rest, …]` */
                              if (!korb_case_eq(c, cv.value, VALUE_REF_GET(subjref))) return RESULT_OK(KORB_FALSE); }
-        if (KORB_ARRAY_P(VALUE_REF_GET(subjref))) {
+        if (korb_pat_plain_array(VALUE_REF_GET(subjref))) {
             cur[0] = VALUE_REF_GET(subjref);
         } else {
             const uint32_t mid_dc = korb_intern(c->vm, "deconstruct", 11);
@@ -4671,7 +4703,7 @@ korb_pat_match(CTX *c, VALUE *base, VALUE *cur, VALUE_REF subjref, const struct 
             cur[0] = VALUE_REF_GET(subjref);
             RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-            if (!KORB_ARRAY_P(dr.value)) return RESULT_OK(KORB_FALSE);
+            if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
             cur[0] = dr.value;
         }
         VALUE_REF aref = VALUE_REF_AT(&cur[0]);          /* the subject array, parked + rooted at cur[0] */

@@ -54,6 +54,7 @@ struct kp_ctx {
     int32_t chain;            /* staging depth at the current program point */
     int32_t **bake_list;      /* lvar-offset cells awaiting locals_cnt fixup */
     uint32_t bake_cnt, bake_capa;
+    bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
 };
 
 /* Evaluate BODY (allocations / transduction of the children of a node
@@ -449,6 +450,72 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
     return next;
 }
 
+/* true if the constant-pool name is a bindable variable — i.e. NOT underscore
+ * prefixed (CRuby permits `_`-prefixed binds inside alternative patterns). */
+static bool
+kp_name_is_bindable(struct kp_ctx *tc, pm_constant_id_t cid)
+{
+    const pm_constant_t *ct = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
+    return !(ct->length > 0 && ct->start[0] == '_');
+}
+
+/* CRuby forbids variable binding inside an alternative pattern (`a | b`), save
+ * for underscore-prefixed names.  Recursively true if `pat` binds such a var. */
+static bool
+pattern_binds_var(struct kp_ctx *tc, const pm_node_t *pat)
+{
+    if (!pat) return false;
+    if (PM_NODE_TYPE_P(pat, PM_IMPLICIT_NODE))
+        return pattern_binds_var(tc, (const pm_node_t *)((const pm_implicit_node_t *)pat)->value);
+    switch (PM_NODE_TYPE(pat)) {
+      case PM_LOCAL_VARIABLE_TARGET_NODE:
+        return kp_name_is_bindable(tc, ((const pm_local_variable_target_node_t *)pat)->name);
+      case PM_CAPTURE_PATTERN_NODE: {
+        const pm_capture_pattern_node_t *cp = (const pm_capture_pattern_node_t *)pat;
+        return kp_name_is_bindable(tc, cp->target->name) || pattern_binds_var(tc, cp->value);
+      }
+      case PM_ALTERNATION_PATTERN_NODE: {
+        const pm_alternation_pattern_node_t *ap = (const pm_alternation_pattern_node_t *)pat;
+        return pattern_binds_var(tc, ap->left) || pattern_binds_var(tc, ap->right);
+      }
+      case PM_ARRAY_PATTERN_NODE: {
+        const pm_array_pattern_node_t *ap = (const pm_array_pattern_node_t *)pat;
+        for (size_t i = 0; i < ap->requireds.size; i++) if (pattern_binds_var(tc, ap->requireds.nodes[i])) return true;
+        if (pattern_binds_var(tc, ap->rest)) return true;
+        for (size_t i = 0; i < ap->posts.size; i++) if (pattern_binds_var(tc, ap->posts.nodes[i])) return true;
+        return false;
+      }
+      case PM_FIND_PATTERN_NODE: {
+        const pm_find_pattern_node_t *fp = (const pm_find_pattern_node_t *)pat;
+        if (pattern_binds_var(tc, (const pm_node_t *)fp->left) || pattern_binds_var(tc, (const pm_node_t *)fp->right)) return true;
+        for (size_t i = 0; i < fp->requireds.size; i++) if (pattern_binds_var(tc, fp->requireds.nodes[i])) return true;
+        return false;
+      }
+      case PM_HASH_PATTERN_NODE: {
+        const pm_hash_pattern_node_t *hp = (const pm_hash_pattern_node_t *)pat;
+        for (size_t i = 0; i < hp->elements.size; i++) {
+            if (!PM_NODE_TYPE_P(hp->elements.nodes[i], PM_ASSOC_NODE)) continue;
+            const pm_assoc_node_t *as = (const pm_assoc_node_t *)hp->elements.nodes[i];
+            if (as->value) { if (pattern_binds_var(tc, as->value)) return true; }   /* `key: pat` */
+            else if (PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE)) {                     /* `key:` binds `key` */
+                const pm_symbol_node_t *sn = (const pm_symbol_node_t *)as->key;
+                const char *kn = (const char *)pm_string_source(&sn->unescaped);
+                if (pm_string_length(&sn->unescaped) > 0 && kn[0] != '_') return true;
+            }
+        }
+        if (hp->rest && PM_NODE_TYPE_P(hp->rest, PM_ASSOC_SPLAT_NODE))
+            return pattern_binds_var(tc, ((const pm_assoc_splat_node_t *)hp->rest)->value);
+        return false;
+      }
+      case PM_SPLAT_NODE:
+        return pattern_binds_var(tc, ((const pm_splat_node_t *)pat)->expression);
+      case PM_ASSOC_SPLAT_NODE:
+        return pattern_binds_var(tc, ((const pm_assoc_splat_node_t *)pat)->value);
+      default:
+        return false;
+    }
+}
+
 /* Compile a prism pattern into a korb_pat descriptor (immortal; walked by the
  * runtime matcher).  Supports binding / array / hash / value (=== ) patterns;
  * rest/post/constant/find patterns fall back to an unsupported value node. */
@@ -579,6 +646,8 @@ build_pattern_desc(struct kp_ctx *tc, const pm_node_t *pat)
         }
     } else if (PM_NODE_TYPE_P(pat, PM_ALTERNATION_PATTERN_NODE)) {  /* `a | b` (no bindings) */
         const pm_alternation_pattern_node_t *ap = (const pm_alternation_pattern_node_t *)pat;
+        if (pattern_binds_var(tc, ap->left) || pattern_binds_var(tc, ap->right))
+            tc->syntax_error = true;   /* CRuby: "illegal variable in alternative pattern" → SyntaxError */
         p->kind = 5; p->n = 2;
         p->elems = calloc(2, sizeof(struct korb_pat *));
         p->elems[0] = build_pattern_desc(tc, ap->left);
@@ -3091,6 +3160,14 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     free(tc.bake_list);
+    if (tc.syntax_error) {                           /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
+        pm_node_destroy(&parser, root);
+        pm_parser_free(&parser);
+        pm_options_free(&options);
+        if (!exit_on_error) return NULL;             /* eval(str): caller raises SyntaxError */
+        fprintf(stderr, "%s: syntax error (SyntaxError)\n", fname);
+        exit(1);
+    }
 
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
@@ -3130,8 +3207,9 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     free(tc.bake_list);
+    bool serr = tc.syntax_error;
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     pm_options_free(&options);
-    return ast;
+    return serr ? NULL : ast;   /* binding in alternative pattern → SyntaxError */
 }
