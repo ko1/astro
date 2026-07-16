@@ -9990,7 +9990,14 @@ korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (KORB_STRING_P(a0)) return RESULT_OK(a0);
     slots[0] = a0;                                        /* root across dispatch */
-    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    if (!korb_responds_to(c, a0, korb_intern(c->vm, "to_s", 4)))   /* CRuby: no #to_s → TypeError, not NoMethodError */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String", korb_type_name(a0));
+    RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(!KORB_STRING_P(r.value)))               /* #to_s must return a String */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_s gives %s)",
+                          korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
+    return r;
 }
 
 /* Float(arg) — Kernel conversion.  Float→itself, Integer→to f, String→strict. */
