@@ -19,11 +19,33 @@ static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int mode) {
     VALUE o = VALUE_SLICE_GET(a, 0);
-    intptr_t m;
-    if (UNLIKELY(!korb_to_index(o, &m))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(o));
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self)) & m;
-    bool r = mode == 0 ? (n == 0) : mode == 1 ? (n != 0) : (n == m);   /* nobits/anybits/allbits */
+    if (UNLIKELY(!KORB_INTEGER_P(o))) {                   /* coerce a Float / #to_int object to an Integer (CRuby rb_to_int) */
+        if (KORB_OBJECT_P(o) || KORB_FLOAT_P(o)) {
+            slots[0] = o;
+            RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
+            if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+            if (KORB_INTEGER_P(tr.value)) o = tr.value;
+        }
+        if (UNLIKELY(!KORB_INTEGER_P(o)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    const VALUE sv = VALUE_REF_GET(self);                 /* re-read: #to_int may have GC'd (self stays rooted) */
+    if (LIKELY(FIXNUM_P(sv) && FIXNUM_P(o))) {
+        const intptr_t m = FIX2LONG(o), n = FIX2LONG(sv) & m;
+        const bool r = mode == 0 ? (n == 0) : mode == 1 ? (n != 0) : (n == m);   /* nobits/anybits/allbits */
+        return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
+    }
+#ifdef KORB_HAVE_GMP
+    slots[0] = o;                                         /* root o across the AND alloc + compare */
+    RESULT ar = korb_int_bitwise(c, slots + 1, sv, o, 0);   /* self & o */
+    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    bool r;
+    if (mode == 2) r = (korb_int_cmp(ar.value, slots[0]) == 0);       /* allbits: (self & o) == o */
+    else { const bool z = (korb_int_cmp(ar.value, LONG2FIX(0)) == 0); r = (mode == 0) ? z : !z; }
     return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
+#else
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Bignum bit test (no GMP)");
+#endif
 }
 static RESULT korb_m_int_nobits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_m_int_bits(c, slots, self, a, 0); }
 static RESULT korb_m_int_anybits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_int_bits(c, slots, self, a, 1); }
