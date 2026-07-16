@@ -61,17 +61,9 @@ module Marshal
     when Float
       s = _float_str(o)
       out << "f"; _long(s.bytesize, out); out << s
-    when Array
-      out << "["; _long(o.length, out)
-      o.each { |e| _dump(e, out, st) }
-    when Hash
-      if o.default.nil?
-        out << "{"; _long(o.size, out)
-      else
-        out << "}"; _long(o.size, out)
-      end
-      o.each { |k, v| _dump(k, out, st); _dump(v, out, st) }
-      _dump(o.default, out, st) unless o.default.nil?
+    when Regexp  then _dump_regexp(o, out, st)
+    when Array   then _dump_array(o, out, st)
+    when Hash    then _dump_hash(o, out, st)
     when Range                                         # generic object: class :Range + 3 ivars
       out << "o"
       _symdump(:Range, out, st); _long(3, out)
@@ -91,7 +83,9 @@ module Marshal
     when Complex
       out << "U"; _symdump(:Complex, out, st); _dump([o.real, o.imaginary], out, st)
     else
-      if o.respond_to?(:marshal_dump)
+      if defined?(Data) && Data === o
+        _dump_data(o, out, st)
+      elsif o.respond_to?(:marshal_dump)
         _dump_umarshal(o, out, st)
       elsif o.respond_to?(:_dump)
         _dump_udump(o, out, st)
@@ -99,6 +93,76 @@ module Marshal
         _dump_generic(o, out, st)
       end
     end
+  end
+
+  # 'e' (extend module) and 'C' (subclass) prefixes, outermost after any 'I'.
+  # Also enforces the TypeErrors CRuby raises for un-dumpable singletons.
+  def self._wrap_prefix(o, base, out, st)
+    unless (o.singleton_methods(false) rescue []).empty?
+      raise TypeError, "singleton can't be dumped"
+    end
+    exts = (o.singleton_class.included_modules - o.class.included_modules rescue [])
+    exts.each do |m|
+      nm = m.name
+      raise TypeError, "can't dump anonymous module #{m}" if nm.nil?
+      out << "e"; _symdump(nm.to_sym, out, st)
+    end
+    if o.class != base
+      nm = o.class.name
+      raise TypeError, "can't dump anonymous class #{o.class}" if nm.nil?
+      out << "C"; _symdump(nm.to_sym, out, st)
+    end
+  end
+
+  def self._dump_array(o, out, st)
+    uiv = o.instance_variables
+    out << "I" unless uiv.empty?
+    _wrap_prefix(o, Array, out, st)
+    out << "["; _long(o.length, out)
+    o.each { |e| _dump(e, out, st) }
+    _dump_ivars(o, uiv, out, st) unless uiv.empty?
+  end
+
+  def self._dump_hash(o, out, st)
+    raise TypeError, "can't dump hash with default proc" if o.default_proc
+    uiv = o.instance_variables
+    out << "I" unless uiv.empty?
+    _wrap_prefix(o, Hash, out, st)
+    if o.default.nil?
+      out << "{"; _long(o.size, out)
+    else
+      out << "}"; _long(o.size, out)
+    end
+    o.each { |k, v| _dump(k, out, st); _dump(v, out, st) }
+    _dump(o.default, out, st) unless o.default.nil?
+    _dump_ivars(o, uiv, out, st) unless uiv.empty?
+  end
+
+  def self._dump_regexp(o, out, st)
+    src = o.source
+    out << "I"
+    _wrap_prefix(o, Regexp, out, st)
+    out << "/"; _long(src.bytesize, out); out << src
+    out << (o.options & 0xff).chr
+    uiv = o.instance_variables
+    _long(1 + uiv.length, out)
+    _symdump(:E, out, st); _dump(false, out, st)      # ascii regexp encoding
+    uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+  end
+
+  def self._dump_data(o, out, st)
+    name = o.class.name
+    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('S' carries the name)
+    out << "S"; _symdump(name.to_sym, out, st)
+    mem = o.class.members
+    _long(mem.length, out)
+    mem.each { |m| _symdump(m, out, st); _dump(o.send(m), out, st) }
+  end
+
+  def self._dump_ivars(o, ivars, out, st)
+    _long(ivars.length, out)
+    ivars.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
 
   def self._dump_class(o, out, st)
@@ -135,6 +199,7 @@ module Marshal
   def self._dump_generic(o, out, st)
     name = o.class.name
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('o' carries the name)
     ivars = o.instance_variables
     out << "o"
     _symdump(name.to_sym, out, st); _long(ivars.length, out)
@@ -144,15 +209,18 @@ module Marshal
   def self._dump_string(o, out, st)
     enc = _str_enc_marker(o)
     uiv = o.instance_variables
-    if enc.nil? && uiv.empty?
+    if enc.nil? && uiv.empty? && o.class == String
       out << "\""; _long(o.bytesize, out); out << o
       return
     end
-    out << "I"
+    out << "I" if enc || !uiv.empty?
+    _wrap_prefix(o, String, out, st)
     out << "\""; _long(o.bytesize, out); out << o
-    _long((enc ? 1 : 0) + uiv.length, out)
-    _write_enc(enc, out, st) if enc
-    uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+    if enc || !uiv.empty?
+      _long((enc ? 1 : 0) + uiv.length, out)
+      _write_enc(enc, out, st) if enc
+      uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+    end
   end
 
   # Encoding marker for a String, or nil for ASCII-8BIT (dumped bare).
@@ -259,8 +327,29 @@ module Marshal
   end
 
   def self._reg(st, obj)                               # register a linkable object
-    st[:objs] << obj
+    if (i = st[:reuse])
+      st[:reuse] = nil                                 # a 'C'/'e' wrapper reserved this slot
+      st[:objs][i] = obj
+    else
+      st[:objs] << obj
+    end
     obj
+  end
+
+  def self._reclass(cls, inner)                        # rebuild inner as an instance of cls
+    case inner
+    when String
+      cls.new(inner)
+    when Array
+      a = cls.new; a.replace(inner); a
+    when Hash
+      h = cls.new; inner.each { |k, v| h[k] = v }; h
+    when Regexp
+      cls.new(inner.source, inner.options)
+    else inner
+    end
+  rescue StandardError
+    inner
   end
 
   def self._read(st)
@@ -310,6 +399,21 @@ module Marshal
         v.instance_variable_set(name, val) rescue nil
       end
       v
+    when 0x2f                                            # '/' Regexp
+      src = _bytes(st, _rlong(st)); opt = _byte(st)
+      _reg(st, Regexp.new(src, opt))
+    when 0x43                                            # 'C' subclass wrapper
+      idx = st[:objs].size; st[:objs] << nil
+      cls = Object.const_get(_read(st))
+      st[:reuse] = idx
+      inner = _read(st)
+      obj = _reclass(cls, inner)
+      st[:objs][idx] = obj
+    when 0x65                                            # 'e' extend-module wrapper
+      msym = _read(st)
+      obj = _read(st)
+      (obj.extend(Object.const_get(msym)) rescue nil)
+      obj
     when 0x63                                            # 'c' Class
       _reg(st, Object.const_get(_bytes(st, _rlong(st))))
     when 0x6d                                            # 'm' Module
