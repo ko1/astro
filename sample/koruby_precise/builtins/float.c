@@ -295,6 +295,8 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
             if (!korb_to_index(dv, &ndig)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
         }
     }
+    if (UNLIKELY(ndig > INT32_MAX || ndig < INT32_MIN)) /* ndigits must fit in a C int (CRuby) */
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to `int'", (long)ndig);
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
     intptr_t f = 1;
     for (intptr_t k = 0; k < -ndig; k++) {
