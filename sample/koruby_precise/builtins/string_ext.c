@@ -124,9 +124,11 @@ static int korb_fmt_named_arg(CTX *c, VALUE *slots, const char *fmt, uint32_t fl
         *out_err = korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "one hash required");
         return -1;
     }
-    const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+    const VALUE key_sym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
+    const int32_t hidx = korb_hash_find(VAL2HASH(nh), key_sym);
     if (UNLIKELY(hidx < 0)) {
-        *out_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key<%.*s> not found", (int)(i - nstart), fmt + nstart);
+        char km[256]; snprintf(km, sizeof km, "key<%.*s> not found", (int)(i - nstart), fmt + nstart);
+        *out_err = korb_raise_key(c, slots + 1, nh, key_sym, km);  /* KeyError w/ #receiver + #key */
         return -1;
     }
     *out_arg = VAL2HASH(nh)->items->data[2 * hidx + 1];
@@ -209,16 +211,21 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const int32_t hidx = korb_hash_find(VAL2HASH(nh), key_sym);
             if (hidx >= 0) {
                 named_arg = VAL2HASH(nh)->items->data[2 * hidx + 1];
-            } else if (VAL2HASH(nh)->default_proc != KORB_NIL || VAL2HASH(nh)->default_val != KORB_NIL) {
-                slots[1] = nh; slots[2] = key_sym;         /* missing key with a default → nh[key] (proc / value) */
-                RESULT dr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);
-                if (UNLIKELY(dr.state != KORB_NORMAL)) { coerce_err = dr; has_coerce_err = true; err = true; break; }
-                FMT_REREAD_ARGS();
-                named_arg = dr.value;
-            } else {                                        /* a missing named key with no default raises KeyError (w/ #receiver + #key) */
-                char km[256]; snprintf(km, sizeof km, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
-                coerce_err = korb_raise_key(c, slots + 1, nh, key_sym, km);
-                has_coerce_err = true; err = true; break;
+            } else {
+                VALUE dv = KORB_NIL;                        /* absent key: honor a non-nil default */
+                if (VAL2HASH(nh)->default_proc != KORB_NIL || VAL2HASH(nh)->default_val != KORB_NIL) {
+                    slots[1] = nh; slots[2] = key_sym;     /* nh[key] (proc / value) */
+                    RESULT dr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);
+                    if (UNLIKELY(dr.state != KORB_NORMAL)) { coerce_err = dr; has_coerce_err = true; err = true; break; }
+                    FMT_REREAD_ARGS();
+                    dv = dr.value;
+                }
+                if (dv == KORB_NIL) {                       /* no default, or default gave nil → KeyError (w/ #receiver + #key) */
+                    char km[256]; snprintf(km, sizeof km, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+                    coerce_err = korb_raise_key(c, slots + 1, nh, key_sym, km);
+                    has_coerce_err = true; err = true; break;
+                }
+                named_arg = dv;
             }
             if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
             else if (KORB_OBJECT_P(named_arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
@@ -291,9 +298,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
             if (i >= flen || !KORB_HASH_P(nh)) { err = true; errmsg = "malformed format sequence"; break; }
-            const int32_t hidx = korb_hash_find(VAL2HASH(nh), ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart)));
+            const VALUE ksym = ID2SYM(korb_intern(c->vm, fmt + nstart, i - nstart));
+            const int32_t hidx = korb_hash_find(VAL2HASH(nh), ksym);
             if (UNLIKELY(hidx < 0)) {
-                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+                char km[256]; snprintf(km, sizeof km, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+                coerce_err = korb_raise_key(c, slots + 1, nh, ksym, km);  /* KeyError w/ #receiver + #key */
                 has_coerce_err = true; err = true; break;
             }
             named_arg = VAL2HASH(nh)->items->data[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
