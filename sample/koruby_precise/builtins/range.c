@@ -268,6 +268,17 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
         if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
         if (!korb_range_int_bounds(r, &lo, &hi)) {
+            /* Integer begin but endless / Bignum end: min(n) = first n ascending
+             * from begin (capped by a Fixnum end); no materialization. */
+            if (FIXNUM_P(r->rbegin)) {
+                const intptr_t b = FIX2LONG(r->rbegin);
+                uint32_t take = (uint32_t)n;
+                if (r->rend != KORB_NIL && FIXNUM_P(r->rend)) {
+                    const intptr_t e = r->exclude_end ? FIX2LONG(r->rend) : FIX2LONG(r->rend) + 1;
+                    take = (intptr_t)take > e - b ? (uint32_t)(e > b ? e - b : 0) : take;
+                }
+                return korb_range_seq(c, slots, b, take, 1);
+            }
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
             return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
         }
@@ -291,8 +302,28 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
     }
     intptr_t lo, hi;
-    if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-integer range → via to_a */
-        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
+    if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-fixnum bounds */
+#ifdef KORB_HAVE_GMP
+        /* Bignum-bounded Integer range (e.g. 0...2**64): max is end / end-1 with
+         * no materialization (korb_range_int_bounds only recognises Fixnum). */
+        if (KORB_INTEGER_P(r->rbegin) && KORB_INTEGER_P(r->rend) &&
+            (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)) {
+            const int cmp = korb_int_cmp(r->rbegin, r->rend);
+            if (cmp > 0 || (r->exclude_end && cmp == 0)) return RESULT_OK(KORB_NIL);   /* empty */
+            if (!r->exclude_end) return RESULT_OK(r->rend);
+            return korb_int_arith(c, slots, r->rend, LONG2FIX(1), 1, 0);              /* exclusive: end - 1 */
+        }
+#endif
+        /* Non-numeric INCLUSIVE range (Time..Time, 'f'..'l'): the max is simply
+         * the end (when begin <= end) — no #succ / to_a materialization needed.
+         * Exclusive non-numeric still needs the succ-strided to_a below. */
+        if (!r->exclude_end && r->rend != KORB_NIL &&
+            (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL)) {
+            int cmp; RESULT cr = korb_range_cmp(c, slots, r->rbegin, r->rend, &cmp);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cmp != 2) return RESULT_OK(cmp <= 0 ? r->rend : KORB_NIL);
+        }
+        slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));   /* non-integer (String …) → via to_a */
         return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
     }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* max(n) → last n descending */
