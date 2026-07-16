@@ -1321,6 +1321,45 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             }
         }
     }
+    /* Generic non-numeric range with a block (String range, or any element that
+     * defines #+ and #<=>): iterate v = begin; yield; v = v + step — while
+     * v <=> end stays in range (CRuby range_step for comparable+addable values).
+     * A step that doesn't advance toward end (e.g. 0) yields nothing. */
+    {
+        const KorbRange *const rng = SELF_RANGE;
+        const VALUE bg = rng->rbegin;
+        const bool numeric_begin = FIXNUM_P(bg) || KORB_FLOAT_P(bg) || KORB_BIGNUM_P(bg) || KORB_RATIONAL_P(bg);
+        const bool numeric_step  = FIXNUM_P(sv) || KORB_FLOAT_P(sv) || KORB_BIGNUM_P(sv) || KORB_RATIONAL_P(sv);
+        /* Only when BOTH the range and the step are non-numeric objects: an
+         * Integer step over a String range uses #succ (fall through), and a
+         * Float step over a String range is a TypeError (fall through to 1324). */
+        if (block != NULL && bg != KORB_NIL && !numeric_begin && !numeric_step) {
+            const bool excl = rng->exclude_end;       /* value copy — safe across GC */
+            const uint32_t mid_plus = korb_intern(c->vm, "+", 1);
+            slots[0] = bg;                            /* v    — all rooted (moving GC): the range,   */
+            slots[1] = sv;                            /* step   its end, v, step, next may all move   */
+            slots[2] = rng->rend;                     /* endv   under the #+/#<=>/yield dispatches.   */
+            for (;;) {
+                if (slots[2] != KORB_NIL) {           /* bounded: stop once v passes end */
+                    int cmp; RESULT cr = korb_range_cmp(c, slots + 3, slots[0], slots[2], &cmp);
+                    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                    if (cmp == 2 || (excl ? cmp >= 0 : cmp > 0)) break;
+                }
+                slots[3] = slots[0];                  /* recv for v+step */
+                slots[4] = slots[1];
+                RESULT nr = korb_send(c, slots + 5, mid_plus, 0, 1);   /* next = v + step */
+                if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+                slots[3] = nr.value;                  /* park next (rooted) before the <=> dispatch may GC */
+                int pc; RESULT pr = korb_range_cmp(c, slots + 4, slots[3], slots[0], &pc);   /* next <=> v */
+                if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                if (pc != 1) break;                   /* no forward progress (step 0 / wrong direction) → stop, no yield */
+                RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[0], 1, captured_self);
+                if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+                slots[0] = slots[3];                  /* v = next */
+            }
+            return RESULT_OK(VALUE_REF_GET(self));
+        }
+    }
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
     if (UNLIKELY(st == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
