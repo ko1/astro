@@ -124,6 +124,9 @@ module Marshal
     uiv = o.instance_variables
     out << "I" unless uiv.empty?
     _wrap_prefix(o, Hash, out, st)
+    if o.compare_by_identity?                           # CRuby marks this with a 'C:Hash' wrapper
+      out << "C"; _symdump(:Hash, out, st)
+    end
     if o.default.nil?
       out << "{"; _long(o.size, out)
     else
@@ -401,7 +404,11 @@ module Marshal
     when Array
       a = cls.new; a.replace(inner); a
     when Hash
-      h = cls.new; inner.each { |k, v| h[k] = v }; h
+      if cls == Hash                                     # 'C:Hash' marks compare_by_identity
+        inner.compare_by_identity
+      else
+        h = cls.new; inner.each { |k, v| h[k] = v }; h
+      end
     when Regexp
       cls.new(inner.source, inner.options)
     else inner
