@@ -9459,8 +9459,8 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
 bad:
 #endif
-    if (n == 1 && KORB_OBJECT_P(nv) && korb_responds_to(c, nv, korb_intern(c->vm, "to_r", 4))) {
-        slots[0] = nv;
+    if (n == 1 && (KORB_OBJECT_P(nv) || KORB_COMPLEX_P(nv)) && korb_responds_to(c, nv, korb_intern(c->vm, "to_r", 4))) {
+        slots[0] = nv;                                       /* Complex#to_r: real part if imaginary 0, else RangeError */
         RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, KORB_NIL);
         if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
         if (KORB_RATIONAL_P(rr.value) || KORB_INTEGER_P(rr.value)) return RESULT_OK(rr.value);
