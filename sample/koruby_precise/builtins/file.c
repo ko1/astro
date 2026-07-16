@@ -801,12 +801,16 @@ static RESULT korb_m_dir_i_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(out));
 }
-/* Push the glob(3) matches of one concrete pattern into `arr`. */
-static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat, int flags) {
+/* Push the glob(3) matches of one concrete pattern into `arr`.  When `strip` is
+ * set, a synthetic "./" base prefix (added for a leading `**`) is removed so the
+ * results match CRuby's bare relative paths. */
+static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat, int flags, bool strip) {
     glob_t g; memset(&g, 0, sizeof g);
     glob(pat, flags, NULL, &g);
     for (size_t i = 0; i < g.gl_pathc; i++) {
-        slots[0] = UNWRAP(korb_str_new(c, slots, g.gl_pathv[i], (uint32_t)strlen(g.gl_pathv[i])));
+        const char *m = g.gl_pathv[i];
+        if (strip && m[0] == '.' && m[1] == '/') m += 2;
+        slots[0] = UNWRAP(korb_str_new(c, slots, m, (uint32_t)strlen(m)));
         if (korb_ary_push_val(c, slots + 1, arr, slots[0]).state != KORB_NORMAL) break;
     }
     globfree(&g);
@@ -818,13 +822,14 @@ static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pa
 static RESULT korb_glob_one(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat) {
     const int flags = GLOB_BRACE | GLOB_TILDE;
     const char *ss = strstr(pat, "**");
-    if (!ss) return korb_glob_push(c, slots, arr, pat, flags);
+    if (!ss) return korb_glob_push(c, slots, arr, pat, flags, false);
     /* split into the prefix before the double-star and the suffix after it. */
     char prefix[4096], suffix[4096];
     size_t plen = (size_t)(ss - pat);
     while (plen > 0 && pat[plen - 1] == '/') plen--;                 /* trim the '/' before ** */
     if (plen >= sizeof prefix) plen = sizeof prefix - 1;
     memcpy(prefix, pat, plen); prefix[plen] = '\0';
+    const bool strip = (plen == 0);                                 /* leading `**`: drop the synthetic "./" base */
     const char *suf = ss + 2;                                        /* after "**" */
     while (*suf == '/') suf++;                                       /* skip the slash after the stars */
     snprintf(suffix, sizeof suffix, "%s", suf);
@@ -833,7 +838,7 @@ static RESULT korb_glob_one(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat
         n += snprintf(pbuf + n, sizeof pbuf - n, "%s", prefix[0] ? prefix : ".");
         for (int d = 0; d < depth; d++) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/*");
         if (suffix[0]) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/%s", suffix);
-        CHECK(korb_glob_push(c, slots, arr, pbuf, flags));
+        CHECK(korb_glob_push(c, slots, arr, pbuf, flags, strip));
         /* stop once no directory exists at this depth (nothing deeper to match). */
         char dbuf[8192]; int m = 0;
         m += snprintf(dbuf + m, sizeof dbuf - (size_t)m, "%s", prefix[0] ? prefix : ".");
