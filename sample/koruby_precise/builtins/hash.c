@@ -167,6 +167,9 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
     if (!KORB_HASH_P(other)) return RESULT_OK(KORB_FALSE);
     if (VAL2HASH(VALUE_REF_GET(self))->len != VAL2HASH(other)->len) return RESULT_OK(KORB_FALSE);
+    if (VAL2HASH(VALUE_REF_GET(self))->len != 0 &&        /* non-empty: differ only by compare_by_identity → not equal (two empty hashes stay equal regardless) */
+        ((VAL2HASH(VALUE_REF_GET(self))->head.flags ^ VAL2HASH(other)->head.flags) & KORB_FL_CMP_BY_ID))
+        return RESULT_OK(KORB_FALSE);
     if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive */
     slots[0] = VALUE_REF_GET(self); slots[1] = other;     /* root both across value == dispatch */
     const uint32_t n = VAL2HASH(slots[0])->len;
