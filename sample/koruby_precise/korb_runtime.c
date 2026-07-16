@@ -6585,7 +6585,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE sdef = KORB_NIL;
             struct korb_method *const snew =
                 KORB_CLASS_P(sing) ? korb_class_find_method(sing, vm->mid_new, &sdef) : NULL;
-            if (snew && snew->kind == KORB_METHOD_ISEQ)
+            /* A user `def self.new` (ISEQ) or a builtin singleton `new` (CFUNC —
+             * Regexp/Time/File/Dir) overrides the default allocator; the direct
+             * path resolves this in node_send_cached, this shared (send/block)
+             * path must too. */
+            if (snew && (snew->kind == KORB_METHOD_ISEQ || snew->kind == KORB_METHOD_CFUNC))
                 return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self);
         }
         uint32_t cname = VAL2CLASS(self)->name_sym;
