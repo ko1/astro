@@ -454,10 +454,10 @@ module Marshal
       h.default = _read(st) if t == 0x7d
       h
     when 0x49                                            # 'I' ivar-wrapped
-      v = _read(st)
+      v = _read0(st)                                     # transparent: caller's proc sees the object
       ni = _rlong(st)
       ni.times do
-        name = _read(st); val = _read(st)
+        name = _read0(st); val = _read(st)              # ivar name is structural; value is data
         next if name == :E || name == :encoding         # encoding markers, not user ivars
         v.instance_variable_set(name, val) rescue nil
       end
@@ -467,13 +467,13 @@ module Marshal
       _reg(st, Regexp.new(src, opt))
     when 0x43                                            # 'C' subclass wrapper
       idx = st[:objs].size; st[:objs] << nil
-      cls = _const(_read(st))
+      cls = _const(_read0(st))
       st[:reuse] = idx
       inner = _read(st)
       obj = _reclass(cls, inner)
       st[:objs][idx] = obj
     when 0x65                                            # 'e' extend-module wrapper
-      msym = _read(st)
+      msym = _read0(st)
       obj = _read(st)
       (obj.extend(_const(msym)) rescue nil)
       obj
@@ -483,10 +483,10 @@ module Marshal
       _reg(st, _const(_bytes(st, _rlong(st))))
     when 0x6f                                            # 'o' generic object
       idx = st[:objs].size; st[:objs] << nil
-      cls = _read(st)
+      cls = _read0(st)
       ni = _rlong(st)
       ivars = {}
-      ni.times { name = _read(st); ivars[name] = _read(st) }
+      ni.times { name = _read0(st); ivars[name] = _read(st) }
       if cls == :Range
         obj = Range.new(ivars[:begin], ivars[:end], ivars[:excl])
       else
@@ -503,20 +503,20 @@ module Marshal
       st[:objs][idx] = obj
     when 0x75                                            # 'u' user _dump
       idx = st[:objs].size; st[:objs] << nil
-      cls = _read(st)
+      cls = _read0(st)
       data = _bytes(st, _rlong(st))
       obj = _const(cls)._load(data)
       st[:objs][idx] = obj
     when 0x53                                            # 'S' Struct
       idx = st[:objs].size; st[:objs] << nil
-      cls = _read(st)
+      cls = _read0(st)
       n = _rlong(st)
       vals = []
-      n.times { _read(st); vals << _read(st) }
+      n.times { _read0(st); vals << _read(st) }
       st[:objs][idx] = _const(cls).new(*vals)
     when 0x55                                            # 'U' user marshal_dump
       idx = st[:objs].size; st[:objs] << nil
-      cls = _read(st)
+      cls = _read0(st)
       data = _read(st)
       obj = case cls
             when :Rational then Rational(data[0], data[1])
