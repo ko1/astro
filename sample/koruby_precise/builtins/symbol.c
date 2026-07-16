@@ -60,11 +60,14 @@ static RESULT korb_m_obj_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
  * user method_missing call `super` for the unhandled case (CRuby semantics). */
 static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE name = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    const char *nm = SYMBOL_P(name) ? korb_sym_name(c->vm, SYM2ID(name))
-                   : (KORB_STRING_P(name) ? VAL2STR(name)->buf->data : "(unknown)");
+    char nmbuf[256];   /* copy the method name: korb_recv_desc may dispatch #name → GC → move a String arg */
+    if (SYMBOL_P(name))       snprintf(nmbuf, sizeof nmbuf, "%s", korb_sym_name(c->vm, SYM2ID(name)));
+    else if (KORB_STRING_P(name)) snprintf(nmbuf, sizeof nmbuf, "%.*s", (int)VAL2STR(name)->len, VAL2STR(name)->buf->data);
+    else                      snprintf(nmbuf, sizeof nmbuf, "(unknown)");
+    const char *const nm = nmbuf;
     const VALUE recv = VALUE_REF_GET(self);
     char buf[256];   /* CRuby-shaped: "class Foo" / "module Bar" / "an instance of Foo" / … */
-    const char *tn = korb_recv_desc(c, recv, buf, sizeof buf);
+    const char *tn = korb_recv_desc(c, slots, recv, buf, sizeof buf);
     RESULT r = korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for %s", nm, tn);
     if (LIKELY(KORB_EXC_P(r.value))) {                    /* attach #name / #receiver metadata */
         slots[0] = r.value;

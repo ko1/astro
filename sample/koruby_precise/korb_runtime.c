@@ -4294,19 +4294,39 @@ korb_a_type_name(VALUE v)
  *   instance → "an instance of Foo" (the object's real class name)
  *   others   → korb_a_type_name (nil/true/Integer/String/…).
  * Formats into `buf` for the dynamic cases; returns a static string otherwise. */
+/* Overridable #name of a class/module: dispatches the (user-overridable) `name`
+ * method so a `def self.name` shows through in error messages (CRuby).  Returns
+ * a static string into `buf` on success, or NULL to fall back.  `scratch` is a
+ * VM-stack scratch window; `cls` must be a class/module. */
 static const char *
-korb_recv_desc(CTX *c, VALUE v, char *buf, size_t sz)
+korb_class_display_name(CTX *c, VALUE *scratch, VALUE cls, char *buf, size_t sz)
+{
+    scratch[0] = cls;                                    /* root across the dispatch */
+    RESULT nr = korb_send(c, scratch + 1, korb_intern(c->vm, "name", 4), 0, 0);
+    if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value) && VAL2STR(nr.value)->len > 0) {
+        snprintf(buf, sz, "%.*s", (int)VAL2STR(nr.value)->len, VAL2STR(nr.value)->buf->data);
+        return buf;
+    }
+    return NULL;                                         /* nil (anonymous) / non-String / raised → fall back */
+}
+
+static const char *
+korb_recv_desc(CTX *c, VALUE *scratch, VALUE v, char *buf, size_t sz)
 {
     if (KORB_CLASS_P(v)) {
         const KorbClass *const k = VAL2CLASS(v);
         const char *const kind = k->is_module ? "module" : "class";
-        if (k->name_sym) { char qn[192]; korb_class_qname_into(c, v, qn, sizeof qn); snprintf(buf, sz, "%s %s", kind, qn); }
+        char nm[192];
+        if (korb_class_display_name(c, scratch, v, nm, sizeof nm)) snprintf(buf, sz, "%s %s", kind, nm);
+        else if (k->name_sym) { korb_class_qname_into(c, v, nm, sizeof nm); snprintf(buf, sz, "%s %s", kind, nm); }
         else snprintf(buf, sz, "%s #<%s:0x%016zx>", kind, k->is_module ? "Module" : "Class", (size_t)(uintptr_t)v);
         return buf;
     }
     if (KORB_OBJECT_P(v)) {
         const VALUE cls = VAL2OBJ(v)->klass;
-        if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { char qn[192]; korb_class_qname_into(c, cls, qn, sizeof qn); snprintf(buf, sz, "an instance of %s", qn); }
+        char nm[192];
+        if (KORB_CLASS_P(cls) && korb_class_display_name(c, scratch, cls, nm, sizeof nm)) snprintf(buf, sz, "an instance of %s", nm);
+        else if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, nm, sizeof nm); snprintf(buf, sz, "an instance of %s", nm); }
         else if (KORB_CLASS_P(cls))
             snprintf(buf, sz, "an instance of #<Class:0x%016zx>", (size_t)(uintptr_t)cls);
         else
@@ -5565,10 +5585,10 @@ korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
             }
             slots[0] = self;                               /* root receiver across raise + ivar_set */
             char rdbuf2[256];
+            const char *const rd2 = (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
+                                        ? "main" : korb_recv_desc(c, slots + 2, slots[0], rdbuf2, sizeof rdbuf2);
             RESULT nmr = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
-                              "undefined method '%s' for %s", korb_sym_name(vm, mid),
-                              (KORB_OBJECT_P(slots[0]) && VAL2OBJ(slots[0])->klass == KORB_NIL)
-                                  ? "main" : korb_recv_desc(c, slots[0], rdbuf2, sizeof rdbuf2));
+                              "undefined method '%s' for %s", korb_sym_name(vm, mid), rd2);
             if (LIKELY(KORB_EXC_P(nmr.value))) {
                 slots[1] = nmr.value;
                 VALUE_REF eref = VALUE_REF_AT(&slots[1]);
@@ -6919,9 +6939,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         slots[0] = self;                                   /* root receiver across the raise + ivar_set allocs */
         char rdbuf[256];
+        const char *const rd = korb_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
         RESULT r = korb_raise(c, slots + 1, KORB_E_NOMETHOD, line,
                               "undefined method '%s' for %s",
-                              korb_sym_name(vm, mid), korb_recv_desc(c, slots[0], rdbuf, sizeof rdbuf));
+                              korb_sym_name(vm, mid), rd);
         if (LIKELY(KORB_EXC_P(r.value))) {                 /* attach #name / #receiver metadata */
             slots[1] = r.value;
             VALUE_REF eref = VALUE_REF_AT(&slots[1]);
