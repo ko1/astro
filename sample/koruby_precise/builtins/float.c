@@ -8,8 +8,11 @@ static RESULT korb_m_flt_uminus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 /* Float#rationalize(eps=nil): simplest rational within eps (or within the
  * float's own rounding interval if no eps) of self. */
 static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     double f = SELF_FLT;
-    if (UNLIKELY(!isfinite(f))) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Infinity");
+    if (UNLIKELY(!isfinite(f)))
+        return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(f) ? "NaN" : (f < 0 ? "-Infinity" : "Infinity"));
     int64_t n, d;
     if (VALUE_SLICE_LEN(a) >= 1) {
         double eps;
@@ -45,10 +48,12 @@ static RESULT korb_m_rat_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
 }
 static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->num);
+    (void)a; if (UNLIKELY(!isfinite(SELF_FLT))) return RESULT_OK(VALUE_REF_GET(self));   /* NaN/±Infinity → self (CRuby) */
+    RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->num);
 }
 static RESULT korb_m_flt_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->den);
+    (void)a; if (UNLIKELY(!isfinite(SELF_FLT))) return RESULT_OK(LONG2FIX(1));           /* NaN/±Infinity → 1 (CRuby) */
+    RESULT r = korb_flt_to_rat(c, slots, SELF_FLT); if (r.state != KORB_NORMAL) return r; return RESULT_OK(VAL2RAT(r.value)->den);
 }
 static RESULT korb_m_flt_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)a; return korb_float_new(c, slots, fabs(SELF_FLT)); }
 static RESULT korb_m_flt_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_FLT == 0.0 ? KORB_TRUE : KORB_FALSE); }
