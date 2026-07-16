@@ -371,6 +371,9 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE arg = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(arg) && korb_float_val(arg) == 0.0)   /* Rational#div(0.0): ZeroDivisionError, not floor(Inf) */
+        return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
     slots[0] = VALUE_REF_GET(self);
     slots[1] = VALUE_SLICE_GET(a, 0);
     RESULT q = korb_send_impl(c, slots + 2, korb_intern(c->vm, "/", 1), 0, 1, NULL, NULL, NULL);
@@ -477,7 +480,12 @@ static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* truncate([ndigits]) — toward zero (mode 2). ndigits<=0 → Integer, >0 → Rational. */
 static RESULT korb_m_rat_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t nd = 0;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) nd = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1) {
+        const VALUE p = VALUE_SLICE_GET(a, 0);
+        if (FIXNUM_P(p)) nd = FIX2LONG(p);
+        else if (UNLIKELY(!KORB_INTEGER_P(p)))       /* non-Integer precision → TypeError (no #to_int coercion) */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "not an integer");   /* Bignum precision keeps nd=0 (untested) */
+    }
     return korb_rat_round_digits(c, slots, SELF_RAT->num, SELF_RAT->den, nd, 2);
 }
 static double korb_cospi(double x);   /* fwd (builtins/int_float_ext.c) */
@@ -527,6 +535,7 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
         else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
+        if (base == 0.0 && ex < 0) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");   /* 0 ** negative */
         if (base < 0 && ex != floor(ex)) {                 /* negative base, fractional exp → Complex */
             const double mag = pow(-base, ex);
             slots[2] = UNWRAP(korb_float_new(c, slots + 2, mag * korb_cospi(ex)));
