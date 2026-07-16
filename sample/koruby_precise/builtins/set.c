@@ -1296,10 +1296,21 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
         if (UNLIKELY(mid == UINT32_MAX))              /* bad arg type is checked before frozen-ness (CRuby order) */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
         KORB_CHECK_FROZEN(c, slots, cls);             /* undef_method on a frozen class → FrozenError (even for a missing name) */
-        VALUE mdef = KORB_NIL;                         /* NameError only when the method exists nowhere (self/ancestors/global) */
-        if (UNLIKELY(korb_class_find_method(cls, mid, &mdef) == NULL && korb_method_lookup(c->vm, mid) == NULL))
-            return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
-                              korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", korb_type_name(cls));
+        VALUE mdef = KORB_NIL;                         /* NameError only when the method exists nowhere (self/ancestors/global/Object/intrinsic) */
+        if (UNLIKELY(korb_class_find_method(cls, mid, &mdef) == NULL && korb_method_lookup(c->vm, mid) == NULL)) {
+            /* to_s/inspect/!~/<=>/! are koruby-intrinsic universal methods (no
+             * table entry); ==/===/hash/eql? live on Object.  undef_method of an
+             * inherited/intrinsic method is legal (delegate.rb undefs exactly
+             * these on a duped Kernel) — only a genuinely unknown name raises. */
+            const VALUE objc = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+            const bool on_object = KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL;
+            const char *const nm = korb_sym_name(c->vm, mid);
+            const bool intrinsic = !strcmp(nm, "to_s") || !strcmp(nm, "inspect") || !strcmp(nm, "!~") ||
+                                   !strcmp(nm, "<=>") || !strcmp(nm, "!") || !strcmp(nm, "!=");
+            if (!on_object && !intrinsic)
+                return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for %s '%s'",
+                                  korb_sym_name(c->vm, mid), k->is_module ? "module" : "class", korb_type_name(cls));
+        }
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; break; }
     }

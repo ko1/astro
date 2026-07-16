@@ -1059,7 +1059,15 @@ def evaluate(code, &blk)
   end
 end
 
-# koruby: no ARGV/require-of-fixtures.  Best-effort no-op so specs that pull in
-# fixture files don't crash at load (their missing constants surface as err/skip).
-def require(*_a); false; end
+# koruby: try a REAL require first (koruby ships pure-Ruby stdlib under lib/, on
+# $LOAD_PATH), so `require 'delegate'` etc. actually load.  Anything that can't
+# load — a missing gem, or a bundled lib that errors mid-load — is swallowed to a
+# no-op false so the spec file keeps running (its missing constants surface as
+# err/skip, exactly as under the old always-false stub).
+alias __koruby_orig_require require
+def require(name)
+  __koruby_orig_require(name)
+rescue Exception
+  false
+end
 def require_relative(*_a); false; end
