@@ -1003,19 +1003,32 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
     const bool all = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
     const uint32_t mid_init = c->vm->mid_initialize;
     const uint8_t mask = (1u << 0) | (1u << 2);                     /* public + protected */
-    slots[1] = korb_dispatch_class(c, VALUE_REF_GET(self));         /* singleton (if any) or real class */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 2, 4));              /* result */
     const VALUE_REF result = VALUE_REF_AT(&slots[0]);
+    slots[1] = KORB_NIL;                                            /* singleton (rooted) */
     slots[2] = KORB_NIL;                                            /* module scratch (rooted) */
-    if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
-        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), mask, mid_init));
-        if (all && VAL2CLASS(slots[1])->included != KORB_NIL) {     /* extended modules */
-            const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
-            for (uint32_t j = mlen; j-- > 0; ) {
-                slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];
-                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), mask, mid_init));
+    slots[3] = VALUE_REF_GET(self);                                 /* walk cursor (rooted) */
+    /* A Class inherits class methods from its superclasses' singleton classes; walk
+     * the (user) superclass chain when `all`, stopping before Object so builtin class
+     * methods don't leak in. */
+    const VALUE obj_cls = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+    const bool is_class = KORB_CLASS_P(VALUE_REF_GET(self)) && !VAL2CLASS(VALUE_REF_GET(self))->is_singleton;
+    for (;;) {
+        slots[1] = korb_dispatch_class(c, slots[3]);                /* singleton (if any) or real class */
+        if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
+            CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[1]), mask, mid_init));
+            if (all && VAL2CLASS(slots[1])->included != KORB_NIL) { /* extended modules */
+                const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
+                for (uint32_t j = mlen; j-- > 0; ) {
+                    slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];
+                    CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[2]), mask, mid_init));
+                }
             }
         }
+        if (!all || !is_class) break;
+        const VALUE sup = VAL2CLASS(slots[3])->superclass;
+        if (!KORB_CLASS_P(sup) || sup == obj_cls) break;           /* stop before Object */
+        slots[3] = sup;
     }
     return RESULT_OK(VALUE_REF_GET(result));
 }
