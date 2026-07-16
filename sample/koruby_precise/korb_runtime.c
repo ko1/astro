@@ -278,7 +278,23 @@ static int korb_rat_cmp(VALUE l, VALUE r) {
 }
 static RESULT korb_m_rat_num(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num); }
 static RESULT korb_m_rat_den(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->den); }
-static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; double n, d; korb_num_to_d(SELF_RAT->num, &n); korb_num_to_d(SELF_RAT->den, &d); return korb_float_new(c, slots, n / d); }
+static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE num = SELF_RAT->num, den = SELF_RAT->den;
+    if (LIKELY(FIXNUM_P(num) && FIXNUM_P(den)))
+        return korb_float_new(c, slots, (double)FIX2LONG(num) / (double)FIX2LONG(den));
+#ifdef KORB_HAVE_GMP
+    /* Bignum num/den: naive num.to_d / den.to_d overflows each to ±Inf → NaN.
+     * mpq_get_d computes the ratio exactly-rounded regardless of magnitude. */
+    mpz_t zn, zd; korb_to_mpz(num, zn); korb_to_mpz(den, zd);
+    mpq_t q; mpq_init(q); mpq_set_num(q, zn); mpq_set_den(q, zd); mpq_canonicalize(q);
+    const double r = mpq_get_d(q);
+    mpq_clear(q); mpz_clear(zn); mpz_clear(zd);
+    return korb_float_new(c, slots, r);
+#else
+    double n, d; korb_num_to_d(num, &n); korb_num_to_d(den, &d); return korb_float_new(c, slots, n / d);
+#endif
+}
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* integer floor-div of rational num/den (mode: 0 floor, 1 ceil, 2 trunc,
  * 3 round-half-away (:up), 4 round-half-even, 5 round-half-down (toward zero)). */
@@ -366,9 +382,16 @@ static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * via dispatch; `other` is re-read from the scanned args between sends (GC-safe)
  * and intermediate results are parked in slots before each send. */
 static RESULT korb_m_rat_mod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    if (KORB_FLOAT_P(o)) {                                /* Rational % Float → Float (floored fmod) */
+        const double of = korb_float_val(o);
+        if (UNLIKELY(of == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
+        double sf; korb_num_to_d(VALUE_REF_GET(self), &sf);
+        return korb_float_new(c, slots, korb_float_fmod(sf, of));
+    }
     /* floored modulo via the shared GMP/Rational divmod (op 1 = modulo); it parks
      * operands so the allocs can't strand a moved VALUE. */
-    return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), 1);
+    return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), o, 1);
 }
 /* divmod → [self.div(other), self % other]. */
 static RESULT korb_m_rat_divmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
