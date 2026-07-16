@@ -8,7 +8,8 @@ class Numeric
   # Generic fallbacks for Numeric subclasses (Integer/Float/Rational/Complex have
   # their own C implementations, which take precedence).
   def abs; self < 0 ? -self : self; end
-  def magnitude; abs; end
+  alias magnitude abs                     # CRuby: #magnitude is an alias of #abs (same UnboundMethod)
+  def -@; a, b = coerce(0); a - b; end    # CRuby Numeric#-@: 0 - self via #coerce (subtract 2nd from 1st)
   def abs2; self * self; end
   def arg; self < 0 ? Math::PI : 0; end   # angle: 0 for non-negative reals, PI for negative (Float/Integer have C impls)
   alias angle arg
