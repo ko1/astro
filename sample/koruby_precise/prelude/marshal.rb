@@ -70,19 +70,13 @@ module Marshal
       _symdump(:excl, out, st);  _dump(o.exclude_end?, out, st)
       _symdump(:begin, out, st); _dump(o.begin, out, st)
       _symdump(:end, out, st);   _dump(o.end, out, st)
-    when Struct
-      name = o.class.name
-      raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
-      out << "S"
-      _symdump(name.to_sym, out, st)
-      mem = o.members; vals = o.to_a
-      _long(mem.length, out)
-      mem.each_with_index { |m, i| _symdump(m, out, st); _dump(vals[i], out, st) }
+    when Struct then _dump_struct(o, out, st)
     when Rational                                      # 'U' user-marshal
       out << "U"; _symdump(:Rational, out, st); _dump([o.numerator, o.denominator], out, st)
     when Complex
       out << "U"; _symdump(:Complex, out, st); _dump([o.real, o.imaginary], out, st)
     else
+      _raise_if_undumpable(o)
       if defined?(Data) && Data === o
         _dump_data(o, out, st)
       elsif o.respond_to?(:marshal_dump)
@@ -148,6 +142,34 @@ module Marshal
     _long(1 + uiv.length, out)
     _symdump(:E, out, st); _dump(false, out, st)      # ascii regexp encoding
     uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
+  end
+
+  # CRuby raises TypeError for objects with no _dump_data (unmarshalable core types).
+  UNDUMPABLE = %w[MatchData IO File Thread Mutex Thread::Mutex Binding
+                  Method UnboundMethod].freeze
+  def self._raise_if_undumpable(o)
+    if Proc === o || Method === o
+      raise TypeError, "no _dump_data is defined for class #{o.class}"
+    end
+    UNDUMPABLE.each do |n|
+      k = (Object.const_get(n) rescue nil)
+      if k && o.is_a?(k)
+        raise TypeError, "no _dump_data is defined for class #{o.class}"
+      end
+    end
+  end
+
+  def self._dump_struct(o, out, st)
+    name = o.class.name
+    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    uiv = o.instance_variables
+    out << "I" unless uiv.empty?
+    _wrap_prefix(o, o.class, out, st)                  # 'e' extends only
+    out << "S"; _symdump(name.to_sym, out, st)
+    mem = o.members; vals = o.to_a
+    _long(mem.length, out)
+    mem.each_with_index { |m, i| _symdump(m, out, st); _dump(vals[i], out, st) }
+    _dump_ivars(o, uiv, out, st) unless uiv.empty?
   end
 
   def self._dump_data(o, out, st)
