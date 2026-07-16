@@ -2558,6 +2558,11 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     }
     return vm->re_fn == (void *)(intptr_t)-1 ? NULL : (korb_re_exec_fn_t)vm->re_fn;
 }
+/* fwd (defined in builtins/regexp.c, included after string.c) — lets String#/
+ * Symbol#start_with? take a Regexp prefix. */
+static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);
+static RESULT korb_re_build_md(CTX *c, VALUE *slots, VALUE subj, VALUE re, const korb_re_match_t *m);
+static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil);
 RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags) {
     VALUE_REF sref = SLOTS_PUSH(slots, source);          /* root source across alloc */
     KorbRegexp *r = korb_alloc(c, slots, sizeof(KorbRegexp), KORB_OBJ_REGEXP);

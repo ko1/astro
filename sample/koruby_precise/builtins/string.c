@@ -1424,7 +1424,19 @@ static RESULT korb_m_str_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_str_start_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
         VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a prefix via #to_str (regex prefixes are astrorge-blocked) */
+        if (KORB_REGEXP_P(pv)) {                          /* Regexp prefix: matches iff it anchors at byte 0 */
+            korb_re_match_t m;
+            RESULT rr = korb_re_run(c, slots, pv, VALUE_REF_GET(self), 0, &m);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (rr.value == KORB_TRUE && m.matched && m.starts[0] == 0) {
+                slots[0] = VALUE_REF_GET(self); slots[1] = pv;
+                VALUE md = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &m));
+                korb_re_set_lastmatch(c, md);            /* start_with? sets $~ on a true match */
+                return RESULT_OK(KORB_TRUE);
+            }
+            continue;                                    /* this prefix didn't anchor — try the next arg */
+        }
+        if (UNLIKELY(!KORB_STRING_P(pv))) {              /* coerce a prefix via #to_str */
             RESULT cr = korb_coerce_to_str(c, slots, &pv);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, i)));
