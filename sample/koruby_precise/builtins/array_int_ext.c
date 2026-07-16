@@ -715,6 +715,8 @@ static RESULT korb_m_hash_compact(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     (void)a;
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(VALUE_REF_GET(self))->len));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
+    if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* compact retains compare_by_identity */
+        ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
@@ -811,6 +813,11 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;                       /* clear, then copy other's pairs */
     slots[0] = ov;
+    {   /* replace adopts the source's compare_by_identity setting (set or clear) */
+        AroObjectHeader *const sh = (AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self);
+        if (VAL2HASH(ov)->head.flags & KORB_FL_CMP_BY_ID) sh->flags |= KORB_FL_CMP_BY_ID;
+        else                                              sh->flags &= (uint16_t)~KORB_FL_CMP_BY_ID;
+    }
     for (uint32_t i = 0; ; i++) {
         const KorbHash *oh = VAL2HASH(slots[0]);
         if (i >= oh->len) break;
