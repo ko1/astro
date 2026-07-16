@@ -135,19 +135,67 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, false);
 }
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */
+/* Parse a Time.new component String to an integer.  For the month a 3-letter
+ * English name (jan..dec, any case) is also accepted. */
+static bool korb_parse_time_str(const char *s, uint32_t len, bool is_month, intptr_t *out) {
+    static const char *const mon[12] = { "jan","feb","mar","apr","may","jun",
+                                         "jul","aug","sep","oct","nov","dec" };
+    if (is_month && len >= 3) {
+        char lo[3];
+        for (int k = 0; k < 3; k++) lo[k] = (char)tolower((unsigned char)s[k]);
+        for (int m = 0; m < 12; m++)
+            if (lo[0] == mon[m][0] && lo[1] == mon[m][1] && lo[2] == mon[m][2]) { *out = m + 1; return true; }
+    }
+    char buf[64]; if (len >= sizeof buf) return false;
+    memcpy(buf, s, len); buf[len] = '\0';
+    char *end; const long v = strtol(buf, &end, 10);
+    while (*end == ' ' || *end == '\t' || *end == '\n') end++;
+    if (end == buf || *end != '\0') return false;
+    *out = (intptr_t)v; return true;
+}
+
 static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE a, bool utc) {
     struct tm tm; memset(&tm, 0, sizeof tm);
     intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
     double subsec = 0.0;                                     /* fractional seconds (Float/Rational sec arg) */
     const intptr_t defs = (intptr_t)VALUE_SLICE_LEN(a);
+    slots[0] = cls;                                          /* root cls across #to_int/#to_str dispatch */
     for (intptr_t i = 0; i < 6 && i < defs; i++) {
-        const VALUE cv = VALUE_SLICE_GET(a, i);
-        if (i == 5 && !FIXNUM_P(cv)) {                       /* seconds may be fractional (Float/Rational) */
+        VALUE cv = VALUE_SLICE_GET(a, i);
+        if (i == 5 && !FIXNUM_P(cv) && (KORB_FLOAT_P(cv) || KORB_RATIONAL_P(cv))) {  /* fractional seconds */
             double sv = 0; if (korb_num_to_d(cv, &sv)) { comp[5] = (intptr_t)sv; subsec = sv - (double)comp[5]; }
+            continue;
         }
-        else if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
-        else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
+        if (cv == KORB_NIL) {                                /* nil year is a TypeError; later nils keep the default */
+            if (i == 0) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion from nil to integer");
+            continue;
+        }
+        if (FIXNUM_P(cv)) { comp[i] = FIX2LONG(cv); continue; }
+        if (KORB_FLOAT_P(cv)) { comp[i] = (intptr_t)korb_float_val(cv); continue; }
+        if (!KORB_STRING_P(cv)) {                            /* coerce: #to_int, else #to_str → parse */
+            if (korb_responds_to(c, cv, korb_intern(c->vm, "to_int", 6))) {
+                slots[1] = cv;
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (FIXNUM_P(r.value)) { comp[i] = FIX2LONG(r.value); cls = slots[0]; continue; }
+                if (KORB_FLOAT_P(r.value)) { comp[i] = (intptr_t)korb_float_val(r.value); cls = slots[0]; continue; }
+            }
+            if (korb_responds_to(c, cv, korb_intern(c->vm, "to_str", 6))) {
+                slots[1] = cv;
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                cls = slots[0];
+                if (KORB_STRING_P(r.value)) cv = r.value;
+                else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, i)));
+            } else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(cv));
+        }
+        if (KORB_STRING_P(cv)) {                             /* String component → parse (month accepts names) */
+            const KorbString *cs = VAL2STR(cv);
+            if (!korb_parse_time_str(cs->buf->data, cs->len, i == 1, &comp[i]))
+                return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "argument out of range");
+        }
     }
+    cls = slots[0];                                          /* re-read after any GC move */
     /* CRuby raises ArgumentError for out-of-range components (no mktime rollover). */
     if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
         comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60)
