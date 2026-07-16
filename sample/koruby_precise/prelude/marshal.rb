@@ -333,17 +333,37 @@ module Marshal
 
   # --- load ------------------------------------------------------------------
 
-  def self.load(data, _proc = nil)
-    data = data.read if data.respond_to?(:read) && !data.is_a?(String)
+  def self.load(data, proc = nil)
+    from_io = false
+    if data.respond_to?(:read) && !data.is_a?(String)
+      from_io = true; data = data.read
+    end
     data = data.string if data.respond_to?(:string)
-    st = { s: data, i: 0, syms: [], objs: [] }
-    _byte(st); _byte(st)                                # major, minor
+    if data.nil? || data.bytesize == 0
+      raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
+    end
+    st = { s: data, i: 0, syms: [], objs: [], proc: proc }
+    maj = _byte(st); min = _byte(st)
+    if maj != MAJOR_VERSION || min > MINOR_VERSION
+      raise TypeError,
+            "incompatible marshal file format (can't be read)\n" \
+            "\tformat version #{MAJOR_VERSION}.#{MINOR_VERSION} required; " \
+            "#{maj}.#{min} given"
+    end
     _read(st)
   end
   class << self; alias restore load; end
 
+  # Resolve a possibly '::'-qualified constant name for load; ArgumentError if absent.
+  def self._const(name)
+    name.to_s.split("::").reduce(Object) { |m, n| m.const_get(n) }
+  rescue NameError
+    raise ArgumentError, "undefined class/module #{name}"
+  end
+
   def self._byte(st)
     b = st[:s].getbyte(st[:i])
+    raise ArgumentError, "marshal data too short" if b.nil?
     st[:i] += 1
     b
   end
@@ -375,6 +395,11 @@ module Marshal
   end
 
   def self._read(st)
+    v = _read0(st)
+    (p = st[:proc]) ? p.call(v) : v
+  end
+
+  def self._read0(st)
     t = _byte(st)
     case t
     when 0x30 then nil                                  # '0'
@@ -426,7 +451,7 @@ module Marshal
       _reg(st, Regexp.new(src, opt))
     when 0x43                                            # 'C' subclass wrapper
       idx = st[:objs].size; st[:objs] << nil
-      cls = Object.const_get(_read(st))
+      cls = _const(_read(st))
       st[:reuse] = idx
       inner = _read(st)
       obj = _reclass(cls, inner)
@@ -434,12 +459,12 @@ module Marshal
     when 0x65                                            # 'e' extend-module wrapper
       msym = _read(st)
       obj = _read(st)
-      (obj.extend(Object.const_get(msym)) rescue nil)
+      (obj.extend(_const(msym)) rescue nil)
       obj
     when 0x63                                            # 'c' Class
-      _reg(st, Object.const_get(_bytes(st, _rlong(st))))
+      _reg(st, _const(_bytes(st, _rlong(st))))
     when 0x6d                                            # 'm' Module
-      _reg(st, Object.const_get(_bytes(st, _rlong(st))))
+      _reg(st, _const(_bytes(st, _rlong(st))))
     when 0x6f                                            # 'o' generic object
       idx = st[:objs].size; st[:objs] << nil
       cls = _read(st)
@@ -449,7 +474,7 @@ module Marshal
       if cls == :Range
         obj = Range.new(ivars[:begin], ivars[:end], ivars[:excl])
       else
-        obj = Object.const_get(cls).allocate
+        obj = _const(cls).allocate
         ivars.each { |name, val| obj.instance_variable_set(name, val) }
       end
       st[:objs][idx] = obj
@@ -457,7 +482,7 @@ module Marshal
       idx = st[:objs].size; st[:objs] << nil
       cls = _read(st)
       data = _bytes(st, _rlong(st))
-      obj = Object.const_get(cls)._load(data)
+      obj = _const(cls)._load(data)
       st[:objs][idx] = obj
     when 0x53                                            # 'S' Struct
       idx = st[:objs].size; st[:objs] << nil
@@ -465,7 +490,7 @@ module Marshal
       n = _rlong(st)
       vals = []
       n.times { _read(st); vals << _read(st) }
-      st[:objs][idx] = Object.const_get(cls).new(*vals)
+      st[:objs][idx] = _const(cls).new(*vals)
     when 0x55                                            # 'U' user marshal_dump
       idx = st[:objs].size; st[:objs] << nil
       cls = _read(st)
@@ -474,7 +499,7 @@ module Marshal
             when :Rational then Rational(data[0], data[1])
             when :Complex  then Complex(data[0], data[1])
             else
-              o = Object.const_get(cls).allocate
+              o = _const(cls).allocate
               o.marshal_load(data) if o.respond_to?(:marshal_load)
               o
             end
