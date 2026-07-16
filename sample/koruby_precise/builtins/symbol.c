@@ -656,6 +656,33 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
     }
     return korb_unbound_new(c, slots, cls, mid);
 }
+/* Method#hash — equal for methods that are #eql? (same underlying definition,
+ * and for bound methods the same receiver), consistent with korb_m_meth_eq. */
+static RESULT korb_m_meth_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbMethod *m = VAL2METH(VALUE_REF_GET(self));
+    const struct korb_method *const e = korb_meth_resolve(c, m);
+    /* Hash the SAME definition identity korb_m_meth_eq compares, so aliases
+     * (foo / bar sharing one body) collide as CRuby requires. */
+    uintptr_t def_id = (uintptr_t)e;
+    if (e != NULL) switch (e->kind) {
+        case KORB_METHOD_ISEQ:    def_id = (uintptr_t)e->body; break;
+        case KORB_METHOD_CFUNC:   def_id = (uintptr_t)e->rfn ^ (uintptr_t)e->rbfn; break;
+        case KORB_METHOD_BUILTIN: def_id = (uintptr_t)e->bfn; break;
+        case KORB_METHOD_ATTR_R:
+        case KORB_METHOD_ATTR_W:  def_id = (uintptr_t)e->attr_ivar; break;
+        case KORB_METHOD_DM:      def_id = (uintptr_t)e->dm_proc; break;
+        default: break;
+    }
+    uintptr_t h = def_id * 0x9e3779b97f4a7c15ULL;
+    if (!m->unbound) {                                             /* bound: fold in the receiver's #hash */
+        slots[0] = m->recv;
+        RESULT hr = korb_send(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0);
+        if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        if (FIXNUM_P(hr.value)) h ^= (uintptr_t)FIX2LONG(hr.value) * 0x100000001b3ULL;
+    }
+    return RESULT_OK(LONG2FIX((intptr_t)(h & (((uintptr_t)1 << 62) - 1))));
+}
 /* Method#unbind → UnboundMethod owned by the receiver's class. */
 static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const KorbMethod *const m = VAL2METH(VALUE_REF_GET(self));

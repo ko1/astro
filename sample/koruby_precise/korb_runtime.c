@@ -7953,6 +7953,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "super_method", korb_m_meth_super_method, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "==", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "eql?", korb_m_meth_eq, 1);
+    korb_def_cmethod(c, KORB_C_METHOD, "hash", korb_m_meth_hash, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "unbind", korb_m_meth_unbind, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
@@ -7967,6 +7968,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "super_method", korb_m_meth_super_method, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "==", korb_m_meth_eq, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "eql?", korb_m_meth_eq, 1);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "hash", korb_m_meth_hash, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind", korb_m_meth_bind, 1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
