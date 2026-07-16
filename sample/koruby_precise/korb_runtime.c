@@ -1561,6 +1561,25 @@ korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE 
     return RESULT_OK(VALUE_REF_GET(vref));
 }
 
+/* Raise a KeyError carrying #receiver (recv) and #key (key), as CRuby's
+ * Hash#fetch / Array#fetch / sprintf-%{name} / ENV.fetch do.  `msg` is the
+ * pre-built message.  recv/key are rooted across the ivar allocs. */
+static RESULT
+korb_raise_key(CTX *c, VALUE *slots, VALUE recv, VALUE key, const char *msg)
+{
+    slots[0] = recv; slots[1] = key;
+    RESULT r = korb_raise(c, slots + 2, KORB_E_KEY, 0, "%s", msg);
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        slots[2] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[2]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__key", 6)), slots[1]);
+        r.value = VALUE_REF_GET(eref);
+    }
+    return r;
+}
+
 /* Generic-ivar side table for objects without a struct ivar slot (String/Array/
  * Hash/Proc/...).  Same lockstep-forwarded pattern as the sklass override table:
  * both columns are GC roots (see AROH_VISIT_ROOTS), so `obj == objivar_obj[i]`

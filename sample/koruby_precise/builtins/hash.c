@@ -252,9 +252,9 @@ static RESULT korb_m_hash_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
     char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
     if (km) { korb_fprint_inspect(c, km, VALUE_SLICE_GET(a, 0)); fclose(km); }
-    RESULT r = korb_raise(c, slots, KORB_E_KEY, 0, "key not found: %s", kb ? kb : "");
+    char msg[512]; snprintf(msg, sizeof msg, "key not found: %s", kb ? kb : "");
     free(kb);
-    return r;
+    return korb_raise_key(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), msg);   /* KeyError w/ #receiver + #key */
 }
 
 /* collect keys (sel 0) or values (sel 1) into a new array */

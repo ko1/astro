@@ -215,8 +215,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (UNLIKELY(dr.state != KORB_NORMAL)) { coerce_err = dr; has_coerce_err = true; err = true; break; }
                 FMT_REREAD_ARGS();
                 named_arg = dr.value;
-            } else {                                        /* a missing named key with no default raises KeyError */
-                coerce_err = korb_raise(c, slots + 1, KORB_E_KEY, 0, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+            } else {                                        /* a missing named key with no default raises KeyError (w/ #receiver + #key) */
+                char km[256]; snprintf(km, sizeof km, "key{%.*s} not found", (int)(i - nstart), fmt + nstart);
+                coerce_err = korb_raise_key(c, slots + 1, nh, key_sym, km);
                 has_coerce_err = true; err = true; break;
             }
             if (KORB_STRING_P(named_arg)) fwrite(VAL2STR(named_arg)->buf->data, 1, VAL2STR(named_arg)->len, ms);
