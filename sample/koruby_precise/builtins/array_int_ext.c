@@ -1001,6 +1001,8 @@ static RESULT korb_m_hash_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_hash_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block, VALUE *def_env, VALUE *captured_self, bool keep) {
     if (UNLIKELY(block == NULL)) { slots[0] = VALUE_REF_GET(self); slots[1] = ID2SYM(korb_intern(c->vm, "select", 6)); return korb_send(c, slots + 1, korb_intern(c->vm, "to_enum", 7), 0, 1); }
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
+    if (VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* select/reject retain compare_by_identity */
+        ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
         if (i >= h->len) break;
