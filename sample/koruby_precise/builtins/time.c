@@ -195,6 +195,14 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
                 return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "argument out of range");
         }
     }
+    if (defs >= 7) {                                         /* Time.utc/local 7th arg = microseconds */
+        const VALUE uv = VALUE_SLICE_GET(a, 6);
+        double us = 0;
+        if (FIXNUM_P(uv)) us = (double)FIX2LONG(uv);
+        else if (KORB_FLOAT_P(uv)) us = korb_float_val(uv);
+        else korb_num_to_d(uv, &us);
+        subsec += us / 1e6;
+    }
     cls = slots[0];                                          /* re-read after any GC move */
     /* CRuby raises ArgumentError for out-of-range components (no mktime rollover). */
     if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
