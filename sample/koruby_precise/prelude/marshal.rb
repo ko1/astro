@@ -83,6 +83,8 @@ module Marshal
         _dump_umarshal(o, out, st)
       elsif o.respond_to?(:_dump)
         _dump_udump(o, out, st)
+      elsif Exception === o
+        _dump_exception(o, out, st)
       else
         _dump_generic(o, out, st)
       end
@@ -216,6 +218,20 @@ module Marshal
     else
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
     end
+  end
+
+  # Exception: CRuby stores the message and backtrace as the pseudo-ivars
+  # :mesg and :bt (no '@'), ahead of any real instance variables.
+  def self._dump_exception(o, out, st)
+    name = o.class.name
+    raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
+    _wrap_prefix(o, o.class, out, st)
+    out << "o"; _symdump(name.to_sym, out, st)
+    uiv = o.instance_variables
+    _long(2 + uiv.length, out)
+    _symdump(:mesg, out, st); _dump(o.message, out, st)
+    _symdump(:bt, out, st);   _dump(o.backtrace, out, st)
+    uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
 
   def self._dump_generic(o, out, st)
@@ -474,8 +490,15 @@ module Marshal
       if cls == :Range
         obj = Range.new(ivars[:begin], ivars[:end], ivars[:excl])
       else
-        obj = _const(cls).allocate
-        ivars.each { |name, val| obj.instance_variable_set(name, val) }
+        klass = _const(cls)
+        if klass <= Exception                            # :mesg/:bt are pseudo-ivars
+          obj = klass.new(ivars[:mesg])
+          obj.set_backtrace(ivars[:bt]) if ivars[:bt] && obj.respond_to?(:set_backtrace)
+          ivars.each { |name, val| obj.instance_variable_set(name, val) if name.to_s.start_with?("@") }
+        else
+          obj = klass.allocate
+          ivars.each { |name, val| obj.instance_variable_set(name, val) }
+        end
       end
       st[:objs][idx] = obj
     when 0x75                                            # 'u' user _dump
