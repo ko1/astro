@@ -335,14 +335,31 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
  * push nil rather than raise.  slots[0]=template, slots[1]=subject (both re-read
  * after each result push, which may move them). */
 static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t na = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(na < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE tv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(tv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(tv));
+    long off = 0;                                        /* optional offset: keyword */
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
+        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        const int32_t oi = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "offset", 6)));
+        if (oi >= 0) {
+            const VALUE ov = h->items->data[2 * oi + 1];
+            if (UNLIKELY(!FIXNUM_P(ov)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(ov));
+            off = FIX2LONG(ov);
+            if (UNLIKELY(off < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "offset can't be negative");
+            if (UNLIKELY((uint32_t)off > VAL2STR(VALUE_REF_GET(self))->len))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "offset outside of string");
+        }
+    }
     slots[0] = tv;                                        /* template */
     slots[1] = VALUE_REF_GET(self);                      /* subject */
     slots[2] = UNWRAP(korb_ary_new(c, slots + 3, 0));    /* result */
     VALUE_REF res = VALUE_REF_AT(&slots[2]);
-    uint32_t ti = 0, si = 0;
+    uint32_t ti = 0, si = (uint32_t)off;
     while (ti < VAL2STR(slots[0])->len) {
         const KorbString *t = VAL2STR(slots[0]);
         const char d = t->buf->data[ti++];
