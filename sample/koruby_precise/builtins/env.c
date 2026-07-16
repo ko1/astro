@@ -56,7 +56,8 @@ static RESULT korb_m_env_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (v) return korb_str_new(c, slots, v, (uint32_t)strlen(v));
     if (block != NULL) { slots[0] = VALUE_SLICE_GET(a, 0); return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self); }
     if (VALUE_SLICE_LEN(a) >= 2) return RESULT_OK(VALUE_SLICE_GET(a, 1));
-    return korb_raise(c, slots, KORB_E_KEY, 0, "key not found: \"%s\"", name);
+    char msg[512]; snprintf(msg, sizeof msg, "key not found: \"%s\"", name);   /* KeyError w/ #receiver = ENV, #key */
+    return korb_raise_key(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "ENV", 3)), VALUE_SLICE_GET(a, 0), msg);
 }
 
 /* split environ entry "K=V" — returns key len via *klen, value pointer via *val. */
