@@ -9901,8 +9901,16 @@ korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (UNLIKELY(VALUE_SLICE_LEN(args) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no format string given");
     VALUE fmt = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(fmt)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(fmt));
+    if (UNLIKELY(!KORB_STRING_P(fmt))) {                  /* coerce the format via #to_str */
+        slots[0] = fmt;
+        if (korb_responds_to(c, fmt, korb_intern(c->vm, "to_str", 6))) {
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (UNLIKELY(!KORB_STRING_P(r.value)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(args, 0)));
+            fmt = r.value;
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(fmt));
+    }
     slots[0] = fmt;                                       /* root format string */
     const uint32_t n = VALUE_SLICE_LEN(args) - 1;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n));     /* arr at slots[1], scratch from slots+2 */
