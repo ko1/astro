@@ -932,15 +932,36 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 }
 static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
-    if (KORB_REGEXP_P(src)) { slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; }
+    bool from_regexp = false;
+    if (KORB_REGEXP_P(src)) { slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; from_regexp = true; }
     else if (KORB_STRING_P(src)) slots[0] = src;
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(src));
-    if (VALUE_SLICE_LEN(a) >= 2) {
+    else {                                                /* #to_str coercion, else TypeError */
+        slots[0] = src;
+        if (korb_responds_to(c, src, korb_intern(c->vm, "to_str", 6))) {
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (!KORB_STRING_P(r.value))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(src));
+            slots[0] = r.value;
+        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(src));
+    }
+    /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored. */
+    if (!from_regexp && VALUE_SLICE_LEN(a) >= 2) {
         VALUE opt = VALUE_SLICE_GET(a, 1);
-        if (opt == KORB_TRUE) flags |= 4u;
-        else if (opt == KORB_NIL || opt == KORB_FALSE) {}
+        if (opt == KORB_NIL || opt == KORB_FALSE) {}
         else if (FIXNUM_P(opt)) { long o = FIX2LONG(opt); if (o & 1) flags |= 4u; if (o & 2) flags |= 8u; if (o & 4) flags |= 16u; }
-        else flags |= 4u;
+        else if (KORB_STRING_P(opt)) {                    /* a String of flag chars: i/m/x */
+            const KorbString *fs = VAL2STR(opt);
+            for (uint32_t k = 0; k < fs->len; k++) {
+                switch (fs->buf->data[k]) {
+                  case 'i': flags |= 4u;  break;          /* IGNORECASE */
+                  case 'm': flags |= 16u; break;          /* MULTILINE */
+                  case 'x': flags |= 8u;  break;          /* EXTENDED */
+                  default: return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %c", fs->buf->data[k]);
+                }
+            }
+        }
+        else flags |= 4u;                                 /* any other truthy value → IGNORECASE (CRuby warns) */
     }
     (void)korb_re_load(c->vm);
     korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
