@@ -9859,6 +9859,7 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
         RESULT ci = korb_coerce_to_int(c, slots, &v);      /* dispatches #to_int */
         if (UNLIKELY(ci.state != KORB_NORMAL)) return exc ? ci : RESULT_OK(KORB_NIL);
         if (ci.value == KORB_TRUE) return RESULT_OK(v);
+        if (KORB_BIGNUM_P(v)) return RESULT_OK(v);          /* #to_int returned a Bignum (out of the index range) */
         slots[0] = a0;
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {   /* #to_str → parse as a String (honours base) */
