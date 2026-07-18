@@ -1718,7 +1718,7 @@ korb_ivar_set(CTX *c, VALUE *slots, VALUE_REF selfref, VALUE name_sym, VALUE val
  * defined.  Objects consult their shape (no cost to the hot ivar_get path);
  * class/exc consult their side hash (which already distinguishes nil-set from
  * unset).  Returns false for immediates / other builtins. */
-static bool
+bool
 korb_ivar_defined(CTX *c, VALUE self, VALUE name_sym)
 {
     if (KORB_OBJECT_P(self))

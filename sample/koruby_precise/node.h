@@ -180,6 +180,7 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, VALUE *slots, VALUE klass);
 VALUE  korb_ivar_get(CTX *c, VALUE self, VALUE name_sym);
+bool   korb_ivar_defined(CTX *c, VALUE self, VALUE name_sym);
 bool   korb_responds_to(CTX *c, VALUE self, uint32_t mid);   /* defined?(method) */
 /* write val into an existing ivar slot (cache-hit fast path; routes the WB). */
 void   korb_ivar_store_at(CTX *c, struct KorbObject *o, uint32_t slot, VALUE val);

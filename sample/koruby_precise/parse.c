@@ -2743,7 +2743,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE)) {
             const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name);
-            if (gn == korb_intern(tc->c->vm, "$~", 2)) return ALLOC_node_defined(12, 200, 0);   /* $~ always defined */
+            if (gn == korb_intern(tc->c->vm, "$~", 2) ||        /* always-defined specials */
+                gn == korb_intern(tc->c->vm, "$!", 2) ||
+                gn == korb_intern(tc->c->vm, "$@", 2))
+                return ALLOC_node_defined(12, 200, 0);
             return ALLOC_node_defined(3, gn, 0);
         }
         if (PM_NODE_TYPE_P(v, PM_NUMBERED_REFERENCE_READ_NODE))          /* $1..$9 → gv iff that group matched */

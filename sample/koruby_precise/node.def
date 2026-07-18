@@ -1156,8 +1156,8 @@ node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id, int32_t 
             if (vm->methods[i]->mid == id) { res = "method"; break; }
         break;
       case 1: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX && vm->const_vals[i] != KORB_NIL) res = "constant"; break; }
-      case 2: if (korb_ivar_get(c, slots[self_off], ID2SYM(id)) != KORB_NIL) res = "instance-variable"; break;
-      case 3: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX && vm->const_vals[i] != KORB_NIL) res = "global-variable"; break; }
+      case 2: if (korb_ivar_defined(c, slots[self_off], ID2SYM(id))) res = "instance-variable"; break;   /* membership, not value (nil counts) */
+      case 3: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX) res = "global-variable"; break; }   /* a global assigned nil is still defined */
       case 4: res = "local-variable"; break;
       case 5: res = "expression"; break;
       case 6: res = "self"; break;
