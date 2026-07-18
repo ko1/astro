@@ -442,7 +442,10 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
         return nd;
     }
     for (size_t k = rc->exceptions.size; k-- > 0; ) {
-        NODE *cls = transduce(tc, rc->exceptions.nodes[k]);
+        /* node_rescue evaluates the matcher one slot up (slots+1), so bake its
+         * offsets at chain+1 — otherwise a local / captured-var matcher (e.g.
+         * `rescue klass`) reads the wrong slot and crashes. */
+        NODE *cls = WITH_CHAIN(tc, 1, transduce(tc, rc->exceptions.nodes[k]));
         NODE *nd = ALLOC_node_rescue(cls, body, next, resc_var, flags);
         if (flags & 1u) bake_add(tc, &nd->u.node_rescue.resc_var);
         next = nd;
