@@ -9382,16 +9382,25 @@ static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
-    bool def; const VALUE out = korb_out_target(c, "$stdout", 7, &def);
-    if (def || !KORB_OBJECT_P(out)) {                    /* default $stdout → direct fwrite */
+    bool def; (void)korb_out_target(c, "$stdout", 7, &def);
+    if (def) {                                           /* default $stdout → direct fwrite */
         if (n == 0) { fputc('\n', stdout); return RESULT_OK(KORB_NIL); }
         for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stdout));
         return RESULT_OK(KORB_NIL);
     }
-    slots[0] = out;                                      /* redirected → delegate $stdout.puts(*args) (CRuby) */
-    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
-    RESULT r = korb_send(c, slots + 1 + n, korb_intern(c->vm, "puts", 4), 0, n);
-    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
+    /* redirected → buffer, then $stdout.write (NOT $stdout.puts, which is
+     * Kernel#puts on a plain object and would recurse forever). */
+    char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
+    if (!ms) return RESULT_OK(KORB_NIL);
+    if (n == 0) fputc('\n', ms);
+    else for (uint32_t i = 0; i < n; i++) {
+        RESULT pr = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), ms);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) { fclose(ms); free(buf); return pr; }
+    }
+    fclose(ms);
+    bool def2; const VALUE out = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: buffering may have GC'd */
+    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz); free(buf);
+    return er;
 }
 
 #ifdef KORB_HAVE_GMP
@@ -10129,15 +10138,20 @@ static RESULT
 korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
-    bool def; const VALUE out = korb_out_target(c, "$stdout", 7, &def);
-    if (def || !KORB_OBJECT_P(out)) {                    /* default $stdout → direct fwrite */
+    bool def; (void)korb_out_target(c, "$stdout", 7, &def);
+    if (def) {                                           /* default $stdout → direct fwrite */
         for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, stdout, VALUE_SLICE_GET(args, i));
         return RESULT_OK(KORB_NIL);
     }
-    slots[0] = out;                                      /* redirected → delegate $stdout.print(*args) */
-    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(args, i);
-    RESULT r = korb_send(c, slots + 1 + n, korb_intern(c->vm, "print", 5), 0, n);
-    return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_NIL) : r;
+    /* redirected → buffer, then $stdout.write (NOT $stdout.print, which is
+     * Kernel#print on a plain object and would recurse forever). */
+    char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
+    if (!ms) return RESULT_OK(KORB_NIL);
+    for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, ms, VALUE_SLICE_GET(args, i));
+    fclose(ms);
+    bool def2; const VALUE out = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: buffering may have GC'd */
+    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz); free(buf);
+    return er;
 }
 
 /* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
