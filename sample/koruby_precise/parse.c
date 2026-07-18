@@ -2741,8 +2741,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_path_node_t *)v)->name), 0);
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
             { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }
-        if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE))
-            return ALLOC_node_defined(3, kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name), 0);
+        if (PM_NODE_TYPE_P(v, PM_GLOBAL_VARIABLE_READ_NODE)) {
+            const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)v)->name);
+            if (gn == korb_intern(tc->c->vm, "$~", 2)) return ALLOC_node_defined(12, 200, 0);   /* $~ always defined */
+            return ALLOC_node_defined(3, gn, 0);
+        }
+        if (PM_NODE_TYPE_P(v, PM_NUMBERED_REFERENCE_READ_NODE))          /* $1..$9 → gv iff that group matched */
+            return ALLOC_node_defined(12, 100u + ((const pm_numbered_reference_read_node_t *)v)->number, 0);
+        if (PM_NODE_TYPE_P(v, PM_BACK_REFERENCE_READ_NODE)) {            /* $& $` $' $+ → gv iff non-nil */
+            const uint32_t nm = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)v)->name);
+            uint32_t rk = 0;
+            if      (nm == korb_intern(tc->c->vm, "$`", 2)) rk = 1;
+            else if (nm == korb_intern(tc->c->vm, "$'", 2)) rk = 2;
+            else if (nm == korb_intern(tc->c->vm, "$+", 2)) rk = 3;
+            return ALLOC_node_defined(12, rk, 0);
+        }
         if (PM_NODE_TYPE_P(v, PM_CALL_NODE)) {                           /* method call */
             const pm_call_node_t *cn = (const pm_call_node_t *)v;
             if (cn->receiver != NULL) {                                  /* recv.meth: eval recv, check it responds */
