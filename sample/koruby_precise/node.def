@@ -473,8 +473,14 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         KORB_CHECK_FROZEN_HEAP(c, slots, l, "Array");
         return korb_ary_push_val(c, slots, lhs, rhs);           /* grow path */
     }
-    slots[0] = rhs;   /* recv already rooted at slots[-1] (lhs); stage only the arg — inline-cached String#<< / bignum / user */
-    return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic, KORB_UNDEF);   /* `<<` operator: public, no visibility check */
+    slots[0] = rhs;   /* recv rooted at slots[-1] (lhs); stage only the arg */
+    if (LIKELY(KORB_STRING_P(l)))   /* hot String#<< (a CFUNC) keeps its inline cache */
+        return korb_send_cached(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1, ic, KORB_UNDEF);
+    /* A user (ISEQ) `<<` needs a full call frame; node_shl's slot window is too
+     * tight for korb_send_cached's direct dispatch when the operand is staged by a
+     * multiple-assignment / array-literal RHS (frame collision → stack overflow),
+     * so route non-String receivers through the robust uncached path. */
+    return korb_send(c, slots + 1, c->vm->mid_shl, n->u.node_shl.line, 1);
 }
 
 NODE_DEF
