@@ -166,6 +166,61 @@ add(snips, "closure_counter", "", "def mk; c = 0; -> { c += 1 }; end\nf = mk\np 
 add(snips, "closures_share", "", "a = []; 3.times { |i| a << -> { i } }; p a.map(&:call)")
 add(snips, "curry", "", "add = ->(a, b, c) { a + b + c }; p add.curry[1][2][3]")
 
+# 21b) more control flow: while/until/loop with break value, redo, next in loops
+add(snips, "while_break_val", "", "i=0; r = while true; i+=1; break i*10 if i==3; end; p r")
+add(snips, "until_loop", "", "i=0; until i>=5; i+=1; end; p i")
+add(snips, "loop_break", "", "i=0; r = loop { i+=1; break :done if i==4 }; p [i, r]")
+add(snips, "begin_while", "", "i=0; begin; i+=1; end while i<3; p i")
+add(snips, "flip_map_reduce", "", "p (1..5).map { |x| x*x }.reduce(:+)")
+
+# 23) Enumerable/Array method families with blocks
+add(snips, "each_with_object", "", "p [1,2,3].each_with_object([]) { |x, acc| acc << x*2 }")
+add(snips, "group_by", "", "p (1..6).group_by { |x| x % 3 }")
+add(snips, "chunk_while", "", "p [1,2,4,5,7].chunk_while { |a,b| b-a == 1 }.to_a")
+add(snips, "each_cons_slice", "", "p [[1,2,3,4].each_cons(2).to_a, [1,2,3,4,5].each_slice(2).to_a]")
+add(snips, "zip_flat_map", "", "p [[1,2].zip([3,4],[5,6]), [1,2,3].flat_map { |x| [x, -x] }]")
+add(snips, "partition_reduce", "", "p [(1..6).partition(&:even?), (1..4).reduce(1, :*)]")
+add(snips, "sort_by_min_max", "", "p [%w[bb a ccc].sort_by(&:length), [3,1,2].min, [3,1,2].max_by { |x| -x }]")
+add(snips, "inject_hash", "", "p [1,2,3].inject({}) { |h, x| h[x] = x*x; h }")
+add(snips, "tally_count", "", "p [%w[a b a c a].tally, [1,2,2,3,3,3].count(3)]")
+
+# 24) Hash method families
+add(snips, "hash_merge_block", "", "p({a:1,b:2}.merge({b:3,c:4}) { |k,o,n| o+n })")
+add(snips, "hash_transform", "", "p({a:1,b:2}.transform_values { |v| v*10 }.transform_keys(&:to_s))")
+add(snips, "hash_select_reject", "", "p [{a:1,b:2,c:3}.select { |k,v| v>1 }, {a:1,b:2}.reject { |k,v| v>1 }]")
+add(snips, "hash_each_reduce", "", "s=0; {a:1,b:2,c:3}.each { |k,v| s+=v }; p s")
+add(snips, "hash_default_proc", "", "h=Hash.new { |hh,k| hh[k]=[] }; h[:x] << 1; h[:x] << 2; p h")
+
+# 25) Range operations
+add(snips, "range_step_toa", "", "p [(1..10).step(3).to_a, (0.0..1.0).step(0.5).to_a, ('a'..'e').to_a]")
+add(snips, "range_cover_incl", "", "p [(1..5).cover?(3), (1...5).include?(5), (1..5).sum]")
+
+# 26) numeric methods
+add(snips, "int_methods", "", "p [17.divmod(5), 12.gcd(18), 10.lcm(15), 255.to_s(16), 5.pow(3, 7)]")
+add(snips, "float_methods", "", "p [3.7.floor, 3.2.ceil, 3.14159.round(2), (-5).abs, 2.5.truncate]")
+add(snips, "bignum_bits", "", "b = 2**80; p [b & (b-1), b | 1, b >> 40, (b).bit_length]")
+
+# 27) Proc/Method composition
+add(snips, "proc_compose", "", "f = ->(x){x+1}; g = ->(x){x*2}; p [(f >> g).call(3), (f << g).call(3)]")
+add(snips, "method_object", "class C; def dbl(x); x*2; end; end",
+    "m = C.new.method(:dbl); p [m.call(5), [1,2,3].map(&m)]")
+
+# 28) deep structures + dup/clone/freeze
+add(snips, "deep_dup", "", "a = [[1,2],[3,4]]; b = a.dup; b[0] << 9; p [a, b]")
+add(snips, "frozen_nested", "", "a = [1,2].freeze; p [a.frozen?, (a + [3]).frozen?, a.map { |x| x }.frozen?]")
+add(snips, "obj_as_hashkey", "class Pt2; attr_reader :x,:y; def initialize(x,y);@x=x;@y=y;end; def ==(o); o.is_a?(Pt2)&&x==o.x&&y==o.y; end; def hash; [x,y].hash; end; def eql?(o); self==o; end; end",
+    "h={}; h[Pt2.new(1,2)]=:a; p h[Pt2.new(1,2)]")
+
+# 29) string methods with blocks / format
+add(snips, "gsub_block", "", "p \"hello\".gsub(/l/) { |m| m.upcase }")
+add(snips, "scan_split", "", "p [\"a1b2c3\".scan(/[a-z]\\d/), \"a,b,,c\".split(\",\")]")
+add(snips, "format_variety", "", "p [format(\"%05.2f\", 3.14159), \"%d-%s\" % [5, \"x\"], \"%x\" % 255]")
+add(snips, "str_each_ops", "", "p [\"abc\".chars, \"a\\nb\\nc\".lines, \"hello\".each_char.to_a]")
+
+# 30) case/when with ranges, classes, regexp, lambda
+add(snips, "case_variety", "", "def cls(v); case v; when Integer then :int; when String then :str; when 1..10 then :range; else :other; end; end\np [cls(5), cls(\"x\"), cls(3.5)]")
+add(snips, "case_regexp", "", "def kind(s); case s; when /^\\d+$/ then :num; when /^[a-z]+$/ then :word; else :mixed; end; end\np [kind(\"123\"), kind(\"abc\"), kind(\"a1\")]")
+
 # 22) randomly-generated deep expression trees (deterministic per index — no
 #     Math.random; mixes operators, massign, blocks, rescue, ternary, index).
 class Gen
