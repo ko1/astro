@@ -232,7 +232,10 @@ node_massign_splat(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t npre, 
     for (uint32_t k = 0; k < splat_cnt; k++)
         CHECK(korb_ary_push_val(c, slots + 2, sp, MA_ELEM(npre + k)));
     slots[offs[npre]] = VALUE_REF_GET(sp);
-    for (uint32_t i = 0; i < npost; i++) slots[offs[npre + 1 + i]] = MA_ELEM(len - npost + i);
+    /* posts follow the pre + splat elements (npre + splat_cnt); when there aren't
+     * enough values (splat_cnt == 0 and len < npre+npost) this fills left-to-right
+     * with nil padding, as CRuby does — `len - npost` would underflow. */
+    for (uint32_t i = 0; i < npost; i++) slots[offs[npre + 1 + i]] = MA_ELEM(npre + splat_cnt + i);
 #undef MA_ELEM
     return RESULT_OK(slots[0]);
 }
