@@ -164,7 +164,18 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   positional arity を厳格化し auto-splat しない。FWD 経路の proc は captured_self から届くので
   fast/full 両 yield 経路で is_lambda を見て ArgumentError（opt/rest/post 考慮）+ auto-splat 抑止。
   plain block/proc は不変。yield 38→42（fail 4→0）。
+- **多重代入は coerce 後の Array でなく元の RHS を返す**: `(a, b = obj)`（`obj#to_ary`→[1,2]）が
+  [1,2] を返していた（CRuby は obj）。massign 3 ノードが slots[0] を to_ary 結果で上書きして返していたのを、
+  元 RHS を slots[0]（cursor 下＝rooted）に残し copy を slots[1] で coerce、het/splat は ivar/splat-array
+  scratch を 1 slot 上げる。variables 133→143。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
+- **既知の architectural gap（本ラウンドで確認、未修正）**:
+  - flat const table の nil は「削除済/予約」marker（`remove_const`=set.c で val=nil、Comparable/Enumerable/
+    Numeric の slot 予約も nil）。よって `X = nil; X` / 定数 target が nil を受けると NameError になる
+    （`SINGLE_RHS_1, SINGLE_RHS_2 = 1` の 2 つ目等）。修正には KORB_UNDEF sentinel 導入が必要で
+    remove_const/bootstrap/const_get 全体に波及するため保留。
+  - massign の splat target が非 local（`@x, *y` / `CONST, *rest`）は "non-local splat target" で未対応
+    （splat path は depth-0 local のみ、general desugar 未拡張）。
 - **残ギャップ**: `**{a:1}`/`m("a"=>1)` の keyword 構文分類（位置 Hash 扱い→架構級, version-sensitive）、
   lambda の `(lambda)` inspect marker（`&l` 捕捉で is_lambda が落ちる、block-forward ABI に is_lambda を
   通す必要）、method_spec の splat×#to_a は mspec mock の respond_to 挙動依存（除外）。
