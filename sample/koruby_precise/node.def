@@ -1305,6 +1305,24 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct kor
     return korb_call_cached(c, slots, mid, line, cc, ic, argc, self);
 }
 
+// Implicit-self call whose trailing arg is a keyword bundle carrying a **splat
+// (`m(pos..., **h)` / `m(pos..., k: v, **h)`).  Identical to node_call except an
+// empty kwargs Hash is elided (CRuby 3.0 empty-kwsplat rule) so the callee sees
+// only the positionals — `m(**{})` reaches a 0-arg method, not a `{}` positional.
+// The dropped Hash sits at slots[-1]; dispatching from cur=slots-1 with argc-1
+// keeps `base` (and self at base[-1]) at the same absolute slots, so the empty
+// Hash simply becomes callee scratch.
+NODE_DEF @framehdr
+node_call_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+{
+    (void)n;
+    uint32_t argc = argv_cnt - 1;
+    VALUE *cur = slots;
+    if (LIKELY(argc > 0) && KORB_HASH_P(slots[-1]) && VAL2HASH(slots[-1])->len == 0) { argc--; cur = slots - 1; }
+    const VALUE self = slots[-(intptr_t)argv_cnt];       /* base[-1] (absolute slot; unchanged by the drop) */
+    return korb_call_cached(c, cur, mid, line, cc, ic, argc, self);
+}
+
 // Implicit-self keyword call `f(pos..., k: v...)`.  @children stages the pos args
 // then the keyword VALUES; `kw_syms` is a baked uint32_t[] of the keyword mids,
 // `pos_argc` the positional count (kw count = argv_cnt - pos_argc).  Hash-free

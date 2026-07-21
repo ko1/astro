@@ -1427,6 +1427,9 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
         tc->chain = saved;
+        /* trailing `**h` / `k: v, **h` bundle → drop an empty kwargs Hash at call time */
+        if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_KEYWORD_HASH_NODE))
+            return ALLOC_node_call_kws(mid, line, argv, cnt);
         return ALLOC_node_call(mid, line, argv, cnt);
     }
 }
