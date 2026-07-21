@@ -928,6 +928,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t param
     (void)n; (void)body_dispatcher;
     VALUE definee = slots[self_off];
     if (KORB_CLASS_P(definee)) {
+        { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
         korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
         /* fire Module#method_added(name) — only when overridden (no default → no per-def cost). */
         const uint32_t mad = korb_intern(c->vm, "method_added", 12);
@@ -956,6 +957,7 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint
         korb_class_def_method(c, korb_class_obj_of(c, obj), mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
         return RESULT_OK(ID2SYM(mid));
     }
+    KORB_CHECK_FROZEN(c, slots, obj);                    /* `def frozen_obj.m` → FrozenError */
     VALUE sing = UNWRAP(korb_obj_singleton(c, slots, obj));
     korb_class_def_method(c, sing, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
     /* fire the BasicObject#singleton_method_added(name) hook — only when the

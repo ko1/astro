@@ -389,6 +389,7 @@ const char *korb_a_type_name(VALUE v);
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */
 RESULT korb_raise_frozen(CTX *c, VALUE *slots, VALUE v);   /* "can't modify frozen <Type>: <inspect>" */
+RESULT korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee);   /* def on a frozen class / singleton-of-frozen-obj → FrozenError */
 #define KORB_CHECK_FROZEN(c, slots, v) do {                                    \
     const VALUE _kf = (v);                                                     \
     if (UNLIKELY(AROH_IS_GC_OBJECT(_kf) &&                                     \

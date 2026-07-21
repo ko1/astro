@@ -5435,6 +5435,25 @@ korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
     return r;
 }
 
+/* Guard a method definition against a frozen definee.  Adding a method to a
+ * singleton class modifies its attached object, so a `class << frozen_obj` (or
+ * frozen class) def must raise FrozenError against that object.  Returns a RAISE
+ * result when frozen, else NORMAL. */
+RESULT
+korb_check_def_frozen(CTX *c, VALUE *slots, VALUE definee)
+{
+    VALUE target = definee;
+    if (KORB_CLASS_P(definee) && VAL2CLASS(definee)->is_singleton) {   /* singleton → its attached object governs */
+        struct korb_vm *const vm = c->vm;
+        for (uint32_t i = 0; i < vm->sklass_cnt; i++)
+            if (vm->sklass_cls[i] == definee) { target = vm->sklass_obj[i]; break; }
+    }
+    if (UNLIKELY(AROH_IS_GC_OBJECT(target) &&
+                 (((const AroObjectHeader *)(uintptr_t)target)->flags & KORB_FL_FROZEN)))
+        return korb_raise_frozen(c, slots, target);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* etype for `Klass.new` on an exception class (mirrors the `raise Klass` path):
  * nearest builtin-exception ancestor's exc_etype, else KORB_E_RUNTIME for an
  * abstract base / user subclass of Exception, else -1 (not an exception). */
