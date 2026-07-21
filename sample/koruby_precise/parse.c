@@ -1603,6 +1603,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
         if (safe) return ALLOC_node_send_safe(mid, line, argv, cnt);
+        /* trailing `**h` / `k: v, **h` bundle → drop an empty kwargs Hash at call time */
+        if (argc >= 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[argc - 1], PM_KEYWORD_HASH_NODE)) {
+            NODE *ckws = ALLOC_node_send_kws(mid, line, self_off, argv, cnt);
+            bake_add(tc, &ckws->u.node_send_kws.self_off);
+            return ckws;
+        }
         NODE *call = ALLOC_node_send(mid, line, self_off, argv, cnt);
         bake_add(tc, &call->u.node_send.self_off);    /* fixed up by the caller frame_size (base[-1] = self) */
         return call;

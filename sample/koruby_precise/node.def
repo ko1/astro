@@ -1452,6 +1452,22 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t se
     return korb_send_cached(c, slots, mid, line, argc, ic, caller_self);
 }
 
+// Receiver send whose trailing arg is a keyword bundle carrying a **splat
+// (`recv.m(pos..., **h)`).  Like node_send but an empty kwargs Hash is elided
+// (CRuby 3.0 empty-kwsplat rule): dispatching from cur=slots-1 with argc-1 keeps
+// recv at base[-1] and the empty Hash becomes callee scratch.  caller_self is
+// still read from the original `slots` (self_off indexes the caller frame).
+NODE_DEF @framehdr
+node_send_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+{
+    (void)n;
+    uint32_t argc = argv_cnt - 1;
+    VALUE *cur = slots;
+    if (LIKELY(argc > 0) && KORB_HASH_P(slots[-1]) && VAL2HASH(slots[-1])->len == 0) { argc--; cur = slots - 1; }
+    const VALUE caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
+    return korb_send_cached(c, cur, mid, line, argc, ic, caller_self);
+}
+
 // safe navigation `recv&.m(args)`: if recv is nil, yield nil without dispatch.
 // (args are staged like a normal send; their evaluation on a nil recv is a
 // minor, practically-unobservable deviation from CRuby's lazy arg eval.)
