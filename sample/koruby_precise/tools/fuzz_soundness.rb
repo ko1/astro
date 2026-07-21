@@ -201,7 +201,9 @@ end
 # --- run each snippet through koruby and ruby ------------------------------
 def run(bin, path, env = {})
   out, st = Open3.capture2e(env, bin, path)
-  [out.force_encoding('UTF-8').scrub, st.exitstatus]   # tolerate binary output (marshal/pack)
+  out = out.force_encoding('UTF-8').scrub                # tolerate binary output (marshal/pack)
+  out = out.lines.reject { |l| l =~ /:\s*warning:/ }.join # ruby-only lint warnings are not a soundness signal
+  [out, st.exitstatus]
 rescue => e
   ["<runner-error: #{e.class}>", -1]
 end
@@ -230,18 +232,17 @@ snips.each do |(name, code)|
   # format adds a source snippet + caret which koruby doesn't), strip addresses.
   norm = lambda do |s|
     s = s.gsub(/0x[0-9a-f]+/, '0xADDR').gsub(/#<(\w+):0xADDR>/, '#<\1>')
-    if s =~ /\(([A-Z]\w*(?:Error|Exception|Interrupt))\)\s*\z/m ||
-       (s =~ /:\s*(.+?)\s*\(([A-Z]\w*(?:Error|Exception))\)/m)
-      # extract "message (Class)" from the first error line
-      line = s.lines.find { |l| l =~ /\([A-Z]\w*(?:Error|Exception)\)/ } || s
-      if line =~ /:\s*(.*?)\s*\(([A-Z]\w*(?:Error|Exception))\)/
-        # NameError vs NoMethodError for a bare vcall is a known minor divergence;
-        # treat them as equal so it doesn't drown real diffs.
-        cls = $2.sub('NoMethodError', 'NameError')
-        return "ERR:#{cls}:#{$1.split("\n").first}"
-      end
+    line = s.lines.find { |l| l =~ /\([A-Z]\w*(?:Error|Exception)\)/ }
+    if line && (md = line.match(/:\s+([^:]*?)\s*\(([A-Z]\w*(?:Error|Exception))\)/))
+      # collapse to "ERR:<Class>:<message>"; a bare vcall to an undefined name is a
+      # known minor divergence (koruby → NoMethodError "undefined method", ruby →
+      # NameError "undefined local variable or method"), so unify both.
+      cls = md[2].sub('NoMethodError', 'NameError')
+      msg = md[1].to_s.split("\n").first.to_s.sub('undefined local variable or method', 'undefined method')
+      "ERR:#{cls}:#{msg}"
+    else
+      s
     end
-    s
   end
   if norm.call(ko) != norm.call(rb)
     diffs << [name, ko, rb, code]
