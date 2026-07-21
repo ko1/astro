@@ -6143,6 +6143,26 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(c->vm, kw->entries[j].mid));
             }
         }
+        if (kw->kwrest_slot >= 0) {                      /* collect undeclared keys into **rest (like korb_invoke_method) */
+            VALUE *cur = bf + 1 + blocals;              /* scratch above the block frame */
+            bf[1 + kw->kwrest_slot] = kwhash;          /* park (scanned) for re-read across the alloc below */
+            cur[0] = UNWRAP(korb_hash_new(c, cur, 4));
+            VALUE_REF kr = VALUE_REF_AT(&cur[0]);
+            const VALUE kh = bf[1 + kw->kwrest_slot];
+            if (kh != KORB_NIL) {
+                const uint32_t hn = VAL2HASH(kh)->len;
+                for (uint32_t i = 0; i < hn; i++) {
+                    const VALUE key = VAL2HASH(bf[1 + kw->kwrest_slot])->items->data[2 * i];
+                    bool declared = false;
+                    for (uint32_t j = 0; j < kw->count; j++) if (key == ID2SYM(kw->entries[j].mid)) { declared = true; break; }
+                    if (declared) continue;
+                    cur[1] = key;
+                    const VALUE val = VAL2HASH(bf[1 + kw->kwrest_slot])->items->data[2 * i + 1];
+                    CHECK(korb_hash_set(c, cur + 2, kr, VALUE_REF_AT(&cur[1]), val));
+                }
+            }
+            bf[1 + kw->kwrest_slot] = VALUE_REF_GET(kr);
+        }
     }
     /* `|&b|`: materialize a forwarded block into its local as a Proc (rare; only
      * proc.call passes bp_blk).  Done after positional binding, before dispatch —
