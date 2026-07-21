@@ -168,6 +168,15 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   [1,2] を返していた（CRuby は obj）。massign 3 ノードが slots[0] を to_ary 結果で上書きして返していたのを、
   元 RHS を slots[0]（cursor 下＝rooted）に残し copy を slots[1] で coerce、het/splat は ivar/splat-array
   scratch を 1 slot 上げる。variables 133→143。
+- **massign の非 local splat target**: `@x, *y = ...` / `CONST, *rest = ...` / `h[k], *rest = ...` が
+  "non-local splat target" で未対応だった。target が全 depth-0 local でなければ desugar—検証済の
+  all-local `node_massign_splat` で synth local に massign し、各 synth を実 target（@ivar/CONST/$g/
+  recv.setter=/recv[k]=）へ plumb（新 `assign_target_from_synth`）。massign の戻り（元 RHS）を temp に
+  退避して式値に。variables 143→144。
+- **frozen class/object への def は FrozenError**: frozen class 内 `def m`、`def frozen_obj.m`、
+  `class << B(frozen); def m` が黙って method 追加して symbol を返していた。node_def/node_singleton_def に
+  frozen guard。singleton class への def は attached object の変更なので `korb_check_def_frozen` が
+  sklass table で singleton→attached を辿って判定。def_spec の frozen-def 群が pass。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **既知の architectural gap（本ラウンドで確認、未修正）**:
   - flat const table の nil は「削除済/予約」marker（`remove_const`=set.c で val=nil、Comparable/Enumerable/
