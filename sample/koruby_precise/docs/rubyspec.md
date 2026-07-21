@@ -177,6 +177,8 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   `class << B(frozen); def m` が黙って method 追加して symbol を返していた。node_def/node_singleton_def に
   frozen guard。singleton class への def は attached object の変更なので `korb_check_def_frozen` が
   sklass table で singleton→attached を辿って判定。def_spec の frozen-def 群が pass。
+  同型の gap だった `alias` / `attr_reader/writer/accessor`（builtin + parse-time node_attr 両経路）/
+  `remove_method` にも同 guard を追加（undef_method/define_method は既に check 済）。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **既知の architectural gap（本ラウンドで確認、未修正）**:
   - flat const table の nil は「削除済/予約」marker（`remove_const`=set.c で val=nil、Comparable/Enumerable/
