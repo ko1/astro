@@ -1875,6 +1875,16 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, ct->receiver), v = mw_index_get(tc, src_tmp, idx, aref, line)));
         return kp_send1(setter, line, r, v);
     }
+    if (PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE)) {     /* h[k], a[i] = ...  →  recv.[]=(key, value), single index arg */
+        const pm_index_target_node_t *it = (const pm_index_target_node_t *)t;
+        if (it->block || !it->arguments || it->arguments->arguments.size != 1) return NULL;
+        uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
+        NODE *r, *k, *v;
+        WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, it->receiver),
+                                     k = transduce(tc, it->arguments->arguments.nodes[0]),
+                                     v = mw_index_get(tc, src_tmp, idx, aref, line)));
+        return kp_send2(aset, line, r, k, v);
+    }
     if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {     /* nested `(a, b[, *r], c)` → materialize then destructure */
         const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)t;
         if (mt->rest || mt->rights.size) return NULL;  /* nested splat/post not yet supported */
@@ -2329,8 +2339,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                            PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
                     all_local = false;
                 } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE) ||
-                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / recv.x= → general desugar */
+                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / recv.x= / recv[k]= → general desugar */
                     all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
