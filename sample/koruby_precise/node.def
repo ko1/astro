@@ -1115,11 +1115,13 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
             }
         }
         if (!KORB_CLASS_P(cref)) cref = korb_const_get(vm, owner_name);   /* no chain / unresolved → flat seed (prior behaviour) */
-        for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
+        for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
             idx = korb_const_index_owned(vm, name_sym, o);
             if (idx != UINT32_MAX) break;
         }
-        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);
+        if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
+            idx = korb_const_in_ancestry(vm, cref, name_sym);
+        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);            /* finally top-level / builtin (owner nil) */
     } else {                                          /* top-level bare read — flat first-match (hot path unchanged) */
         idx = korb_const_index(vm, name_sym);
     }

@@ -2837,6 +2837,41 @@ korb_const_index_owned(const struct korb_vm *vm, uint32_t name_sym, VALUE owner)
         if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) return i;
     return UINT32_MAX;
 }
+/* One MRO segment (a class + its prepended/included modules, in method-lookup
+ * order) searched for a constant owned by it — mirrors korb_mro_seg_find. */
+static uint32_t korb_const_mro_seg(const struct korb_vm *vm, VALUE klass, uint32_t name_sym, int depth)
+{
+    if (!KORB_CLASS_P(klass) || depth > 64) return UINT32_MAX;
+    const KorbClass *const k = VAL2CLASS(klass);
+    if (k->prepended != KORB_NIL) {                          /* prepended: most-recently-prepended first */
+        const KorbArray *const pre = VAL2ARY(k->prepended);
+        for (int32_t j = (int32_t)pre->len - 1; j >= 0; j--) {
+            const uint32_t idx = korb_const_mro_seg(vm, pre->items->data[j], name_sym, depth + 1);
+            if (idx != UINT32_MAX) return idx;
+        }
+    }
+    uint32_t idx = korb_const_index_owned(vm, name_sym, klass);
+    if (idx != UINT32_MAX) return idx;
+    if (k->included != KORB_NIL) {                           /* included: most-recently-included first */
+        const KorbArray *const inc = VAL2ARY(k->included);
+        for (int32_t j = (int32_t)inc->len - 1; j >= 0; j--) {
+            idx = korb_const_mro_seg(vm, inc->items->data[j], name_sym, depth + 1);
+            if (idx != UINT32_MAX) return idx;
+        }
+    }
+    return UINT32_MAX;
+}
+/* Search a constant through `cref`'s ancestry (self + modules, then up the
+ * superclass chain) in Ruby's constant-lookup order.  UINT32_MAX if absent. */
+uint32_t
+korb_const_in_ancestry(const struct korb_vm *vm, VALUE cref, uint32_t name_sym)
+{
+    for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
+        const uint32_t idx = korb_const_mro_seg(vm, k, name_sym, 0);
+        if (idx != UINT32_MAX) return idx;
+    }
+    return UINT32_MAX;
+}
 
 void
 korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
