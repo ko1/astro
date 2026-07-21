@@ -201,7 +201,7 @@ end
 # --- run each snippet through koruby and ruby ------------------------------
 def run(bin, path, env = {})
   out, st = Open3.capture2e(env, bin, path)
-  [out, st.exitstatus]
+  [out.force_encoding('UTF-8').scrub, st.exitstatus]   # tolerate binary output (marshal/pack)
 rescue => e
   ["<runner-error: #{e.class}>", -1]
 end
