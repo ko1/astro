@@ -159,6 +159,11 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   `op=`→`X = X op v`。path は static owner（`A::B`/`A::C::B`）対応、dynamic module part は未対応。
   optional_assignments 36→52。（副産物として `X = nil; X` が NameError になる flat-const-table の
   architectural 制約を確認—op-assign は defined? 短絡で回避。）
+- **lambda を block として渡して yield すると arity を強制**: `m(&lam); yield ...` が lambda を
+  block 扱い（lenient）していた—引数過不足を nil bind/drop、単一 Array を auto-splat。lambda は
+  positional arity を厳格化し auto-splat しない。FWD 経路の proc は captured_self から届くので
+  fast/full 両 yield 経路で is_lambda を見て ArgumentError（opt/rest/post 考慮）+ auto-splat 抑止。
+  plain block/proc は不変。yield 38→42（fail 4→0）。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **残ギャップ**: `**{a:1}`/`m("a"=>1)` の keyword 構文分類（位置 Hash 扱い→架構級, version-sensitive）、
   lambda の `(lambda)` inspect marker（`&l` 捕捉で is_lambda が落ちる、block-forward ABI に is_lambda を
