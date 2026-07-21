@@ -40,6 +40,7 @@ struct kp_frame {
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
+    int32_t  method_rest_slot;/* `def m(*rest)` → the rest param's local slot, for forwarding super (-1 = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
     int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
     uint32_t add_cnt, add_capa;
@@ -167,6 +168,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_params = 0;
     f->fwd_slot = -1;
     f->anon_rest_slot = -1;
+    f->method_rest_slot = -1;
     f->class_name_sym = 0;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
@@ -1680,6 +1682,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         rest_slot = rn ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
                        : (int32_t)alloc_synth_local(tc);          /* anonymous `*` → synth slot (bare `*` forwards it) */
         if (!rn) tc->frame->anon_rest_slot = rest_slot;
+        tc->frame->method_rest_slot = rest_slot;                 /* for forwarding super (`super` re-splats the rest) */
     }
     /* `def m(...)` — prism gives no locals, so collect ALL positional args into a
      * synth rest local; `inner(...)` in the body splats it (args-only forward;
@@ -3129,6 +3132,18 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
         uint32_t np = tc->frame->method_params;
+        const int32_t rest_slot = tc->frame->method_rest_slot;
+        if (rest_slot >= 0 && np == 0) {
+            /* `def m(*rest); super; end` → super(*rest): re-splat the (possibly
+             * modified) rest array, so the current elements are forwarded. */
+            NODE *arr;
+            WITH_CHAIN(tc, 1, (arr = bake_lget(tc, rest_slot)));
+            int32_t soff2 = -1 - tc->chain - 1, dco2 = -1 - tc->chain - 1;
+            NODE *_s = ALLOC_node_super_splat(m_mid, line, soff2, dco2, arr);
+            bake_add(tc, &_s->u.node_super_splat.self_off);
+            return _s;
+        }
+        if (rest_slot >= 0) return kp_unsupported(tc, node, "forwarding super with positional + rest params");
         if (np > 3) return kp_unsupported(tc, node, "forwarding super with more than 3 params");
         int32_t soff = -1 - tc->chain - (int32_t)np, dco = -1 - tc->chain - (int32_t)np;
         NODE *a[3];
