@@ -1924,6 +1924,50 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
     return NULL;
 }
 
+/* Assign the value held in synth local `src_local` to multi-assign target `t`
+ * (local / @ivar / CONST / $global / recv.setter= / recv[k]=).  Like
+ * mw_assign_target but the source is a plain local read (built at each target's
+ * own staging chain) instead of `src[idx]` — used to plumb the results of a
+ * non-local splat multi-assign out of synth temps.  Returns NULL if unsupported. */
+static NODE *
+assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local)
+{
+    uint32_t line = kp_line(tc, t);
+    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+        const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)t;
+        return lvar_write(tc, t, lt->name, lt->depth, bake_lget(tc, src_local));
+    }
+    if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE))
+        return bake_ivar_set(tc, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
+                                  bake_lget(tc, src_local));
+    if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
+        uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
+        NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
+    }
+    if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
+        uint32_t name = kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name);
+        NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
+    }
+    if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
+        const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
+        NODE *r, *v;
+        WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, ct->receiver), v = bake_lget(tc, src_local)));
+        return kp_send1(kp_intern_cid(tc, ct->name), line, r, v);
+    }
+    if (PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE)) {
+        const pm_index_target_node_t *it = (const pm_index_target_node_t *)t;
+        if (it->block || !it->arguments || it->arguments->arguments.size != 1) return NULL;
+        NODE *r, *k, *v;
+        WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, it->receiver),
+                                     k = transduce(tc, it->arguments->arguments.nodes[0]),
+                                     v = bake_lget(tc, src_local)));
+        return kp_send2(korb_intern(tc->c->vm, "[]=", 3), line, r, k, v);
+    }
+    return NULL;   /* nested multi-target splat etc. → caller falls to unsupported */
+}
+
 /* Emit a `super`/`super(args)` that forwards the current method's incoming block.
  * `arr` (built at chain+1, staged as the node's array child) supplies the args;
  * the block trio is read from the method frame (self_off is bottom-header →
@@ -2527,8 +2571,47 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* splat path: lefts(npre) | *splat | rights(npost) */
         const pm_splat_node_t *sp = (const pm_splat_node_t *)mw->rest;
         const bool anon_splat = (sp->expression == NULL);    /* `first, *, last = ...` → discard middle */
-        if (!anon_splat && !PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE))
-            return kp_unsupported(tc, node, "non-local splat target");
+        /* Any non-(depth-0-local) target (a splat / pre / post that is @ivar / CONST /
+         * $g / recv.x= / recv[k]=) → desugar: massign into synth locals with the fast
+         * all-local node, then plumb each synth out to its real target. */
+        {
+            bool all_local = true;
+            #define IS_L0(t) (PM_NODE_TYPE_P((t), PM_LOCAL_VARIABLE_TARGET_NODE) && \
+                              ((const pm_local_variable_target_node_t *)(t))->depth == 0)
+            for (uint32_t i = 0; i < mw->lefts.size && all_local; i++) if (!IS_L0(mw->lefts.nodes[i])) all_local = false;
+            for (uint32_t i = 0; i < mw->rights.size && all_local; i++) if (!IS_L0(mw->rights.nodes[i])) all_local = false;
+            if (all_local && !anon_splat && !IS_L0(sp->expression)) all_local = false;
+            #undef IS_L0
+            if (!all_local) {
+                const uint32_t npre = (uint32_t)mw->lefts.size, npost = (uint32_t)mw->rights.size, no = npre + 1u + npost;
+                uint32_t *synth = malloc(sizeof(uint32_t) * no);
+                int32_t  *offs  = malloc(sizeof(int32_t) * no);
+                if (!synth || !offs) abort();
+                for (uint32_t k = 0; k < no; k++) { synth[k] = alloc_synth_local(tc); offs[k] = (int32_t)synth[k] - tc->chain; }
+                NODE *rhs = transduce(tc, mw->value);
+                NODE *massign = ALLOC_node_massign_splat(offs, npre, npost, rhs);
+                for (uint32_t k = 0; k < no; k++) bake_add(tc, &offs[k]);
+                /* store the massign value (original RHS) so we can return it after plumbing */
+                uint32_t rettmp = alloc_synth_local(tc);
+                NODE *acc = bake_lset(tc, rettmp, massign);
+                for (uint32_t i = 0; i < npre; i++) {
+                    NODE *a = assign_target_from_synth(tc, mw->lefts.nodes[i], synth[i]);
+                    if (!a) return kp_unsupported(tc, mw->lefts.nodes[i], "non-local splat target");
+                    acc = ALLOC_node_seq(acc, a);
+                }
+                if (!anon_splat) {
+                    NODE *a = assign_target_from_synth(tc, sp->expression, synth[npre]);
+                    if (!a) return kp_unsupported(tc, sp->expression, "non-local splat target");
+                    acc = ALLOC_node_seq(acc, a);
+                }
+                for (uint32_t j = 0; j < npost; j++) {
+                    NODE *a = assign_target_from_synth(tc, mw->rights.nodes[j], synth[npre + 1u + j]);
+                    if (!a) return kp_unsupported(tc, mw->rights.nodes[j], "non-local splat target");
+                    acc = ALLOC_node_seq(acc, a);
+                }
+                return ALLOC_node_seq(acc, bake_lget(tc, rettmp));   /* massign value = original RHS */
+            }
+        }
         uint32_t npre = (uint32_t)mw->lefts.size, npost = (uint32_t)mw->rights.size;
         uint32_t no = npre + 1u + npost;
         int32_t *offs = malloc(sizeof(int32_t) * no);
