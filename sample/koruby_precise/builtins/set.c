@@ -679,6 +679,7 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     struct korb_vm *const vm = c->vm;
     slots[0] = VALUE_REF_GET(self);                          /* cls (rooted) */
     if (UNLIKELY(!KORB_CLASS_P(slots[0]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "attr on a non-class");
+    { RESULT fr = korb_check_def_frozen(c, slots, slots[0]); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* attr_* on a frozen class → FrozenError */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n * 2));    /* defined method names → return value */
     VALUE_REF res = VALUE_REF_AT(&slots[1]);
     for (uint32_t i = 0; i < n; i++) {
@@ -1283,6 +1284,7 @@ static RESULT korb_m_class_cvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
+    { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* remove_method on a frozen class → FrozenError */
     KorbClass *const k = VAL2CLASS(cls);
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
         const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));

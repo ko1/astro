@@ -2964,6 +2964,7 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
     if (!KORB_CLASS_P(klass)) klass = korb_dispatch_class(c, klass);   /* top-level (self=main) → alias on its class (Object) */
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
+    { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* alias in a frozen class → FrozenError */
     const struct korb_method *src = korb_class_find_method(klass, oldm, NULL);
     if (src == NULL) src = korb_method_lookup(c->vm, oldm);
     if (src == NULL && KORB_CLASS_P(klass) && VAL2CLASS(klass)->is_module) {

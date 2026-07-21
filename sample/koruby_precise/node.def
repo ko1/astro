@@ -1016,6 +1016,7 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
     VALUE cls = slots[self_off];
     if (UNLIKELY(!KORB_CLASS_P(cls)))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "attr accessor called outside a class body");
+    { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* attr_* in a frozen class → FrozenError */
     const struct korb_attr_desc *d = (const struct korb_attr_desc *)descs;
     for (uint32_t i = 0; i < count; i++)
         korb_class_def_attr(c, cls, d[i].mid, d[i].ivar, d[i].is_writer);
