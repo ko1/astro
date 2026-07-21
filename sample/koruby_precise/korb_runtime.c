@@ -3259,7 +3259,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     /* a method with keyword params consumes a trailing Hash arg as kwargs. */
     uint32_t pos_argc = argc;
     VALUE kwhash = KORB_NIL;
-    if (kw && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }
+    if (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }   /* `**nil` (-3): a trailing Hash stays positional */
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
     if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
@@ -5839,6 +5839,9 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
         }
     }
     if (LIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ)) {
+        const struct korb_kw_info *const mkw = (const struct korb_kw_info *)m->kw_info;
+        if (UNLIKELY(kw_argc > 0 && mkw != NULL && mkw->kwrest_slot == -3))   /* `**nil`: keyword syntax is refused outright */
+            return korb_raise(c, slots - (pos_argc + kw_argc), KORB_E_ARGUMENT, line, "no keywords accepted");
         if (LIKELY(korb_kw_fast_eligible(m) && kw_argc <= 64))
             return korb_invoke_kw_simple(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);
         return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, self, def_class);

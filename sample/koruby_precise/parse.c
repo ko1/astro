@@ -948,7 +948,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
                     if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
                     else    kw_info->kwrest_slot = -2;   /* anonymous `**` : accept & discard all keywords */
-                }
+                } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE))
+                    kw_info->kwrest_slot = -3;           /* `**nil` : no keywords accepted */
             }
             if (ps->rest || ps->optionals.size || ps->posts.size) {
                 /* general positional block params: req..., opt..., *rest, post...
@@ -1745,7 +1746,8 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
             pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
             if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
             else    kw_info->kwrest_slot = -2;   /* anonymous `**` : accept & discard all keywords */
-        }
+        } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE))
+            kw_info->kwrest_slot = -3;           /* `**nil` : no keywords accepted (positional Hash stays positional) */
     }
     tc->frame->method_kw_info = kw_info;   /* for forwarding super (`super` re-passes the keyword args) */
 
