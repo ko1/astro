@@ -6087,16 +6087,20 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
          * after the rest array so rcur+1 scratch is free; rest array stays rooted
          * at rcur[0]), else nil for a missing required (block-lenient). */
         for (uint32_t i = 0; i < rs; i++) {
-            if (i < srcn) bf[1 + i] = stage[i];
-            else if (opts != NULL && i >= reqc) {
+            if (i < reqc) bf[1 + i] = (i < srcn) ? stage[i] : KORB_NIL;      /* required: first args */
+            else if ((int32_t)i < (int32_t)srcn - (int32_t)npost)           /* optional: only args left after reserving posts */
+                bf[1 + i] = stage[i];
+            else if (opts != NULL) {                                        /* optional → default */
                 RESULT dr = EVAL(c, opts[i - reqc], rcur + 1);
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 bf[1 + i] = dr.value;
             } else bf[1 + i] = KORB_NIL;
         }
         bf[1 + rs] = VALUE_REF_GET(rarr);
-        for (uint32_t j = 0; j < npost; j++)                                 /* trailing post params */
-            bf[1 + rs + 1 + j] = (rs + surplus + j < srcn) ? stage[rs + surplus + j] : KORB_NIL;
+        for (uint32_t j = 0; j < npost; j++) {                               /* trailing post params → the last npost args */
+            const int32_t pidx = (int32_t)srcn - (int32_t)npost + (int32_t)j;
+            bf[1 + rs + 1 + j] = (pidx >= 0 && pidx < (int32_t)srcn) ? stage[pidx] : KORB_NIL;
+        }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else if (korb_entry_opt_defaults(block) != NULL) {   /* |req..., opt=default...| (no rest) */
         const uint32_t np = korb_entry_params_cnt(block);
