@@ -169,17 +169,18 @@ node_massign(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t ntargets, VA
 {
     (void)n;
     const int32_t *const offs = (const int32_t *)offsets;
-    slots[0] = rval;
-    CHECK(korb_massign_coerce(c, slots));                  /* non-Array rhs → #to_ary */
-    if (KORB_ARRAY_P(slots[0])) {
-        const KorbArray *const a = VAL2ARY(slots[0]);      /* no alloc below → pointer stays valid */
+    slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted, below the cursor) */
+    slots[1] = rval;
+    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    if (KORB_ARRAY_P(slots[1])) {
+        const KorbArray *const a = VAL2ARY(slots[1]);      /* no alloc below → pointer stays valid */
         for (uint32_t i = 0; i < ntargets; i++)
             slots[offs[i]] = i < a->len ? a->items->data[i] : KORB_NIL;
     } else {
         for (uint32_t i = 0; i < ntargets; i++)
-            slots[offs[i]] = (i == 0) ? slots[0] : KORB_NIL;
+            slots[offs[i]] = (i == 0) ? slots[1] : KORB_NIL;
     }
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(slots[0]);                            /* massign yields the original RHS, not the coerced Array */
 }
 
 // Multiple assignment to heterogeneous targets (no splat): each target is a
@@ -191,23 +192,24 @@ node_massign_het(CTX *c, NODE *n, VALUE *slots, void *descs, uint32_t nt, int32_
 {
     (void)n;
     const struct { int32_t kind; int32_t data; } *const d = descs;
-    slots[0] = rval;
-    CHECK(korb_massign_coerce(c, slots));                  /* non-Array rhs → #to_ary */
-    const bool is_ary = KORB_ARRAY_P(slots[0]);
+    slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted) to return */
+    slots[1] = rval;
+    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    const bool is_ary = KORB_ARRAY_P(slots[1]);
     for (uint32_t i = 0; i < nt; i++) {
         const VALUE v = is_ary
-            ? (i < VAL2ARY(slots[0])->len ? VAL2ARY(slots[0])->items->data[i] : KORB_NIL)
-            : (i == 0 ? slots[0] : KORB_NIL);
+            ? (i < VAL2ARY(slots[1])->len ? VAL2ARY(slots[1])->items->data[i] : KORB_NIL)
+            : (i == 0 ? slots[1] : KORB_NIL);
         switch (d[i].kind) {
           case 0: slots[d[i].data] = v; break;                              /* local */
           case 1:                                                            /* @ivar */
-            slots[1] = v;                                                    /* root across alloc */
-            CHECK(korb_ivar_set(c, slots + 2, VALUE_REF_AT(&slots[self_off]), ID2SYM((uint32_t)d[i].data), slots[1]));
+            slots[2] = v;                                                    /* root across alloc (slots[1] keeps the coerced Array) */
+            CHECK(korb_ivar_set(c, slots + 3, VALUE_REF_AT(&slots[self_off]), ID2SYM((uint32_t)d[i].data), slots[2]));
             break;
           case 2: korb_const_define(c, (uint32_t)d[i].data, v); break;       /* CONST */
         }
     }
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(slots[0]);                            /* massign yields the original RHS, not the coerced Array */
 }
 
 // Multiple assignment with a splat target: `pre..., *splat, post... = rhs`.
@@ -219,25 +221,26 @@ node_massign_splat(CTX *c, NODE *n, VALUE *slots, void *offsets, uint32_t npre, 
 {
     (void)n;
     const int32_t *const offs = (const int32_t *)offsets;
-    slots[0] = rval;                                       /* root rhs across the splat alloc */
-    CHECK(korb_massign_coerce(c, slots));                  /* non-Array rhs → #to_ary */
-    const bool is_ary = KORB_ARRAY_P(slots[0]);
-    const uint32_t len = is_ary ? VAL2ARY(slots[0])->len : 1u;
+    slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted) to return */
+    slots[1] = rval;
+    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    const bool is_ary = KORB_ARRAY_P(slots[1]);
+    const uint32_t len = is_ary ? VAL2ARY(slots[1])->len : 1u;
     const uint32_t splat_cnt = len > npre + npost ? len - npre - npost : 0u;
-#define MA_ELEM(i) (is_ary ? ((i) < VAL2ARY(slots[0])->len ? VAL2ARY(slots[0])->items->data[(i)] : KORB_NIL) \
-                            : ((i) == 0 ? slots[0] : KORB_NIL))
+#define MA_ELEM(i) (is_ary ? ((i) < VAL2ARY(slots[1])->len ? VAL2ARY(slots[1])->items->data[(i)] : KORB_NIL) \
+                            : ((i) == 0 ? slots[1] : KORB_NIL))
     for (uint32_t i = 0; i < npre; i++) slots[offs[i]] = MA_ELEM(i);
-    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, splat_cnt));
-    VALUE_REF sp = VALUE_REF_AT(&slots[1]);
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, splat_cnt));   /* splat Array at slots[2] (slots[1] keeps the coerced RHS) */
+    VALUE_REF sp = VALUE_REF_AT(&slots[2]);
     for (uint32_t k = 0; k < splat_cnt; k++)
-        CHECK(korb_ary_push_val(c, slots + 2, sp, MA_ELEM(npre + k)));
+        CHECK(korb_ary_push_val(c, slots + 3, sp, MA_ELEM(npre + k)));
     slots[offs[npre]] = VALUE_REF_GET(sp);
     /* posts follow the pre + splat elements (npre + splat_cnt); when there aren't
      * enough values (splat_cnt == 0 and len < npre+npost) this fills left-to-right
      * with nil padding, as CRuby does — `len - npost` would underflow. */
     for (uint32_t i = 0; i < npost; i++) slots[offs[npre + 1 + i]] = MA_ELEM(npre + splat_cnt + i);
 #undef MA_ELEM
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(slots[0]);                            /* massign yields the original RHS, not the coerced Array */
 }
 
 // ---- arithmetic ------------------------------------------------------------
