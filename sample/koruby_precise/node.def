@@ -1077,6 +1077,31 @@ node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32
                       (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self);
 }
 
+// `super` / `super(args)` that forwards the CURRENT method's incoming block
+// (no explicit block literal).  Args come from a built Array (like
+// node_super_splat); the block is read from this frame's block trio (biseq /
+// def_env / cself cells at fs-4/-3/-2, populated by korb_invoke_method) and
+// threaded to korb_super so the parent method's `yield` reaches it.  A tagged
+// biseq cell (|1) means a block was passed; an untagged/zero cell → no block.
+NODE_DEF
+node_super_fwd(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF args@child)
+{
+    (void)n; (void)args;
+    const VALUE arr  = slots[-1];                         /* the staged args array */
+    const VALUE dc   = slots[dc_off];
+    const VALUE self = slots[self_off];
+    const VALUE bi   = slots[biseq_off];
+    NODE *block = NULL; VALUE *def_env = NULL; VALUE cself = KORB_NIL;
+    if ((uintptr_t)bi & 1u) {                             /* a block was passed to this frame */
+        block   = (NODE *)((uintptr_t)bi & ~(uintptr_t)1u);
+        def_env = (VALUE *)(uintptr_t)slots[def_env_off]; /* forward the block's original env verbatim */
+        cself   = slots[cself_off];
+    }
+    const uint32_t N = VAL2ARY(arr)->len;
+    for (uint32_t i = 0; i < N; i++) slots[i] = VAL2ARY(arr)->items->data[i];
+    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself);
+}
+
 // constant read (`Foo`) — classes only for now.  Inline cache: the const table
 // `$!` — the current exception (top of the per-CTX errinfo stack, pushed by the
 // active rescue body), nil when none.  O(1) read; no const-table involvement.

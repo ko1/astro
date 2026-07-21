@@ -1903,6 +1903,36 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
     return NULL;
 }
 
+/* Emit a `super`/`super(args)` that forwards the current method's incoming block.
+ * `arr` (built at chain+1, staged as the node's array child) supplies the args;
+ * the block trio is read from the method frame (self_off is bottom-header →
+ * baked; the entry cell + trio are top cells → chain-relative, not baked). */
+/* Build [lget(0), ..., lget(np-1)(, *lget(rest_slot))] as an Array NODE — the
+ * argument list a bare `super` forwards (positional params, then the current
+ * rest array splatted).  Inside-out like build_array. */
+static NODE *
+build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t total)
+{
+    if (total == 0) return ALLOC_node_array_new(0);
+    const bool last_is_rest = (rest_slot >= 0 && total == np + 1);
+    const uint32_t sc = kind_node_ary_push.slot_count;
+    NODE *acc, *elem;
+    WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, total - 1),
+                        elem = bake_lget(tc, last_is_rest ? rest_slot : (int32_t)(total - 1))));
+    return last_is_rest ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
+}
+
+static NODE *
+emit_super_fwd(struct kp_ctx *tc, uint32_t m_mid, uint32_t line, NODE *arr)
+{
+    tc->frame->uses_block = true;                         /* reserve the block trio */
+    int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1;
+    int32_t bo = -4 - tc->chain - 1, deo = -3 - tc->chain - 1, cso = -2 - tc->chain - 1;
+    NODE *_s = ALLOC_node_super_fwd(m_mid, line, soff, dco, bo, deo, cso, arr);
+    bake_add(tc, &_s->u.node_super_fwd.self_off);
+    return _s;
+}
+
 /* `module Name ... end` → node_module (own scope, run with self = the module). */
 static NODE *
 transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
@@ -3094,36 +3124,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             bake_add(tc, &_s->u.node_super_blk.def_env_off);
             return _s;
         }
-        /* `super(*arr)` / `super(a, *b)` — build the args Array, spread at dispatch
-         * (one staged child = the array; self_off/dc_off like the 1-arg case). */
-        {
-            bool has_splat = false;
-            for (size_t i = 0; i < argc; i++)
-                if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
-            if (has_splat) {
-                int32_t soff = -1 - tc->chain - 1, dco = -1 - tc->chain - 1;
-                NODE *arr;
-                WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
-                NODE *_s = ALLOC_node_super_splat(m_mid, line, soff, dco, arr);
-                bake_add(tc, &_s->u.node_super_splat.self_off);
-                return _s;
-            }
-        }
-        if (argc > 3) return kp_unsupported(tc, node, "super with more than 3 arguments");
-        int32_t soff = -1 - tc->chain - (int32_t)argc, dco = -1 - tc->chain - (int32_t)argc;
-        NODE *a[3];
-        switch (argc) {
-          case 0: { NODE *_s = ALLOC_node_super0(m_mid, line, soff, dco); bake_add(tc, &_s->u.node_super0.self_off); return _s; }
-          case 1: WITH_CHAIN(tc, 1, (a[0] = transduce(tc, args->arguments.nodes[0])));
-                  { NODE *_s = ALLOC_node_super1(m_mid, line, soff, dco, a[0]); bake_add(tc, &_s->u.node_super1.self_off); return _s; }
-          case 2: WITH_CHAIN(tc, 2, (a[0] = transduce(tc, args->arguments.nodes[0]),
-                                     a[1] = transduce(tc, args->arguments.nodes[1])));
-                  { NODE *_s = ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]); bake_add(tc, &_s->u.node_super2.self_off); return _s; }
-          default: WITH_CHAIN(tc, 3, (a[0] = transduce(tc, args->arguments.nodes[0]),
-                                      a[1] = transduce(tc, args->arguments.nodes[1]),
-                                      a[2] = transduce(tc, args->arguments.nodes[2])));
-                  { NODE *_s = ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]); bake_add(tc, &_s->u.node_super3.self_off); return _s; }
-        }
+        /* `super(args)` with no literal block — build the args Array and forward
+         * the current method's incoming block (super_fwd). */
+        NODE *arr;
+        WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
+        return emit_super_fwd(tc, m_mid, line, arr);
       }
       case PM_FORWARDING_SUPER_NODE: {   /* bare super — forward the method's params */
         const pm_forwarding_super_node_t *fn = (const pm_forwarding_super_node_t *)node;
@@ -3131,31 +3136,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t m_mid = tc->frame->method_mid;
         if (m_mid == 0) return kp_unsupported(tc, node, "super outside a method body");
         uint32_t line = kp_line(tc, node);
-        uint32_t np = tc->frame->method_params;
+        const uint32_t np = tc->frame->method_params;
         const int32_t rest_slot = tc->frame->method_rest_slot;
-        if (rest_slot >= 0 && np == 0) {
-            /* `def m(*rest); super; end` → super(*rest): re-splat the (possibly
-             * modified) rest array, so the current elements are forwarded. */
-            NODE *arr;
-            WITH_CHAIN(tc, 1, (arr = bake_lget(tc, rest_slot)));
-            int32_t soff2 = -1 - tc->chain - 1, dco2 = -1 - tc->chain - 1;
-            NODE *_s = ALLOC_node_super_splat(m_mid, line, soff2, dco2, arr);
-            bake_add(tc, &_s->u.node_super_splat.self_off);
-            return _s;
-        }
-        if (rest_slot >= 0) return kp_unsupported(tc, node, "forwarding super with positional + rest params");
-        if (np > 3) return kp_unsupported(tc, node, "forwarding super with more than 3 params");
-        int32_t soff = -1 - tc->chain - (int32_t)np, dco = -1 - tc->chain - (int32_t)np;
-        NODE *a[3];
-        switch (np) {
-          case 0: { NODE *_s = ALLOC_node_super0(m_mid, line, soff, dco); bake_add(tc, &_s->u.node_super0.self_off); return _s; }
-          case 1: WITH_CHAIN(tc, 1, (a[0] = bake_lget(tc, 0)));
-                  { NODE *_s = ALLOC_node_super1(m_mid, line, soff, dco, a[0]); bake_add(tc, &_s->u.node_super1.self_off); return _s; }
-          case 2: WITH_CHAIN(tc, 2, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1)));
-                  { NODE *_s = ALLOC_node_super2(m_mid, line, soff, dco, a[0], a[1]); bake_add(tc, &_s->u.node_super2.self_off); return _s; }
-          default: WITH_CHAIN(tc, 3, (a[0] = bake_lget(tc, 0), a[1] = bake_lget(tc, 1), a[2] = bake_lget(tc, 2)));
-                  { NODE *_s = ALLOC_node_super3(m_mid, line, soff, dco, a[0], a[1], a[2]); bake_add(tc, &_s->u.node_super3.self_off); return _s; }
-        }
+        /* bare `super` forwards the method's current args (positional + rest) and
+         * its incoming block: build [pos..., *rest] and dispatch via super_fwd. */
+        const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u);
+        NODE *arr;
+        WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, total)));
+        return emit_super_fwd(tc, m_mid, line, arr);
       }
 
       default: {
