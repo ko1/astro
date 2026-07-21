@@ -3399,8 +3399,8 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
  * params but no **kwrest / *rest / post params (the box(x:,y:,z:) shape). */
 static inline bool korb_kw_fast_eligible(const struct korb_method *m) {
     const struct korb_kw_info *kw = (const struct korb_kw_info *)m->kw_info;
-    return m->kind == KORB_METHOD_ISEQ && kw != NULL && kw->kwrest_slot < 0 &&
-           m->rest_slot < 0 && m->post_cnt == 0;
+    return m->kind == KORB_METHOD_ISEQ && kw != NULL && kw->kwrest_slot == -1 &&
+           m->rest_slot < 0 && m->post_cnt == 0;   /* -2 = anonymous ** (accept-all) → use the hash path so extras are discarded, not rejected */
 }
 
 /* Hash-free keyword invoke (eligibility checked by korb_kw_fast_eligible).
