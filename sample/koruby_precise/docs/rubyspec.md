@@ -150,6 +150,15 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   `node_call_kws`（implicit self）/`node_send_kws`（receiver）を新設。dispatch 時に staged kwargs Hash が
   空なら `cur=slots-1, argc-1` で呼び、base と self@base[-1] を据え置いたまま空 Hash を callee scratch に落とす。
   非空 bundle は従来通り。keyword_arguments 24→26。
+- **index op-assign が代入値を返す + `&&=`**: `recv[k] op= v`/`recv[k] ||= v` が `[]=` の戻り値
+  （CRuby は代入した RHS）を返していた（`c[:a]||=12`→7）。新値を temp に計算→`[]=`→temp を式の値に。
+  `recv[k] &&= v`（PM_INDEX_AND_WRITE、未実装だった）も追加。optional_assignments 21→36。
+- **constant op-assign**: `X ||=/&&=/op= v` と `A::B` path 形が未実装だった（"M0 unsupported"）。desugar:
+  `||=`→`defined?(X) && X || (X=v)`（`&&` が undefined 時に read 前で短絡→NameError 回避、flat const table の
+  nil=空 sentinel で nil 定数は未定義扱い→代入）、`&&=`→`X && (X=v)`（read 先行→undefined は NameError）、
+  `op=`→`X = X op v`。path は static owner（`A::B`/`A::C::B`）対応、dynamic module part は未対応。
+  optional_assignments 36→52。（副産物として `X = nil; X` が NameError になる flat-const-table の
+  architectural 制約を確認—op-assign は defined? 短絡で回避。）
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **残ギャップ**: `**{a:1}`/`m("a"=>1)` の keyword 構文分類（位置 Hash 扱い→架構級, version-sensitive）、
   lambda の `(lambda)` inspect marker（`&l` 捕捉で is_lambda が落ちる、block-forward ABI に is_lambda を
