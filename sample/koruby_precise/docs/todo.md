@@ -2210,3 +2210,12 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   = 全 container を arena migrate する抜本対応が必要 = 大物・要方針確認)。File→IO reparent の raw write は
   ARO_STORE に修正済(barrier 正常化、ただし PURGE 失敗の原因ではない)。
 - 実 GC(STRESS)で io は正しいので **production correctness は OK**。PURGE は test hardening mode。
+
+### 2026-07-21 健全性ファジング + 言語系統修正（詳細は docs/rubyspec.md の 07-16〜21 節）
+- **完了**（corpus 93,399/0 + STRESS + fuzzer 875/0 + ruby一致）:
+  - Marshal を CRuby 4.8 wire format に全書換（dump 0→146 / load 53→235）。**Marshal byte-exact は除外から外れた**。
+  - send/block-path の `Class#new` が builtin singleton `new`(CFUNC=Regexp/Time/File/Dir) を honor → core +2,302。
+  - 言語クラッシュ3件根治: `$stdout=obj;print`無限再帰 / massign-RHS の user`<<`(node_shl send_cached frame衝突) / proc内`rescue <captured-var>`(node_rescue の matcher chain 不整合)。language 68.8%→76.1%。
+  - `defined?`(match global/nil-ivar-gvar, 231→276)、`!=` override + `Object#!=` latent、index massign target、定数 MRO ancestry(91→102)、`super` rest+block forward(48→66)。
+  - **差分ソートネスファザー `tools/fuzz_soundness.rb`**（`--stress` で GC crash 検出）。node.def の slot/frame offset 型バグは静的+動的とも残存無し確認。
+- **残（到達可能）**: `super` block forward は depth==0 のみ（nested block 内 super 未対応）。`X::Foo`(X 非module)→TypeError（node に explicit-path/bare-read 区別が必要）。method/massign の mock-protocol coercion（除外）。

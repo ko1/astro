@@ -114,6 +114,24 @@ example pass-rate (of pass+fail+err) = 84.6%
 
 corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE / AOT すべて green を維持。
 
+## 2026-07-16〜21 大型機能 + 言語クラッシュ掃討 + 健全性ファジング
+
+- **Marshal を CRuby 4.8 wire format に全書き換え**（`prelude/marshal.rb`）: object links(`@`)・symbol table/links(`;`)・String encoding wrapper(`I`+`:E`)・Class(`c`)/Module(`m`)・`_dump`(`u`)/`marshal_dump`(`U`)・subclass(`C`)/extend(`e`)・Regexp(`/`)・Data(`S`)・Exception(:mesg/:bt)・compare_by_identity・nested const 解決・load proc。**dump 0→146 / load 53→235 pass**（round-trip byte 一致）。→ **Marshal byte-exact は「除外」から外れた**（主流オブジェクトグラフは一致）。
+- **send/block-path の `Class#new` が builtin singleton `new`(CFUNC) を honor**（Regexp/Time/File/Dir）。shared-example が `send(:new)` で construct するため **core +2,302**（time/new 49→2222 等）。
+- **言語のクラッシュ3ファイルを実行ベース bisect で根治**（`describe/it→xit` で構造保持二分）:
+  - `$stdout=obj; print/puts` の無限再帰(redirect 時 Kernel#print 自己ループ)→ buffer+`.write`。
+  - massign/array-literal RHS の user `<<`(node_shl の send_cached frame 衝突)。
+  - proc 内 `rescue <captured-var>`(node_rescue が matcher を slots+1 で eval、chain 不整合)→ matcher を chain+1 bake + 非Module→TypeError。
+  → **language 68.8%→76.1%**。
+- **`defined?`** の regexp match global(`$~/$&/$1..`)・nil 代入 ivar/global(231→276)。
+- **`!=` override** を honor + `Object#!=` の identity 比較 latent バグ修正（差分ファザーが検出）。
+- **多重代入の index ターゲット** `h[:a],h[:b]=1,2`（`[]=` desugar）。
+- **定数解決を MRO ancestry 順に**（flat first-match→superclass/module 優先が CRuby 一致）。constants 91→102。
+- **`super` が rest 引数と incoming block を forward**（`def m(*rest);super;end` / `super(args)` の暗黙 block）。super 48→66。
+- **差分ソートネスファザー `tools/fuzz_soundness.rb` 新設**: massign/binop/rescue/closure/pattern-match/Enumerable/Hash/Range/super/method_missing/Struct/Data + ランダム式木 × 5文脈を ruby と diff、`--stress` で GC crash 検出。**875 snippets 0 crash / 0 semantic diff**。static 点検（node.def の slot/frame offset 型バグ）も残存無しを確認。
+- 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
+- **残る到達可能ギャップ**: `super` の block forward は depth==0 のみ（nested block 内 super は未）、`X::Foo`(X 非module)→TypeError（explicit-path/bare-read の node 区別要）、method/massign の mock-protocol coercion（除外）、require/load/autoload・const_source_location・eval 定数スコープ（infra）。
+
 ### この間に入った主なもの
 - **本物の正規表現**（`libastrogre` 経由）: Regexp/MatchData、`=~`/`$~`/`$1..`、scan/match/split/sub/gsub
   （`\1`+block）、名前付きキャプチャ、lookaround、POSIX class、`/i`・`/m`。**matchdata 96% / regexp 55.6%**
@@ -142,4 +160,5 @@ long tail（mock protocol、message 整形、deep-MRO nested super、sized Enume
 
 ### 意図的除外（rubyspec 100% から外す領域）
 encoding transcoding / Unicode case、真の並行性（Thread 同期モデル・Ractor・Fiber scheduler）、
-gem/require/autoload/native 拡張、Marshal byte-exact。encoding 依存 regex もここ（regex 本体は対応済み）。
+gem/require/autoload/native 拡張。encoding 依存 regex もここ（regex 本体は対応済み）。
+（**Marshal byte-exact は 2026-07 に CRuby 4.8 wire format へ全書換して除外から外した** — 主流オブジェクトグラフは byte 一致。残るのは fixture の encoding tag 依存・Time#_dump binary format など encoding/edge のみ。）
