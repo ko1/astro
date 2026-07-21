@@ -43,6 +43,7 @@ struct kp_frame {
     int32_t  method_rest_slot;/* `def m(*rest)` → the rest param's local slot, for forwarding super (-1 = none) */
     int32_t  method_post_base;/* `def m(*rest, a, b)` → first post-param slot, for forwarding super (-1 = none) */
     uint32_t method_post_cnt; /* number of post params (params after *rest), for forwarding super */
+    struct korb_kw_info *method_kw_info; /* `def m(k:, ...)` → keyword params, for forwarding super (NULL = none) */
     uint32_t max_ref_depth;   /* B3: deepest outer-scope depth this block's body reads (0=none) */
     int32_t **add_cells;      /* yield-in-block trio-index cells: fixed up by += frame_size at pop */
     uint32_t add_cnt, add_capa;
@@ -173,6 +174,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_rest_slot = -1;
     f->method_post_base = -1;
     f->method_post_cnt = 0;
+    f->method_kw_info = NULL;
     f->class_name_sym = 0;
     f->max_ref_depth = 0;
     f->add_cells = NULL;
@@ -1743,6 +1745,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
             if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
         }
     }
+    tc->frame->method_kw_info = kw_info;   /* for forwarding super (`super` re-passes the keyword args) */
 
     NODE *body;
     if (dn->body == NULL) {
@@ -1912,23 +1915,54 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
  * `arr` (built at chain+1, staged as the node's array child) supplies the args;
  * the block trio is read from the method frame (self_off is bottom-header →
  * baked; the entry cell + trio are top cells → chain-relative, not baked). */
-/* Build [pos0..pos_{np-1}, *rest, post0..post_{pc-1}] as an Array NODE — the
+/* Build {k0: lget(slot0), ...}(.merge(**kwrest)) as a Hash NODE — the keyword
+ * arguments a bare `super` forwards (each kw param's current value, incl.
+ * defaults, then the kwrest merged).  Inside-out like build_hash. */
+static NODE *
+build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n)
+{
+    if (n == 0) {                                        /* base: {} (+ **kwrest merged on top) */
+        NODE *h = ALLOC_node_hash_new(kw->count);
+        if (kw->kwrest_slot >= 0) {
+            NODE *src; const uint32_t sc = kind_node_hash_merge.slot_count;
+            WITH_CHAIN(tc, sc, (src = bake_lget(tc, kw->kwrest_slot)));
+            h = ALLOC_node_hash_merge(h, src);
+        }
+        return h;
+    }
+    const uint32_t sc = kind_node_hash_set.slot_count;
+    NODE *acc, *key, *val;
+    WITH_CHAIN(tc, sc, (acc = build_fwd_kwargs(tc, kw, n - 1),
+                        key = ALLOC_node_lit(ID2SYM(kw->entries[n - 1].mid)),
+                        val = bake_lget(tc, kw->entries[n - 1].slot)));
+    return ALLOC_node_hash_set(acc, key, val);
+}
+
+/* Build [pos0..pos_{np-1}, *rest, post0..post_{pc-1}(, {kwargs})] as an Array NODE — the
  * argument list a bare `super` forwards (positional params, the current rest
  * array splatted, then post params).  Inside-out like build_array; `total` =
  * np + (rest?1:0) + pc, indexing the segments in that order. */
 static NODE *
-build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_base, uint32_t pc, uint32_t total)
+build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_base, uint32_t pc,
+               struct korb_kw_info *kw, uint32_t total)
 {
     if (total == 0) return ALLOC_node_array_new(0);
     const uint32_t bi = total - 1;                        /* build index of the last element */
     const uint32_t has_rest = (rest_slot >= 0) ? 1u : 0u;
+    const bool has_kw = (kw && (kw->count || kw->kwrest_slot >= 0));
+    const uint32_t sc = kind_node_ary_push.slot_count;
+    if (has_kw && bi == np + has_rest + pc) {             /* trailing kwargs hash element */
+        NODE *acc, *kwh;
+        WITH_CHAIN(tc, sc, (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1),
+                            kwh = build_fwd_kwargs(tc, kw, kw->count)));
+        return ALLOC_node_ary_push(acc, kwh);
+    }
     bool is_rest = false; int32_t slot;
     if (bi < np)                          slot = (int32_t)bi;                          /* positional */
     else if (has_rest && bi == np)      { slot = rest_slot; is_rest = true; }          /* *rest (splat) */
     else                                  slot = (int32_t)(post_base + (bi - np - has_rest));  /* post */
-    const uint32_t sc = kind_node_ary_push.slot_count;
     NODE *acc, *elem;
-    WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, total - 1),
+    WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1),
                         elem = bake_lget(tc, slot)));
     return is_rest ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
 }
@@ -3151,12 +3185,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const int32_t rest_slot = tc->frame->method_rest_slot;
         const uint32_t pc = tc->frame->method_post_cnt;
         const uint32_t pb = tc->frame->method_post_base >= 0 ? (uint32_t)tc->frame->method_post_base : 0;
+        struct korb_kw_info *const kw = tc->frame->method_kw_info;
+        const uint32_t has_kw = (kw && (kw->count || kw->kwrest_slot >= 0)) ? 1u : 0u;
         /* bare `super` forwards the method's current args (positional + rest +
-         * post) and its incoming block: build [pos..., *rest, post...] via
-         * super_fwd. */
-        const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc;
+         * post + keyword) and its incoming block: build [pos..., *rest, post...,
+         * {kwargs}] via super_fwd. */
+        const uint32_t total = np + (rest_slot >= 0 ? 1u : 0u) + pc + has_kw;
         NODE *arr;
-        WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, total)));
+        WITH_CHAIN(tc, 1, (arr = build_fwd_args(tc, np, rest_slot, pb, pc, kw, total)));
         return emit_super_fwd(tc, m_mid, line, arr);
       }
 
