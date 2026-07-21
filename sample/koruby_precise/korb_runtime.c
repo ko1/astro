@@ -5957,6 +5957,10 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL);
 
     const bool fwd = (def_env == KORB_BLK_FWD);
+    /* A lambda forwarded as a block (`m(&lam); yield`) enforces arity and never
+     * auto-splats — unlike a plain block/proc, which is lenient.  (Only the FWD
+     * path can carry a lambda; its proc is reachable via captured_self.) */
+    const bool is_lambda = fwd && VAL2PROC(*captured_self)->is_lambda;
     const VALUE prev = fwd ? VAL2PROC(*captured_self)->env : (VALUE)(uintptr_t)def_env;
     const uint32_t blocals = korb_entry_locals_cnt(block);   /* incl. self cell */
     VALUE *const bf = slots + 2;                             /* block frame base (bottom header) */
@@ -5964,12 +5968,14 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     if (UNLIKELY(bf + 1 + blocals + KORB_FRAME_SLACK > c->slots_limit ||
                  &cstack_probe < c->cstack_limit))
         return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
+    if (UNLIKELY(is_lambda && argc != np))                /* lambda: exact arity (fast path = all-required, no rest/opt) */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, np);
     bf[-2] = 0;          /* B[-3] magic (zeroed for GC scan)   */
     bf[-1] = prev;       /* B[-2] EP / PREV link               */
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
     korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);
-    const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
-    if (LIKELY(!(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind */
+    if (LIKELY(is_lambda || !(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind (lambda never auto-splats) */
         uint32_t i = 0;
         for (; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         if (blocals > np) for (; i < blocals; i++) bf[1 + i] = KORB_NIL;
@@ -6033,12 +6039,28 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const uint32_t orig_argc = argc;
     const bool has_kw_hash = (kw && argc >= 1 && KORB_HASH_P(argv[argc - 1]));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
+    /* A lambda forwarded as a block enforces its positional arity (unlike a plain
+     * block/proc) and never auto-splats a single Array.  The proc is reachable via
+     * captured_self on the FWD path (the only path that can carry a lambda). */
+    const bool is_lambda = fwd && VAL2PROC(*captured_self)->is_lambda;
+    if (UNLIKELY(is_lambda)) {
+        const uint32_t pc = korb_entry_params_cnt(block);
+        const bool has_rest = korb_entry_rest_slot(block) >= 0;
+        const uint32_t rs = has_rest ? (uint32_t)korb_entry_rest_slot(block) : 0;
+        const uint32_t npost = (has_rest && pc > rs + 1) ? (pc - rs - 1) : 0;
+        const uint32_t lo = korb_entry_req_cnt(block) + npost;   /* required front + required post */
+        if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
+            if (has_rest)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u+)", argc, lo);
+            if (lo == pc)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, pc);
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u..%u)", argc, lo, pc);
+        }
+    }
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
     if (spec != NULL) {                                 /* mixed scalar + destructuring params, e.g. |a, (k, v)| */
         const uint32_t np = korb_entry_params_cnt(block);   /* logical param count */
         const VALUE *src = argv; uint32_t srcn = argc;
-        if (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
+        if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
             const KorbArray *ar = VAL2ARY(argv[0]); src = ar->items->data; srcn = ar->len;
         }
         uint32_t loc = 0;
@@ -6072,7 +6094,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t reqc = korb_entry_req_cnt(block);
         struct Node **const opts = korb_entry_opt_defaults(block);          /* front optionals' defaults (NULL if none) */
         const uint32_t npost = (np > rs + 1) ? (np - rs - 1) : 0;
-        const bool splat = (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));   /* auto-splat one Array */
+        const bool splat = (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));   /* auto-splat one Array (lambda: never) */
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
         /* Copy the source args into block-frame scratch FIRST (rooted): argv may
          * point at non-scanned C-locals (builtin yielders pass &elem) that the
@@ -6109,7 +6131,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         const uint32_t np = korb_entry_params_cnt(block);
         const uint32_t reqc = korb_entry_req_cnt(block);
         struct Node **const opts = korb_entry_opt_defaults(block);
-        const bool splat = (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));
+        const bool splat = (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0]));
         const uint32_t srcn = splat ? VAL2ARY(argv[0])->len : argc;
         for (uint32_t i = 0; i < np; i++) {
             if (i < srcn) bf[1 + i] = splat ? VAL2ARY(argv[0])->items->data[i] : argv[i];   /* provided (read before any alloc) */
@@ -6122,7 +6144,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else {
         const uint32_t np = korb_entry_params_cnt(block);   /* np <= blocals - 1 */
-        if (np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat: |a,b| yielded one Array */
+        if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat: |a,b| yielded one Array */
             const KorbArray *ar = VAL2ARY(argv[0]);
             for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
         } else {
