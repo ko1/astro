@@ -2090,6 +2090,42 @@ build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
     return ALLOC_node_dstr_concat(acc, part);
 }
 
+/* Build a bare constant read (`NAME`) node, resolving via the cref owner + the
+ * baked lexical enclosing chain — same as the PM_CONSTANT_READ_NODE case.  Used
+ * to synthesize the read side of `NAME op= v` op-assignments. */
+static NODE *
+build_const_read(struct kp_ctx *tc, uint32_t name_cid)
+{
+    NODE *cn = ALLOC_node_const(name_cid, kp_cref_owner(tc));
+    uint32_t depth = 0;
+    for (struct kp_frame *f = tc->frame; f; f = f->prev)
+        if (f->class_name_sym != 0) depth++;
+    if (depth > 0) {
+        uint32_t *chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
+        if (chain) {
+            uint32_t i = depth;
+            for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
+                if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
+            cn->u.node_const.cache.owner_chain = chain;
+            cn->u.node_const.cache.chain_len = depth;
+        }
+    }
+    return cn;
+}
+
+/* Resolve the owner module name for a `PARENT::NAME` constant-path target with a
+ * STATIC parent (a constant read or nested constant path).  Returns true and sets
+ * *owner_name; returns false for a dynamic parent (`expr::NAME`, unsupported for
+ * op-assign) — matching the owner resolution in PM_CONSTANT_PATH_WRITE_NODE. */
+static bool
+const_path_static_owner(struct kp_ctx *tc, const pm_node_t *parent, uint32_t frame_default, uint32_t *owner_name)
+{
+    if (parent == NULL) { *owner_name = frame_default; return true; }   /* `::X` — top-level frame default */
+    if (PM_NODE_TYPE_P(parent, PM_CONSTANT_READ_NODE)) { *owner_name = kp_intern_cid(tc, ((const pm_constant_read_node_t *)parent)->name); return true; }
+    if (PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE)) { *owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name); return true; }
+    return false;   /* dynamic owner */
+}
+
 /* ---- main dispatch -------------------------------------------------------- */
 
 static NODE *
@@ -3159,6 +3195,38 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
       }
+      case PM_CONSTANT_OR_WRITE_NODE: {  /* `X ||= v` — assign when undefined or falsy (the read never raises) */
+        const pm_constant_or_write_node_t *ow = (const pm_constant_or_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, ow->name);
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
+        NODE *set = ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        /* `defined?(X) && X || (X = v)`: the `&&` short-circuits before the read
+         * when X is undefined (no NameError); a truthy X is kept, else assign. */
+        NODE *guarded = ALLOC_node_and(ALLOC_node_defined(1, name, 0), build_const_read(tc, name));
+        return ALLOC_node_or(guarded, set);
+      }
+      case PM_CONSTANT_AND_WRITE_NODE: { /* `X &&= v` — read (raises if undefined), assign when truthy */
+        const pm_constant_and_write_node_t *aw = (const pm_constant_and_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, aw->name);
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, aw->value)));
+        NODE *set = ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        return ALLOC_node_and(build_const_read(tc, name), set);
+      }
+      case PM_CONSTANT_OPERATOR_WRITE_NODE: {  /* `X op= v` → X = X op v (read raises if undefined) */
+        const pm_constant_operator_write_node_t *ow = (const pm_constant_operator_write_node_t *)node;
+        enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
+        uint32_t opmid = kp_intern_cid(tc, ow->binary_operator);
+        uint32_t name = kp_intern_cid(tc, ow->name), line = kp_line(tc, node);
+        NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
+            NODE *lhs, *rhs;
+            WITH_CHAIN(tc, kind_node_plus.slot_count,
+                       (lhs = build_const_read(tc, name), rhs = transduce(tc, ow->value)));
+            (op != KP_BINOP_NONE) ? alloc_binop(op, lhs, rhs, line) : kp_send1(opmid, line, lhs, rhs);
+        }));
+        return ALLOC_node_const_set(name, tc->frame->class_name_sym, binop);
+      }
       case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name,
                                              * owner = the path's parent (`A`) so B nests under A. */
         const pm_constant_path_write_node_t *cpw = (const pm_constant_path_write_node_t *)node;
@@ -3181,6 +3249,43 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
         return ALLOC_node_const_set(name, owner_name, val);
+      }
+      case PM_CONSTANT_PATH_OR_WRITE_NODE: {   /* `A::B ||= v` (static owner) */
+        const pm_constant_path_or_write_node_t *ow = (const pm_constant_path_or_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, ow->target->name), owner;
+        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner))
+            return kp_unsupported(tc, node, "constant-path ||= with a dynamic module part");
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
+        NODE *set = ALLOC_node_const_set(name, owner, val);
+        /* guard the read with a flat defined? probe of the rightmost name (no NameError) */
+        NODE *guarded = ALLOC_node_and(ALLOC_node_defined(1, name, 0), ALLOC_node_const(name, owner));
+        return ALLOC_node_or(guarded, set);
+      }
+      case PM_CONSTANT_PATH_AND_WRITE_NODE: {  /* `A::B &&= v` (static owner) — read raises if undefined */
+        const pm_constant_path_and_write_node_t *aw = (const pm_constant_path_and_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, aw->target->name), owner;
+        if (!const_path_static_owner(tc, aw->target->parent, tc->frame->class_name_sym, &owner))
+            return kp_unsupported(tc, node, "constant-path &&= with a dynamic module part");
+        NODE *val;
+        WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, aw->value)));
+        NODE *set = ALLOC_node_const_set(name, owner, val);
+        return ALLOC_node_and(ALLOC_node_const(name, owner), set);
+      }
+      case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {  /* `A::B op= v` (static owner) → A::B = A::B op v */
+        const pm_constant_path_operator_write_node_t *ow = (const pm_constant_path_operator_write_node_t *)node;
+        uint32_t name = kp_intern_cid(tc, ow->target->name), owner;
+        if (!const_path_static_owner(tc, ow->target->parent, tc->frame->class_name_sym, &owner))
+            return kp_unsupported(tc, node, "constant-path op= with a dynamic module part");
+        enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
+        uint32_t opmid = kp_intern_cid(tc, ow->binary_operator), line = kp_line(tc, node);
+        NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
+            NODE *lhs, *rhs;
+            WITH_CHAIN(tc, kind_node_plus.slot_count,
+                       (lhs = ALLOC_node_const(name, owner), rhs = transduce(tc, ow->value)));
+            (op != KP_BINOP_NONE) ? alloc_binop(op, lhs, rhs, line) : kp_send1(opmid, line, lhs, rhs);
+        }));
+        return ALLOC_node_const_set(name, owner, binop);
       }
 
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */
