@@ -127,7 +127,7 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
 - **`!=` override** を honor + `Object#!=` の identity 比較 latent バグ修正（差分ファザーが検出）。
 - **多重代入の index ターゲット** `h[:a],h[:b]=1,2`（`[]=` desugar）。
 - **定数解決を MRO ancestry 順に**（flat first-match→superclass/module 優先が CRuby 一致）。constants 91→102。
-- **`super` が rest 引数と incoming block を forward**（`def m(*rest);super;end` / `super(args)` の暗黙 block）。super 48→66。
+- **`super` が全パラメータ種別（req/opt/rest/post/kw/kwrest）と incoming block を forward**（`def m(*rest);super;end` / `super(args)` の暗黙 block、rest の in-body 変更も反映）。super 48→108。
 - **差分ソートネスファザー `tools/fuzz_soundness.rb` 新設**: massign/binop/rescue/closure/pattern-match/Enumerable/Hash/Range/super/method_missing/Struct/Data + ランダム式木 × 5文脈を ruby と diff、`--stress` で GC crash 検出。**875 snippets 0 crash / 0 semantic diff**。static 点検（node.def の slot/frame offset 型バグ）も残存無しを確認。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **残る到達可能ギャップ**: `super` の block forward は depth==0 のみ（nested block 内 super は未）、`X::Foo`(X 非module)→TypeError（explicit-path/bare-read の node 区別要）、method/massign の mock-protocol coercion（除外）、require/load/autoload・const_source_location・eval 定数スコープ（infra）。
