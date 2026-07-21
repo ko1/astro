@@ -132,6 +132,29 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **残る到達可能ギャップ**: `super` の block forward は depth==0 のみ（nested block 内 super は未）、`X::Foo`(X 非module)→TypeError（explicit-path/bare-read の node 区別要）、method/massign の mock-protocol coercion（除外）、require/load/autoload・const_source_location・eval 定数スコープ（infra）。
 
+## 2026-07-21 パラメータ束縛 + キーワード引数の CRuby 追従
+
+引数束縛まわりの残ギャップを潰した（method_spec 188→205、lambda/proc/keyword_arguments に波及）:
+
+- **block/lambda の `opt + rest + post`**: `->(a, b=1, *c, d).call(1,2)` が `b=2,d=nil` になっていた
+  （前方 loop が optional を greedy に食い、post 用の引数を奪う）。optional は `npost` 個を予約した後に
+  だけ束縛し、post は末尾 `npost` 個から取るよう修正 → `[1,1,[],2]`。method 側は元々正しく、block 側の
+  `korb_block_yield_full` だけの不整合だった。
+- **匿名 `**`**: `def m(**)` / `def m(a, **)` / `def m(a:, **)` が「unknown keyword」で落ちていた
+  （名前なし kwrest が `kwrest_slot=-1` = strict と区別できなかった）。匿名 `**` に専用 sentinel
+  `kwrest_slot=-2` を与え、strict fast path を外して余剰キーを黙って捨てる。
+- **`**nil`**: keyword 構文の呼び出しを「no keywords accepted」で拒否し、位置引数の Hash リテラルは
+  位置引数のまま残す（`def m(a, **nil); m({a:1})` → `a={a:1}`）。sentinel `kwrest_slot=-3`。
+- **空 keyword splat の脱落（CRuby 3.0+）**: `m(**{})` / `m(**h)`（h 空）が `{}` を位置引数として渡していた
+  （0-arg メソッドで「given 1」、`def m(*a)` が `[{}]`）。trailing が keyword bundle の呼び出しに
+  `node_call_kws`（implicit self）/`node_send_kws`（receiver）を新設。dispatch 時に staged kwargs Hash が
+  空なら `cur=slots-1, argc-1` で呼び、base と self@base[-1] を据え置いたまま空 Hash を callee scratch に落とす。
+  非空 bundle は従来通り。keyword_arguments 24→26。
+- 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
+- **残ギャップ**: `**{a:1}`/`m("a"=>1)` の keyword 構文分類（位置 Hash 扱い→架構級, version-sensitive）、
+  lambda の `(lambda)` inspect marker（`&l` 捕捉で is_lambda が落ちる、block-forward ABI に is_lambda を
+  通す必要）、method_spec の splat×#to_a は mspec mock の respond_to 挙動依存（除外）。
+
 ### この間に入った主なもの
 - **本物の正規表現**（`libastrogre` 経由）: Regexp/MatchData、`=~`/`$~`/`$1..`、scan/match/split/sub/gsub
   （`\1`+block）、名前付きキャプチャ、lookaround、POSIX class、`/i`・`/m`。**matchdata 96% / regexp 55.6%**
