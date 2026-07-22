@@ -177,11 +177,17 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   `class << B(frozen); def m` が黙って method 追加して symbol を返していた。node_def/node_singleton_def に
   frozen guard。singleton class への def は attached object の変更なので `korb_check_def_frozen` が
   sklass table で singleton→attached を辿って判定。def_spec の frozen-def 群が pass。
-  同型の gap だった `alias` / `attr_reader/writer/accessor`（builtin + parse-time node_attr 両経路）/
-  `remove_method` にも同 guard を追加（undef_method/define_method は既に check 済）。
+  同型の gap を frozen-mutation 全面掃討: `alias` / `attr_reader/writer/accessor`（builtin + parse-time
+  node_attr）/ `remove_method` / `include` / `prepend` / `extend`（singleton 経由）/ `const_set` /
+  `@@cvar =` + `class_variable_set`（korb_cvar_set 集約）。undef_method/define_method/ivar_set は既存。
+  case/when の `===` も修正（下記）。
 - **private/protected NoMethodError が実 receiver class を名指し**: 全 user object で "an instance of Object"
   と誤報していた（`korb_a_type_name` は vm を持たず class 名を引けない）。undefined-method 側が既に使う
   `korb_recv_desc` に置換 → `Foo.new.priv` が "an instance of Foo"（namespaced/anonymous も正しく）。
+- **case/when の誤 identity short-circuit を撤去**: node_caseeq が when値と subject が同一 object なら
+  === dispatch 前に true を返していた。Class/Module when値では誤り（`case Symbol; when Symbol` は
+  `Symbol === Symbol` = is_a? = false）、NaN も同 object で false。identity check を撤去し immediate/値型は
+  korb_value_eq、Class/Range/Regexp/Proc/user は実 === に。case 43→44。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **既知の architectural gap（本ラウンドで確認、未修正）**:
   - flat const table の nil は「削除済/予約」marker（`remove_const`=set.c で val=nil、Comparable/Enumerable/
