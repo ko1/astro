@@ -167,6 +167,13 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   が array を splat していた（yield-fix は FWD 経路のみ、proc.call は proc の env を直渡しで fwd=false）。
   korb_block_yield_full に明示 is_lam を通し rest/opt lambda の proc.call を _full 経由に。
   （simple lambda は arity check が先に落ちるので rest/opt のみ要対応。）proc 28→29、lambda 71→73。
+- **block/lambda `**nil` は trailing Hash を位置引数に**: parser は既に kwrest_slot -3 を付けていたが
+  korb_block_yield_full が Hash を kwargs として剥がして捨てていた。method 側 rule に合わせ -3 で剥がさない。
+  proc 29→30、lambda 73→81。
+- **defined? の充足**: (1) `defined?(A::B)` を owner-aware に（新 node_defined_cpath—flat rightmost 名 probe
+  では `Undefined::Z`/`M::NotOnM` が "constant" 誤判定）。(2) `defined?((expr))` の括弧を unwrap（最内の
+  最終 statement に適用、`defined?((a,b=1,2))`→"assignment"）。defined 278→281。
+  残: super/class-variable/yield-in-block は frame offset 依存で保留、literal Array 要素の再帰 defined? も未。
 - **多重代入は coerce 後の Array でなく元の RHS を返す**: `(a, b = obj)`（`obj#to_ary`→[1,2]）が
   [1,2] を返していた（CRuby は obj）。massign 3 ノードが slots[0] を to_ary 結果で上書きして返していたのを、
   元 RHS を slots[0]（cursor 下＝rooted）に残し copy を slots[1] で coerce、het/splat は ivar/splat-array
