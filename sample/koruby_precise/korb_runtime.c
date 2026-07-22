@@ -1901,6 +1901,7 @@ korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     const VALUE cref = korb_cvar_cref(self, entry_cell);
     if (!KORB_CLASS_P(cref))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable assignment from toplevel");
+    { RESULT fr = korb_check_def_frozen(c, slots, cref); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* @@cvar = / class_variable_set on a frozen class → FrozenError */
     const VALUE sym = ID2SYM(sym_id);
     int32_t idx;
     VALUE target = korb_cvar_owner(cref, sym, &idx);   /* update existing ancestor, else define in cref */

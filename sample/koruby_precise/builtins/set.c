@@ -1200,6 +1200,7 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
     const VALUE val = VALUE_SLICE_GET(a, 1);
     const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
+    { RESULT fr = korb_check_def_frozen(c, slots, owner); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
     korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
     return RESULT_OK(val);
 }
