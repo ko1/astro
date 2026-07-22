@@ -163,7 +163,10 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   block 扱い（lenient）していた—引数過不足を nil bind/drop、単一 Array を auto-splat。lambda は
   positional arity を厳格化し auto-splat しない。FWD 経路の proc は captured_self から届くので
   fast/full 両 yield 経路で is_lambda を見て ArgumentError（opt/rest/post 考慮）+ auto-splat 抑止。
-  plain block/proc は不変。yield 38→42（fail 4→0）。
+  plain block/proc は不変。yield 38→42（fail 4→0）。**続けて `lambda#call` 経路も**: `->(a,*b){}.call([1,2,3])`
+  が array を splat していた（yield-fix は FWD 経路のみ、proc.call は proc の env を直渡しで fwd=false）。
+  korb_block_yield_full に明示 is_lam を通し rest/opt lambda の proc.call を _full 経由に。
+  （simple lambda は arity check が先に落ちるので rest/opt のみ要対応。）proc 28→29、lambda 71→73。
 - **多重代入は coerce 後の Array でなく元の RHS を返す**: `(a, b = obj)`（`obj#to_ary`→[1,2]）が
   [1,2] を返していた（CRuby は obj）。massign 3 ノードが slots[0] を to_ary 結果で上書きして返していたのを、
   元 RHS を slots[0]（cursor 下＝rooted）に残し copy を slots[1] で coerce、het/splat は ivar/splat-array
