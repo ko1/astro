@@ -7190,14 +7190,18 @@ korb_check_call_vis(CTX *c, VALUE *slots, const struct korb_method *m, uint32_t 
                     uint32_t line, VALUE recv, VALUE caller_self, VALUE def_class)
 {
     if (m->visibility == 1) {                          /* private */
-        if (recv != caller_self)
+        if (recv != caller_self) {
+            char rdbuf[224];
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "private method '%s' called for %s",
-                              korb_sym_name(c->vm, mid), korb_a_type_name(recv));
+                              korb_sym_name(c->vm, mid), korb_recv_desc(c, slots, recv, rdbuf, sizeof rdbuf));
+        }
     } else {                                           /* protected (visibility == 2) */
         const VALUE owner = KORB_CLASS_P(def_class) ? def_class : korb_dispatch_class(c, recv);
-        if (!korb_class_has_ancestor(korb_dispatch_class(c, caller_self), owner))
+        if (!korb_class_has_ancestor(korb_dispatch_class(c, caller_self), owner)) {
+            char rdbuf[224];
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "protected method '%s' called for %s",
-                              korb_sym_name(c->vm, mid), korb_a_type_name(recv));
+                              korb_sym_name(c->vm, mid), korb_recv_desc(c, slots, recv, rdbuf, sizeof rdbuf));
+        }
     }
     return RESULT_OK(KORB_NIL);
 }
