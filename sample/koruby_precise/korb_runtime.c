@@ -3641,6 +3641,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
+    { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* include/extend on a frozen class/object → FrozenError */
     slots[0] = klass;                            /* root klass across allocs */
     VALUE_REF kref = VALUE_REF_AT(&slots[0]);
     if (VAL2CLASS(klass)->included == KORB_NIL) {
@@ -3683,6 +3684,7 @@ korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
+    { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* prepend on a frozen class → FrozenError */
     slots[0] = klass;                            /* root klass across allocs */
     VALUE_REF kref = VALUE_REF_AT(&slots[0]);
     if (VAL2CLASS(klass)->prepended == KORB_NIL) {
