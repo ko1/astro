@@ -6060,7 +6060,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
      * the positional binding below sees only the positional args. */
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
     const uint32_t orig_argc = argc;
-    const bool has_kw_hash = (kw && argc >= 1 && KORB_HASH_P(argv[argc - 1]));
+    /* `**nil` (kwrest_slot -3) forbids keywords: a trailing Hash stays positional. */
+    const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(argv[argc - 1]));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
