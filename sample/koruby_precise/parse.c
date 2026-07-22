@@ -2986,6 +2986,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       /* ---- blocks ---- */
       case PM_DEFINED_NODE: {
         const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
+        /* `defined?((expr))` — unwrap parentheses; defined? applies to the last
+         * statement inside (so `defined?((a, b = 1, 2))` sees the multi-assign). */
+        while (PM_NODE_TYPE_P(v, PM_PARENTHESES_NODE)) {
+            const pm_parentheses_node_t *pn = (const pm_parentheses_node_t *)v;
+            if (pn->body == NULL || !PM_NODE_TYPE_P(pn->body, PM_STATEMENTS_NODE)) break;
+            const pm_statements_node_t *st = (const pm_statements_node_t *)pn->body;
+            if (st->body.size == 0) break;
+            v = st->body.nodes[st->body.size - 1];
+        }
         const int32_t self_off = -1 - tc->chain;
         if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(v, PM_IT_LOCAL_VARIABLE_READ_NODE))
             return ALLOC_node_defined(4, 0, 0);                          /* "local-variable" */
