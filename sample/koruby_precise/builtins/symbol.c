@@ -341,7 +341,10 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block != NULL && block != KORB_BLK_CPROC && block->head.kind == &kind_node_entry &&
         korb_entry_blk_param_slot(entry) >= 0)
         r = korb_block_yield_full(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv,
-                                  &slots[1], argc, &slots[0], block, def_env, cself);
+                                  &slots[1], argc, &slots[0], block, def_env, cself, is_lam);
+    else if (is_lam)   /* a lambda enforces arity + never auto-splats a single Array → the full path with is_lam */
+        r = korb_block_yield_full(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv,
+                                  &slots[1], argc, &slots[0], NULL, NULL, NULL, 1);
     else
         r = korb_block_yield(c, slots + 1 + argc, entry, (VALUE *)(uintptr_t)penv, &slots[1], argc, &slots[0]);
     if (UNLIKELY(is_lam && r.state == KORB_RETURN)) {    /* lambda boundary consumes its own `return` */

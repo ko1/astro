@@ -5960,7 +5960,7 @@ NODE    *korb_entry_body(NODE *entry)       { return entry->u.node_entry.body; }
 static __attribute__((no_stack_protector)) RESULT
 korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                       const VALUE *argv, uint32_t argc, VALUE *captured_self,
-                      NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self);
+                      NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam);
 
 /* Block invocation fast path: the overwhelmingly common block has only scalar
  * required params (no kw / destructure / rest / opt).  Binding it inline here —
@@ -5977,7 +5977,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
                  korb_entry_destructure_n(block) || korb_entry_rest_slot(block) >= 0 ||
                  korb_entry_opt_defaults(block)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
-        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL);
+        return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* is_lam via fwd-detection inside */
 
     const bool fwd = (def_env == KORB_BLK_FWD);
     /* A lambda forwarded as a block (`m(&lam); yield`) enforces arity and never
@@ -6026,7 +6026,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 static __attribute__((no_stack_protector)) RESULT
 korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self,
-                 NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self)
+                 NODE *bp_blk, VALUE *bp_denv, VALUE *bp_self, uint32_t is_lam)
 {
     if (UNLIKELY(block == NULL))                         /* builtin / yield with no block passed (folded here from the fast path) */
         return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
@@ -6065,7 +6065,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
      * captured_self on the FWD path (the only path that can carry a lambda). */
-    const bool is_lambda = fwd && VAL2PROC(*captured_self)->is_lambda;
+    const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
     if (UNLIKELY(is_lambda)) {
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_rest_slot(block) >= 0;
