@@ -179,14 +179,21 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   sklass table で singleton→attached を辿って判定。def_spec の frozen-def 群が pass。
   同型の gap だった `alias` / `attr_reader/writer/accessor`（builtin + parse-time node_attr 両経路）/
   `remove_method` にも同 guard を追加（undef_method/define_method は既に check 済）。
+- **private/protected NoMethodError が実 receiver class を名指し**: 全 user object で "an instance of Object"
+  と誤報していた（`korb_a_type_name` は vm を持たず class 名を引けない）。undefined-method 側が既に使う
+  `korb_recv_desc` に置換 → `Foo.new.priv` が "an instance of Foo"（namespaced/anonymous も正しく）。
 - 全修正: corpus 93,399/0 + STRESS+PURGE clean + ruby一致 + fuzzer 875/0 で検証済。
 - **既知の architectural gap（本ラウンドで確認、未修正）**:
   - flat const table の nil は「削除済/予約」marker（`remove_const`=set.c で val=nil、Comparable/Enumerable/
     Numeric の slot 予約も nil）。よって `X = nil; X` / 定数 target が nil を受けると NameError になる
     （`SINGLE_RHS_1, SINGLE_RHS_2 = 1` の 2 つ目等）。修正には KORB_UNDEF sentinel 導入が必要で
     remove_const/bootstrap/const_get 全体に波及するため保留。
-  - massign の splat target が非 local（`@x, *y` / `CONST, *rest`）は "non-local splat target" で未対応
-    （splat path は depth-0 local のみ、general desugar 未拡張）。
+  - **default definee (cref) 不在**: koruby は `def` の定義先を self で決める（class body/top-level では正しい）。
+    しかし method 内の nested `def`（`def o; def i; end; end`）は self=instance→非class→`korb_method_define`
+    で global 関数として leak（本来は enclosing method の owner class の instance method、かつ nested def は
+    常に public）。同様に `Foo.instance_eval { def bar }` は class receiver の singleton へ行くべきが誤る。
+    正しくは「実行中 method の owner を cref とする」default-definee 概念が要る（frame に cref を通す）。
+    `force_public` だけでは定義先 bug を解けないため保留。`class_eval { def m }`（instance method）は正動作。
 - **残ギャップ**: `**{a:1}`/`m("a"=>1)` の keyword 構文分類（位置 Hash 扱い→架構級, version-sensitive）、
   lambda の `(lambda)` inspect marker（`&l` 捕捉で is_lambda が落ちる、block-forward ABI に is_lambda を
   通す必要）、method_spec の splat×#to_a は mspec mock の respond_to 挙動依存（除外）。
