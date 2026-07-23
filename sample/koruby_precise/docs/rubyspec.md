@@ -135,6 +135,14 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   map/select/take/drop/drop_while 群 +~15。注: e->size は非 GC-scanned なので immediate（Fixnum）のみ格納
   （endless range の Infinity は box→stale で SEGV したため nil。STRESS で発見・修正）。
 - **Integer/Float の `**` `%` が obj#coerce を honor**（従来 +/-/*// のみ）。integer/pow 38→39。
+- **`Method#to_s`/`#inspect` に param signature + source location**: `#<Method: C#m(x, y=..., *z, k:, **n, &b) file:line>`
+  形（param_info から req/opt=.../\*rest/key:/\*\*kwrest/&block、top-level は global fn table fallback、alias は
+  `#renamed(original)`）。method/to_s 9→21、unboundmethod/to_s 7→10。
+- **`Symbol#to_proc#to_s` に `(&:name)`**。
+- **確認済の壁**: mock respond_to fidelity（shim で to_str 等を real method 定義 or respond_to_missing?=true が
+  coercion を誤らせる）は default 変更を試すも integer/float coercion が -46 regress → revert（shim は高リスク確定）。
+  Data/Struct#initialize override は default initialize が C コードで callable super 無し → 構築 refactor 要（architectural）。
+  flat_map/with_index/zip の lazy 化は fanout/index/多源で構造的。Enumerator の残はこれら。
 - enumerator category **219→283**（本セッション +64）。err 119→92。全て corpus 93,399/0 + STRESS + fuzzer 875/0。
 - **残（Enumerator, 構造的/edge）**: flat_map/with_index/zip の lazy 化（1入力→多出力/index/多源）、
   generator-driving edge（take(0) は no-yield 等）、endless range の Infinity size（要 GC-scanned size field）。
