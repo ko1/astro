@@ -179,9 +179,22 @@ static RESULT korb_enum_gen_each_stream(CTX *c, VALUE *slots, VALUE_REF self,
 static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
     slots[0] = source;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));            /* empty ops */
-    KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    /* source size (Enumerator#size): Array → len; finite integer Range → count;
+     * else unknown (nil).  Only immediate (Fixnum) sizes are stored — e->size is
+     * not a GC-scanned field, so a heap-boxed Float (an endless range's Infinity)
+     * would go stale; those report nil for now. */
+    slots[2] = KORB_NIL;
+    if (KORB_ARRAY_P(slots[0])) slots[2] = LONG2FIX(VAL2ARY(slots[0])->len);
+    else if (KORB_RANGE_P(slots[0])) {
+        const KorbRange *r = VAL2RANGE(slots[0]);
+        if (FIXNUM_P(r->rbegin) && FIXNUM_P(r->rend)) {
+            intptr_t n = FIX2LONG(r->rend) - FIX2LONG(r->rbegin) + (r->exclude_end ? 0 : 1);
+            slots[2] = LONG2FIX(n < 0 ? 0 : n);
+        }
+    }
+    KorbEnumerator *e = korb_alloc(c, slots + 3, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = mode;
-    e->size = KORB_ARRAY_P(slots[0]) ? LONG2FIX(VAL2ARY(slots[0])->len) : KORB_NIL;   /* Array source → known size (Enumerator#size) */
+    e->size = slots[2];                                         /* re-read after alloc */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->ops, slots[1]);
     return RESULT_OK((VALUE)e);
@@ -463,7 +476,7 @@ static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbEnumerator *const e = SELF_ENUM;
-    if (FIXNUM_P(e->size)) return RESULT_OK(e->size);         /* explicit size (Enumerator.new(size)/to_enum) */
+    if (FIXNUM_P(e->size) || KORB_FLOAT_P(e->size)) return RESULT_OK(e->size);   /* explicit size (Enumerator.new(size)/to_enum) or Infinity */
     /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
      * returns nil when the size is unknown (no size given to Enumerator.new). */
     if (e->mode != 0 || !KORB_ARRAY_P(e->values)) return RESULT_OK(KORB_NIL);
