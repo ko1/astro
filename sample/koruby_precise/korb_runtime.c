@@ -2288,7 +2288,10 @@ static RESULT korb_m_struct_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
     for (uint32_t i = 0; i < mem->len; i++) {
         VALUE iv = korb_member_ivar_sym(c->vm, mem->items->data[i]);
-        if (!korb_value_eq(korb_ivar_get(c, VALUE_REF_GET(self), iv), korb_ivar_get(c, o, iv))) return RESULT_OK(KORB_FALSE);
+        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        const VALUE ov = korb_ivar_get(c, o, iv);
+        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal (breaks the cycle, CRuby-style) */
+        if (!korb_value_eq(sv, ov)) return RESULT_OK(KORB_FALSE);
     }
     return RESULT_OK(KORB_TRUE);
 }
@@ -2300,7 +2303,10 @@ static RESULT korb_m_struct_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
     for (uint32_t i = 0; i < mem->len; i++) {
         VALUE iv = korb_member_ivar_sym(c->vm, mem->items->data[i]);
-        if (!korb_value_eql(korb_ivar_get(c, VALUE_REF_GET(self), iv), korb_ivar_get(c, o, iv))) return RESULT_OK(KORB_FALSE);
+        const VALUE sv = korb_ivar_get(c, VALUE_REF_GET(self), iv);
+        const VALUE ov = korb_ivar_get(c, o, iv);
+        if (sv == VALUE_REF_GET(self) && ov == o) continue;   /* direct self-reference at the same position → equal */
+        if (!korb_value_eql(sv, ov)) return RESULT_OK(KORB_FALSE);
     }
     return RESULT_OK(KORB_TRUE);
 }
@@ -2441,10 +2447,50 @@ static bool korb_data_all_keys_members(const struct korb_vm *vm, const KorbClass
     return true;
 }
 
+/* Data#initialize(*values | **kwargs) — assign the immutable members.  Registered
+ * on every Data class so `allocate` + an explicit #initialize call, and user
+ * overrides that call `super`, both work.  (Data.new has its own fast path that
+ * sets the members directly; this method backs the reflective / override routes.) */
+static RESULT korb_m_data_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    slots[2] = VAL2CLASS(VAL2OBJ(VALUE_REF_GET(self))->klass)->members;   /* member syms (rooted) */
+    const uint32_t mlen = VAL2ARY(slots[2])->len;
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    const bool kw = (argc == 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0)) &&
+                     korb_data_all_keys_members(vm, VAL2CLASS(VAL2OBJ(VALUE_REF_GET(self))->klass), VAL2HASH(VALUE_SLICE_GET(a, 0))));
+    slots[0] = kw ? VALUE_SLICE_GET(a, 0) : KORB_NIL;                     /* kwargs hash (rooted) */
+    if (kw) {
+        for (uint32_t k = 0; k < VAL2ARY(slots[2])->len; k++)            /* missing keyword */
+            if (UNLIKELY(korb_hash_find(VAL2HASH(slots[0]), VAL2ARY(slots[2])->items->data[k]) < 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(VAL2ARY(slots[2])->items->data[k])));
+    } else if (UNLIKELY(argc != mlen)) {
+        const KorbArray *const mm = VAL2ARY(slots[2]);
+        if (argc < mlen) {                                               /* shortfall → the unfilled members are missing keywords */
+            char buf[512]; int off = snprintf(buf, sizeof buf, "missing keyword%s:", (mlen - argc) > 1 ? "s" : "");
+            for (uint32_t i = argc; i < mm->len && off < (int)sizeof buf; i++)
+                off += snprintf(buf + off, sizeof buf - off, "%s :%s", i > argc ? "," : "", korb_sym_name(vm, SYM2ID(mm->items->data[i])));
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", buf);
+        }
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..%u)", argc, mlen);
+    }
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *const mem = VAL2ARY(slots[2]);                  /* re-read (ivar_set may GC) */
+        if (i >= mem->len) break;
+        const VALUE iv = korb_member_ivar_sym(vm, mem->items->data[i]);
+        if (kw) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), mem->items->data[i]); slots[1] = hi >= 0 ? VAL2HASH(slots[0])->items->data[2*hi+1] : KORB_NIL; }
+        else slots[1] = VALUE_SLICE_GET(a, i);
+        CHECK(korb_ivar_set(c, slots + 3, self, iv, slots[1]));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 /* Data#with(**changes) → a fresh instance with the named members replaced. */
 static RESULT korb_m_data_with(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t alen = VALUE_SLICE_LEN(a);                 /* keyword changes arrive as a trailing Hash */
+    const bool last_hash = alen >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, alen - 1));
+    const uint32_t positional = alen - (last_hash ? 1u : 0u);
+    if (UNLIKELY(positional > 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", positional);
     slots[0] = VAL2OBJ(VALUE_REF_GET(self))->klass;          /* the data class (rooted) */
-    slots[1] = (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    slots[1] = last_hash ? VALUE_SLICE_GET(a, alen - 1) : KORB_NIL;
     if (slots[1] != KORB_NIL) {                              /* normalize String keyword keys → Symbols */
         const KorbHash *const h0 = VAL2HASH(slots[1]);
         bool has_str = false;
@@ -2499,7 +2545,14 @@ static RESULT korb_struct_inspect_impl(CTX *c, VALUE *slots, VALUE_REF self, con
         fputs(i == 0 ? " " : ", ", ms);
         fputs(korb_sym_name(c->vm, SYM2ID(msym)), ms);
         fputc('=', ms);
-        korb_fprint_inspect_d(c, NULL, ms, val, 1);              /* _d → nested Struct/Data fields render in full (NULL: keep this loop GC-free) */
+        if (val == VALUE_REF_GET(self)) {                        /* direct self-reference → "#<kind QualName:...>" (CRuby cycle form) */
+            fputc('#', ms); fputc('<', ms); fputs(kind, ms);
+            fputc(' ', ms);
+            if (k->name_sym) korb_fprint_class_qname(c, ms, klass); else korb_fprint_inspect_d(c, NULL, ms, klass, 1);
+            fputs(":...>", ms);
+        } else {
+            korb_fprint_inspect_d(c, NULL, ms, val, 1);          /* _d → nested Struct/Data fields render in full (NULL: keep this loop GC-free) */
+        }
     }
     fputc('>', ms);
     fclose(ms);
@@ -2541,7 +2594,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     VAL2CLASS(VALUE_REF_GET(cls))->is_data = 1;
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "to_h", korb_m_struct_to_h_blk, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, -1);   /* arg (keys|nil) ignored → full hash */
+    korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct_keys", korb_m_struct_deconstruct_keys, 1);   /* requires exactly one arg (keys Array | nil) */
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "members", korb_m_struct_members, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "deconstruct", korb_m_struct_to_a, 0);
@@ -4181,6 +4234,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
     { uint32_t s = korb_intern(vm, "Data", 4);
       slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
       korb_const_define(c, s, slots[0]);
+      korb_class_def_cfn(c, slots[0], "initialize", korb_m_data_initialize, -1);   /* on the Data base class → a subclass override's `super` reaches it */
       slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;    /* Data's singleton holds `define` */
       korb_class_def_cfn_blk(c, slots[1], "define", korb_data_define, -1); }
     { uint32_t s = korb_intern(vm, "Module", 6); vm->name_module = s; korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
@@ -6758,6 +6812,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
          * onto subclasses), so the receiver class itself carries them. */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
             const bool is_data = VAL2CLASS(*recv_slot)->is_data;
+            if (is_data) {                                 /* user-overridden Data#initialize (ISEQ) → allocate + dispatch it */
+                VALUE didef = KORB_NIL;
+                struct korb_method *const duinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &didef);
+                if (duinit && duinit->kind == KORB_METHOD_ISEQ) {   /* the default is a CFUNC, so ISEQ ⇒ a real override */
+                    slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
+                    VALUE *const ibase = slots + 1;
+                    for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(intptr_t)argc + (intptr_t)i];   /* forward args (post-alloc, GC-safe) */
+                    RESULT ir = korb_invoke_method(c, ibase + argc, duinit, argc, line, vm->mid_initialize, slots[0], didef, block, def_env, KORB_CSELF_VAL(captured_self));
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(slots[0]);            /* re-read the (possibly moved) instance */
+                }
+            }
             if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {   /* normalize String keyword keys → Symbols (dup String/Symbol → last wins) */
                 const KorbHash *const h0 = VAL2HASH(slots[-(intptr_t)argc]);
                 bool has_str = false;
@@ -8907,6 +8973,9 @@ korb_fprint_inspect_d(CTX *c, VALUE *slots, FILE *fp, VALUE v, int depth)
             const VALUE klass = VAL2OBJ(v)->klass;
             if (klass != KORB_NIL && KORB_ARRAY_P(VAL2CLASS(klass)->members)) {
                 const KorbClass *const k = VAL2CLASS(klass);
+                if (UNLIKELY(depth >= KORB_PRINT_DEPTH_MAX)) {      /* cycle safety net (direct self-refs are handled precisely upstream) */
+                    fputs(k->is_data ? "#<data ...>" : "#<struct ...>", fp); return;
+                }
                 fputc('#', fp); fputc('<', fp); fputs(k->is_data ? "data" : "struct", fp);
                 if (k->name_sym) { fputc(' ', fp); fputs(korb_sym_name(c->vm, k->name_sym), fp); }
                 const KorbArray *const mem = VAL2ARY(k->members);    /* no GC below (formatter only writes to fp) */
