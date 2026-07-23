@@ -8538,6 +8538,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "compact", korb_m_enum_compact, 0);   /* Enumerator::Lazy#compact */
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "grep", korb_m_enum_grep, -1);     /* lazy-aware grep / grep_v */
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "grep_v", korb_m_enum_grep_v, -1);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "flat_map", korb_m_enum_flat_map, 0);   /* lazy-aware flat_map */
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "collect_concat", korb_m_enum_flat_map, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_slice", korb_m_enum_each_slice, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_cons", korb_m_enum_each_cons, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "group_by", korb_m_enum_group_by, 0);

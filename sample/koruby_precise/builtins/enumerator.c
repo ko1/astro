@@ -343,6 +343,85 @@ static RESULT korb_lazy_apply(CTX *c, VALUE *slots, uint32_t voff, bool *keep, b
     }
     return RESULT_OK(KORB_NIL);
 }
+/* Feed one candidate `value` through the source enum's op chain starting at
+ * `start_oi`, pushing surviving values to `res` (bounded by `limit`).  flat_map
+ * fans out: each element of an Array block-result re-enters ops[oi+1..] via a
+ * recursive call — the only op that produces 0..N outputs per input.  Shared
+ * state: op_state[] (take/drop counters), `seen` (per-op uniq Hash array).
+ * slots[0] holds the current value; slots[1+] is op scratch. */
+static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, uint32_t start_oi,
+                            intptr_t *op_state, VALUE_REF seen, VALUE_REF res, intptr_t limit,
+                            intptr_t *produced, bool *term) {
+    char cstack_probe;
+    if (UNLIKELY(&cstack_probe < c->cstack_limit)) return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    slots[0] = value;                                          /* candidate (rooted) */
+    for (uint32_t oi = start_oi; ; oi++) {
+        const KorbArray *ops = VAL2ARY(SELF_ENUM->ops);        /* re-read: op dispatch GCs */
+        if (oi >= ops->len) break;
+        const KorbArray *pair = VAL2ARY(ops->items->data[oi]);
+        const char *const opn = korb_sym_name(c->vm, SYM2ID(pair->items->data[0]));
+        if (!strcmp(opn, "drop")) { if (oi < 64 && op_state[oi] > 0) { op_state[oi]--; return RESULT_OK(KORB_NIL); } continue; }
+        if (!strcmp(opn, "take")) { if (oi >= 64 || op_state[oi] <= 0) { *term = true; return RESULT_OK(KORB_NIL); } op_state[oi]--; continue; }
+        if (!strcmp(opn, "compact")) { if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL); continue; }
+        if (!strcmp(opn, "grep") || !strcmp(opn, "grep_v")) {
+            const bool gwant = (opn[4] == '\0');
+            bool gm; RESULT gmr = korb_grep_eqq(c, slots + 1, pair->items->data[1], slots[0], &gm);
+            if (UNLIKELY(gmr.state != KORB_NORMAL)) return gmr;
+            if (gm != gwant) return RESULT_OK(KORB_NIL);
+            const KorbArray *gpair = VAL2ARY(VAL2ARY(SELF_ENUM->ops)->items->data[oi]);   /* re-read after GC */
+            if (gpair->len >= 3 && gpair->items->data[2] != KORB_NIL) {
+                slots[1] = gpair->items->data[2];
+                RESULT gr = korb_call1(c, slots + 2, slots[1], slots[0]);
+                if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;
+                slots[0] = gr.value;
+            }
+            continue;
+        }
+        if (!strcmp(opn, "uniq")) {
+            slots[1] = slots[0];                               /* dedup key */
+            if (pair->items->data[1] != KORB_NIL) {
+                slots[2] = pair->items->data[1];
+                RESULT ur = korb_call1(c, slots + 3, slots[2], slots[0]);
+                if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;
+                slots[1] = ur.value;
+            }
+            slots[2] = VAL2ARY(VALUE_REF_GET(seen))->items->data[oi];
+            if (korb_hash_find(VAL2HASH(slots[2]), slots[1]) >= 0) return RESULT_OK(KORB_NIL);
+            CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[1]), KORB_TRUE));
+            continue;
+        }
+        if (!strcmp(opn, "flat_map") || !strcmp(opn, "collect_concat")) {
+            slots[1] = pair->items->data[1];                  /* proc */
+            RESULT fr = korb_call1(c, slots + 2, slots[1], slots[0]);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            slots[1] = fr.value;                              /* block result (rooted) */
+            if (KORB_ARRAY_P(slots[1])) {                     /* Array → flatten one level: each elem re-enters ops[oi+1..] */
+                for (uint32_t k = 0; !*term && k < VAL2ARY(slots[1])->len; k++) {   /* re-read len/elem each iter (recursion GCs) */
+                    RESULT r = korb_lazy_run(c, slots + 2, self, VAL2ARY(slots[1])->items->data[k], oi + 1, op_state, seen, res, limit, produced, term);
+                    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                }
+                return RESULT_OK(KORB_NIL);                   /* fanout handled here; don't push slots[0] */
+            }
+            slots[0] = slots[1];                              /* non-Array → a single value; continue downstream */
+            continue;
+        }
+        /* block ops (select/reject/map/filter_map/take_while/drop_while) */
+        slots[1] = pair->items->data[1];
+        RESULT cr = korb_call1(c, slots + 2, slots[1], slots[0]);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        const VALUE rv = cr.value;
+        if (!strcmp(opn, "select") || !strcmp(opn, "filter")) { if (!KORB_TRUTHY(rv)) return RESULT_OK(KORB_NIL); }
+        else if (!strcmp(opn, "reject")) { if (KORB_TRUTHY(rv)) return RESULT_OK(KORB_NIL); }
+        else if (!strcmp(opn, "map") || !strcmp(opn, "collect")) { slots[0] = rv; }
+        else if (!strcmp(opn, "filter_map")) { if (!KORB_TRUTHY(rv)) return RESULT_OK(KORB_NIL); slots[0] = rv; }
+        else if (!strcmp(opn, "take_while")) { if (!KORB_TRUTHY(rv)) { *term = true; return RESULT_OK(KORB_NIL); } }
+        else if (!strcmp(opn, "drop_while")) { if (oi < 64 && op_state[oi]) { if (KORB_TRUTHY(rv)) return RESULT_OK(KORB_NIL); op_state[oi] = 0; } }
+    }
+    CHECK(korb_ary_push_val(c, slots + 1, res, slots[0]));    /* survived all ops → keep */
+    (*produced)++;
+    if (limit >= 0 && *produced >= limit) *term = true;
+    return RESULT_OK(KORB_NIL);
+}
 /* Drive a lazy/cycle enum: produce values, apply ops, push up to `limit` (or all
  * if limit<0) into a fresh Array.  `self` rooted.  `sink` (non-null) yields each
  * instead of collecting (for lazy#each). */
@@ -374,58 +453,13 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
           else CHECK(korb_ary_push_val(c, slots + 3, seen, KORB_NIL));
       } }
     intptr_t produced = 0;
-    /* process one candidate value `cand` (into slots[2]); a kept value is pushed
-     * to res.  Uses slots[3+] as op scratch. */
+    bool term = false;   /* a take/take_while bound (or the limit) was hit → stop the source */
+    /* Feed one source value through the op chain; flat_map fanout + all state is
+     * handled by korb_lazy_run.  Candidate + op scratch live at slots[2+]. */
     #define LAZY_FEED(cand_expr) do {                                                      \
-        slots[2] = (cand_expr);                                                            \
-        bool keep = true;                                                                  \
-        for (uint32_t oi = 0; keep; oi++) {                                                \
-            const KorbArray *ops = VAL2ARY(SELF_ENUM->ops);   /* re-read: op dispatch GCs */ \
-            if (oi >= ops->len) break;                                                     \
-            const KorbArray *pair = VAL2ARY(ops->items->data[oi]);                         \
-            uint32_t opid = SYM2ID(pair->items->data[0]);                                  \
-            const char *opn = korb_sym_name(c->vm, opid);                                  \
-            if (!strcmp(opn, "drop")) { if (oi < 64 && op_state[oi] > 0) { op_state[oi]--; keep = false; } continue; } \
-            if (!strcmp(opn, "take")) { if (oi >= 64 || op_state[oi] <= 0) { keep = false; goto lazy_done; } op_state[oi]--; continue; } \
-            if (!strcmp(opn, "compact")) { if (slots[2] == KORB_NIL) keep = false; continue; }  /* no-block: drop nils */ \
-            if (!strcmp(opn, "grep") || !strcmp(opn, "grep_v")) {                           \
-                const bool gwant = (opn[4] == '\0');                                        \
-                bool gm; RESULT gmr = korb_grep_eqq(c, slots + 3, pair->items->data[1], slots[2], &gm); \
-                if (UNLIKELY(gmr.state != KORB_NORMAL)) return gmr;                         \
-                if (gm != gwant) { keep = false; continue; }                               \
-                const KorbArray *gpair = VAL2ARY(VAL2ARY(SELF_ENUM->ops)->items->data[oi]); /* re-read after GC */ \
-                if (gpair->len >= 3 && gpair->items->data[2] != KORB_NIL) {                 \
-                    slots[3] = gpair->items->data[2];                                       \
-                    RESULT gr = korb_call1(c, slots + 4, slots[3], slots[2]);               \
-                    if (UNLIKELY(gr.state != KORB_NORMAL)) return gr;                       \
-                    slots[2] = gr.value;                                                    \
-                }                                                                          \
-                continue;                                                                  \
-            }                                                                              \
-            if (!strcmp(opn, "uniq")) {                                                     \
-                slots[3] = slots[2];   /* dedup key = value (or block result) */           \
-                if (pair->items->data[1] != KORB_NIL) {                                     \
-                    slots[4] = pair->items->data[1];                                        \
-                    RESULT ur = korb_call1(c, slots + 5, slots[4], slots[2]);               \
-                    if (UNLIKELY(ur.state != KORB_NORMAL)) return ur;                       \
-                    slots[3] = ur.value;                                                    \
-                }                                                                          \
-                slots[4] = VAL2ARY(VALUE_REF_GET(seen))->items->data[oi];   /* this op's Hash (rooted via seen) */ \
-                if (korb_hash_find(VAL2HASH(slots[4]), slots[3]) >= 0) { keep = false; continue; }  /* already produced */ \
-                CHECK(korb_hash_set(c, slots + 5, VALUE_REF_AT(&slots[4]), VALUE_REF_AT(&slots[3]), KORB_TRUE)); \
-                continue;                                                                  \
-            }                                                                              \
-            slots[3] = pair->items->data[1];                                               \
-            RESULT cr = korb_call1(c, slots + 4, slots[3], slots[2]);                      \
-            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;                              \
-            if (!strcmp(opn, "select") || !strcmp(opn, "filter")) { if (!KORB_TRUTHY(cr.value)) keep = false; } \
-            else if (!strcmp(opn, "reject")) { if (KORB_TRUTHY(cr.value)) keep = false; }  \
-            else if (!strcmp(opn, "map") || !strcmp(opn, "collect")) { slots[2] = cr.value; } \
-            else if (!strcmp(opn, "filter_map")) { if (!KORB_TRUTHY(cr.value)) keep = false; else slots[2] = cr.value; } \
-            else if (!strcmp(opn, "take_while")) { if (!KORB_TRUTHY(cr.value)) { keep = false; goto lazy_done; } } \
-            else if (!strcmp(opn, "drop_while")) { if (oi < 64 && op_state[oi]) { if (KORB_TRUTHY(cr.value)) keep = false; else op_state[oi] = 0; } } \
-        }                                                                                  \
-        if (keep) { CHECK(korb_ary_push_val(c, slots + 3, res, slots[2])); produced++; if (limit >= 0 && produced >= limit) goto lazy_done; } \
+        RESULT _r = korb_lazy_run(c, slots + 2, self, (cand_expr), 0, op_state, seen, res, limit, &produced, &term); \
+        if (UNLIKELY(_r.state != KORB_NORMAL)) return _r;                                  \
+        if (term) goto lazy_done;                                                          \
     } while (0)
 
     if (mode == 2) {                                            /* cycle: repeat the array */
@@ -679,6 +713,22 @@ static RESULT korb_m_enum_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(av.state != KORB_NORMAL)) return av;
     slots[0] = av.value;
     return korb_m_ary_uniq_b(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
+}
+/* Enumerator::Lazy#flat_map / #collect_concat — lazy: chain (korb_lazy_run fans
+ * out an Array block result one level); eager: delegate to Array#flat_map. */
+static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd */
+static RESULT korb_m_enum_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy flat_map without a block");
+    if (SELF_ENUM->mode != 0) {
+        if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
+        VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
+        slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0));
+        return korb_lazy_chain(c, slots + 1, self, "flat_map", slots[0]);
+    }
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager */
+    if (UNLIKELY(av.state != KORB_NORMAL)) return av;
+    slots[0] = av.value;
+    return korb_m_ary_flat_map(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
 }
 static RESULT korb_m_enum_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a; return korb_lazy_op(c, slots, self, "reject", false, block, def_env, cself);
