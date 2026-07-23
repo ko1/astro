@@ -97,10 +97,19 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * Terminals re-run the proc (bounded by a limit via the yielder) — so infinite
  * generators work for first/take/next without eager materialization. */
 static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc, VALUE size) {
-    slots[0] = proc;
-    KorbEnumerator *e = korb_alloc(c, slots + 1, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    slots[0] = proc; slots[1] = size;                    /* root both across alloc */
+    KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
+    slots[2] = (VALUE)e;                                 /* root the new enum across the respond_to? dispatch below */
     e->mode = 3;
-    e->size = FIXNUM_P(size) ? size : KORB_NIL;          /* known size (Fixnum) → Enumerator#size; else unknown */
+    size = slots[1];                                     /* re-read after alloc */
+    e->size = FIXNUM_P(size) ? size : KORB_NIL;          /* known Fixnum size → Enumerator#size directly */
+    if (KORB_FLOAT_P(size) && isinf(korb_float_val(size)) && korb_float_val(size) > 0) e->size_inf = 1;   /* +Infinity size */
+    else if (!FIXNUM_P(size) && size != KORB_NIL &&
+             korb_responds_to_coerce(c, slots + 3, size, korb_intern(c->vm, "call", 4))) {   /* honors #respond_to?/mocks */
+        e = VAL2ENUM(slots[2]); size = slots[1];         /* re-read enum + size after the (GC-capable) respond_to? dispatch */
+        ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->size_proc, size);   /* a callable size → invoked lazily by #size */
+    }
+    e = VAL2ENUM(slots[2]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     return RESULT_OK((VALUE)e);
 }
@@ -184,16 +193,21 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
      * not a GC-scanned field, so a heap-boxed Float (an endless range's Infinity)
      * would go stale; those report nil for now. */
     slots[2] = KORB_NIL;
+    bool src_inf = false;
     if (KORB_ARRAY_P(slots[0])) slots[2] = LONG2FIX(VAL2ARY(slots[0])->len);
     else if (KORB_RANGE_P(slots[0])) {
         const KorbRange *r = VAL2RANGE(slots[0]);
         if (FIXNUM_P(r->rbegin) && FIXNUM_P(r->rend)) {
             intptr_t n = FIX2LONG(r->rend) - FIX2LONG(r->rbegin) + (r->exclude_end ? 0 : 1);
             slots[2] = LONG2FIX(n < 0 ? 0 : n);
+        } else if (KORB_INTEGER_P(r->rbegin) &&                 /* endless / +Infinity integer range → #size is Infinity */
+                   (r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)) && korb_float_val(r->rend) > 0))) {
+            src_inf = true;
         }
     }
     KorbEnumerator *e = korb_alloc(c, slots + 3, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = mode;
+    e->size_inf = src_inf;
     e->size = slots[2];                                         /* re-read after alloc */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->ops, slots[1]);
@@ -202,13 +216,13 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
 /* Size of a chained lazy enum: map/collect preserve it, take(n)=min(size,n),
  * drop(n)=max(0,size-n), everything else is unknown (nil).  blk_proc carries the
  * count for take/drop. */
-static VALUE korb_lazy_size(const char *op, VALUE osz, VALUE blk_proc) {
-    const bool inf = KORB_FLOAT_P(osz) && isinf(korb_float_val(osz));
+static VALUE korb_lazy_size(const char *op, VALUE osz, bool src_inf, VALUE blk_proc, bool *dst_inf) {
+    const bool inf = src_inf || (KORB_FLOAT_P(osz) && isinf(korb_float_val(osz)));
+    *dst_inf = false;
     if (!strcmp(op, "take")) { if (inf) return blk_proc; if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
-    if (!strcmp(op, "map") || !strcmp(op, "collect") || !strcmp(op, "with_index")) return osz;   /* size-preserving (keeps Fixnum or Infinity) */
-    if (!FIXNUM_P(osz)) return KORB_NIL;
-    if (!strcmp(op, "drop")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
-    return KORB_NIL;
+    if (!strcmp(op, "map") || !strcmp(op, "collect") || !strcmp(op, "with_index")) { *dst_inf = inf; return osz; }   /* size-preserving */
+    if (!strcmp(op, "drop")) { if (inf) { *dst_inf = true; return KORB_NIL; } if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
+    return KORB_NIL;   /* filtering ops (select/reject/grep/…) make the size unknowable */
 }
 /* Return a new lazy enum = self with one more op appended (op_sym, blk_proc). */
 static RESULT korb_lazy_chain(CTX *c, VALUE *slots, VALUE_REF self, const char *op, VALUE blk_proc) {
@@ -227,9 +241,11 @@ static RESULT korb_lazy_chain(CTX *c, VALUE *slots, VALUE_REF self, const char *
     CHECK(korb_ary_push_val(c, slots + 6, pr, slots[3]));
     CHECK(korb_ary_push_val(c, slots + 6, pr, slots[4]));
     CHECK(korb_ary_push_val(c, slots + 6, nops, VALUE_REF_GET(pr)));
-    const VALUE nsz = korb_lazy_size(op, SELF_ENUM->size, slots[4]);   /* slots[4] = blk_proc (count for take/drop) */
+    bool dst_inf;
+    const VALUE nsz = korb_lazy_size(op, SELF_ENUM->size, SELF_ENUM->size_inf, slots[4], &dst_inf);   /* slots[4] = blk_proc (count for take/drop) */
     KorbEnumerator *ne = korb_alloc(c, slots + 6, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     ne->mode = SELF_ENUM->mode;
+    ne->size_inf = dst_inf;
     ne->size = nsz;
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->source, slots[0]);
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->ops, VALUE_REF_GET(nops));
@@ -534,6 +550,11 @@ static RESULT korb_m_enum_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbEnumerator *const e = SELF_ENUM;
+    if (e->size_inf) return korb_float_new(c, slots, (double)INFINITY);          /* infinite source (endless/Float::INFINITY range) */
+    if (e->size_proc != KORB_NIL) {                                             /* a callable size — call it fresh each time */
+        slots[0] = e->size_proc;
+        return korb_send(c, slots + 1, korb_intern(c->vm, "call", 4), 0, 0);
+    }
     if (FIXNUM_P(e->size) || KORB_FLOAT_P(e->size)) return RESULT_OK(e->size);   /* explicit size (Enumerator.new(size)/to_enum) or Infinity */
     /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
      * returns nil when the size is unknown (no size given to Enumerator.new). */
@@ -618,7 +639,7 @@ static RESULT korb_m_enum_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(slots[0]);
 }
 /* map: collect block results over the materialized values; no block → self. */
-static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc);   /* fwd */
+static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc, bool src_inf);   /* fwd */
 /* x.lazy — a lazy enumerator over x (Array/Range), or self if already lazy. */
 static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
@@ -626,7 +647,7 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_ENUM_P(v)) {
         const uint8_t m = VAL2ENUM(v)->mode;
         if (m == 1 || m == 2 || m == 4) return RESULT_OK(v);    /* already lazy / cycle / lazy-generator */
-        if (m == 3) { slots[0] = VAL2ENUM(v)->source; return korb_lazy_gen_new(c, slots + 1, slots[0]); }   /* generator → lazy generator */
+        if (m == 3) { const bool si = VAL2ENUM(v)->size_inf; slots[0] = VAL2ENUM(v)->source; return korb_lazy_gen_new(c, slots + 1, slots[0], si); }   /* generator → lazy generator (carry infinite size) */
     }
     if (KORB_HASH_P(v)) {                                        /* lazy over the [k,v] pairs (the driver iterates Arrays) */
         slots[0] = v;
@@ -641,11 +662,12 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* gen.lazy → a lazy generator (mode 4): the block proc as `source` + an empty
  * `ops` chain, driven incrementally (bounded) by the ops-aware yielder — so
  * `select`/`map`/... on an infinite generator stay deferred. */
-static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc) {
+static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc, bool src_inf) {
     slots[0] = proc;
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));           /* empty ops */
     KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = 4;
+    e->size_inf = src_inf;                                       /* infinite source (e.g. loop.lazy) */
     e->size = KORB_NIL;                                          /* generator: size unknown unless set by Lazy.new(obj, size) */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->ops, slots[1]);

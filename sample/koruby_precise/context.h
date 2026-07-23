@@ -280,11 +280,13 @@ typedef struct KorbEnumerator {
     uint32_t cursor;
     uint8_t  mode;                   /* 0 eager (values materialized), 1 lazy, 2 cycle */
     uint8_t  op;                     /* eager reduce when finally given a block: 0 map/each, 1 select, 2 reject */
+    uint8_t  size_inf;               /* 1 → #size is Float::INFINITY (can't be stored in the immediate `size` slot) */
     VALUE ARO_GC_EDGE values;
     VALUE ARO_GC_EDGE desc;
     VALUE ARO_GC_EDGE source;        /* lazy/cycle: the underlying Array/Range */
     VALUE ARO_GC_EDGE ops;           /* lazy: Array of [op_sym, block_proc] pairs */
     VALUE size;                      /* known #size (Fixnum) or nil/0 (unknown); immediate → not a GC edge */
+    VALUE ARO_GC_EDGE size_proc;     /* generator: a callable #size (Enumerator.new(->{…}){…}); nil otherwise */
 } KorbEnumerator;
 
 /* Enumerator::ArithmeticSequence — a lazy step/% sequence.  `recv` is the begin
@@ -1061,6 +1063,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->desc);                   \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->source);                 \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->ops);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_en->size_proc);              \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \
