@@ -8710,7 +8710,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_inspect, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_set", korb_m_hash_to_set, 0);
-    korb_def_cmethod(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
+    korb_def_cmethod_blk(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
 
     /* Integer/Float → Complex helpers */
     korb_def_cmethod(c, KORB_C_INTEGER, "i", korb_m_int_i, 0);
