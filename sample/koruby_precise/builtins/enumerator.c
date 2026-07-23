@@ -847,7 +847,16 @@ static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
  * without → a new Enumerator of [value, off+i] pairs. */
 static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t off = 0;
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) off = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* nil ≡ no argument (offset 0) */
+        VALUE ov = VALUE_SLICE_GET(a, 0);
+        if (FIXNUM_P(ov)) off = FIX2LONG(ov);
+        else {                                                            /* Float/#to_int coercion; String etc → TypeError */
+            RESULT cr = korb_coerce_to_int(c, slots, &ov);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value != KORB_TRUE) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
+            korb_to_index(ov, &off);   /* ov is now Integer/Float — extract (truncating Float) */
+        }
+    }
     if (SELF_ENUM->mode == 1) {                                  /* lazy (source): chain "with_index" [offset, block] */
         slots[0] = LONG2FIX(off);
         slots[1] = KORB_NIL;
