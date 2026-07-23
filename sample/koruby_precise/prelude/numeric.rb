@@ -24,6 +24,8 @@ class Numeric
   def negative?; self < 0; end
   def positive?; self > 0; end
   def integer?; false; end
+  def numerator; to_r.numerator; end       # CRuby: delegates to the Rational form
+  def denominator; to_r.denominator; end
   def to_int; to_i; end
   def div(other); (self / other).floor; end
   def %(other); self - other * self.div(other); end
