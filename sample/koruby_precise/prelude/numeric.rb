@@ -86,8 +86,9 @@ end
 # Complex: predicates/conversions valid only when the imaginary part is zero.
 class Complex
   def zero?; real.zero? && imaginary.zero?; end
-  def to_i; imaginary.zero? ? real.to_i : raise(RangeError, "can't convert #{self} into Integer"); end
-  def to_f; imaginary.zero? ? real.to_f : raise(RangeError, "can't convert #{self} into Float"); end
+  # to_i/to_f require an *exact* zero imaginary part: a Float 0.0 raises (unlike to_r).
+  def to_i; (imaginary.zero? && !imaginary.is_a?(Float)) ? real.to_i : raise(RangeError, "can't convert #{self} into Integer"); end
+  def to_f; (imaginary.zero? && !imaginary.is_a?(Float)) ? real.to_f : raise(RangeError, "can't convert #{self} into Float"); end
   def to_r; imaginary.zero? ? real.to_r : raise(RangeError, "can't convert #{self} into Rational"); end
   def finite?; real.finite? && imaginary.finite?; end
   def infinite?; (real.infinite? || imaginary.infinite?) ? 1 : nil; end
