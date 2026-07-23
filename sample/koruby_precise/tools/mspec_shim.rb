@@ -795,8 +795,7 @@ end
 # Mock#class to return it.
 class MockObject; end unless defined?(MockObject)
 
-class MSpecMock
-  def class; MockObject; end
+class MockObject   # real class is MockObject (matches CRuby's mspec) so inspect / type-name fall back to "MockObject"
   def initialize(name); @name = name; @recv = {}; end
   def should_receive(method, *_); @recv[method] = MSpecMockExpectation.new(self, method); @recv[method]; end
   def stub(*_a); MSpecMockExpectation.new(self, :stub); end
@@ -894,7 +893,7 @@ class MSpecMockExpectation
   end
 end
 
-def mock(name = ""); MSpecMock.new(name); end
+def mock(name = ""); MockObject.new(name); end
 def mock_int(value); value; end
 # Lightweight NumericMockObject stand-in.  Real mspec subclasses Numeric;
 # we pretend by including Comparable and forwarding == / <=> through the
@@ -922,7 +921,7 @@ class NumericMockObject < Numeric
   end
 end
 def mock_numeric(name, options = {}); NumericMockObject.new(name, options); end
-def stub!(name = ""); MSpecMock.new(name); end
+def stub!(name = ""); MockObject.new(name); end
 
 # ScratchPad — mspec helper that records values across an example's
 # block invocations.  Tests do ScratchPad.record :foo / ScratchPad.recorded.
