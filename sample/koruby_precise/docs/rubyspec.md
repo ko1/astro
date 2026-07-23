@@ -139,6 +139,15 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   形（param_info から req/opt=.../\*rest/key:/\*\*kwrest/&block、top-level は global fn table fallback、alias は
   `#renamed(original)`）。method/to_s 9→21、unboundmethod/to_s 7→10。
 - **`Symbol#to_proc#to_s` に `(&:name)`**。
+- **`Enumerator::Lazy#flat_map` を lazy 化**: source-path の driver（LAZY_FEED macro）を再帰的 per-value
+  processor `korb_lazy_run` に書き換え。flat_map は Array block-result を 1段 flatten し各要素を
+  ops[oi+1..] へ再投入（fanout）、非 Array は単一値として通す。全 op（map/select/…/grep/uniq）が同関数経由。
+  lazy/flat_map 0→12。STRESS で fanout 検証。
+- **regression 自己修正**: 上記 lazy grep/uniq/flat_map が `mode != 0` で chain していたため plain generator
+  (`Enumerator.new{}`, mode 3) が非駆動 Enumerator を返していた（enumerable/uniq が検出）。lazy mode(1/4)
+  のみ chain、0/2/3 は to_a+Array method に修正。enumerable/uniq 0→6。
+- **`Range#size`**: Integer 始点で終点 `Float::INFINITY` を Infinity に（従来 nil）。
+- enumerator category **219→295**（本セッション +76）。
 - **確認済の壁**: mock respond_to fidelity（shim で to_str 等を real method 定義 or respond_to_missing?=true が
   coercion を誤らせる）は default 変更を試すも integer/float coercion が -46 regress → revert（shim は高リスク確定）。
   Data/Struct#initialize override は default initialize が C コードで callable super 無し → 構築 refactor 要（architectural）。
