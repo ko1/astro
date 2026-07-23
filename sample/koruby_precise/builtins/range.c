@@ -23,7 +23,7 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         const KorbRange *const r = SELF_RANGE;
         if (KORB_FLOAT_P(r->rbegin))                     /* Float begin → not iterable (even endless) */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
-        if (r->rend == KORB_NIL && KORB_INTEGER_P(r->rbegin))   /* endless Integer → Infinity */
+        if ((r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)))) && KORB_INTEGER_P(r->rbegin))   /* endless / +∞-end Integer → Infinity */
             return korb_float_new(c, slots, INFINITY);
         return RESULT_OK(KORB_NIL);                      /* non-numeric begin (e.g. String) → nil */
     }
