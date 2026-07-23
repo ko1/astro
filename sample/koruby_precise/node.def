@@ -405,7 +405,7 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         return korb_int_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
 #endif
     if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
-    if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs))) {   /* numeric l (incl. Bignum), float involved */
+    if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) && !KORB_OBJECT_P(rhs)) {   /* numeric l (incl. Bignum), float involved (a user-object rhs → the % method, which coerces) */
         double rd;
         if (korb_num_to_d(rhs, &rd) && rd == 0.0)       /* Float modulo by zero → ZeroDivisionError (not NaN) */
             return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
