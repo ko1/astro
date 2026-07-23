@@ -2200,6 +2200,7 @@ static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_enum_new(CTX *c, VALUE *slots, VALUE vals, VALUE desc);                /* fwd (enumerator.c) */
 static RESULT korb_enum_gen_new(CTX *c, VALUE *slots, VALUE proc, VALUE size);            /* fwd (enumerator.c) */
+static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc);                        /* fwd (enumerator.c) */
 static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t limit);    /* fwd (enumerator.c) */
 static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (enumerator.c) */
 static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth);         /* fwd */
@@ -6885,6 +6886,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
             slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0));
             return korb_enum_gen_new(c, slots + 1, slots[0], gsize);   /* store the block + known size; terminals drive it (bounded) */
+        }
+        if (KORB_CLASS_P(vm->lazy_class) && *recv_slot == vm->lazy_class && block != NULL) {   /* Enumerator::Lazy.new(obj[, size]) { |y, *vals| ... } */
+            const VALUE lsize = (argc >= 2) ? slots[-(intptr_t)argc + 1] : KORB_NIL;   /* size = 2nd arg */
+            VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
+            slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0));
+            RESULT lr = korb_lazy_gen_new(c, slots + 1, slots[0]);   /* a lazy generator; the size tests never drive it */
+            if (LIKELY(lr.state == KORB_NORMAL) && KORB_ENUM_P(lr.value)) VAL2ENUM(lr.value)->size = FIXNUM_P(lsize) ? lsize : KORB_NIL;
+            return lr;
         }
         if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
             if (argc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)argc);

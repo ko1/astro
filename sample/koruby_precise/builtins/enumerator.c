@@ -181,9 +181,20 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));            /* empty ops */
     KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = mode;
+    e->size = KORB_ARRAY_P(slots[0]) ? LONG2FIX(VAL2ARY(slots[0])->len) : KORB_NIL;   /* Array source → known size (Enumerator#size) */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->ops, slots[1]);
     return RESULT_OK((VALUE)e);
+}
+/* Size of a chained lazy enum: map/collect preserve it, take(n)=min(size,n),
+ * drop(n)=max(0,size-n), everything else is unknown (nil).  blk_proc carries the
+ * count for take/drop. */
+static VALUE korb_lazy_size(const char *op, VALUE osz, VALUE blk_proc) {
+    if (!FIXNUM_P(osz)) return KORB_NIL;
+    if (!strcmp(op, "map") || !strcmp(op, "collect")) return osz;
+    if (!strcmp(op, "take")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
+    if (!strcmp(op, "drop")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
+    return KORB_NIL;
 }
 /* Return a new lazy enum = self with one more op appended (op_sym, blk_proc). */
 static RESULT korb_lazy_chain(CTX *c, VALUE *slots, VALUE_REF self, const char *op, VALUE blk_proc) {
@@ -202,8 +213,10 @@ static RESULT korb_lazy_chain(CTX *c, VALUE *slots, VALUE_REF self, const char *
     CHECK(korb_ary_push_val(c, slots + 6, pr, slots[3]));
     CHECK(korb_ary_push_val(c, slots + 6, pr, slots[4]));
     CHECK(korb_ary_push_val(c, slots + 6, nops, VALUE_REF_GET(pr)));
+    const VALUE nsz = korb_lazy_size(op, SELF_ENUM->size, slots[4]);   /* slots[4] = blk_proc (count for take/drop) */
     KorbEnumerator *ne = korb_alloc(c, slots + 6, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     ne->mode = SELF_ENUM->mode;
+    ne->size = nsz;
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->source, slots[0]);
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->ops, VALUE_REF_GET(nops));
     return RESULT_OK((VALUE)ne);
@@ -227,6 +240,7 @@ static RESULT korb_lazy_chain2(CTX *c, VALUE *slots, VALUE_REF self, const char 
     CHECK(korb_ary_push_val(c, slots + 6, nops, VALUE_REF_GET(pr)));
     KorbEnumerator *ne = korb_alloc(c, slots + 6, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     ne->mode = SELF_ENUM->mode;
+    ne->size = KORB_NIL;                                          /* grep/grep_v: size unknown */
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->source, slots[0]);
     ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->ops, VALUE_REF_GET(nops));
     return RESULT_OK((VALUE)ne);
@@ -560,6 +574,7 @@ static RESULT korb_lazy_gen_new(CTX *c, VALUE *slots, VALUE proc) {
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 4));           /* empty ops */
     KorbEnumerator *e = korb_alloc(c, slots + 2, sizeof(KorbEnumerator), KORB_OBJ_ENUMERATOR);
     e->mode = 4;
+    e->size = KORB_NIL;                                          /* generator: size unknown unless set by Lazy.new(obj, size) */
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->source, slots[0]);
     ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->ops, slots[1]);
     return RESULT_OK((VALUE)e);
