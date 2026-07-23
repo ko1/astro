@@ -1674,10 +1674,13 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
     }
     /* no explicit message → the class name (exc_class for an abstract/user class,
-     * else the builtin etype name), matching CRuby's default. */
-    const char *nm = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
-                         ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
-                         : korb_etype_name(e->etype);
+     * else the builtin etype name), matching CRuby's default.  Use the *qualified*
+     * name so a namespaced exception reads "Mod::Err", not "Err". */
+    if (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class)) {
+        char qn[256]; korb_class_qname_into(c, e->exc_class, qn, sizeof qn);
+        return korb_str_new(c, slots, qn, (uint32_t)strlen(qn));
+    }
+    const char *nm = korb_etype_name(e->etype);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
 /* Exception#message → self.to_s (so a subclass overriding #to_s is honoured;
@@ -1693,11 +1696,11 @@ static RESULT korb_m_exc_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)a;
     const VALUE sv = VALUE_REF_GET(self);
     const KorbException *const e = VAL2EXC(sv);
-    const char *const cn = (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))
-                               ? korb_sym_name(c->vm, VAL2CLASS(e->exc_class)->name_sym)
-                               : korb_etype_name(e->etype);
-    char cnbuf[160];
-    snprintf(cnbuf, sizeof cnbuf, "%s", cn);                  /* copy before the to_s dispatch (may GC) */
+    char cnbuf[256];
+    if (e->exc_class != KORB_NIL && KORB_CLASS_P(e->exc_class))   /* qualified name (Mod::Err), not the bare Err */
+        korb_class_qname_into(c, e->exc_class, cnbuf, sizeof cnbuf);
+    else
+        snprintf(cnbuf, sizeof cnbuf, "%s", korb_etype_name(e->etype));
     slots[0] = sv;
     RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
