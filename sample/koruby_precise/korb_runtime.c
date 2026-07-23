@@ -8990,6 +8990,8 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         uint32_t fsym, line;
         if (p->iseq && korb_get_srcloc(c->vm, p->iseq, &fsym, &line))
             fprintf(fp, "#<Proc:0x%016lx %s:%u%s>", (unsigned long)(uintptr_t)v, korb_sym_name(c->vm, fsym), line, lam);
+        else if (p->iseq == NULL && p->self == KORB_NIL)   /* Symbol#to_proc → #<Proc:0x..(&:name) (lambda)> */
+            fprintf(fp, "#<Proc:0x%016lx(&:%s)%s>", (unsigned long)(uintptr_t)v, korb_sym_name(c->vm, p->sym_mid), lam);
         else
             fprintf(fp, "#<Proc:0x%016lx%s>", (unsigned long)(uintptr_t)v, lam);
         return;
