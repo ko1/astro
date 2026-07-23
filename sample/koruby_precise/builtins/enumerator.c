@@ -157,6 +157,10 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t l
     if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION)
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
     if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
+    /* Streaming each (limit -2) wants the generator block's OWN return value —
+     * for a to_enum generator that is the underlying method's return (CRuby
+     * Enumerator#each semantics).  Materializing callers want the collector. */
+    if (limit == -2 && br.state == KORB_NORMAL) return RESULT_OK(br.value);
     return RESULT_OK(slots[2]);                               /* finished naturally (finite) */
 }
 /* Stream a (possibly infinite) generator's values straight to `block`, stopping
@@ -174,7 +178,7 @@ static RESULT korb_enum_gen_drive_block(CTX *c, VALUE *slots, VALUE_REF self, in
     c->vm->gen_sink = prev;                                   /* restore */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (kind == 1) return RESULT_OK(slots[1]);               /* take_while → the collected Array */
-    return sink.broke ? RESULT_OK(slots[0]) : RESULT_OK(VALUE_REF_GET(self));
+    return sink.broke ? RESULT_OK(slots[0]) : RESULT_OK(r.value);   /* natural end → the generator block's return value */
 }
 static RESULT korb_enum_gen_each_stream(CTX *c, VALUE *slots, VALUE_REF self,
                                         NODE *block, VALUE *def_env, VALUE *cself) {
@@ -571,8 +575,12 @@ static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_enum_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));
-    if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4)   /* generator: stream (break/StopIteration safe on infinite sources) */
-        return korb_enum_gen_each_stream(c, slots, self, block, def_env, cself);
+    if (SELF_ENUM->mode == 3 || SELF_ENUM->mode == 4) {  /* generator: stream (break/StopIteration safe on infinite sources) */
+        RESULT r = korb_enum_gen_each_stream(c, slots, self, block, def_env, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (SELF_ENUM->mode == 4) return RESULT_OK(VALUE_REF_GET(self));   /* Enumerator::Lazy#each returns the lazy enum */
+        return r;                                         /* plain generator: the source method's return value */
+    }
     if (SELF_ENUM->mode != 0) {                       /* lazy/cycle: force (finite), then yield each — no materialized `values` to read */
         RESULT vr = korb_lazy_drive(c, slots, self, -1);
         if (UNLIKELY(vr.state != KORB_NORMAL)) return vr;
