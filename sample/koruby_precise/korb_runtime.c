@@ -9007,6 +9007,8 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
         if (KORB_CLASS_P(def_cls) && def_cls != recv_cls) { fputc('(', fp); korb_fprint_class_qname(c, fp, def_cls); fputc(')', fp); }
         fprintf(fp, "#%s", korb_sym_name(c->vm, m->mid));
+        if (km != NULL && km->orig_mid && km->orig_mid != km->mid)   /* aliased → #renamed(original) */
+            fprintf(fp, "(%s)", korb_sym_name(c->vm, km->orig_mid));
         /* parameter signature + source location for a Ruby-defined method (CRuby shape) */
         if (km != NULL && km->kind == KORB_METHOD_ISEQ) {
             const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
