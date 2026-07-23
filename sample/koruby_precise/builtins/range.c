@@ -664,6 +664,8 @@ static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VA
         slots[1] = ID2SYM(korb_intern(c->vm, "reverse_each", 12));
         return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, KORB_NIL);
     }
+    if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))           /* endless range → can't reverse-iterate from infinity */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rend));
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
