@@ -679,8 +679,7 @@ static RESULT korb_m_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_ary_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);    /* fwd */
 static RESULT korb_enum_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, const char *op) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
-    if (SELF_ENUM->mode != 0) {                                  /* lazy(1)/cycle(2)/lazy-generator(4): defer */
-        if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
+    if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy (1) / lazy-generator (4) → defer (chain) */
         slots[0] = VALUE_SLICE_GET(a, 0);                        /* pattern */
         slots[1] = KORB_NIL;
         if (block != NULL) {                                     /* optional block transforms each match */
@@ -689,7 +688,7 @@ static RESULT korb_enum_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         return korb_lazy_chain2(c, slots + 2, self, op, slots[0], slots[1]);
     }
-    RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager: materialize + Array#grep */
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager (0/2/3): materialize + Array#grep */
     if (UNLIKELY(av.state != KORB_NORMAL)) return av;
     slots[0] = av.value;
     return (op[4] == '\0' ? korb_m_ary_grep : korb_m_ary_grep_v)(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
@@ -700,8 +699,7 @@ static RESULT korb_m_enum_grep_v(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
  * infinite source stays productive); eager: delegate to Array#uniq. */
 static RESULT korb_m_ary_uniq_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd (array_ext.c) */
 static RESULT korb_m_enum_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (SELF_ENUM->mode != 0) {                                  /* lazy: chain "uniq" (proc = block or nil) */
-        if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
+    if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy → chain "uniq" (proc = block or nil) */
         slots[0] = KORB_NIL;
         if (block != NULL) {
             VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
@@ -719,13 +717,12 @@ static RESULT korb_m_enum_uniq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* fwd */
 static RESULT korb_m_enum_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to call lazy flat_map without a block");
-    if (SELF_ENUM->mode != 0) {
-        if (SELF_ENUM->mode == 3) { RESULT fr = korb_enum_force_gen(c, slots, self); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }
+    if (SELF_ENUM->mode == 1 || SELF_ENUM->mode == 4) {          /* lazy → chain */
         VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
         slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), 0));
         return korb_lazy_chain(c, slots + 1, self, "flat_map", slots[0]);
     }
-    RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager */
+    RESULT av = korb_m_enum_to_a(c, slots, self, a);             /* eager (0/2/3): materialize + Array#flat_map */
     if (UNLIKELY(av.state != KORB_NORMAL)) return av;
     slots[0] = av.value;
     return korb_m_ary_flat_map(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, cself);
