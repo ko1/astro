@@ -1117,7 +1117,6 @@ static RESULT korb_m_enum_##name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 ENUM_DELEGATE_BLK(group_by,    korb_m_ary_group_by)
 ENUM_DELEGATE_BLK(partition,   korb_m_ary_partition)
 ENUM_DELEGATE_BLK(minmax,      korb_m_ary_minmax)
-ENUM_DELEGATE_BLK(uniq,        korb_m_ary_uniq_b)
 ENUM_DELEGATE_BLK(zip,         korb_m_ary_zip)
 ENUM_DELEGATE_BLK(find_index,  korb_m_ary_find_index)
 ENUM_DELEGATE_BLK(chunk_while, korb_m_ary_chunk_while)
