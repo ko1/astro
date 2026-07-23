@@ -129,9 +129,18 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
 - **Enumerator::Lazy#uniq を lazy 化**: per-drive seen-Hash（両 driver: korb_lazy_apply の Ruby-array op_state、
   LAZY_FEED の rooted seen-Hash 配列）で dedup。lazy/uniq 0→9。
 - **Enumerator#find_all を lazy-aware alias(select) に**。
-- enumerator category **219→255**。全て corpus 93,399/0 + STRESS + fuzzer 875/0 で検証。
-- **残（Enumerator）**: `Enumerator::Lazy.new(obj,size)` 構築 + `#size` 伝播（~15-20 tests、"not an enumerator"
-  で block 中）、flat_map/with_index/zip の lazy 化（構造的: 1入力→多出力/index/多源）。
+- **`Enumerator::Lazy.new(obj, size)` 構築 + lazy `#size` 伝播**: 従来 "not an enumerator" で全 size test が
+  err。Lazy.new 特例（lazy generator 構築 + size 格納）、lazy enum に実 `#size`、chain で伝播（map/collect 保存、
+  take(n)=min、drop(n)=max(0,size-n)、grep/select/…→nil、`arr.lazy`=Array len、finite int Range=count）。
+  map/select/take/drop/drop_while 群 +~15。注: e->size は非 GC-scanned なので immediate（Fixnum）のみ格納
+  （endless range の Infinity は box→stale で SEGV したため nil。STRESS で発見・修正）。
+- **Integer/Float の `**` `%` が obj#coerce を honor**（従来 +/-/*// のみ）。integer/pow 38→39。
+- enumerator category **219→283**（本セッション +64）。err 119→92。全て corpus 93,399/0 + STRESS + fuzzer 875/0。
+- **残（Enumerator, 構造的/edge）**: flat_map/with_index/zip の lazy 化（1入力→多出力/index/多源）、
+  generator-driving edge（take(0) は no-yield 等）、endless range の Infinity size（要 GC-scanned size field）。
+- **残（横断, 低リスクだが thin）**: coercion TypeError の per-method 追加、error-class mismatch、
+  各カテゴリ 1-3 test/file の long tail（Set#== の eql? 厳密性等、subtle）。mock respond_to fidelity と
+  encoding は shim/除外域。
 
 ## 2026-07-16〜21 大型機能 + 言語クラッシュ掃討 + 健全性ファジング
 
