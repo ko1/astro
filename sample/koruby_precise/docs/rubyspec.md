@@ -114,6 +114,25 @@ example pass-rate (of pass+fail+err) = 84.6%
 
 corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE / AOT すべて green を維持。
 
+## 2026-07-23 language+core 100% 目標グラインド開始（除外域以外）
+
+充足率実測: **language 82.4% / core 86.2% / library 14.9%**（library はほぼ require/gem/native 除外域）。
+到達可能失敗プールの最大レバーは **Enumerator/Lazy ~400**、次いで coercion TypeError ~70、MRO/prepend ~48。
+
+本ラウンドの修正:
+- **mspec shim: mock の実 class を MockObject に**（MSpecMock→MockObject merge）。inspect/type-name が
+  "MockObject" に。array/hash の mock-inspect が数件通る。
+- **Range#reverse_each on endless → TypeError**（`can't iterate from NilClass`、従来 RangeError）。
+- **Enumerator::Lazy#grep / #grep_v を lazy 化**: 従来 Enumerable#grep で eager materialize（Array 返却・
+  infinite source 過剰反復）。deferred chain op 化（`korb_lazy_chain2` で [op,pattern,block]、両 driver で
+  `pattern === value` を実 === dispatch + optional block map）。lazy/grep 5→18, grep_v 5→18。
+- **Enumerator::Lazy#uniq を lazy 化**: per-drive seen-Hash（両 driver: korb_lazy_apply の Ruby-array op_state、
+  LAZY_FEED の rooted seen-Hash 配列）で dedup。lazy/uniq 0→9。
+- **Enumerator#find_all を lazy-aware alias(select) に**。
+- enumerator category **219→255**。全て corpus 93,399/0 + STRESS + fuzzer 875/0 で検証。
+- **残（Enumerator）**: `Enumerator::Lazy.new(obj,size)` 構築 + `#size` 伝播（~15-20 tests、"not an enumerator"
+  で block 中）、flat_map/with_index/zip の lazy 化（構造的: 1入力→多出力/index/多源）。
+
 ## 2026-07-16〜21 大型機能 + 言語クラッシュ掃討 + 健全性ファジング
 
 - **Marshal を CRuby 4.8 wire format に全書き換え**（`prelude/marshal.rb`）: object links(`@`)・symbol table/links(`;`)・String encoding wrapper(`I`+`:E`)・Class(`c`)/Module(`m`)・`_dump`(`u`)/`marshal_dump`(`U`)・subclass(`C`)/extend(`e`)・Regexp(`/`)・Data(`S`)・Exception(:mesg/:bt)・compare_by_identity・nested const 解決・load proc。**dump 0→146 / load 53→235 pass**（round-trip byte 一致）。→ **Marshal byte-exact は「除外」から外れた**（主流オブジェクトグラフは一致）。
