@@ -205,7 +205,7 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
 static VALUE korb_lazy_size(const char *op, VALUE osz, VALUE blk_proc) {
     const bool inf = KORB_FLOAT_P(osz) && isinf(korb_float_val(osz));
     if (!strcmp(op, "take")) { if (inf) return blk_proc; if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
-    if (!strcmp(op, "map") || !strcmp(op, "collect")) return osz;   /* size-preserving (keeps Fixnum or Infinity) */
+    if (!strcmp(op, "map") || !strcmp(op, "collect") || !strcmp(op, "with_index")) return osz;   /* size-preserving (keeps Fixnum or Infinity) */
     if (!FIXNUM_P(osz)) return KORB_NIL;
     if (!strcmp(op, "drop")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
     return KORB_NIL;
@@ -273,6 +273,11 @@ static RESULT korb_grep_eqq(CTX *c, VALUE *slots, VALUE pat, VALUE val, bool *m)
 static RESULT korb_call1(CTX *c, VALUE *slots, VALUE proc, VALUE v) {
     slots[0] = proc; slots[1] = v;
     return korb_send(c, slots + 2, korb_intern(c->vm, "call", 4), 0, 1);
+}
+/* call proc.call(v1, v2) — proc + 2 args staged + rooted. */
+static RESULT korb_call2(CTX *c, VALUE *slots, VALUE proc, VALUE v1, VALUE v2) {
+    slots[0] = proc; slots[1] = v1; slots[2] = v2;
+    return korb_send(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2);
 }
 /* Apply the lazy `ops` chain to slots[voff] (value; transformed in place by
  * map/filter_map).  slots[voff+1]=ops, slots[voff+2]=op_state (per-op Fixnum
@@ -390,6 +395,24 @@ static RESULT korb_lazy_run(CTX *c, VALUE *slots, VALUE_REF self, VALUE value, u
             CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[1]), KORB_TRUE));
             continue;
         }
+        if (!strcmp(opn, "with_index")) {                     /* value → [value, idx] (no block) or block(value, idx) */
+            const intptr_t idx = (oi < 64) ? op_state[oi]++ : 0;
+            const VALUE blk = (pair->len >= 3) ? pair->items->data[2] : KORB_NIL;
+            if (blk != KORB_NIL) {
+                slots[1] = blk;
+                RESULT wr = korb_call2(c, slots + 2, slots[1], slots[0], LONG2FIX(idx));
+                if (UNLIKELY(wr.state != KORB_NORMAL)) return wr;
+                slots[0] = wr.value;
+            } else {
+                slots[1] = LONG2FIX(idx);
+                VALUE p = UNWRAP(korb_ary_new(c, slots + 2, 2));   /* [value, idx] */
+                slots[2] = p;
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
+                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
+                slots[0] = slots[2];
+            }
+            continue;
+        }
         if (!strcmp(opn, "flat_map") || !strcmp(opn, "collect_concat")) {
             slots[1] = pair->items->data[1];                  /* proc */
             RESULT fr = korb_call1(c, slots + 2, slots[1], slots[0]);
@@ -446,6 +469,7 @@ static RESULT korb_lazy_drive(CTX *c, VALUE *slots, VALUE_REF self, intptr_t lim
           const KorbArray *pair = VAL2ARY(VAL2ARY(SELF_ENUM->ops)->items->data[oi]);   /* re-read: hash_new GCs */
           const char *opn = korb_sym_name(c->vm, SYM2ID(pair->items->data[0]));
           if (!strcmp(opn, "drop") || !strcmp(opn, "take")) op_state[oi] = FIX2LONG(pair->items->data[1]);
+          else if (!strcmp(opn, "with_index")) op_state[oi] = FIX2LONG(pair->items->data[1]);   /* running index (starts at the offset) */
           else if (!strcmp(opn, "drop_while")) op_state[oi] = 1;            /* 1 = still dropping */
           else op_state[oi] = 0;
           if (!strcmp(opn, "take") || !strcmp(opn, "take_while")) has_terminator = true;
@@ -824,6 +848,12 @@ static RESULT korb_m_enum_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     intptr_t off = 0;
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) off = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (SELF_ENUM->mode == 1) {                                  /* lazy (source): chain "with_index" [offset, block] */
+        slots[0] = LONG2FIX(off);
+        slots[1] = KORB_NIL;
+        if (block != NULL) { VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u); slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, denv, KORB_CSELF_VAL(cself), 0)); }
+        return korb_lazy_chain2(c, slots + 2, self, "with_index", slots[0], slots[1]);
+    }
     /* lazy/cycle enums carry no materialized `values`; force them first (finite). */
     if (SELF_ENUM->mode != 0) { RESULT vr = korb_lazy_drive(c, slots, self, -1); if (UNLIKELY(vr.state != KORB_NORMAL)) return vr; slots[0] = vr.value; }
     else slots[0] = SELF_ENUM->values;
