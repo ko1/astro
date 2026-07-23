@@ -1987,6 +1987,13 @@ static RESULT korb_m_struct_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALU
             if (r->rbegin != KORB_NIL) { if (UNLIKELY(!korb_to_index(r->rbegin, &b))) return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (b < 0) b += n; }
             if (r->rend == KORB_NIL) last = (intptr_t)n - 1;
             else { if (UNLIKELY(!korb_to_index(r->rend, &e2))) return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion into Integer"); if (e2 < 0) e2 += n; last = r->exclude_end ? e2 - 1 : e2; }
+            if (UNLIKELY(b < 0)) {                             /* a begin still negative after wrap → RangeError (CRuby) */
+                slots[4] = av;                                 /* root the range across #to_s + raise */
+                RESULT ts = korb_send(c, slots + 5, korb_intern(c->vm, "to_s", 4), 0, 0);
+                if (UNLIKELY(ts.state != KORB_NORMAL)) return ts;
+                slots[4] = ts.value;
+                return korb_raise(c, slots + 5, KORB_E_RANGE, 0, "%s out of range", KORB_STRING_P(slots[4]) ? (const char *)VAL2STR(slots[4])->buf->data : "range");
+            }
             for (intptr_t i = b; i <= last; i++)
                 CHECK(korb_ary_push_val(c, slots + 3, dst, (i >= 0 && (uint32_t)i < n) ? VAL2ARY(VALUE_REF_GET(vals))->items->data[i] : KORB_NIL));
             continue;
@@ -1994,9 +2001,10 @@ static RESULT korb_m_struct_values_at(CTX *c, VALUE *slots, VALUE_REF self, VALU
         intptr_t idx;
         if (UNLIKELY(!korb_to_index(av, &idx)))
             return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(av));
+        const intptr_t orig = idx;
         if (idx < 0) idx += n;
         if (UNLIKELY(idx < 0 || (uint32_t)idx >= n))
-            return korb_raise(c, slots + 3, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)idx, n);
+            return korb_raise(c, slots + 3, KORB_E_INDEX, 0, orig < 0 ? "offset %ld too small for struct(size:%u)" : "offset %ld too large for struct(size:%u)", (long)orig, n);
         CHECK(korb_ary_push_val(c, slots + 3, dst, VAL2ARY(VALUE_REF_GET(vals))->items->data[idx]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -2142,14 +2150,10 @@ static RESULT korb_m_struct_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const VALUE mems = STRUCT_MEMBERS(self);
     const KorbArray *mem = VAL2ARY(mems);
     VALUE k = VALUE_SLICE_GET(a, 0);
-    if (FIXNUM_P(k)) {
-        intptr_t i = FIX2LONG(k); if (i < 0) i += mem->len;
-        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)FIX2LONG(k), mem->len);
-        return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
-    }
-    if (KORB_FLOAT_P(k)) {                                /* Float index → truncate toward zero, like to_int */
-        intptr_t i = (intptr_t)korb_float_val(k); if (i < 0) i += mem->len;
-        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)(intptr_t)korb_float_val(k), mem->len);
+    if (FIXNUM_P(k) || KORB_FLOAT_P(k)) {                /* integer/Float(truncated) position */
+        const intptr_t orig = FIXNUM_P(k) ? FIX2LONG(k) : (intptr_t)korb_float_val(k);
+        intptr_t i = orig; if (i < 0) i += mem->len;
+        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, orig < 0 ? "offset %ld too small for struct(size:%u)" : "offset %ld too large for struct(size:%u)", (long)orig, mem->len);
         return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i])));
     }
     if (UNLIKELY(!SYMBOL_P(k) && !KORB_STRING_P(k)))      /* not Integer/Float/Symbol/String → no implicit Integer conversion */
@@ -2187,13 +2191,22 @@ static RESULT korb_m_struct_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return korb_send_impl(c, slots + na, mid_dig, 0, na - 1, NULL, NULL, KORB_NIL);
 }
 static RESULT korb_m_struct_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));     /* []= on a frozen struct → FrozenError */
     const KorbArray *mem = VAL2ARY(STRUCT_MEMBERS(self));
     VALUE k = VALUE_SLICE_GET(a, 0), v = VALUE_SLICE_GET(a, 1);
     intptr_t idx = -1;
-    if (FIXNUM_P(k)) { intptr_t i = FIX2LONG(k); if (i < 0) i += mem->len; idx = i; }
-    else { uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : (KORB_STRING_P(k) ? korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len) : 0);
-           for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(mem->items->data[i]) == sym) { idx = i; break; } }
-    if (UNLIKELY(idx < 0 || (uint32_t)idx >= mem->len)) return korb_raise(c, slots, KORB_E_NAME, 0, "no such struct member");
+    if (FIXNUM_P(k) || KORB_FLOAT_P(k)) {                 /* integer position → IndexError when out of range */
+        intptr_t i = FIXNUM_P(k) ? FIX2LONG(k) : (intptr_t)korb_float_val(k);
+        const intptr_t orig = i; if (i < 0) i += mem->len;
+        if (UNLIKELY(i < 0 || (uint32_t)i >= mem->len)) return korb_raise(c, slots, KORB_E_INDEX, 0, "offset %ld too large for struct(size:%u)", (long)orig, mem->len);
+        idx = i;
+    } else if (SYMBOL_P(k) || KORB_STRING_P(k)) {         /* member name → NameError when unknown */
+        const uint32_t sym = SYMBOL_P(k) ? SYM2ID(k) : korb_intern(c->vm, VAL2STR(k)->buf->data, VAL2STR(k)->len);
+        for (uint32_t i = 0; i < mem->len; i++) if (SYM2ID(mem->items->data[i]) == sym) { idx = i; break; }
+        if (UNLIKELY(idx < 0)) return korb_raise(c, slots, KORB_E_NAME, 0, "no member '%s' in struct", korb_sym_name(c->vm, sym));
+    } else {                                              /* neither Integer/Float nor a name → no implicit Integer conversion */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(k));
+    }
     slots[0] = v;
     CHECK(korb_ivar_set(c, slots + 1, self, korb_member_ivar_sym(c->vm, mem->items->data[idx]), slots[0]));
     return RESULT_OK(slots[0]);
@@ -2338,7 +2351,10 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keyword: :%s",
                                       SYMBOL_P(h->items->data[2 * j]) ? korb_sym_name(vm, SYM2ID(h->items->data[2 * j])) : korb_type_name(h->items->data[2 * j]));
             int32_t ki = korb_hash_find(h, kw_sym);
-            if (ki >= 0) kwinit = KORB_TRUTHY(VAL2HASH(sym)->items->data[2*ki+1]) ? 1 : 2;
+            if (ki >= 0) {                                   /* keyword_init: true → 1, false → 2 (explicit), nil → 0 (unspecified) */
+                const VALUE kv = VAL2HASH(sym)->items->data[2*ki+1];
+                kwinit = (kv == KORB_NIL) ? 0 : (KORB_TRUTHY(kv) ? 1 : 2);
+            }
             continue;
         }
         if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern(vm, VAL2STR(sym)->buf->data, VAL2STR(sym)->len));
@@ -2350,12 +2366,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
                 if (mm->items->data[k] == sym)
                     return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "duplicate member: %s", korb_sym_name(vm, SYM2ID(sym)));
         }
-        const char *nm = korb_sym_name(vm, SYM2ID(sym));
-        char buf[256];
-        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
-        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
-        snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
-        CHECK(korb_ary_push_val(c, slots + 2, mem, sym));
+        CHECK(korb_ary_push_val(c, slots + 2, mem, sym));   /* accessors are defined below, after the common methods */
     }
     if (has_name) {                                                   /* Struct.new("Name",..) → Struct::Name (nested under Struct) */
         const VALUE struct_cls = korb_const_get(vm, korb_intern(vm, "Struct", 6));
@@ -2388,6 +2399,17 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "each_pair", korb_m_struct_each_pair, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "map", korb_m_struct_map, 0);
     korb_class_def_cfn_blk(c, VALUE_REF_GET(cls), "collect", korb_m_struct_map, 0);
+    /* Member accessors are defined LAST so a member named like a built-in
+     * (:hash/:each/:size/:members/…) keeps its accessor — CRuby defines the
+     * accessors on the anonymous subclass, shadowing the inherited methods. */
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(mem))->len; i++) {
+        const VALUE sym = VAL2ARY(VALUE_REF_GET(mem))->items->data[i];
+        const char *nm = korb_sym_name(vm, SYM2ID(sym));
+        char buf[256];
+        snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
+        korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, nm, strlen(nm)), ivar, 0);   /* reader */
+        snprintf(buf, sizeof buf, "%s=", nm); korb_class_def_attr(c, VALUE_REF_GET(cls), korb_intern(vm, buf, strlen(buf)), ivar, 1);  /* writer */
+    }
     VAL2CLASS(VALUE_REF_GET(cls))->struct_kwinit = kwinit;
     /* class-level `Rec.members`: install on the class's singleton (name already
      * interned above → no GC in def_cfn). */
