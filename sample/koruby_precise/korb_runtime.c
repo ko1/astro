@@ -9003,9 +9003,34 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         if (KORB_CLASS_P(recv_cls)) korb_fprint_class_qname(c, fp, recv_cls); else fputs("Object", fp);
         /* the module/class that actually defines the method, if different from the receiver class */
         VALUE def_cls = KORB_NIL;
-        if (KORB_CLASS_P(recv_cls)) (void)korb_class_find_method(recv_cls, m->mid, &def_cls);
+        const struct korb_method *km = KORB_CLASS_P(recv_cls) ? korb_class_find_method(recv_cls, m->mid, &def_cls) : NULL;
+        if (km == NULL) km = korb_method_lookup(c->vm, m->mid);   /* top-level (global function) method */
         if (KORB_CLASS_P(def_cls) && def_cls != recv_cls) { fputc('(', fp); korb_fprint_class_qname(c, fp, def_cls); fputc(')', fp); }
-        fprintf(fp, "#%s>", korb_sym_name(c->vm, m->mid));
+        fprintf(fp, "#%s", korb_sym_name(c->vm, m->mid));
+        /* parameter signature + source location for a Ruby-defined method (CRuby shape) */
+        if (km != NULL && km->kind == KORB_METHOD_ISEQ) {
+            const struct korb_param_info *const pi = (const struct korb_param_info *)km->param_info;
+            fputc('(', fp);
+            for (uint32_t i = 0; pi != NULL && i < pi->n; i++) {
+                if (i) fputs(", ", fp);
+                const struct korb_param_entry *const e = &pi->e[i];
+                const char *const nm = e->name ? korb_sym_name(c->vm, e->name) : "";
+                switch (e->kind) {
+                  case 0: fputs(nm, fp); break;                 /* required */
+                  case 1: fprintf(fp, "%s=...", nm); break;     /* optional */
+                  case 2: fprintf(fp, "*%s", nm); break;        /* rest */
+                  case 3: fprintf(fp, "%s:", nm); break;        /* keyreq */
+                  case 4: fprintf(fp, "%s: ...", nm); break;    /* key */
+                  case 5: fprintf(fp, "**%s", nm); break;       /* keyrest */
+                  case 6: fprintf(fp, "&%s", nm); break;        /* block */
+                }
+            }
+            fputc(')', fp);
+            uint32_t fsym, line;
+            if (km->body && korb_get_srcloc(c->vm, km->body, &fsym, &line))
+                fprintf(fp, " %s:%u", korb_sym_name(c->vm, fsym), line);
+        }
+        fputc('>', fp);
         return;
       }
     }
