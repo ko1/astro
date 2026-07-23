@@ -8521,6 +8521,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "drop", korb_m_enum_drop, 1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "drop_while", korb_m_enum_drop_while, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "select", korb_m_enum_select, 0);
+    korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "find_all", korb_m_enum_select, 0);   /* find_all is an alias for select (lazy-aware) */
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter", korb_m_enum_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "reject", korb_m_enum_reject, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "filter_map", korb_m_enum_filter_map, 0);
