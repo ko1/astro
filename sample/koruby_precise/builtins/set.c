@@ -166,9 +166,9 @@ static RESULT korb_m_set_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* Set#join(sep="") — delegate to the member Array's join. */
 static RESULT korb_m_set_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const uint32_t n = VALUE_SLICE_LEN(a);
-    slots[0] = SELF_SET->elems;                            /* receiver = member Array */
-    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);   /* forward args */
-    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "join", 4), 0, n, NULL, NULL, NULL);
+    slots[0] = SELF_SET->elems;                            /* receiver = member Array (slots[0]) */
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);   /* args at slots[1..n] */
+    return korb_send_impl(c, slots + 1 + n, korb_intern(c->vm, "join", 4), 0, n, NULL, NULL, NULL);   /* scratch base is above recv+args */
 }
 static RESULT korb_set_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int rel) {
     if (UNLIKELY(!KORB_SET_P(VALUE_SLICE_GET(a, 0))))   /* subset?/superset?/</<= require a Set (not just set-like) */

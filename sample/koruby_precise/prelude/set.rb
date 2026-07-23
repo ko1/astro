@@ -21,14 +21,28 @@ class Set
   end
   # in-place filters: collect the targets into a fresh array first (Set#to_a aliases
   # internal storage, so deleting while iterating it would skip elements).
-  def delete_if; rm = []; each { |x| rm << x if yield(x) }; rm.each { |x| delete(x) }; self; end
-  def keep_if; rm = []; each { |x| rm << x unless yield(x) }; rm.each { |x| delete(x) }; self; end
-  def reject!; n = size; delete_if { |x| yield(x) }; size == n ? nil : self; end
-  def select!; n = size; keep_if { |x| yield(x) }; size == n ? nil : self; end
-  def filter!(&b); select!(&b); end
-  def collect!; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; old.each { |x| delete(x) }; nw.each { |x| self << x }; self; end
-  def map!(&b); collect!(&b); end
-  def classify; h = {}; each { |e| k = yield(e); (h[k] ||= self.class.new) << e }; h; end
+  def delete_if; return to_enum(:delete_if) { size } unless block_given?; rm = []; each { |x| rm << x if yield(x) }; rm.each { |x| delete(x) }; self; end
+  def keep_if; return to_enum(:keep_if) { size } unless block_given?; rm = []; each { |x| rm << x unless yield(x) }; rm.each { |x| delete(x) }; self; end
+  def reject!; return to_enum(:reject!) { size } unless block_given?; n = size; delete_if { |x| yield(x) }; size == n ? nil : self; end
+  def select!; return to_enum(:select!) { size } unless block_given?; n = size; keep_if { |x| yield(x) }; size == n ? nil : self; end
+  alias filter! select!                    # CRuby: #filter! is the same UnboundMethod as #select!
+  def collect!; return to_enum(:collect!) { size } unless block_given?; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; old.each { |x| delete(x) }; nw.each { |x| self << x }; self; end
+  alias map! collect!                      # CRuby: #map! and #collect! share one UnboundMethod
+  def classify; return to_enum(:classify) { size } unless block_given?; h = {}; each { |e| k = yield(e); (h[k] ||= self.class.new) << e }; h; end
+  # remove every element, returning self.
+  def clear
+    rm = []
+    each { |x| rm << x }
+    rm.each { |x| delete(x) }
+    self
+  end
+  # replace self's contents with the given enumerable's, in place.
+  def replace(enum)
+    raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)
+    clear
+    enum.each { |x| self << x }
+    self
+  end
   def flatten!
     flat = flatten
     if flat == self
@@ -39,29 +53,39 @@ class Set
     end
   end
   def divide(&func)
+    return to_enum(:divide) unless block_given?
     if func.arity == 2
+      # Connected components of the directed graph u->v where func(u,v) is truthy.
+      # CRuby calls the block once for every ordered pair (incl. self-pairs); the
+      # groups are its strongly-connected components (mutual reachability).
       els = to_a
-      parent = {}
-      els.each { |e| parent[e] = e }
-      root = lambda do |x|
-        r = x
-        r = parent[r] while parent[r] != r
-        r
+      adj = Array.new(els.size) { [] }
+      els.each_with_index do |u, i|
+        els.each_with_index { |v, j| adj[i] << j if func.call(u, v) }
       end
-      els.each do |a|
-        els.each do |b|
-          if !a.equal?(b) && func.call(a, b) && func.call(b, a)
-            parent[root.call(a)] = root.call(b)
+      idx = Array.new(els.size, nil); low = Array.new(els.size, 0)
+      on_stack = Array.new(els.size, false); stack = []; counter = 0; comps = []
+      strongconnect = lambda do |v|
+        idx[v] = counter; low[v] = counter; counter += 1
+        stack.push(v); on_stack[v] = true
+        adj[v].each do |w|
+          if idx[w].nil?
+            strongconnect.call(w); low[v] = low[v] < low[w] ? low[v] : low[w]
+          elsif on_stack[w]
+            low[v] = low[v] < idx[w] ? low[v] : idx[w]
           end
         end
+        if low[v] == idx[v]
+          comp = []
+          loop do
+            w = stack.pop; on_stack[w] = false; comp << els[w]
+            break if w == v
+          end
+          comps << comp
+        end
       end
-      comps = {}
-      els.each do |e|
-        k = root.call(e)
-        comps[k] = [] unless comps.key?(k)
-        comps[k] << e
-      end
-      self.class.new(comps.values.map { |g| self.class.new(g) })
+      els.each_index { |i| strongconnect.call(i) if idx[i].nil? }
+      self.class.new(comps.map { |g| self.class.new(g) })
     else
       groups = {}
       each do |e|
