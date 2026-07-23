@@ -411,9 +411,9 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
             return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
         return korb_num_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
     }
-    if (KORB_INTEGER_P(l))                              /* Fixnum or Bignum / non-numeric → TypeError, not NoMethodError */
+    if (KORB_INTEGER_P(l) && !KORB_OBJECT_P(rhs))       /* Integer % non-object (nil/true/...) → TypeError, not NoMethodError */
         return korb_raise(c, slots, KORB_E_TYPE, n->u.node_mod.line, "%s can't be coerced into Integer", korb_type_name(rhs));
-    slots[0] = l; slots[1] = rhs;                       /* Range#% / user-defined % via dispatch */
+    slots[0] = l; slots[1] = rhs;                       /* Integer#% (coerces obj#coerce) / Range#% / user-defined % via dispatch */
     return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), n->u.node_mod.line, 1);
 }
 
