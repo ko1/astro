@@ -190,9 +190,10 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode) {
  * drop(n)=max(0,size-n), everything else is unknown (nil).  blk_proc carries the
  * count for take/drop. */
 static VALUE korb_lazy_size(const char *op, VALUE osz, VALUE blk_proc) {
+    const bool inf = KORB_FLOAT_P(osz) && isinf(korb_float_val(osz));
+    if (!strcmp(op, "take")) { if (inf) return blk_proc; if (!FIXNUM_P(osz)) return KORB_NIL; intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
+    if (!strcmp(op, "map") || !strcmp(op, "collect")) return osz;   /* size-preserving (keeps Fixnum or Infinity) */
     if (!FIXNUM_P(osz)) return KORB_NIL;
-    if (!strcmp(op, "map") || !strcmp(op, "collect")) return osz;
-    if (!strcmp(op, "take")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(n < s ? n : s); }
     if (!strcmp(op, "drop")) { intptr_t n = FIX2LONG(blk_proc), s = FIX2LONG(osz); return LONG2FIX(s > n ? s - n : 0); }
     return KORB_NIL;
 }
