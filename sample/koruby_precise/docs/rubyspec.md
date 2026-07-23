@@ -147,7 +147,14 @@ corpus（`make test`）は golden **93,399 件 0 fail / 0 crash**、STRESS+PURGE
   (`Enumerator.new{}`, mode 3) が非駆動 Enumerator を返していた（enumerable/uniq が検出）。lazy mode(1/4)
   のみ chain、0/2/3 は to_a+Array method に修正。enumerable/uniq 0→6。
 - **`Range#size`**: Integer 始点で終点 `Float::INFINITY` を Infinity に（従来 nil）。
-- enumerator category **219→295**（本セッション +76）。
+- **`Enumerator::Lazy#with_index` を lazy 化**: korb_lazy_run に index counter（op_state, offset 初期化）で
+  [value, idx] or block(value, idx) を生成。size 保存。lazy/with_index 1→5。
+- enumerator category **219→298**（本セッション +79）。lazy の source-path op はほぼ完備
+  （map/select/reject/filter_map/take/drop/*_while/compact/grep/grep_v/uniq/find_all/flat_map/with_index）。
+- **残（Enumerator, 要 driver 統合 or 構造）**: generator-path（mode 4, korb_lazy_apply）の flat_map fanout は
+  未（collector-aware な korb_lazy_run へ両 driver 統合が要）、zip（多源）、next/peek/rewind（external iteration）、
+  multi-value yield。他カテゴリの残は introspection-fidelity（curry の parameters/source_location、Kernel を
+  instance method 化）、Data/Struct init override（構築 refactor）、encoding/mock（除外・shim 高リスク）。
 - **確認済の壁**: mock respond_to fidelity（shim で to_str 等を real method 定義 or respond_to_missing?=true が
   coercion を誤らせる）は default 変更を試すも integer/float coercion が -46 regress → revert（shim は高リスク確定）。
   Data/Struct#initialize override は default initialize が C コードで callable super 無し → 構築 refactor 要（architectural）。
