@@ -1417,10 +1417,19 @@ static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */
         if (block != NULL) korb_warn(c, slots, "given block not used");   /* arg wins */
-        VALUE needle = VALUE_SLICE_GET(a, 0);
-        const KorbArray *ary = SELF_ARY;
-        for (uint32_t i = 0; i < ary->len; i++)
-            if (korb_value_eq(ary->items->data[i], needle)) return RESULT_OK(LONG2FIX(i));
+        slots[0] = VALUE_SLICE_GET(a, 0);            /* needle (root across element == dispatch) */
+        const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
+        for (uint32_t i = 0; i < n; i++) {
+            const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* re-read each iter (dispatch may GC) */
+            if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {   /* user #== → dispatch element == needle */
+                slots[1] = e; slots[2] = slots[0];
+                RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
+            } else if (korb_value_eq(e, slots[0])) {
+                return RESULT_OK(LONG2FIX(i));
+            }
+        }
         return RESULT_OK(KORB_NIL);
     }
     ARY_REQUIRE_BLOCK("Array#find_index");

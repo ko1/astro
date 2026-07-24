@@ -713,22 +713,40 @@ static RESULT korb_m_ary_drop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return korb_ary_subseq(c, slots, self, (uint32_t)n, len - (uint32_t)n);
 }
 static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    slots[0] = VALUE_SLICE_GET(a, 0);             /* root the needle across a possible yield */
-    KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-    KorbArrayItems *it = ary->items;
-    uint32_t w = 0; VALUE last = KORB_NIL; bool found = false;
-    for (uint32_t r = 0; r < ary->len; r++) {
-        if (korb_value_eq(it->data[r], slots[0])) {     /* match → would delete; frozen only errors if it would modify */
-            if (UNLIKELY(!found)) KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
-            last = it->data[r]; found = true;           /* return the deleted element */
+    /* Two passes: collect the survivors (dispatching a user element's #== is
+     * GC-unsafe against in-place compaction, so build a fresh `kept` array first,
+     * then copy it back with no intervening dispatch). */
+    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (rooted) */
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 3, VAL2ARY(VALUE_REF_GET(self))->len));   /* survivors (rooted) */
+    slots[2] = KORB_NIL;                                 /* last deleted element (rooted) */
+    bool found = false;
+    for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(self))->len; i++) {
+        VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
+        bool eq;
+        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {   /* user #== → dispatch element == needle */
+            slots[3] = e; slots[4] = slots[0];
+            RESULT r = korb_send_impl(c, slots + 5, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            eq = KORB_TRUTHY(r.value);
+            e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];   /* re-read after the (GC-capable) dispatch */
+        } else {
+            eq = korb_value_eq(e, slots[0]);
         }
-        else { if (w != r) ARO_STORE(c, it, &it->data[w], it->data[r]); w++; }
+        if (eq) { slots[2] = e; found = true; }
+        else CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[1]), e));
     }
-    for (uint32_t r = w; r < ary->len; r++) ARO_STORE(c, it, &it->data[r], KORB_NIL);
-    ary->len = w;
-    if (found) return RESULT_OK(last);
-    if (block != NULL) return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);   /* not found → block value */
-    return RESULT_OK(KORB_NIL);
+    if (!found) {
+        if (block != NULL) return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        return RESULT_OK(KORB_NIL);
+    }
+    KORB_CHECK_FROZEN(c, slots + 3, VALUE_REF_GET(self));    /* it would modify → FrozenError if frozen */
+    KorbArray *const ary = VAL2ARY(VALUE_REF_GET(self));
+    const KorbArray *const kept = VAL2ARY(slots[1]);
+    KorbArrayItems *const it = ary->items;                   /* copy survivors back in place (no dispatch → GC-safe) */
+    for (uint32_t i = 0; i < kept->len; i++)      ARO_STORE(c, it, &it->data[i], kept->items->data[i]);
+    for (uint32_t i = kept->len; i < ary->len; i++) ARO_STORE(c, it, &it->data[i], KORB_NIL);
+    ary->len = kept->len;
+    return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_ary_delete_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
