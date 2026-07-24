@@ -939,12 +939,16 @@ static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", 
 static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
-    const uint32_t priv_mids[] = {                                  /* method names that are always private, however defined */
+    const uint32_t priv_mids[] = {                                  /* method names that are always reported private */
         c->vm->mid_initialize,
         korb_intern(c->vm, "initialize_copy", 15),
         korb_intern(c->vm, "initialize_clone", 16),
         korb_intern(c->vm, "initialize_dup", 14),
         korb_intern(c->vm, "respond_to_missing?", 19),
+        korb_intern(c->vm, "public", 6),                            /* Module's visibility helpers are private instance methods */
+        korb_intern(c->vm, "private", 7),
+        korb_intern(c->vm, "protected", 9),
+        korb_intern(c->vm, "module_function", 15),
     };
     const uint32_t priv_n = (uint32_t)(sizeof priv_mids / sizeof priv_mids[0]);
     /* Compute the "bare module" test up front, while start_class is still fresh —
