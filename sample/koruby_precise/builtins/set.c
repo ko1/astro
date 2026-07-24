@@ -893,11 +893,12 @@ static RESULT korb_m_class_instance_methods(CTX *c, VALUE *slots, VALUE_REF self
 /* push the visibility-matching method names of `klass_ref`'s class into `result`
  * (with dedup).  vis_mask bit v set ⇒ include methods of visibility v.  Re-reads
  * the class each iteration since korb_ary_push_val can move it under a moving GC. */
-static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF klass_ref, uint8_t vis_mask, uint32_t mid_init) {
+static RESULT korb_push_vis_methods(CTX *c, VALUE *slots, VALUE_REF result, VALUE_REF klass_ref, uint8_t vis_mask, const uint32_t *priv_mids, uint32_t priv_n) {
     const uint32_t n = VAL2CLASS(VALUE_REF_GET(klass_ref))->method_cnt;
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method *const m = VAL2CLASS(VALUE_REF_GET(klass_ref))->methods[i];   /* entries are immortal (libc) */
-        const uint8_t v = (m->mid == mid_init) ? 1 : m->visibility;  /* initialize is private */
+        uint8_t v = m->visibility;
+        for (uint32_t p = 0; p < priv_n; p++) if (m->mid == priv_mids[p]) { v = 1; break; }   /* initialize/initialize_{copy,clone,dup}/respond_to_missing? are always private */
         if (!(vis_mask & (1u << v))) continue;
         const VALUE sym = ID2SYM(m->mid);
         const KorbArray *const r = VAL2ARY(VALUE_REF_GET(result));
@@ -926,7 +927,14 @@ static const char *const korb_kernel_priv_funcs[] = { "loop", "catch", "throw", 
 static const char *const korb_kernel_pub_funcs[]  = { "loop", "catch", "throw", "lambda", "proc" };
 static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class, VALUE_SLICE a, uint8_t vis_mask) {
     const bool inherit = !(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) == KORB_FALSE);
-    const uint32_t mid_init = c->vm->mid_initialize;
+    const uint32_t priv_mids[] = {                                  /* method names that are always private, however defined */
+        c->vm->mid_initialize,
+        korb_intern(c->vm, "initialize_copy", 15),
+        korb_intern(c->vm, "initialize_clone", 16),
+        korb_intern(c->vm, "initialize_dup", 14),
+        korb_intern(c->vm, "respond_to_missing?", 19),
+    };
+    const uint32_t priv_n = (uint32_t)(sizeof priv_mids / sizeof priv_mids[0]);
     /* Compute the "bare module" test up front, while start_class is still fresh —
      * the collection loop below allocs (GC), after which start_class is stale. */
     const VALUE kernel_mod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
@@ -942,15 +950,15 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
             const uint32_t plen = VAL2ARY(VAL2CLASS(slots[1])->prepended)->len;
             for (uint32_t j = plen; j-- > 0; ) {
                 slots[2] = VAL2ARY(VAL2CLASS(slots[1])->prepended)->items->data[j];   /* re-read (rooted class) */
-                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, mid_init));
+                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
             }
         }
-        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), vis_mask, mid_init));
+        CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[1]), vis_mask, priv_mids, priv_n));
         if (inherit && VAL2CLASS(slots[1])->included != KORB_NIL) { /* mixed-in modules */
             const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
             for (uint32_t j = mlen; j-- > 0; ) {
                 slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];   /* re-read (rooted class) */
-                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, mid_init));
+                CHECK(korb_push_vis_methods(c, slots + 3, result, VALUE_REF_AT(&slots[2]), vis_mask, priv_mids, priv_n));
             }
         }
         if (!inherit && !is_sing) break;                           /* false: stop after the first non-singleton class */
@@ -1018,12 +1026,12 @@ static RESULT korb_m_obj_singleton_methods(CTX *c, VALUE *slots, VALUE_REF self,
     for (;;) {
         slots[1] = korb_dispatch_class(c, slots[3]);                /* singleton (if any) or real class */
         if (KORB_CLASS_P(slots[1]) && VAL2CLASS(slots[1])->is_singleton) {
-            CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[1]), mask, mid_init));
+            CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[1]), mask, &mid_init, 1u));
             if (all && VAL2CLASS(slots[1])->included != KORB_NIL) { /* extended modules */
                 const uint32_t mlen = VAL2ARY(VAL2CLASS(slots[1])->included)->len;
                 for (uint32_t j = mlen; j-- > 0; ) {
                     slots[2] = VAL2ARY(VAL2CLASS(slots[1])->included)->items->data[j];
-                    CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[2]), mask, mid_init));
+                    CHECK(korb_push_vis_methods(c, slots + 4, result, VALUE_REF_AT(&slots[2]), mask, &mid_init, 1u));
                 }
             }
         }
