@@ -612,22 +612,34 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 /* private_class_method / public_class_method :sym... — set the visibility of the
  * named singleton (class) methods, which live on self's singleton class. */
 static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint8_t vis) {
-    (void)slots;
     const VALUE selfv = VALUE_REF_GET(self);
     const VALUE ret = VALUE_SLICE_LEN(a) == 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     if (!KORB_CLASS_P(selfv)) return RESULT_OK(ret);
-    const VALUE sing = korb_dispatch_class(c, selfv);      /* singleton class holding `def self.x` methods */
-    if (!KORB_CLASS_P(sing)) return RESULT_OK(ret);
-    KorbClass *const k = VAL2CLASS(sing);
+    slots[0] = UNWRAP(korb_obj_singleton(c, slots + 1, selfv));   /* self's OWN singleton (created if absent → copy-down never touches a parent's) */
+    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(ret);
     const uint32_t argc = VALUE_SLICE_LEN(a);
     for (uint32_t i = 0; i < argc; i++) {
         const VALUE arg = VALUE_SLICE_GET(a, i);
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
         else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern(c->vm, s->buf->data, s->len); }
-        else continue;
+        else return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(arg));
+        KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
+        bool set = false;
         for (uint32_t j = 0; j < k->method_cnt; j++)
-            if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; break; }
+            if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; set = true; break; }
+        if (set) continue;
+        /* inherited class method (defined on a superclass' singleton) → copy it
+         * down onto self's singleton with the requested visibility (CRuby). */
+        const struct korb_method *src = korb_class_find_method(slots[0], mid, NULL);
+        if (src != NULL) {
+            const struct korb_method tmp = *src;           /* snapshot: the slot-array grow may dangle src */
+            struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
+            *dst = tmp; dst->mid = mid; dst->owner = slots[0]; dst->visibility = vis;
+            continue;
+        }
+        return korb_raise(c, slots + 1, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
+                          korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }
     c->vm->method_serial++;                                /* invalidate call caches */
     return RESULT_OK(ret);
@@ -1204,9 +1216,12 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
     if (UNLIKELY(id == UINT32_MAX))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
-    const char *const cname = korb_sym_name(c->vm, id);   /* constant names must start with an uppercase letter */
+    const char *const cname = korb_sym_name(c->vm, id);   /* [A-Z][A-Za-z0-9_]* (or non-ASCII) */
     if (UNLIKELY(!((cname[0] >= 'A' && cname[0] <= 'Z') || (unsigned char)cname[0] >= 0x80)))
         return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
+    for (const char *p = cname + 1; *p; p++)              /* reject '=', '?', etc. after the first char */
+        if (UNLIKELY(!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || (unsigned char)*p >= 0x80)))
+            return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
     const VALUE val = VALUE_SLICE_GET(a, 1);
     const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
     { RESULT fr = korb_check_def_frozen(c, slots, owner); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
