@@ -7522,7 +7522,10 @@ korb_register_core_methods(CTX *c)
     /* Integer#=== / Float#=== are aliases of #== (which resolves to Comparable#==);
      * registering the same fn makes instance_method(:===) == instance_method(:==)
      * and keeps case/when (`5 === x`) behaviourally identical. */
-    korb_def_cmethod(c, KORB_C_INTEGER, "===", korb_m_cmpbl_eq, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "==", korb_m_num_eq, 1);   /* reflexive for a non-numeric other (overrides Comparable#==) */
+    korb_def_cmethod(c, KORB_C_INTEGER, "===", korb_m_num_eq, 1);  /* #=== is the same method as #== */
+    korb_def_cmethod(c, KORB_C_FLOAT,   "==", korb_m_num_eq, 1);
+    korb_def_cmethod(c, KORB_C_FLOAT,   "===", korb_m_num_eq, 1);
     korb_def_cmethod(c, KORB_C_FLOAT,   "===", korb_m_cmpbl_eq, 1);
     korb_def_cmethod(c, KORB_C_SYMBOL,  "===", korb_m_cmpbl_eq, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "abs", korb_m_int_abs, 0);

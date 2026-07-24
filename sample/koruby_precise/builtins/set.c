@@ -1159,6 +1159,21 @@ static RESULT korb_m_cmpbl_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     return korb_m_cmpbl_rel(c, slots, self, a, 4);
 }
+/* Numeric#== — numeric value equality, but for a non-numeric object other it is
+ * reflexive: `5 == obj` → `obj == 5` (CRuby).  Overrides Comparable#== (which
+ * would just return false via <=>), so method-dispatched `num == obj` (e.g. from
+ * Array#find_index) honors a custom #== on the other side. */
+static RESULT korb_m_num_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE l = VALUE_REF_GET(self), r = VALUE_SLICE_GET(a, 0);
+    if (korb_value_eq(l, r)) return RESULT_OK(KORB_TRUE);
+    if (KORB_OBJECT_P(r)) {                              /* non-numeric other → reflexive delegation */
+        slots[0] = r; slots[1] = l;
+        RESULT res = korb_send(c, slots + 2, c->vm->mid_eq, 0, 1);
+        if (UNLIKELY(res.state != KORB_NORMAL)) return res;
+        return RESULT_OK(KORB_TRUTHY(res.value) ? KORB_TRUE : KORB_FALSE);
+    }
+    return RESULT_OK(KORB_FALSE);
+}
 static RESULT korb_m_cmpbl_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     int c1; RESULT r = korb_comparable_cmp(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), &c1);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
