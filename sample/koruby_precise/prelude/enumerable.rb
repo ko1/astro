@@ -148,7 +148,16 @@ module Enumerable
   def find_index(*v, &blk); return to_enum(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
   def each_slice(n, &blk); n = __as_int(n); raise ArgumentError, "invalid slice size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z + n - 1) / n : nil; return Enumerator.new(sz) { |y| this.each_slice(n) { |s| y << s } }; end; s = []; __each_el { |x| s << x; if s.size == n; yield s; s = []; end }; yield s unless s.empty?; self; end
   def each_cons(n, &blk); n = __as_int(n); raise ArgumentError, "invalid size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z >= n ? z - n + 1 : 0) : nil; return Enumerator.new(sz) { |y| this.each_cons(n) { |c| y << c } }; end; buf = []; __each_el { |x| buf << x; if buf.size == n; yield buf.dup; buf.shift; end }; self; end
-  def zip(*others); os = others.map { |o| o.to_a }; r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }; if block_given?; r.each { |row| yield row }; nil; else; r; end; end
+  def zip(*others)
+    os = others.map do |o|                          # to_ary, else drive #each via to_enum(:each), else TypeError
+      if o.respond_to?(:to_ary) then o.to_ary
+      elsif o.respond_to?(:each) then o.to_enum(:each).to_a
+      else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
+      end
+    end
+    r = []; i = 0; __each_el { |x| row = [x]; os.each { |o| row << o[i] }; r << row; i += 1 }
+    if block_given? then r.each { |row| yield row }; nil else r end
+  end
   def filter_map(&blk); return to_enum(:filter_map) unless blk; r = []; each { |*ar| v = blk.call(*ar); r << v if v }; r; end
   alias collect_concat flat_map
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end

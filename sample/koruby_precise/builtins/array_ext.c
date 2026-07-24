@@ -799,22 +799,37 @@ static RESULT korb_m_ary_rotate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * (block path leaves it nil/unused), rows built at slots[2]. */
 static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     const uint32_t k = VALUE_SLICE_LEN(a);
+    if (VAL2ARY(VALUE_REF_GET(self))->len == 0)             /* empty self → no rows, and the args are never validated (CRuby) */
+        return block != NULL ? RESULT_OK(KORB_NIL) : korb_ary_new(c, slots, 0);
     /* coerce each arg: Array/Range/ArithSeq stay as-is (korb_zip_elem indexes them
      * lazily, so infinite sequences don't materialize); a user object with #to_ary
      * (or #to_a) is converted up-front. */
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, k));
     VALUE_REF cargs = VALUE_REF_AT(&slots[0]);
     const uint32_t to_ary_id = korb_intern(c->vm, "to_ary", 6), to_a_id = korb_intern(c->vm, "to_a", 4);
+    const uint32_t each_id = korb_intern(c->vm, "each", 4), to_enum_id = korb_intern(c->vm, "to_enum", 7);
     for (uint32_t j = 0; j < k; j++) {
         slots[1] = VALUE_SLICE_GET(a, j);                     /* candidate (rooted) */
-        if (!KORB_ARRAY_P(slots[1]) && KORB_OBJECT_P(slots[1])) {
-            for (int pass = 0; pass < 2; pass++) {            /* 0 = to_ary, 1 = to_a */
-                const uint32_t mid = pass == 0 ? to_ary_id : to_a_id;
-                if (!korb_responds_to(c, slots[1], mid)) continue;
-                RESULT r = korb_send_impl(c, slots + 2, mid, 0, 0, NULL, NULL, KORB_NIL);
+        /* Array/Range/ArithSeq index lazily via korb_zip_elem; anything else is
+         * materialized here (#to_ary, else #each via #to_enum → #to_a). */
+        if (!KORB_ARRAY_P(slots[1]) && !KORB_RANGE_P(slots[1]) && !KORB_ARITHSEQ_P(slots[1])) {
+            bool done = false;
+            if (korb_responds_to_coerce(c, slots + 2, slots[1], to_ary_id)) {   /* #to_ary conversion (honors respond_to?) */
+                RESULT r = korb_send_impl(c, slots + 2, to_ary_id, 0, 0, NULL, NULL, KORB_NIL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-                if (KORB_ARRAY_P(r.value)) { slots[1] = r.value; break; }
+                if (KORB_ARRAY_P(r.value)) { slots[1] = r.value; done = true; }
             }
+            if (!done && korb_responds_to_coerce(c, slots + 2, slots[1], each_id)) {   /* responds to #each → arg.to_enum(:each).to_a */
+                slots[2] = ID2SYM(each_id);                   /* the :each argument to #to_enum */
+                RESULT er = korb_send_impl(c, slots + 3, to_enum_id, 0, 1, NULL, NULL, KORB_NIL);   /* recv=slots[1], arg=slots[2] */
+                if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+                slots[2] = er.value;                          /* the enumerator (rooted) */
+                RESULT r = korb_send_impl(c, slots + 3, to_a_id, 0, 0, NULL, NULL, KORB_NIL);   /* recv at slots[2] */
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                if (KORB_ARRAY_P(r.value)) { slots[1] = r.value; done = true; }
+            }
+            if (UNLIKELY(!done))                              /* neither Array-like nor iterable */
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "wrong argument type %s (must respond to :each)", korb_type_name(VALUE_SLICE_GET(a, j)));
         }
         CHECK(korb_ary_push_val(c, slots + 2, cargs, slots[1]));
     }
