@@ -1648,21 +1648,30 @@ static RESULT korb_m_num_step(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* any? (mode 0) / all? (1) / none? (2). A pattern arg (case ===) wins over a block. */
 static RESULT korb_ary_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
-    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    const bool has_pat = VALUE_SLICE_LEN(a) >= 1;
     if (has_pat && block != NULL) korb_warn(c, slots, "given block not used");   /* pattern arg wins */
+    slots[0] = has_pat ? VALUE_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted across dispatch) */
+    const bool pat_obj = has_pat && KORB_OBJECT_P(slots[0]);         /* user object → dispatch #=== (korb_case_eq can't) */
+    const uint32_t ceq = pat_obj ? korb_intern(c->vm, "===", 3) : 0;
     for (uint32_t i = 0; ; i++) {
-        const KorbArray *ary = SELF_ARY;
-        if (i >= ary->len) break;
-        slots[0] = ary->items->data[i];
+        if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;           /* re-read len each iter (dispatch may GC) */
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
         bool t;
         if (has_pat) {
-            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]);    /* pattern === element */
+            if (pat_obj) {                                          /* pattern.===(element) */
+                slots[2] = slots[0]; slots[3] = slots[1];
+                RESULT r = korb_send_impl(c, slots + 4, ceq, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                t = KORB_TRUTHY(r.value);
+            } else {
+                t = korb_case_eq(c, slots[0], slots[1]);            /* Range/Class/Regexp/== fast path */
+            }
         } else if (block != NULL) {                                 /* truthiness of block result */
-            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
         } else {
-            t = KORB_TRUTHY(slots[0]);                        /* no block → element truthiness */
+            t = KORB_TRUTHY(slots[1]);                              /* no block → element truthiness */
         }
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);     /* any? */
         if (mode == 1 && !t) return RESULT_OK(KORB_FALSE);   /* all? */

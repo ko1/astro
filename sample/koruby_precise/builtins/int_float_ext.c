@@ -618,21 +618,30 @@ static RESULT korb_m_ary_fetch_values(CTX *c, VALUE *slots, VALUE_REF self, VALU
 /* one?: exactly one truthy element (or exactly one block-truthy element). */
 static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
-    bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    const bool has_pat = VALUE_SLICE_LEN(a) >= 1;
+    slots[0] = has_pat ? VALUE_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted) */
+    const bool pat_obj = has_pat && KORB_OBJECT_P(slots[0]);         /* user object → dispatch #=== */
+    const uint32_t ceq = pat_obj ? korb_intern(c->vm, "===", 3) : 0;
     uint32_t cnt = 0;
     for (uint32_t i = 0; ; i++) {
-        const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
-        if (i >= ary->len) break;
-        slots[0] = ary->items->data[i];
+        if (i >= VAL2ARY(VALUE_REF_GET(self))->len) break;
+        slots[1] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
         bool t;
         if (has_pat) {
-            t = korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]);
+            if (pat_obj) {
+                slots[2] = slots[0]; slots[3] = slots[1];
+                RESULT r = korb_send_impl(c, slots + 4, ceq, 0, 1, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+                t = KORB_TRUTHY(r.value);
+            } else {
+                t = korb_case_eq(c, slots[0], slots[1]);
+            }
         } else if (block != NULL) {
-            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
         } else {
-            t = KORB_TRUTHY(slots[0]);
+            t = KORB_TRUTHY(slots[1]);
         }
         if (t && ++cnt > 1) return RESULT_OK(KORB_FALSE);
     }
