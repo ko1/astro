@@ -506,6 +506,7 @@ typedef struct KorbClass {
     uint8_t  struct_kwinit;          /* Struct.new(..., keyword_init: true) → .new takes a kwargs hash */
     uint8_t  is_data;                /* 1 = Data.define class (immutable; .new accepts positional OR keyword) */
     uint8_t  cur_visibility;         /* default visibility for `def` in this class body: 0 pub / 1 priv / 2 prot */
+    uint32_t serial;                 /* monotonic per-class id (GC-stable identity for #hash of anonymous Struct/Data classes) */
     struct korb_method **methods;    /* libc array of immortal entry ptrs (owner edge GC-forwarded) */
     VALUE ARO_GC_EDGE superclass;    /* KorbClass | nil (nil ⇒ Object) */
     VALUE ARO_GC_EDGE included;      /* KorbArray of included modules | nil */
@@ -671,6 +672,7 @@ struct korb_vm {
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
      * so the redefinition is honored (CRuby basic-op-redefined semantics). */

@@ -1808,6 +1808,7 @@ korb_class_new(CTX *c, VALUE *slots, uint32_t name_sym, VALUE superclass)
     VALUE_REF sref = SLOTS_PUSH(slots, superclass);   /* root super across alloc */
     KorbClass *k = korb_alloc(c, slots, sizeof(KorbClass), KORB_OBJ_CLASS);
     k->name_sym = name_sym;                            /* methods=NULL, cnts=0 (zero-init) */
+    k->serial = ++c->vm->class_serial;                 /* GC-stable identity (name_sym is 0 for anonymous classes) */
     k->exc_etype = -1;                                 /* not an exception class by default */
     if (superclass != KORB_NIL) ARO_STORE(c, k, (VALUE *)(uintptr_t)&k->superclass, VALUE_REF_GET(sref));
     /* A subclass of a Struct/Data class inherits its member layout: share the
@@ -2112,7 +2113,7 @@ static RESULT korb_m_struct_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)slots; (void)a;
     const VALUE klass = VAL2OBJ(VALUE_REF_GET(self))->klass;
     uint64_t h = 14695981039346656037ULL;
-    h ^= (uint64_t)VAL2CLASS(klass)->name_sym; h *= 1099511628211ULL;
+    h ^= (uint64_t)VAL2CLASS(klass)->serial; h *= 1099511628211ULL;   /* per-class identity (distinguishes anonymous Struct/Data classes) */
     const KorbArray *const mem = VAL2ARY(VAL2CLASS(klass)->members);
     for (uint32_t i = 0; i < mem->len; i++) {
         const VALUE iv = korb_ivar_get(c, VALUE_REF_GET(self), korb_member_ivar_sym(c->vm, mem->items->data[i]));
