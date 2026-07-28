@@ -7564,7 +7564,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "pow", korb_m_int_pow, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "divmod", korb_m_int_divmod, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "div", korb_m_int_div, 1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_int_modulo, 1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "modulo", korb_m_num_mod, 1);   /* #modulo IS #% (same UnboundMethod) */
     korb_def_cmethod(c, KORB_C_INTEGER, "remainder", korb_m_int_remainder, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "+", korb_m_num_add, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "-", korb_m_num_sub, 1);

@@ -328,24 +328,6 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(LONG2FIX(korb_int_fdiv(SELF_INT, b)));
 }
 
-static RESULT korb_m_int_modulo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE bv = VALUE_SLICE_GET(a, 0);
-    if (KORB_FLOAT_P(bv)) {                            /* Integer#modulo(Float) → Float (floored) */
-        double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
-        if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        return korb_float_new(c, slots, korb_float_fmod(s, f));
-    }
-    if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 1);
-    if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.modulo(b) */
-        if (KORB_OBJECT_P(bv)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "modulo", 0, &h); if (h) return cr; }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
-    }
-    if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(bv)))   /* Bignum operand/self → GMP */
-        return korb_int_intdiv(c, slots, VALUE_REF_GET(self), bv, 1);
-    intptr_t b = FIX2LONG(bv);
-    if (UNLIKELY(b == 0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-    return RESULT_OK(LONG2FIX(korb_int_fmod(SELF_INT, b)));
-}
 
 static RESULT korb_m_int_gcd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE bv = VALUE_SLICE_GET(a, 0), sv = VALUE_REF_GET(self);
