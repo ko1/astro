@@ -1,6 +1,7 @@
 /* koruby_precise — integer.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- Integer methods ----------------------------------------------------- */
+static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind);   /* fwd (float.c) — Fixnum-or-Bignum from an integer-valued double */
 
 static RESULT korb_m_int_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; VALUE selfv = VALUE_REF_GET(self);
@@ -314,7 +315,7 @@ static RESULT korb_m_int_div(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (KORB_FLOAT_P(bv)) {                            /* Integer#div(Float) → floor(self/f) Integer */
         double f = korb_float_val(bv), s; korb_num_to_d(VALUE_REF_GET(self), &s);
         if (UNLIKELY(f == 0.0)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
-        return RESULT_OK(LONG2FIX((intptr_t)floor(s / f)));
+        return korb_flt_toint(c, slots, s / f, 0);    /* floor → Fixnum or Bignum (a huge quotient overflows intptr_t) */
     }
     if (KORB_RATIONAL_P(bv)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), bv, 0);
     if (UNLIKELY(!KORB_INTEGER_P(bv))) {                  /* a, b = bv.coerce(self); a.div(b) */
