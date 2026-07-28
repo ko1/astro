@@ -316,18 +316,18 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), slots[1]);
     }
     const uint32_t np = korb_entry_params_cnt(block);
-    for (uint32_t i = 0; ; i++) {
+    for (uint32_t i = 0; ; ) {
         const KorbHash *h = SELF_HASH;
         if (i >= h->len) break;
-        VALUE k = h->items->data[2 * i];
+        slots[0] = h->items->data[2 * i];    /* key — rooted so the post-yield advance check survives GC */
         VALUE v = h->items->data[2 * i + 1];
         RESULT r;
         if (np >= 2) {                       /* |k, v| — fast path, no pair alloc */
-            VALUE argv[2] = { k, v };
-            r = korb_block_yield(c, slots, block, def_env, argv, 2, captured_self);
+            VALUE argv[2] = { slots[0], v };
+            r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
         } else {                             /* |pair| — yield a [k, v] array */
-            slots[0] = k; slots[1] = v;                              /* root k,v in scratch */
-            VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));      /* slots[0,1] rooted */
+            slots[1] = v;                                            /* root v (key already at slots[0]) */
+            VALUE pair = UNWRAP(korb_ary_new(c, slots + 2, 2));
             slots[2] = pair;                                         /* root pair */
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[0]));
             CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[2]), slots[1]));
@@ -335,6 +335,11 @@ static RESULT korb_m_hash_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             r = korb_block_yield(c, slots + 3, block, def_env, &parg, 1, captured_self);
         }
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        /* Delete-during-iteration safe: if the block deleted the current key, the
+         * next key was compacted into slot i, so reprocess it; otherwise advance. */
+        const KorbHash *h2 = SELF_HASH;
+        if (i >= h2->len || h2->items->data[2 * i] != slots[0]) continue;
+        i++;
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
