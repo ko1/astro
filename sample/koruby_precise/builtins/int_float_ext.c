@@ -480,6 +480,11 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             }
             free(syms);
         }
+        /* CRuby calls #initialize_copy(orig) on the new object after copying the
+         * ivars — the default is a no-op here, but a user override runs its logic. */
+        slots[2] = VALUE_REF_GET(self);                   /* orig (arg); recv = the new object at slots[1] */
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
     }
