@@ -111,6 +111,19 @@ static RESULT korb_m_set_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* Set#delete?(o) — delete o and return self if it was a member, else nil. */
+static RESULT korb_m_set_delete_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbArray *ar = VAL2ARY(SELF_SET->elems);
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 0; i < ar->len; i++)
+        if (korb_value_eq(ar->items->data[i], v)) {
+            for (uint32_t j = i; j + 1 < ar->len; j++) ARO_STORE(c, ar->items, &ar->items->data[j], ar->items->data[j+1]);
+            ARO_STORE(c, ar->items, &ar->items->data[--ar->len], KORB_NIL);
+            return RESULT_OK(VALUE_REF_GET(self));    /* was present → self */
+        }
+    return RESULT_OK(KORB_NIL);                        /* not present → nil */
+}
 static RESULT korb_m_set_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(self));

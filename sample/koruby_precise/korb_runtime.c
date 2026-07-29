@@ -8724,6 +8724,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "<<", korb_m_set_add, 1);
     korb_def_cmethod(c, KORB_C_SET, "add?", korb_m_set_add_q, 1);
     korb_def_cmethod(c, KORB_C_SET, "delete", korb_m_set_delete, 1);
+    korb_def_cmethod(c, KORB_C_SET, "delete?", korb_m_set_delete_q, 1);
     korb_def_cmethod_blk(c, KORB_C_SET, "each", korb_m_set_each, 0);
     korb_def_cmethod_blk(c, KORB_C_SET, "map", korb_m_set_map, 0);
     korb_def_cmethod_blk(c, KORB_C_SET, "collect", korb_m_set_map, 0);
@@ -8758,7 +8759,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "compare_by_identity", korb_m_set_cbi, 0);
     korb_def_cmethod(c, KORB_C_SET, "compare_by_identity?", korb_m_set_cbi_p, 0);
     korb_def_cmethod(c, KORB_C_SET, "to_s", korb_m_obj_to_s, 0);
-    korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s (same rfn → ==) */
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_set", korb_m_hash_to_set, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
