@@ -145,10 +145,24 @@ static bool korb_valid_ivar_name(struct korb_vm *vm, uint32_t sym) {
     }
     return true;
 }
+/* Resolve an ivar-name argument to a Symbol: Symbol/String direct, else via
+ * #to_str; *ok is set false when it's none of those. */
+static RESULT korb_ivar_name_arg(CTX *c, VALUE *slots, VALUE name, VALUE *out_sym, bool *ok) {
+    if (korb_name_to_sym(c, name, out_sym)) { *ok = true; return RESULT_OK(KORB_NIL); }
+    if (KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, korb_intern(c->vm, "to_str", 6))) {
+        slots[0] = name;
+        RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (korb_name_to_sym(c, sr.value, out_sym)) { *ok = true; return RESULT_OK(KORB_NIL); }
+    }
+    *ok = false; return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    bool ok; RESULT nr = korb_ivar_name_arg(c, slots, name, &sym, &ok);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    if (UNLIKELY(!ok))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     if (UNLIKELY(!AROH_IS_GC_OBJECT(VALUE_REF_GET(self))))   /* immediates (Integer/Symbol/nil/...) carry no ivars */
@@ -159,8 +173,10 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!korb_name_to_sym(c, name, &sym)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(name));
+    bool ok; RESULT nr = korb_ivar_name_arg(c, slots, name, &sym, &ok);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+    if (UNLIKELY(!ok))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
     (void)slots;
