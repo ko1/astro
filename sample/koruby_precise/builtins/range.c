@@ -242,16 +242,35 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
 }
 /* Range#== — another Range with == begin / == end and the same exclude_end. */
-static RESULT korb_m_range_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots;
+/* Range#== / #eql?: equal iff exclude_end matches and both endpoints compare
+ * equal — via `mid` (== or eql?) so a custom-object endpoint's own operator is
+ * honoured; korb_value_eq handles nil/cross-numeric fast without a dispatch. */
+static RESULT korb_range_eq_via(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, uint32_t mid, bool strict) {
     const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_RANGE_P(o)) return RESULT_OK(KORB_FALSE);
-    const KorbRange *const r = SELF_RANGE;
-    const KorbRange *const r2 = VAL2RANGE(o);
-    const bool eq = (r->exclude_end == r2->exclude_end)
-                 && korb_value_eq(r->rbegin, r2->rbegin)      /* handles nil==nil and cross-numeric */
-                 && korb_value_eq(r->rend, r2->rend);
-    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
+    if (SELF_RANGE->exclude_end != VAL2RANGE(o)->exclude_end) return RESULT_OK(KORB_FALSE);
+    slots[0] = SELF_RANGE->rbegin; slots[1] = VAL2RANGE(o)->rbegin;   /* stage endpoints below the send area (GC-rooted) */
+    slots[2] = SELF_RANGE->rend;   slots[3] = VAL2RANGE(o)->rend;
+    for (int k = 0; k < 2; k++) {                                     /* k=0 begins, k=1 ends */
+        const VALUE x = slots[2 * k], y = slots[2 * k + 1];
+        bool eq;
+        if (KORB_OBJECT_P(x) || KORB_OBJECT_P(y)) {                   /* dispatch the endpoint's own operator */
+            slots[4] = x; slots[5] = y;                              /* recv, arg */
+            RESULT r = korb_send_impl(c, slots + 6, mid, 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            eq = KORB_TRUTHY(r.value);
+        } else {                                                     /* eql? is type-strict (1.eql?(1.0)=false); == is cross-numeric */
+            eq = strict ? korb_value_eql(x, y) : korb_value_eq(x, y);
+        }
+        if (!eq) return RESULT_OK(KORB_FALSE);
+    }
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_m_range_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_range_eq_via(c, slots, self, a, c->vm->mid_eq, false);
+}
+static RESULT korb_m_range_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    return korb_range_eq_via(c, slots, self, a, korb_intern(c->vm, "eql?", 4), true);
 }
 /* build an array of `take` consecutive ints from `from`, step +1 (asc) or -1 (desc). */
 static RESULT korb_range_seq(CTX *c, VALUE *slots, intptr_t from, uint32_t take, int step) {

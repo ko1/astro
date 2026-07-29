@@ -8091,7 +8091,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "frozen?", korb_m_range_frozen, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "==", korb_m_range_eq, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "eql?", korb_m_range_eq, 1);
+    korb_def_cmethod(c, KORB_C_RANGE, "eql?", korb_m_range_eql, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "entries", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
