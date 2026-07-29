@@ -6829,6 +6829,28 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 VALUE didef = KORB_NIL;
                 struct korb_method *const duinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &didef);
                 if (duinit && duinit->kind == KORB_METHOD_ISEQ) {   /* the default is a CFUNC, so ISEQ ⇒ a real override */
+                    const uint32_t nmem = VAL2ARY(VAL2CLASS(*recv_slot)->members)->len;
+                    const bool kw_form = argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
+                                         korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc]));
+                    /* Data.new always calls #initialize with KEYWORDS: map exact-count
+                     * positional args to a member-keyed Hash so an override's **kw sees them.
+                     * Build the kwargs Hash BEFORE allocating the instance (the instance
+                     * lives in a slot right up to the invoke, no alloc after it). */
+                    if (!kw_form && argc == nmem && nmem > 0) {
+                        slots[0] = UNWRAP(korb_hash_new(c, slots, nmem));   /* kwargs hash (rooted) */
+                        VALUE_REF kh = VALUE_REF_AT(&slots[0]);
+                        for (uint32_t i = 0; i < nmem; i++) {
+                            slots[1] = VAL2ARY(VAL2CLASS(*recv_slot)->members)->items->data[i];   /* member sym (re-read; rooted) */
+                            slots[2] = slots[-(intptr_t)argc + (intptr_t)i];                       /* positional value (re-read from args region) */
+                            CHECK(korb_hash_set(c, slots + 3, kh, VALUE_REF_AT(&slots[1]), slots[2]));
+                        }
+                        slots[1] = UNWRAP(korb_obj_new(c, slots + 1, *recv_slot));   /* instance (allocated last, rooted) */
+                        VALUE *const ibase = slots + 2;
+                        ibase[0] = slots[0];               /* the single kwargs Hash → override's **kw */
+                        RESULT ir = korb_invoke_method(c, ibase + 1, duinit, 1, line, vm->mid_initialize, slots[1], didef, block, def_env, KORB_CSELF_VAL(captured_self));
+                        if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                        return RESULT_OK(slots[1]);
+                    }
                     slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
                     VALUE *const ibase = slots + 1;
                     for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(intptr_t)argc + (intptr_t)i];   /* forward args (post-alloc, GC-safe) */
