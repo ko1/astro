@@ -7544,7 +7544,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "to_f", korb_m_int_to_f, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "to_r", korb_m_int_to_r, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "quo", korb_m_int_quo, 1);
-    korb_def_cmethod(c, KORB_C_INTEGER, "rationalize", korb_m_int_to_r, -1);
+    korb_def_cmethod(c, KORB_C_INTEGER, "rationalize", korb_m_int_rationalize, -1);   /* 0..1 args (eps ignored) */
     korb_def_cmethod(c, KORB_C_INTEGER, "numerator", korb_m_int_numerator, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "denominator", korb_m_int_denominator, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "real", korb_m_num_real, 0);

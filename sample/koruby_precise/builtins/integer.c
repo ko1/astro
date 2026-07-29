@@ -512,6 +512,11 @@ static RESULT korb_m_int_quo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_int_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_rat_new_v(c, slots, VALUE_REF_GET(self), LONG2FIX(1));   /* VALUE-based: Bignum-safe */
 }
+/* Integer#rationalize([eps]) — exact for an integer; eps is ignored, but a 2nd arg is an error. */
+static RESULT korb_m_int_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)VALUE_SLICE_LEN(a));
+    return korb_rat_new_v(c, slots, VALUE_REF_GET(self), LONG2FIX(1));
+}
 static RESULT korb_m_int_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 static RESULT korb_m_int_denominator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(LONG2FIX(1)); }
 /* real-number helpers shared by Integer/Float/Rational: real=self, imaginary=0. */

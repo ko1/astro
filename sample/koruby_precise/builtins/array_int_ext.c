@@ -228,6 +228,20 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t i = 0, mask_len = 0; bool single_bit = false, zero = false;
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {   /* int[i..j] */
         const KorbRange *rg = VAL2RANGE(VALUE_SLICE_GET(a, 0));
+        if (KORB_FLOAT_P(rg->rbegin) && isinf(korb_float_val(rg->rbegin)))   /* an Infinity boundary is out of domain */
+            return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, korb_float_val(rg->rbegin) < 0 ? "-Infinity" : "Infinity");
+        if (KORB_FLOAT_P(rg->rend) && isinf(korb_float_val(rg->rend)))
+            return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, korb_float_val(rg->rend) < 0 ? "-Infinity" : "Infinity");
+        if (rg->rbegin == KORB_NIL) {                                       /* beginless (..j): finite only when self is 0 */
+            bool nz;
+            if (FIXNUM_P(selfv)) nz = FIX2LONG(selfv) != 0;
+#ifdef KORB_HAVE_GMP
+            else nz = mpz_sgn(VAL2BIG(selfv)->z) != 0;
+#else
+            else nz = true;
+#endif
+            if (nz) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "The beginless range for Integer#[] results in infinity");
+        }
         i = (rg->rbegin == KORB_NIL) ? 0 : (FIXNUM_P(rg->rbegin) ? FIX2LONG(rg->rbegin) : 0);   /* beginless ⇒ 0 */
         if (rg->rend != KORB_NIL && FIXNUM_P(rg->rend)) {
             intptr_t len = FIX2LONG(rg->rend) - i + (rg->exclude_end ? 0 : 1);
