@@ -388,9 +388,17 @@ static RESULT korb_m_md_deconstruct_keys(CTX *c, VALUE *slots, VALUE_REF self, V
     if (!nf || !KORB_REGEXP_P(md->regexp)) return RESULT_OK(slots[1]);
     if (keys != KORB_NIL) {                               /* subset by the given Symbol keys */
         const uint32_t klen = VAL2ARY(VALUE_SLICE_GET(a, 0))->len;   /* re-fetch: korb_hash_new above moved GC */
+        uint32_t ng = 0;                                  /* count named groups: more keys than groups → {} */
+        for (int k = 0; ; k++) {
+            const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);
+            const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
+            int gi = -1; if (!nf(pat->buf->data, pat->len, flags, k, &gi)) break;
+            ng++;
+        }
+        if (klen > ng) return RESULT_OK(slots[1]);
         for (uint32_t i = 0; i < klen; i++) {
             const VALUE kv = VAL2ARY(VALUE_SLICE_GET(a, 0))->items->data[i];   /* re-fetch (moving GC) */
-            if (!SYMBOL_P(kv)) break;
+            if (!SYMBOL_P(kv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Symbol)", korb_re_arg_type(kv));
             const char *nm = korb_sym_name(c->vm, SYM2ID(kv)); const uint32_t nl = (uint32_t)strlen(nm);
             const int gi = korb_md_name_idx(c, slots[0], nm, nl);
             if (gi < 0) break;                            /* unknown key → stop (partial match) */

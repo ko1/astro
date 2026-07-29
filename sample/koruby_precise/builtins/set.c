@@ -751,6 +751,8 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             cn == c->vm->class_name[KORB_C_FALSE] || cn == c->vm->class_name[KORB_C_INTEGER] ||
             cn == c->vm->class_name[KORB_C_FLOAT] || cn == c->vm->class_name[KORB_C_SYMBOL])
             return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", korb_sym_name(c->vm, cn));
+        if (cn == c->vm->class_name[KORB_C_MATCHDATA])   /* MatchData has no allocator (built only by a match) → NoMethodError */
+            return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'allocate' for class %s", korb_sym_name(c->vm, cn));
     }
     /* Enumerator.allocate must produce a KorbEnumerator (not a generic object),
      * else enumerator methods VAL2ENUM-cast a too-small object → heap corruption.
