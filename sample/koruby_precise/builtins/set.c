@@ -1260,9 +1260,8 @@ static RESULT korb_m_class_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* Module#const_set(name, value) — koruby's const table is flat (global), so this
  * defines/overwrites the named constant. Returns the value. */
 static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(id == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t id;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     const char *const cname = korb_sym_name(c->vm, id);   /* [A-Z][A-Za-z0-9_]* (or non-ASCII) */
     if (UNLIKELY(!((cname[0] >= 'A' && cname[0] <= 'Z') || (unsigned char)cname[0] >= 0x80)))
         return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", cname);
@@ -1285,9 +1284,8 @@ static RESULT korb_cvar_name_check(CTX *c, VALUE *slots, uint32_t id) {
 /* Module#class_variable_get(name) — name is :@@x / "@@x" (koruby keys cvars by
  * the full @@-prefixed symbol); searches self + ancestors, NameError if absent. */
 static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(id == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t id;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
@@ -1300,9 +1298,8 @@ static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* Module#class_variable_set(name, val) — set on the defining ancestor if one
  * exists, else on the receiver (matches CRuby's rb_cvar_set). */
 static RESULT korb_m_class_cvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(id == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t id;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls)))
@@ -1313,9 +1310,8 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* Module#remove_class_variable(name) → removes the class variable from self
  * (not ancestors) and returns its value; NameError if not defined on self. */
 static RESULT korb_m_class_remove_cvar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(id == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t id;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
@@ -1330,9 +1326,8 @@ static RESULT korb_m_class_remove_cvar(CTX *c, VALUE *slots, VALUE_REF self, VAL
 }
 /* Module#class_variable_defined?(name) → true if defined on self or an ancestor. */
 static RESULT korb_m_class_cvar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const uint32_t id = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(id == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t id;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
