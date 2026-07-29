@@ -8193,6 +8193,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "source_location", korb_m_meth_source_location, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "to_s", korb_m_obj_to_s, 0);      /* #inspect is an alias of #to_s (same rfn → == ) */
+    korb_def_cmethod(c, KORB_C_METHOD, "inspect", korb_m_obj_to_s, 0);
     /* UnboundMethod: same reflection surface as Method minus call/receiver;
      * the shared korb_m_meth_* fns already branch on the ->unbound flag. */
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "name", korb_m_meth_name, 0);
@@ -8207,6 +8209,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "bind_call", korb_m_meth_bind_call, -1);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "parameters", korb_m_meth_parameters, 0);
     korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "source_location", korb_m_meth_source_location, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "to_s", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s */
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "inspect", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_get", korb_m_bind_lvget, 1);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_set", korb_m_bind_lvset, 2);
     korb_def_cmethod(c, KORB_C_BINDING, "local_variable_defined?", korb_m_bind_lvdefined, 1);
