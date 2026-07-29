@@ -143,7 +143,7 @@ module Enumerable
   def drop(n); n = __as_int(n); raise ArgumentError, "attempt to drop negative size" if n < 0; r = []; i = 0; __each_el { |x| r << x if i >= n; i += 1 }; r; end
   def take_while(&blk); return to_enum(:take_while) unless blk; r = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; break unless blk.call(*ar); r << e }; r; end
   def drop_while(&blk); return to_enum(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
-  def minmax; [min, max]; end
+  def minmax(&blk); [min(&blk), max(&blk)]; end   # honor an optional comparator block
   def minmax_by; return to_enum(:minmax_by) unless block_given?; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
   def find_index(*v, &blk); return to_enum(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
   def each_slice(n, &blk); n = __as_int(n); raise ArgumentError, "invalid slice size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z + n - 1) / n : nil; return Enumerator.new(sz) { |y| this.each_slice(n) { |s| y << s } }; end; s = []; __each_el { |x| s << x; if s.size == n; yield s; s = []; end }; yield s unless s.empty?; self; end
