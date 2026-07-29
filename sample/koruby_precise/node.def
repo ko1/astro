@@ -1187,6 +1187,8 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
         if (LIKELY(KORB_EXC_P(nr.value))) {              /* NameError#name = the missing constant symbol */
             slots[0] = nr.value;
             korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(name_sym));
+            korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__receiver", 11)), korb_const_get(vm, korb_intern(vm, "Object", 6)));   /* top-level lookup target is Object */
+            korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__has_recv", 11)), KORB_TRUE);
             nr.value = slots[0];
         }
         return nr;
