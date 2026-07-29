@@ -428,20 +428,34 @@ static RESULT korb_m_ary_fill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(KORB_RANGE_P(pos0) && VALUE_SLICE_LEN(a) > base + 1))   /* fill(x, range, length) is invalid */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "length invalid with range");
     if (KORB_RANGE_P(pos0)) {
-        const KorbRange *r = VAL2RANGE(pos0);
         intptr_t b = 0, e;
-        if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &b)))   /* beginless → 0 */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        slots[0] = v;                                    /* root the filler across the #to_int dispatch */
+        slots[1] = VAL2RANGE(pos0)->rbegin;              /* stage bounds (rooted too) */
+        slots[2] = VAL2RANGE(pos0)->rend;
+        const bool excl = VAL2RANGE(pos0)->exclude_end != 0;
+        const bool endless = (slots[2] == KORB_NIL);
+        if (slots[1] != KORB_NIL && UNLIKELY(!korb_to_index(slots[1], &b))) {   /* beginless → 0; else coerce via #to_int */
+            RESULT cr = korb_coerce_to_int(c, slots + 3, &slots[1]);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (!korb_to_index(slots[1], &b)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            n = VAL2ARY(VALUE_REF_GET(self))->len;
+        }
         const intptr_t braw = b;
         if (b < 0) b += n;
-        if (b < 0) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld..%ld out of range", (long)braw, (long)(r->rend == KORB_NIL ? -1 : 0));   /* begin before array start */
-        if (r->rend == KORB_NIL) {                       /* endless range → to end of array */
+        if (b < 0) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld..%ld out of range", (long)braw, (long)(endless ? -1 : 0));   /* begin before array start */
+        if (endless) {                                   /* endless range → to end of array */
             beg = b; len = n - b; have_len = true;
         } else {
-            if (UNLIKELY(!korb_to_index(r->rend, &e))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (UNLIKELY(!korb_to_index(slots[2], &e))) {
+                RESULT cr = korb_coerce_to_int(c, slots + 3, &slots[2]);
+                if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+                if (!korb_to_index(slots[2], &e)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                n = VAL2ARY(VALUE_REF_GET(self))->len;
+            }
             if (e < 0) e += n;
-            beg = b; len = (r->exclude_end ? e - 1 : e) - b + 1; have_len = true;
+            beg = b; len = (excl ? e - 1 : e) - b + 1; have_len = true;
         }
+        v = slots[0];                                    /* reload the (possibly GC-moved) filler */
     } else {
         if (pos0 != KORB_NIL) {
             if (UNLIKELY(!korb_to_index(pos0, &beg))) {   /* coerce start via #to_int (self is a VALUE_REF; n is a value) */
