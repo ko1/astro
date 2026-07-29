@@ -3146,6 +3146,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
         c->vm->method_serial++;
         return RESULT_OK(ID2SYM(mid));
+    } else if (VALUE_SLICE_LEN(a) >= 2) {                /* a 2nd arg that isn't a Proc/Method/UnboundMethod */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Proc/Method/UnboundMethod)", korb_type_name(VALUE_SLICE_GET(a, 1)));
     } else {
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "tried to create Proc object without a block");
     }
