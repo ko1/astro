@@ -1068,13 +1068,11 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(!KORB_STRING_P(pv))) {                /* coerce a non-String/Regexp pattern via #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots, &pv, to_str)) {
-            slots[0] = VALUE_REF_GET(self);            /* root self across the dispatch */
-            slots[1] = pv;
-            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            slots[0] = pv;                             /* recv for the #to_str dispatch (self stays the caller's rooted VALUE_REF) */
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
-            self = VALUE_REF_AT(&slots[0]);
-            slots[1] = sr.value; pv = slots[1];
+            pv = sr.value;                             /* the coerced String pattern; downstream roots it like the literal-String path */
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Regexp)", korb_type_name(pv));
     }
     /* String pattern → route through the engine as an escaped literal Regexp so
