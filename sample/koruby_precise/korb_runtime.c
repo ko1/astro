@@ -4234,7 +4234,11 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       (void)korb_do_include(c, slots + 2, slots[1], VALUE_SLICE_MAKE(&slots[0], 1)); }
 
     /* Struct factory class — `Struct.new(*members)` builds anonymous subclasses. */
-    { uint32_t s = korb_intern(vm, "Struct", 6); korb_const_define(c, s, korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value); }
+    { uint32_t s = korb_intern(vm, "Struct", 6); const VALUE sc = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value; korb_const_define(c, s, sc);
+      /* to_a / deconstruct on the base Struct too (subclasses override with their
+       * own) so reflection works: Struct.instance_method(:deconstruct) == :to_a. */
+      korb_class_def_cfn(c, sc, "to_a", korb_m_struct_to_a, 0);
+      korb_class_def_cfn(c, sc, "deconstruct", korb_m_struct_to_a, 0); }
     /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
     { uint32_t s = korb_intern(vm, "Data", 4);
       slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
