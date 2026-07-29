@@ -6598,6 +6598,13 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         slots[0] = UNWRAP(korb_hash_new(c, slots, argc));
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         if (argc == 1 && !KORB_HASH_P(base[0]) && !KORB_ARRAY_P(base[0]) && KORB_OBJECT_P(base[0]) &&
+            korb_responds_to_coerce(c, slots + 2, base[0], korb_intern(vm, "to_hash", 7))) {  /* Hash[obj] → obj.to_hash (tried before to_ary) */
+            slots[1] = base[0];
+            RESULT hr = korb_send_impl(c, slots + 2, korb_intern(vm, "to_hash", 7), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            if (KORB_HASH_P(hr.value)) base[0] = hr.value;
+        }
+        if (argc == 1 && !KORB_HASH_P(base[0]) && !KORB_ARRAY_P(base[0]) && KORB_OBJECT_P(base[0]) &&
             korb_responds_to_coerce(c, slots + 2, base[0], korb_intern(vm, "to_ary", 6))) {  /* Hash[obj] → obj.to_ary */
             slots[1] = base[0];
             RESULT ar = korb_send_impl(c, slots + 2, korb_intern(vm, "to_ary", 6), 0, 0, NULL, NULL, KORB_NIL);
