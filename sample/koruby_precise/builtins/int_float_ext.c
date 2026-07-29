@@ -2,6 +2,26 @@
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
 /* ---- more Integer / Float methods ---------------------------------------- */
 static RESULT korb_m_int_self2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
+/* #clone for an always-frozen immediate (Integer/Float/Symbol/Rational/Complex,
+ * nil/true/false): returns self, but honours the freeze: keyword — freeze:false
+ * can't unfreeze an immutable value → ArgumentError (CRuby). */
+static RESULT korb_m_immed_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (n >= 1) {
+        const VALUE last = VALUE_SLICE_GET(a, n - 1);
+        if (UNLIKELY(!KORB_HASH_P(last)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
+        const int32_t fi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "freeze", 6)));
+        if (fi >= 0) {
+            const VALUE fv = VAL2HASH(last)->items->data[2 * fi + 1];
+            if (UNLIKELY(fv != KORB_NIL && fv != KORB_TRUE && fv != KORB_FALSE))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected value for freeze: %s", korb_type_name(fv));
+            if (fv == KORB_FALSE)
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "can't unfreeze %s", korb_type_name(VALUE_REF_GET(self)));
+        }
+    }
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const VALUE sv = VALUE_REF_GET(self);
 #ifdef KORB_HAVE_GMP

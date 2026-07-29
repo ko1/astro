@@ -7611,7 +7611,15 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, "round", korb_m_int_round, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "frozen?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "dup", korb_m_int_self2, 0);
-    korb_def_cmethod(c, KORB_C_INTEGER, "clone", korb_m_int_self2, 0);
+    korb_def_cmethod(c, KORB_C_INTEGER, "clone", korb_m_immed_clone, -1);   /* honours freeze: (freeze:false → can't unfreeze) */
+    /* the other always-frozen immediates share the same #clone (return self, reject freeze:false) */
+    korb_def_cmethod(c, KORB_C_FLOAT,    "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_SYMBOL,   "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_NIL,      "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_TRUE,     "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_FALSE,    "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_RATIONAL, "clone", korb_m_immed_clone, -1);
+    korb_def_cmethod(c, KORB_C_COMPLEX,  "clone", korb_m_immed_clone, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "abs2", korb_m_int_abs2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "nobits?", korb_m_int_nobits, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "anybits?", korb_m_int_anybits, 1);
