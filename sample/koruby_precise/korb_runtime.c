@@ -8317,6 +8317,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "<=", korb_m_class_le, 1);
     korb_def_cmethod(c, KORB_C_CLASS, ">",  korb_m_class_gt, 1);
     korb_def_cmethod(c, KORB_C_CLASS, ">=", korb_m_class_ge, 1);
+    korb_def_cmethod(c, KORB_C_CLASS, "<=>", korb_m_class_cmp, 1);
     korb_def_cmethod(c, KORB_C_STRING, "=~", korb_m_str_match_op, 1);
     korb_def_cmethod(c, KORB_C_STRING, "match?", korb_m_str_match_q, -1);
     korb_def_cmethod_blk(c, KORB_C_STRING, "match", korb_m_str_match, -1);
@@ -8451,6 +8452,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("<=", korb_m_class_le, 1);
     MOD_CFN(">",  korb_m_class_gt, 1);
     MOD_CFN(">=", korb_m_class_ge, 1);
+    MOD_CFN("<=>", korb_m_class_cmp, 1);
     MOD_CFN("attr_reader", korb_m_class_attr_reader, -1);
     MOD_CFN("attr_writer", korb_m_class_attr_writer, -1);
     MOD_CFN("attr_accessor", korb_m_class_attr_accessor, -1);

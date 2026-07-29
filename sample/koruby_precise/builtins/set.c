@@ -1110,6 +1110,17 @@ static RESULT korb_class_cmp_rel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(KORB_NIL);                                  /* unrelated */
 }
 static RESULT korb_m_class_lt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 0); }
+/* Module#<=> — 0 if equal, -1 if self is a descendant of (includes/inherits)
+ * other, 1 if an ancestor, nil if unrelated or other isn't a Module (no error). */
+static RESULT korb_m_class_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    const VALUE me = VALUE_REF_GET(self), other = VALUE_SLICE_GET(a, 0);
+    if (!KORB_CLASS_P(other)) return RESULT_OK(KORB_NIL);
+    if (me == other) return RESULT_OK(LONG2FIX(0));
+    if (korb_class_is_descendant(me, other)) return RESULT_OK(LONG2FIX(-1));
+    if (korb_class_is_descendant(other, me)) return RESULT_OK(LONG2FIX(1));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_class_le(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 1); }
 static RESULT korb_m_class_gt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 2); }
 static RESULT korb_m_class_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_class_cmp_rel(c, slots, self, a, 3); }
