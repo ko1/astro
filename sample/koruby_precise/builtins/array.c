@@ -443,7 +443,13 @@ static RESULT korb_m_ary_pop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE other = VALUE_SLICE_GET(a, 0);
     if (VALUE_REF_GET(self) == other) return RESULT_OK(KORB_TRUE);
-    if (!KORB_ARRAY_P(other)) return RESULT_OK(KORB_FALSE);
+    if (!KORB_ARRAY_P(other)) {                            /* Array-like (responds to #to_ary) → delegate other == self */
+        if (KORB_OBJECT_P(other) && korb_responds_to(c, other, korb_intern(c->vm, "to_ary", 6))) {
+            slots[0] = other; slots[1] = VALUE_REF_GET(self);
+            return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+        }
+        return RESULT_OK(KORB_FALSE);
+    }
     if (VAL2ARY(VALUE_REF_GET(self))->len != VAL2ARY(other)->len) return RESULT_OK(KORB_FALSE);
     if (VAL2ARY(VALUE_REF_GET(self))->head.flags & KORB_FL_JOIN_VISITING) return RESULT_OK(KORB_TRUE);   /* recursive: CRuby assumes equal */
     slots[0] = VALUE_REF_GET(self); slots[1] = other;     /* root both across element == dispatch */
