@@ -1363,16 +1363,15 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     { RESULT fr = korb_check_def_frozen(c, slots, cls); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* remove_method on a frozen class → FrozenError */
-    KorbClass *const k = VAL2CLASS(cls);
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
-        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));
-        if (UNLIKELY(mid == UINT32_MAX))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
+        uint32_t mid;   /* Symbol/String, or #to_str-coercible */
+        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, ai), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        KorbClass *const k = VAL2CLASS(VALUE_REF_GET(self));   /* re-read: the coercion may have GC-moved the class */
         bool found = false;
         for (uint32_t i = 0; i < k->method_cnt; i++)
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; found = true; break; }
         if (!found)
-            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), korb_type_name(cls));
+            return korb_raise(c, slots, KORB_E_NAME, 0, "method '%s' not defined in %s", korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }
     c->vm->method_serial++;                     /* method table changed → flush caches */
     return RESULT_OK(cls);
@@ -1381,13 +1380,12 @@ static RESULT korb_m_class_remove_method(CTX *c, VALUE *slots, VALUE_REF self, V
  * Approximated as remove-if-present (no inherited-block marker); a name absent
  * from this class is tolerated so it doesn't re-block the file. */
 static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE cls = VALUE_REF_GET(self);
-    if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
-    KorbClass *const k = VAL2CLASS(cls);
+    if (UNLIKELY(!KORB_CLASS_P(VALUE_REF_GET(self)))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     for (uint32_t ai = 0; ai < VALUE_SLICE_LEN(a); ai++) {
-        const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, ai));
-        if (UNLIKELY(mid == UINT32_MAX))              /* bad arg type is checked before frozen-ness (CRuby order) */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, ai)));
+        uint32_t mid;                                 /* Symbol/String, or #to_str-coercible (bad type is checked before frozen-ness, CRuby order) */
+        { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, ai), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+        const VALUE cls = VALUE_REF_GET(self);        /* re-read: the coercion may have GC-moved the class */
+        KorbClass *const k = VAL2CLASS(cls);
         KORB_CHECK_FROZEN(c, slots, cls);             /* undef_method on a frozen class → FrozenError (even for a missing name) */
         VALUE mdef = KORB_NIL;                         /* NameError only when the method exists nowhere (self/ancestors/global/Object/intrinsic) */
         if (UNLIKELY(korb_class_find_method(cls, mid, &mdef) == NULL && korb_method_lookup(c->vm, mid) == NULL)) {
@@ -1408,7 +1406,7 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
             if (k->methods[i]->mid == mid) { k->methods[i]->mid = UINT32_MAX; break; }
     }
     c->vm->method_serial++;
-    return RESULT_OK(cls);
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Module#method_defined?(sym|str[, inherit]) — true if an instance method by
  * that name is defined on the class / its ancestors (koruby doesn't track
