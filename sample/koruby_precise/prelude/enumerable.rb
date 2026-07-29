@@ -72,7 +72,22 @@ module Enumerable
     acc
   end
   alias inject reduce
-  def sum(init = 0, &blk); s = init; if blk; each { |*a| s = s + blk.call(a.size <= 1 ? a[0] : a) }; else; __each_el { |x| s = s + x }; end; s; end
+  # Kahan-Babuška compensated summation once the running total and the addend are
+  # both Float (matches CRuby's precise Float sum); exact for Integer/Rational.
+  def sum(init = 0, &blk)
+    s = init; comp = 0.0
+    each do |*a|
+      x = blk ? blk.call(a.size <= 1 ? a[0] : a) : (a.size <= 1 ? a[0] : a)
+      if s.is_a?(Float) && x.is_a?(Float)
+        t = s + x
+        comp += (s.abs >= x.abs) ? ((s - t) + x) : ((x - t) + s)
+        s = t
+      else
+        s = s + x
+      end
+    end
+    s.is_a?(Float) ? s + comp : s
+  end
   # min/max: (), (n), { cmp }, (n) { cmp }.  n → the n smallest/largest as an Array.
   # Running min/max (not sort-based): honours a degenerate comparator block that
   # keeps the first element (CRuby semantics). The n form returns the n smallest/largest.
