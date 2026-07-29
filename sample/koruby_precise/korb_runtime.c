@@ -6523,7 +6523,19 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             uint32_t rmid;
             if (SYMBOL_P(name)) rmid = SYM2ID(name);
             else if (KORB_STRING_P(name)) rmid = korb_intern(vm, VAL2STR(name)->buf->data, VAL2STR(name)->len);
-            else return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(name));
+            else {                                          /* coerce a #to_str name (scratch above the args; args/self are GC-rooted below) */
+                const uint32_t to_str = korb_intern(vm, "to_str", 6);
+                if (UNLIKELY(!(KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str))))
+                    return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(slots[-(intptr_t)argc]));
+                slots[0] = name;
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (UNLIKELY(!KORB_STRING_P(sr.value)))
+                    return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(slots[-(intptr_t)argc]));
+                slots[0] = sr.value;                        /* root the coerced String while interning */
+                rmid = korb_intern(vm, VAL2STR(slots[0])->buf->data, VAL2STR(slots[0])->len);
+                self = *recv_slot;                          /* re-read: the #to_str dispatch may have GC-moved self */
+            }
             /* public_send cannot reach top-level defs: CRuby exposes them as
              * private Object methods (send/__send__ bypass privacy, public_send
              * does not). */

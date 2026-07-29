@@ -271,12 +271,9 @@ static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 }
 /* Object#method(:sym) → bound Method. */
 static RESULT korb_m_obj_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    VALUE name = VALUE_SLICE_GET(a, 0);
-    uint32_t mid;
-    if (SYMBOL_P(name)) mid = SYM2ID(name);
-    else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); mid = korb_intern(c->vm, s->buf->data, s->len); }
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Symbol", korb_type_name(name));
-    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);
+    uint32_t mid;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    return korb_method_new(c, slots, VALUE_REF_GET(self), mid);   /* self re-read (coercion may GC) */
 }
 /* Method#call / #[] — re-dispatch to recv.mid(*args).  Stage [recv | args...]
  * below a fresh cursor and reuse the send machinery (polymorphic with Array#[]). */

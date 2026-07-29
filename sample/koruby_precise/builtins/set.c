@@ -365,11 +365,8 @@ static RESULT korb_m_obj_is_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 }
 static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
-    VALUE mv = VALUE_SLICE_GET(a, 0);
-    uint32_t mid;
-    if (SYMBOL_P(mv)) mid = SYM2ID(mv);
-    else if (KORB_STRING_P(mv)) mid = korb_intern(vm, VAL2STR(mv)->buf->data, VAL2STR(mv)->len);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(mv));
+    uint32_t mid;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_arg_to_mid(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     VALUE sv = VALUE_REF_GET(self);
     const VALUE incv = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
     const bool include_priv = (incv != KORB_NIL && incv != KORB_FALSE);
