@@ -8183,7 +8183,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "nil?", korb_m_obj_nil_q, 0);
     korb_def_cmethod(c, KORB_C_OBJECT, "method_missing", korb_m_obj_method_missing, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "==", korb_m_obj_eq, 1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_eq, 1);   /* default: same as == (Class/Range/Regexp/Set override) */
+    korb_def_cmethod(c, KORB_C_OBJECT, "===", korb_m_obj_case_eq, 1);   /* default: self == other, honouring an overridden #== (Class/Range/Regexp/Set override) */
     korb_def_cmethod(c, KORB_C_OBJECT, "!=", korb_m_obj_neq, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "equal?", korb_m_obj_equal, 1);
     korb_def_cmethod(c, KORB_C_OBJECT, "eql?", korb_m_obj_eql, 1);

@@ -90,6 +90,12 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
 }
 static RESULT korb_m_nil_nil_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE); }
 static RESULT korb_m_obj_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots; return RESULT_OK(korb_value_eq(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }
+/* Object#=== — the default is `self == other`, so a subclass's overridden #==
+ * is honoured (dispatch rather than the identity korb_m_obj_eq). */
+static RESULT korb_m_obj_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    slots[0] = VALUE_REF_GET(self); slots[1] = VALUE_SLICE_GET(a, 0);
+    return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+}
 static RESULT korb_m_obj_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eql(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }  /* type-strict: 1.eql?(1.0) => false */
 static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* BasicObject#!= is !(self == other) — dispatch #== so a user-defined == is honoured. */
