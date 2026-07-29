@@ -770,6 +770,7 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
     if (block != NULL && VALUE_SLICE_LEN(a) == 0) {   /* block form (arg, if given, wins per CRuby) */
         for (int32_t i = (int32_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
+            if (i >= (int32_t)VAL2ARY(VALUE_REF_GET(self))->len) continue;   /* re-check size: the block may have shrunk self */
             slots[0] = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
             RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
