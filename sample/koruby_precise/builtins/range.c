@@ -279,6 +279,9 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
                 }
                 return korb_range_seq(c, slots, b, take, 1);
             }
+            /* endless range with a non-Integer begin can't be iterated from begin */
+            if (r->rend == KORB_NIL && !KORB_INTEGER_P(r->rbegin))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
             return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
         }
