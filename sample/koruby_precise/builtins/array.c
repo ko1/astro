@@ -79,18 +79,16 @@ static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t i = 0; i < m; i++) {
         const VALUE xi = VAL2ARY(slots[0])->items->data[i], yi = VAL2ARY(slots[1])->items->data[i];
         if (xi == yi && !KORB_FLOAT_P(xi)) continue;   /* identical (also breaks self-referential) */
-        int cmp;
         if (UNLIKELY(KORB_OBJECT_P(xi) || KORB_OBJECT_P(yi))) {   /* user/Comparable element → dispatch <=> */
             slots[2] = xi; slots[3] = yi;
             RESULT cr = korb_send(c, slots + 4, c->vm->mid_cmp, 0, 1);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
-            if (!FIXNUM_P(cr.value)) return RESULT_OK(KORB_NIL);   /* element <=> returned nil */
-            const intptr_t v = FIX2LONG(cr.value);
-            cmp = (v > 0) - (v < 0);
-        } else {
-            cmp = korb_cmp_full(c, xi, yi);
-            if (UNLIKELY(cmp == 2)) return RESULT_OK(KORB_NIL);
+            if (cr.value == KORB_NIL) return RESULT_OK(KORB_NIL);      /* element uncomparable → nil */
+            if (cr.value == LONG2FIX(0)) continue;                     /* equal → next element */
+            return RESULT_OK(cr.value);                                /* first non-zero → the element's raw result */
         }
+        const int cmp = korb_cmp_full(c, xi, yi);
+        if (UNLIKELY(cmp == 2)) return RESULT_OK(KORB_NIL);
         if (cmp != 0) return RESULT_OK(LONG2FIX(cmp));
     }
     const uint32_t xl = VAL2ARY(slots[0])->len, yl = VAL2ARY(slots[1])->len;   /* re-read post-dispatch */
