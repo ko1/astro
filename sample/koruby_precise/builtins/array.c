@@ -299,15 +299,22 @@ static RESULT korb_m_ary_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const KorbRange *r = VAL2RANGE(iv);
         const bool beginless = (r->rbegin == KORB_NIL);
         const bool endless   = (r->rend   == KORB_NIL);
+        const bool excl      = (r->exclude_end != 0);      /* capture before any #to_int GC (r may move) */
         const intptr_t len = VAL2ARY(VALUE_REF_GET(self))->len;
         intptr_t b, e;
         if (beginless) b = 0;
         else CHECK(korb_index_coerce(c, slots, r->rbegin, &b));
+        const intptr_t braw = b;                           /* original begin (for the out-of-range message) */
         if (endless) e = len;
         else CHECK(korb_index_coerce(c, slots, r->rend, &e));
+        const intptr_t eraw = e;
         if (b < 0) b += len;
+        if (UNLIKELY(b < 0)) {                              /* begin below the array start → RangeError */
+            if (endless) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld.. out of range", (long)braw);
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld%s%ld out of range", (long)braw, excl ? "..." : "..", (long)eraw);
+        }
         if (!endless && e < 0) e += len;
-        intptr_t last = (endless || r->exclude_end) ? e - 1 : e, dellen = last - b + 1;
+        intptr_t last = (endless || excl) ? e - 1 : e, dellen = last - b + 1;
         if (dellen < 0) dellen = 0;
         return korb_ary_splice(c, slots, self, b, dellen, VALUE_SLICE_REF(a, 1));
     }
