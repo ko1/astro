@@ -610,6 +610,17 @@ static RESULT korb_m_ary_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;                              /* root result */
+        if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {   /* non-Array result → try #to_ary */
+            const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
+            if (korb_responds_to(c, slots[0], to_ary)) {
+                RESULT tr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);   /* recv at slots[0] */
+                if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+                if (UNLIKELY(tr.value != KORB_NIL && !KORB_ARRAY_P(tr.value)))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
+                                      korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(tr.value));
+                if (KORB_ARRAY_P(tr.value)) slots[0] = tr.value;   /* nil → keep the original element as-is */
+            }
+        }
         if (KORB_ARRAY_P(slots[0])) {
             uint32_t m = VAL2ARY(slots[0])->len;
             for (uint32_t j = 0; j < m; j++) {
