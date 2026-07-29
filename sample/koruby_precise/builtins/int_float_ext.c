@@ -464,6 +464,27 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION) {   /* Exception → fresh copy (was aliasing self) */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbException *ne = korb_alloc(c, slots + 2, sizeof(KorbException), KORB_OBJ_EXCEPTION);
+        const KorbException *se = VAL2EXC(slots[1]);        /* re-read: alloc may have GC-moved the source */
+        ne->etype = se->etype; ne->line = se->line;
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->msg,       se->msg);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->exc_class, se->exc_class);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->cause,     se->cause);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->backtrace, se->backtrace);
+        ARO_STORE(c, ne, (VALUE *)(uintptr_t)&ne->ivars,     KORB_NIL);
+        slots[1] = (VALUE)ne;                              /* result (rooted) */
+        if (VAL2EXC(VALUE_REF_GET(self))->ivars != KORB_NIL) {   /* dup the ivar side-hash so the copy is independent */
+            slots[2] = VAL2EXC(VALUE_REF_GET(self))->ivars;
+            RESULT hd = korb_m_obj_dup(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_SLICE_MAKE(NULL, 0));
+            if (UNLIKELY(hd.state != KORB_NORMAL)) return hd;
+            ARO_STORE(c, VAL2EXC(slots[1]), (VALUE *)(uintptr_t)&VAL2EXC(slots[1])->ivars, hd.value);
+        }
+        /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs) */
+        slots[2] = VALUE_REF_GET(self);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
         VALUE_REF dst = VALUE_REF_AT(&slots[1]);
