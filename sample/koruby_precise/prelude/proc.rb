@@ -44,9 +44,13 @@ class Method
       n = req
     else
       n = args[0]
-      # a fixed-arity method must be curried at exactly its arity; a variadic one
-      # at no fewer than its required count (CRuby raises otherwise).
-      if (a >= 0 && n != a) || (a < 0 && n < req)
+      # n must be at least the required count, and — unless the method takes a
+      # rest arg (unbounded) — no more than req+opt (its maximum). CRuby raises
+      # ArgumentError otherwise.
+      ps = parameters
+      has_rest = ps.any? { |p| p[0] == :rest }
+      max = req + ps.count { |p| p[0] == :opt }
+      if n < req || (!has_rest && n > max)
         raise ArgumentError, "wrong number of arguments (given #{n}, expected #{req})"
       end
     end
