@@ -949,6 +949,8 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
         korb_intern(c->vm, "private", 7),
         korb_intern(c->vm, "protected", 9),
         korb_intern(c->vm, "module_function", 15),
+        korb_intern(c->vm, "marshal_dump", 12),                     /* Marshal hooks are private wherever defined */
+        korb_intern(c->vm, "marshal_load", 12),
     };
     const uint32_t priv_n = (uint32_t)(sizeof priv_mids / sizeof priv_mids[0]);
     /* Compute the "bare module" test up front, while start_class is still fresh —

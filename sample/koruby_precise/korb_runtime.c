@@ -535,7 +535,9 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
         else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
-        if (base == 0.0 && ex < 0) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");   /* 0 ** negative */
+        /* 0 ** negative: an exact (Rational) exponent diverges → ZeroDivisionError;
+         * a Float exponent stays in the float domain → pow(0.0, neg) = Infinity. */
+        if (base == 0.0 && ex < 0 && KORB_RATIONAL_P(e)) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
         if (base < 0 && ex != floor(ex)) {                 /* negative base, fractional exp → Complex */
             const double mag = pow(-base, ex);
             slots[2] = UNWRAP(korb_float_new(c, slots + 2, mag * korb_cospi(ex)));
