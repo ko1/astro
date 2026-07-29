@@ -687,17 +687,19 @@ static RESULT korb_m_cpx_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     slots[0] = LONG2FIX(rn * (d / rd)); slots[1] = LONG2FIX(in * (d / id));
     return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
 }
-static RESULT korb_m_cpx_to_rat_via(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *meth, uint32_t mlen) {   /* re.<meth> when imaginary is 0 */
+static RESULT korb_m_cpx_to_rat_via(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, const char *meth, uint32_t mlen, bool strict) {   /* re.<meth> when imaginary is 0 */
     double im;
-    if (UNLIKELY(!(korb_num_to_d(SELF_CPX->im, &im) && im == 0.0)))
+    /* strict (rationalize) rejects a Float imaginary part even when it is 0.0
+     * (an inexact zero is not an exact zero); lenient (to_r) accepts 0.0. */
+    if (UNLIKELY(!(korb_num_to_d(SELF_CPX->im, &im) && im == 0.0) || (strict && KORB_FLOAT_P(SELF_CPX->im))))
         return korb_raise(c, slots, KORB_E_RANGE, 0, "can't convert %s into Rational", korb_type_name(VALUE_REF_GET(self)));
     const uint32_t argc = VALUE_SLICE_LEN(a);
     slots[0] = SELF_CPX->re;                                 /* recv below the staged args */
     for (uint32_t j = 0; j < argc; j++) slots[1 + j] = VALUE_SLICE_GET(a, j);
     return korb_send(c, slots + 1 + argc, korb_intern(c->vm, meth, mlen), 0, argc);
 }
-static RESULT korb_m_cpx_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "rationalize", 11); }
-static RESULT korb_m_cpx_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "to_r", 4); }
+static RESULT korb_m_cpx_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "rationalize", 11, true); }
+static RESULT korb_m_cpx_to_r(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "to_r", 4, false); }
 static RESULT korb_m_cpx_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;
     VALUE o = VALUE_SLICE_GET(a, 0);
