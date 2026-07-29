@@ -1068,6 +1068,8 @@ static RESULT korb_m_hash_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_hash_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_hash_filter(c, slots, self, block, def_env, captured_self, false); }
 /* any?(0)/all?(1)/none?(2) */
 static RESULT korb_hash_quant(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self, int mode) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) > 1))                 /* all?/any?/none?/one? take at most one pattern arg */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", VALUE_SLICE_LEN(a));
     if (VALUE_SLICE_LEN(a) >= 1) {                        /* pattern === [k,v] pair */
         for (uint32_t i = 0; ; i++) {
             const KorbHash *h = VAL2HASH(VALUE_REF_GET(self));
