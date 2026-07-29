@@ -6781,7 +6781,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         uint32_t cname = VAL2CLASS(self)->name_sym;
         if (cname == vm->class_name[KORB_C_NIL] || cname == vm->class_name[KORB_C_TRUE] ||
             cname == vm->class_name[KORB_C_FALSE] || cname == vm->class_name[KORB_C_INTEGER] ||
-            cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL])   /* immediate classes: #new is undefined */
+            cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL] ||
+            cname == vm->class_name[KORB_C_RATIONAL] || cname == vm->class_name[KORB_C_COMPLEX])   /* #new is undefined (built via Rational()/Complex()) */
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
         if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
@@ -7255,7 +7256,8 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
         cname == vm->class_name[KORB_C_RANGE] ||   /* Range.new(begin,end[,excl]) → real Range, not a generic object */
         cname == vm->class_name[KORB_C_NIL]   || cname == vm->class_name[KORB_C_TRUE] ||
         cname == vm->class_name[KORB_C_FALSE] || cname == vm->class_name[KORB_C_INTEGER] ||
-        cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL]) {   /* immediate classes → slow path raises NoMethodError */
+        cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL] ||
+        cname == vm->class_name[KORB_C_RATIONAL] || cname == vm->class_name[KORB_C_COMPLEX]) {   /* immediate/#new-undefined classes → slow path raises NoMethodError */
         kind = 2;
     } else if (korb_class_exc_etype(vm, cls) >= 0) {   /* exception class → KorbException, not a generic object */
         kind = 2;
