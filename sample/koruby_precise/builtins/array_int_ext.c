@@ -232,15 +232,35 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, korb_float_val(rg->rbegin) < 0 ? "-Infinity" : "Infinity");
         if (KORB_FLOAT_P(rg->rend) && isinf(korb_float_val(rg->rend)))
             return korb_raise(c, slots, KORB_E_FLOAT_DOMAIN, 0, korb_float_val(rg->rend) < 0 ? "-Infinity" : "Infinity");
-        if (rg->rbegin == KORB_NIL) {                                       /* beginless (..j): finite only when self is 0 */
+        if (rg->rbegin == KORB_NIL) {                                       /* beginless (..j): result is 0 unless a bit in [0,j] is set */
+            /* nz = self has any set bit in positions 0..j (two's-complement).
+             * j<0 ⇒ empty range ⇒ 0; endless j ⇒ all bits ⇒ any nonzero self. */
             bool nz;
-            if (FIXNUM_P(selfv)) nz = FIX2LONG(selfv) != 0;
+            const bool endless = (rg->rend == KORB_NIL);
+            const bool small_j = !endless && FIXNUM_P(rg->rend) && FIX2LONG(rg->rend) < 62;
+            if (small_j && FIXNUM_P(selfv)) {
+                const intptr_t j = FIX2LONG(rg->rend);
+                nz = (j < 0) ? false : (FIX2LONG(selfv) & ((((intptr_t)1) << (j + 1)) - 1)) != 0;
+            } else if (small_j && FIX2LONG(rg->rend) < 0) {
+                nz = false;                                                 /* Bignum self, empty range */
+            } else {
 #ifdef KORB_HAVE_GMP
-            else nz = mpz_sgn(VAL2BIG(selfv)->z) != 0;
+                mpz_t zn; korb_to_mpz(selfv, zn);                            /* Fixnum or Bignum self, into two's-complement mpz */
+                if (endless) {
+                    nz = mpz_sgn(zn) != 0;
+                } else {                                                    /* mask = (1<<(j+1))-1, nz = (self & mask) != 0 */
+                    mpz_t mask, tmp; mpz_init(mask); mpz_init(tmp);
+                    mpz_ui_pow_ui(mask, 2, (unsigned long)(FIX2LONG(rg->rend) + 1)); mpz_sub_ui(mask, mask, 1);
+                    mpz_and(tmp, zn, mask); nz = mpz_sgn(tmp) != 0;
+                    mpz_clear(mask); mpz_clear(tmp);
+                }
+                mpz_clear(zn);
 #else
-            else nz = true;
+                nz = true;
 #endif
+            }
             if (nz) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "The beginless range for Integer#[] results in infinity");
+            zero = true;                                                    /* not raised ⇒ bits [0,j] all clear ⇒ result is 0 */
         }
         i = (rg->rbegin == KORB_NIL) ? 0 : (FIXNUM_P(rg->rbegin) ? FIX2LONG(rg->rbegin) : 0);   /* beginless ⇒ 0 */
         if (rg->rend != KORB_NIL && FIXNUM_P(rg->rend)) {

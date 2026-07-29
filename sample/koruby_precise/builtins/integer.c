@@ -436,6 +436,18 @@ static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         (void)korb_num_to_d(VALUE_REF_GET(self), &s);  /* works for Bignum self too */
         return RESULT_OK(LONG2FIX((intptr_t)ceil(s / f)));
     }
+#ifdef KORB_HAVE_GMP
+    if (KORB_RATIONAL_P(bv)) {                         /* Integer#ceildiv(Rational p/q) → ceil(self*q / p), exact */
+        mpz_t za, zp, zq, prod, res;
+        korb_to_mpz(VALUE_REF_GET(self), za); korb_to_mpz(VAL2RAT(bv)->num, zp); korb_to_mpz(VAL2RAT(bv)->den, zq);
+        if (UNLIKELY(mpz_sgn(zp) == 0)) { mpz_clear(za); mpz_clear(zp); mpz_clear(zq); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+        mpz_init(prod); mpz_init(res); mpz_mul(prod, za, zq);   /* den q > 0 (normalized), so cdiv toward +inf is ceil */
+        mpz_cdiv_q(res, prod, zp);
+        RESULT out = korb_big_from_mpz(c, slots, res);
+        mpz_clear(za); mpz_clear(zp); mpz_clear(zq); mpz_clear(prod); mpz_clear(res);
+        return out;
+    }
+#endif
     if (UNLIKELY(!KORB_INTEGER_P(bv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
 #ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self)) || KORB_BIGNUM_P(bv)) {   /* ceiling division in GMP (no intptr_t overflow) */
