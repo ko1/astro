@@ -537,8 +537,19 @@ static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup) {
 /* op: 0 `<`  1 `<=`  2 `>`  3 `>=` (subset/superset comparison) */
 static RESULT korb_hash_cmp_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op) {
     VALUE ov = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_HASH_P(ov))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(ov));
-    const KorbHash *me = VAL2HASH(VALUE_REF_GET(self)), *other = VAL2HASH(ov);
+    if (UNLIKELY(!KORB_HASH_P(ov))) {                            /* coerce the operand via #to_hash (Hash subclasses are already KORB_HASH_P) */
+        const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
+        if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
+            slots[1] = ov;
+            RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+            ov = hr.value;
+        }
+        if (UNLIKELY(!KORB_HASH_P(ov)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    }
+    slots[0] = ov;                                              /* root the (possibly coerced) operand across the compare */
+    const KorbHash *me = VAL2HASH(VALUE_REF_GET(self)), *other = VAL2HASH(slots[0]);
     bool res;
     switch (op) {
       case 0: res = me->len <  other->len && korb_hash_is_subset(me, other); break;

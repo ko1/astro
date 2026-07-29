@@ -4958,6 +4958,7 @@ korb_cmperr_operand(VALUE v, char *buf, size_t cap)
 }
 
 static bool korb_hash_is_subset(const KorbHash *sub, const KorbHash *sup);
+static RESULT korb_hash_cmp_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int op);
 static RESULT korb_m_set_subset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_superset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_set_psubset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
@@ -4980,16 +4981,11 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
 #endif
-    if (KORB_HASH_P(l) && KORB_HASH_P(r)) {              /* subset/superset comparison */
-        const KorbHash *me = VAL2HASH(l), *other = VAL2HASH(r);
-        bool t;
-        switch (op) {
-          case 0:  t = me->len <  other->len && korb_hash_is_subset(me, other); break;
-          case 1:  t = me->len <= other->len && korb_hash_is_subset(me, other); break;
-          case 2:  t = me->len >  other->len && korb_hash_is_subset(other, me); break;
-          default: t = me->len >= other->len && korb_hash_is_subset(other, me); break;
-        }
-        return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
+    if (KORB_HASH_P(l)) {                                /* subset/superset; coerce a non-Hash r via #to_hash (in korb_hash_cmp_op) */
+        slots[0] = l; slots[1] = r;
+        VALUE_REF lref = VALUE_REF_AT(&slots[0]);
+        VALUE_SLICE rsl = VALUE_SLICE_MAKE(&slots[1], 1);
+        return korb_hash_cmp_op(c, slots + 2, lref, rsl, op);
     }
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(r)) {     /* exact rational/int compare */
         int cmp = korb_rat_cmp(l, r);
