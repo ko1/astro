@@ -574,9 +574,14 @@ static RESULT korb_m_ary_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VALU
  * no block → an Enumerator over the slices.  The slices are pre-built into a
  * rooted array so yielding is GC-safe. */
 static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     intptr_t n;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce the size via #to_int */
+        RESULT cr = korb_coerce_to_int(c, slots, &nv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(nv, &n)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    }
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid slice size");
     /* slots[0]=out, slots[1]=captured_self (heap VALUE — must be rooted across the
      * slice-building allocs, else STRESS GC moves `main` and the later yield uses a
@@ -605,9 +610,14 @@ static RESULT korb_m_ary_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 /* each_cons(n): overlapping n-element windows.  block → yield each (nil); no block
  * → Enumerator.  Windows pre-built into a rooted array (GC-safe yields). */
 static RESULT korb_m_ary_each_cons(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     intptr_t n;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !korb_to_index(VALUE_SLICE_GET(a, 0), &n)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    VALUE nv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!korb_to_index(nv, &n))) {              /* coerce the size via #to_int */
+        RESULT cr = korb_coerce_to_int(c, slots, &nv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(nv, &n)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    }
     if (UNLIKELY(n <= 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid size");
     slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
     slots[1] = KORB_CSELF_VAL(captured_self);                                    /* rooted across the build allocs */
