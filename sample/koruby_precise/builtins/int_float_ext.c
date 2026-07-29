@@ -261,7 +261,20 @@ static RESULT korb_ary_filter_bang(CTX *c, VALUE *slots, VALUE_REF self, NODE *b
         if (r >= ary->len) break;
         slots[0] = ary->items->data[r];                    /* root elem across the yield */
         RESULT res = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
-        if (UNLIKELY(res.state != KORB_NORMAL)) return res;
+        if (UNLIKELY(res.state != KORB_NORMAL)) {          /* block raised/broke: finalize like CRuby */
+            /* keep the survivors decided so far ([0,w)) + the unprocessed tail
+             * ([r,len), incl. the current element), dropping the already-deleted
+             * ones ([w,r)); then propagate the non-normal state. */
+            KorbArray *a2 = VAL2ARY(VALUE_REF_GET(self));
+            if (w < r) {                                   /* left-shift the tail down over the deleted gap */
+                const uint32_t tail = a2->len - r;
+                for (uint32_t k = 0; k < tail; k++) ARO_STORE(c, a2->items, &a2->items->data[w + k], a2->items->data[r + k]);
+                const uint32_t newlen = w + tail;
+                for (uint32_t k = newlen; k < a2->len; k++) ARO_STORE(c, a2->items, &a2->items->data[k], KORB_NIL);
+                a2->len = newlen;
+            }
+            return res;
+        }
         bool kept = (KORB_TRUTHY(res.value) == keep_truthy);
         if (kept) {
             KorbArray *a2 = VAL2ARY(VALUE_REF_GET(self));
