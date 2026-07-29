@@ -1175,9 +1175,21 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
                 slots[1] = ID2SYM(name_sym);
                 return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
             }
-            return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
+            RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s::%s", korb_sym_name(vm, owner_name), korb_sym_name(vm, name_sym));
+            if (LIKELY(KORB_EXC_P(nr.value))) {          /* NameError#name = the missing constant symbol */
+                slots[0] = nr.value;
+                korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(name_sym));
+                nr.value = slots[0];
+            }
+            return nr;
         }
-        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
+        RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
+        if (LIKELY(KORB_EXC_P(nr.value))) {              /* NameError#name = the missing constant symbol */
+            slots[0] = nr.value;
+            korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(vm, "@__name", 7)), ID2SYM(name_sym));
+            nr.value = slots[0];
+        }
+        return nr;
     }
     cache->idx_plus1 = idx + 1;
     return RESULT_OK(vm->const_vals[idx]);

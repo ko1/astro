@@ -1582,7 +1582,7 @@ korb_exc_ivar_get(VALUE exc, VALUE name_sym)
     return idx >= 0 ? VAL2HASH(h)->items->data[2 * idx + 1] : KORB_NIL;
 }
 
-static RESULT
+RESULT
 korb_exc_ivar_set(CTX *c, VALUE *slots, VALUE_REF excref, VALUE name_sym, VALUE val)
 {
     VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root across hash alloc/grow */
