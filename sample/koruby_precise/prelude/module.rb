@@ -29,7 +29,8 @@ class Module
   # Default hooks (private).  const_added is a no-op; const_missing raises.
   # (The automatic firing of these hooks is a separate C concern.)
   def const_missing(name)
-    raise NameError, (self.equal?(Object) ? "uninitialized constant #{name}" : "uninitialized constant #{self}::#{name}")
+    msg = self.equal?(Object) ? "uninitialized constant #{name}" : "uninitialized constant #{self}::#{name}"
+    raise NameError.new(msg, name, receiver: self)   # NameError#name / #receiver reflect the missing constant
   end
   private def const_added(name); end
 
