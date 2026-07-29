@@ -443,6 +443,14 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         RESULT sr = korb_set_from_array(c, slots + 2, cp);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         slots[1] = sr.value;
+    } else if (KORB_METHOD_P(v)) {                         /* Method/UnboundMethod → fresh (unfrozen) shallow copy */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbMethod *m = korb_alloc(c, slots + 2, sizeof(KorbMethod), KORB_OBJ_METHOD);
+        const KorbMethod *src = VAL2METH(slots[1]);        /* re-read: alloc may have GC-moved the source */
+        m->mid = src->mid; m->unbound = src->unbound;
+        ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
+        ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
+        slots[1] = (VALUE)m;
     } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
         VALUE_REF dst = VALUE_REF_AT(&slots[1]);
