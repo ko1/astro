@@ -1409,9 +1409,8 @@ static RESULT korb_m_class_undef_method(CTX *c, VALUE *slots, VALUE_REF self, VA
  * visibility, so any defined method counts; public_method_defined? aliases it). */
 /* want: -1 = method_defined? (public or protected, not private); 0/1/2 = exact. */
 static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int want) {
-    const uint32_t mid = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(mid == UINT32_MAX))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t mid;                                        /* Symbol/String, or #to_str-coercible */
+    { RESULT r = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     VALUE mdef = KORB_NIL;
     const struct korb_method *const me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;

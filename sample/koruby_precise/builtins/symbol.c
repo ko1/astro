@@ -668,11 +668,8 @@ static RESULT korb_m_meth_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 }
 /* Module#instance_method(name) → UnboundMethod owned by the class. */
 static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const VALUE nv = VALUE_SLICE_GET(a, 0);
-    uint32_t mid;
-    if (SYMBOL_P(nv))           mid = SYM2ID(nv);
-    else if (KORB_STRING_P(nv)) mid = korb_intern(c->vm, VAL2STR(nv)->buf->data, VAL2STR(nv)->len);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(nv));
+    uint32_t mid;                                        /* Symbol/String, or #to_str-coercible */
+    { RESULT r = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls) || korb_class_find_method(cls, mid, NULL) == NULL)) {
         /* koruby keeps Kernel's instance methods (respond_to?/freeze/class/...) on
