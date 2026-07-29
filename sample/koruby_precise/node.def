@@ -1972,6 +1972,19 @@ node_block_given(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
     return RESULT_OK(((uintptr_t)slots[biseq_off] & 1u) ? KORB_TRUE : KORB_FALSE);
 }
 
+// block_given? inside a block: block_given? reaches the enclosing METHOD's
+// block, not a nested block's.  Walk `depth` env links (like korb_yield_outer)
+// to the method frame and test its biseq presence bit; an escaped (KorbEnv)
+// chain → no block.
+NODE_DEF @nogc
+node_block_given_outer(CTX *c, NODE *n, VALUE *slots, int32_t prev_off, uint32_t depth, int32_t trio_base)
+{
+    (void)c; (void)n;
+    const VALUE *node = korb_outer_frame_base(slots[prev_off], depth);
+    if (!node) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(((uintptr_t)node[trio_base] & 1u) ? KORB_TRUE : KORB_FALSE);
+}
+
 // `next [v]` — early-return from a block; korb_yield catches KORB_NEXT.
 NODE_DEF @nogc
 node_next(CTX *c, NODE *n, VALUE *slots, VALUE v@child)

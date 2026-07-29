@@ -1197,11 +1197,22 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     const pm_arguments_node_t *args = cn->arguments;
     size_t argc = args ? args->arguments.size : 0;
 
-    /* block_given? — reads the current method's frame-top biseq cell. */
+    /* block_given? — reaches the enclosing METHOD's block, not a nested block's.
+     * Walk up to the method frame (like yield); flat read at method level, else
+     * resolve through `depth` env links to the method frame's biseq. */
     if (argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "block_given?") == 0) {
-        tc->frame->uses_block = true;
-        return ALLOC_node_block_given(-4 - tc->chain);   /* block_entry cell (fs-5) */
+        struct kp_frame *mf = tc->frame;
+        uint32_t depth = 0;
+        while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
+        if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }   /* outside a method: legacy flat path */
+        mf->uses_block = true;                                     /* the method reserves the block trio */
+        if (depth == 0)
+            return ALLOC_node_block_given(-4 - tc->chain);        /* method top-level: this frame's biseq cell */
+        NODE *bg = ALLOC_node_block_given_outer(-2 - tc->chain, depth, -4);   /* prev_off = this block's env link; trio_base += method frame_size */
+        bake_add(tc, &bg->u.node_block_given_outer.prev_off);
+        add_bake_to(mf, &bg->u.node_block_given_outer.trio_base);
+        return bg;
     }
 
     /* __method__ / __callee__ — the enclosing method's name (nil at top level),
