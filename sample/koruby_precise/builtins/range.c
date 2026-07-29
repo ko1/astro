@@ -25,7 +25,13 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
         if ((r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)))) && KORB_INTEGER_P(r->rbegin))   /* endless / +∞-end Integer → Infinity */
             return korb_float_new(c, slots, INFINITY);
-        return RESULT_OK(KORB_NIL);                      /* non-numeric begin (e.g. String) → nil */
+        if (KORB_INTEGER_P(r->rbegin))
+            return RESULT_OK(KORB_NIL);                  /* Bignum-bounded integer range: exact count not computed (gap) */
+        /* other begin: iterable-by-succ (String/Symbol) → nil; else (nil/Array/…) can't iterate → TypeError */
+        slots[0] = r->rbegin;                            /* root across the respond_to check */
+        if (korb_responds_to(c, slots[0], korb_intern(c->vm, "succ", 4)))
+            return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(slots[0]));
     }
     return RESULT_OK(LONG2FIX(hi > lo ? hi - lo : 0));
 }
@@ -752,6 +758,16 @@ static int korb_bsearch_dir(VALUE v, bool *cand, bool *valid) {
 static RESULT korb_m_range_bsearch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     (void)a;
     const KorbRange *rg = SELF_RANGE;
+    /* bsearch is only defined for Integer/Float ranges (nil bound = ±∞); any
+     * other endpoint (String/Array/Rational/…) → TypeError, reported against the
+     * begin's class (CRuby quirk), and before the no-block Enumerator is built. */
+    {
+        const VALUE bb = rg->rbegin, ee = rg->rend;
+        const bool bok = bb == KORB_NIL || KORB_INTEGER_P(bb) || KORB_FLOAT_P(bb);
+        const bool eok = ee == KORB_NIL || KORB_INTEGER_P(ee) || KORB_FLOAT_P(ee);
+        if (UNLIKELY(!bok || !eok))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't do binary search for %s", korb_type_name(bb));
+    }
     if (UNLIKELY(block == NULL)) {                        /* no block → Enumerator */
         slots[0] = UNWRAP(korb_ary_new(c, slots, 0));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "bsearch"));
