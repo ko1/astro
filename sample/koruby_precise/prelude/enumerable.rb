@@ -40,12 +40,14 @@ module Enumerable
   def count(*args, &blk); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif blk; each { |*a| n += 1 if blk.call(*a) }; else; each { |*a| n += 1 }; end; n; end
   def include?(v); __each_el { |e| return true if e == v }; false; end
   alias member? include?
-  def first(n = nil)
-    if n.nil?
+  def first(*args)
+    if args.empty?                         # no argument → the first element (an explicit nil is NOT "no arg")
       __each_el { |e| return e }
       return nil
     end
-    unless n.is_a?(Integer)                # coerce via #to_int; a non-numeric arg is a TypeError
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    n = args[0]
+    unless n.is_a?(Integer)                # coerce via #to_int; a non-numeric arg (incl. nil) is a TypeError
       raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
       n = n.to_int
     end
