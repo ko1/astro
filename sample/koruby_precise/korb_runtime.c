@@ -369,6 +369,7 @@ int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-st
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
+static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE arg = VALUE_SLICE_GET(a, 0);
@@ -2825,26 +2826,26 @@ static RESULT korb_m_bind_source_location(CTX *c, VALUE *slots, VALUE_REF self, 
     return korb_srcloc_result(c, slots, node);
 }
 static RESULT korb_m_bind_lvget(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
-    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Symbol", korb_type_name(VALUE_SLICE_GET(a, 0)));
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const int i = korb_bind_find(b, sym);
     if (i >= 0) return RESULT_OK(korb_bind_env_get(b, (uint32_t)i));
     if (b->extra != KORB_NIL) { const int32_t hi = korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)); if (hi >= 0) return RESULT_OK(VAL2HASH(b->extra)->items->data[2 * hi + 1]); }
     return korb_raise(c, slots, KORB_E_NAME, 0, "local variable '%s' is not defined for %s", korb_sym_name(c->vm, sym), "an instance of Binding");
 }
 static RESULT korb_m_bind_lvdefined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
-    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Symbol");
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    const KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     if (korb_bind_find(b, sym) >= 0) return RESULT_OK(KORB_TRUE);
     if (b->extra != KORB_NIL && korb_hash_find(VAL2HASH(b->extra), ID2SYM(sym)) >= 0) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(KORB_FALSE);
 }
 static RESULT korb_m_bind_lvset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));
-    const uint32_t sym = korb_bind_argsym(c, VALUE_SLICE_GET(a, 0));
-    if (UNLIKELY(sym == UINT32_MAX)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Symbol");
+    uint32_t sym;   /* Symbol/String, or #to_str-coercible */
+    { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &sym); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
+    KorbBinding *b = VAL2BIND(VALUE_REF_GET(self));   /* re-read after the coercion (may GC) */
     const VALUE val = VALUE_SLICE_GET(a, 1);
     const int i = korb_bind_find(b, sym);
     if (i >= 0) {                                          /* existing frame local → write the env */
