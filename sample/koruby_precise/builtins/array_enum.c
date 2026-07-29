@@ -5,34 +5,7 @@ static RESULT korb_lazy_new(CTX *c, VALUE *slots, VALUE source, uint8_t mode);  
 static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALUE a1, uint8_t nargs, uint8_t is_pct);   /* arithseq.c */
 
 
-static RESULT korb_m_ary_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
-    if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
-    if (block != NULL && VALUE_SLICE_LEN(a) == 0) {  /* block form: first truthy-yield index */
-        for (uint32_t i = 0; ; i++) {
-            const KorbArray *ary = SELF_ARY;
-            if (i >= ary->len) break;
-            slots[0] = ary->items->data[i];
-            RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
-        }
-        return RESULT_OK(KORB_NIL);
-    }
-    slots[0] = VALUE_SLICE_GET(a, 0);                    /* needle (root across element == dispatch) */
-    const uint32_t n = VAL2ARY(VALUE_REF_GET(self))->len;
-    for (uint32_t i = 0; i < n; i++) {
-        const VALUE e = VAL2ARY(VALUE_REF_GET(self))->items->data[i];
-        if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
-            slots[1] = e; slots[2] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
-            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-            if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
-        } else if (korb_value_eq(e, slots[0])) {
-            return RESULT_OK(LONG2FIX(i));
-        }
-    }
-    return RESULT_OK(KORB_NIL);
-}
+/* Array#index is a true alias of #find_index (registered to the same CFUNC). */
 
 static RESULT korb_m_ary_count(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (block != NULL && VALUE_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */

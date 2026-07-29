@@ -7912,7 +7912,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "intersect?", korb_m_ary_intersect_q, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "+", korb_m_ary_plus, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "*", korb_m_ary_mul, 1);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "index", korb_m_ary_index, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "index", korb_m_ary_find_index, -1);   /* #index is a true alias of #find_index */
     korb_def_cmethod(c, KORB_C_ARRAY, "assoc", korb_m_ary_assoc, 1);
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
