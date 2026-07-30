@@ -16,6 +16,12 @@ static uint32_t korb_io_register(struct korb_vm *vm, FILE *fp) {
 }
 static uint32_t korb_io_fp_mid(CTX *c) { return korb_intern(c->vm, "__io_fp", 7); }
 static uint32_t korb_io_mode_mid(CTX *c) { return korb_intern(c->vm, "__io_mode", 9); }
+static uint32_t korb_io_bin_mid(CTX *c) { return korb_intern(c->vm, "__io_bin", 8); }
+/* true if the stream was opened in binary mode (the 'b' flag) — its reads yield
+ * ASCII-8BIT (byte-indexed) strings, like CRuby, so binary parsing works. */
+static bool korb_io_is_binary(CTX *c, VALUE self) {
+    return korb_ivar_get(c, self, ID2SYM(korb_io_bin_mid(c))) == KORB_TRUE;
+}
 /* read/write permission bits from the @__io_mode ivar: 1 = readable, 2 = writable. */
 static int korb_io_rw(CTX *c, VALUE self) {
     const VALUE v = korb_ivar_get(c, self, ID2SYM(korb_io_mode_mid(c)));
@@ -158,6 +164,8 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
         RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
         free(b);
+        if (r.state == KORB_NORMAL && korb_io_is_binary(c, VALUE_REF_GET(self)))
+            KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);                   /* 'rb' → ASCII-8BIT (byte-indexed) */
         return r;
     }
     char *buf = NULL; size_t cap = 0, len = 0;
@@ -169,6 +177,8 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)len);
     free(buf);
+    if (r.state == KORB_NORMAL && korb_io_is_binary(c, VALUE_REF_GET(self)))
+        KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
 }
 /* IO#gets → the next line (with '\n'), or nil at EOF. */
@@ -374,7 +384,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!KORB_STRING_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-    int rw = 0; FILE *fp;
+    int rw = 0; bool binary = false; FILE *fp;
     if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {   /* integer O_* flags → open(2) */
         const int fl = (int)FIX2LONG(VALUE_SLICE_GET(a, 1));
         const mode_t perm = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
@@ -391,6 +401,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (ml > 0 && ml < sizeof(mode)) { memcpy(mode, m, ml); mode[ml] = '\0'; }
         }
         const char b = mode[0]; const bool plus = strchr(mode, '+') != NULL;   /* validate + derive rw bits */
+        binary = strchr(mode, 'b') != NULL;                                     /* 'rb'/'wb'/… → byte-encoded reads */
         if (b == 'r') rw = plus ? 3 : 1;
         else if (b == 'w' || b == 'a') rw = plus ? 3 : 2;
         else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
@@ -399,6 +410,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, rw));   /* self = the File class */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
+    if (binary)   /* remember binary mode → reads produce ASCII-8BIT strings */
+        CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
