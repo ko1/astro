@@ -1414,6 +1414,21 @@ static RESULT korb_method_defined_vis(CTX *c, VALUE *slots, VALUE_REF self, VALU
     uint32_t mid;                                        /* Symbol/String, or #to_str-coercible */
     { RESULT r = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &mid); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
+    /* Optional 2nd arg `inherit` (default true): when false, search only the
+     * class's own method table — ignoring superclasses AND included/prepended
+     * modules (CRuby semantics). */
+    const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    if (!inherit) {
+        if (!KORB_CLASS_P(cls)) return RESULT_OK(KORB_FALSE);
+        const KorbClass *const k = VAL2CLASS(cls);
+        for (uint32_t j = 0; j < k->method_cnt; j++) {
+            const struct korb_method *const om = k->methods[j];
+            if (om->mid != mid) continue;
+            const bool ok = (want < 0) ? (om->visibility != 1) : (om->visibility == want);
+            return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
+        }
+        return RESULT_OK(KORB_FALSE);
+    }
     VALUE mdef = KORB_NIL;
     const struct korb_method *const me = KORB_CLASS_P(cls) ? korb_class_find_method(cls, mid, &mdef) : NULL;
     if (me == NULL) {
