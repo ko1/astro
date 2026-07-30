@@ -7513,6 +7513,10 @@ korb_send_cached(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t arg
                !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
                (klass = VAL2OBJ(recv)->klass) != KORB_NIL)) {
         /* plain user instance — klass set above */
+    } else if (FIXNUM_P(recv)) {
+        klass = korb_builtin_class_obj(vm, KORB_C_INTEGER);   /* immediate: skip the dispatch_class + class_of PLT pair */
+    } else if (FLONUM_P(recv)) {
+        klass = korb_builtin_class_obj(vm, KORB_C_FLOAT);     /* (numeric kernels send to_i/abs/coerce on these per-iteration) */
     } else {
         klass = korb_dispatch_class(c, recv);
     }
