@@ -4407,6 +4407,7 @@ korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude
     VALUE_REF eref = SLOTS_PUSH(slots, end);          /* root end across the alloc */
     KorbRange *r = korb_alloc(c, slots, sizeof(KorbRange), KORB_OBJ_RANGE);
     r->exclude_end = exclude_end;
+    r->head.flags |= KORB_FL_FROZEN;                  /* Range instances are frozen (a dup'd copy is not — see korb_m_obj_dup) */
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->rbegin, VALUE_REF_GET(bref));
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->rend,   VALUE_REF_GET(eref));
     return RESULT_OK((VALUE)r);

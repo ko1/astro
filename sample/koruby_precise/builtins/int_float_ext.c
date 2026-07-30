@@ -464,6 +464,17 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE) {   /* Range → fresh (unfrozen) copy (literals/Range.new are frozen) */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbRange *nr = korb_alloc(c, slots + 2, sizeof(KorbRange), KORB_OBJ_RANGE);
+        const KorbRange *sr = VAL2RANGE(slots[1]);         /* re-read: alloc may have GC-moved the source */
+        nr->exclude_end = sr->exclude_end;
+        ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rbegin, sr->rbegin);
+        ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rend,   sr->rend);
+        slots[1] = (VALUE)nr;
+        slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC) {   /* Proc → fresh (unfrozen) shallow copy */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbProc *np = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);

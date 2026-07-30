@@ -430,7 +430,8 @@ static RESULT korb_m_range_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(acc));
 }
 static RESULT korb_m_range_frozen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_TRUE);   /* Range instances are frozen */
+    (void)c;(void)slots;(void)a;                          /* frozen literals/Range.new carry the flag; a dup'd Range does not */
+    return RESULT_OK((((const AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
