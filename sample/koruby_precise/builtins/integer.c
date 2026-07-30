@@ -425,7 +425,14 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
 #endif
     double s; korb_num_to_d(sv, &s);                      /* self may be a Bignum */
-    double o; if (UNLIKELY(!korb_num_to_d(bv, &o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    double o;
+    if (UNLIKELY(!korb_num_to_d(bv, &o))) {               /* non-numeric arg → the coerce protocol (a,b = arg.coerce(self); a.fdiv(b)) */
+        if (KORB_OBJECT_P(bv)) {
+            bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), bv, "fdiv", 0, &h);
+            if (h) return cr;
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(bv));
+    }
     return korb_float_new(c, slots, s / o);
 }
 static RESULT korb_m_int_ceildiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
