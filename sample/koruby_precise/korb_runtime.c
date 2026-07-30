@@ -7217,6 +7217,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
              * is the `Klass.new(...) { block }` path, so a block may be present. */
             RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            if (UNLIKELY(ir.state == KORB_BREAK)) return RESULT_OK(ir.value);   /* `break v` in the block passed to new (its home is new) → new returns v */
             return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
         }
         if (UNLIKELY(argc != 0))
