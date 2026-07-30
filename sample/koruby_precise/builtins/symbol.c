@@ -404,10 +404,19 @@ static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest);   /* fwd (defined below) */
 /* Proc#arity: #required positional, negated as -(req+1) when optional/rest make
  * it variable.  (Symbol#to_proc → -2, matching CRuby.) */
+static intptr_t korb_method_arity(const struct korb_method *km);   /* fwd (defined below) */
 static RESULT korb_m_proc_arity(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
     const KorbProc *p = VAL2PROC(VALUE_REF_GET(self));
-    if (p->iseq == NULL) return RESULT_OK(LONG2FIX(-2));   /* symbol proc */
+    if (p->iseq == NULL) {
+        if (p->self != KORB_NIL) {                        /* Method#to_proc → the bound method's own arity */
+            const VALUE klass = korb_dispatch_class(c, p->self);
+            const struct korb_method *km = KORB_CLASS_P(klass) ? korb_class_find_method(klass, p->sym_mid, NULL) : NULL;
+            if (km == NULL) km = korb_method_lookup(c->vm, p->sym_mid);   /* top-level def lives in the global table */
+            return RESULT_OK(LONG2FIX(km ? korb_method_arity(km) : -1));
+        }
+        return RESULT_OK(LONG2FIX(-2));                   /* Symbol#to_proc */
+    }
     const NODE *e = p->iseq;
     const bool lam = p->is_lambda;
     /* Count param kinds from the full param list (0=req 1=opt 2=rest 3=keyreq
