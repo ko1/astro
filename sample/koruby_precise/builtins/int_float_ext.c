@@ -417,18 +417,25 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     /* preserve the subclass: a builtin-subclass instance dups to the same class */
     const bool sub = AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
     slots[0] = sub ? korb_klass_override_get(c->vm, v) : KORB_NIL;   /* override class (rooted across the copy) */
+    /* String/Array/Hash/Set build the copy without dispatching #initialize_copy
+     * (the default is a no-op — a plain builtin can't override it).  A subclass or
+     * singleton CAN, so dispatch it in the tail below only when `sub` (zero cost
+     * for a plain String#dup). */
+    bool need_initcopy = false;
     if (KORB_STRING_P(v)) {
         uint32_t len = VAL2STR(v)->len;
         KorbString *r = korb_str_alloc(c, slots + 1, len);
         memcpy(r->buf->data, VAL2STR(VALUE_REF_GET(self))->buf->data, len);   /* re-read after alloc */
         KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(VALUE_REF_GET(self)));   /* preserve encoding */
         slots[1] = (VALUE)r;
+        need_initcopy = true;
     } else if (KORB_ARRAY_P(v)) {
         uint32_t n = VAL2ARY(v)->len;
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
         VALUE_REF dst = VALUE_REF_AT(&slots[1]);
         for (uint32_t i = 0; i < n; i++)
             CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(VALUE_REF_GET(self))->items->data[i]));
+        need_initcopy = true;
     } else if (KORB_HASH_P(v)) {
         uint32_t n = VAL2HASH(v)->len;
         slots[1] = UNWRAP(korb_hash_new(c, slots + 1, n));
@@ -447,6 +454,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         const KorbHash *const sh = VAL2HASH(VALUE_REF_GET(self));
         ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_val, sh->default_val);
         ARO_STORE(c, dh, (VALUE *)(uintptr_t)&dh->default_proc, sh->default_proc);
+        need_initcopy = true;
     } else if (KORB_SET_P(v)) {                            /* copy a Set (dup returned self before) */
         const uint32_t sn = VAL2ARY(korb_set_elems_of(v))->len;
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, sn));   /* fresh element copy */
@@ -456,6 +464,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         RESULT sr = korb_set_from_array(c, slots + 2, cp);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         slots[1] = sr.value;
+        need_initcopy = true;
     } else if (KORB_METHOD_P(v)) {                         /* Method/UnboundMethod → fresh (unfrozen) shallow copy */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbMethod *m = korb_alloc(c, slots + 2, sizeof(KorbMethod), KORB_OBJ_METHOD);
@@ -544,6 +553,11 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (sub && !(KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton))
         korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
+    if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) #initialize_copy now that the class is set */
+        slots[2] = VALUE_REF_GET(self);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
+    }
     return RESULT_OK(slots[1]);
 }
 /* Object#clone(freeze: nil) — like dup, but copies the frozen state (unless
