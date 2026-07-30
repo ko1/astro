@@ -7783,6 +7783,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "tr!", korb_m_str_tr_bang, 2);
     korb_def_cmethod_blk(c, KORB_C_STRING, "grapheme_clusters", korb_m_str_chars_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "<=>", korb_m_str_cmp, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "===", korb_m_cmpbl_eq, 1);   /* #=== is an alias of #== (both resolve to the Comparable rfn → instance_method ==) */
     korb_def_cmethod(c, KORB_C_STRING, "%", korb_m_str_format, 1);
     korb_def_cmethod(c, KORB_C_STRING, "*", korb_m_str_mul, 1);
     korb_def_cmethod(c, KORB_C_STRING, "+", korb_m_str_plus, 1);
@@ -7794,7 +7795,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "insert", korb_m_str_insert, 2);
     korb_def_cmethod(c, KORB_C_STRING, "setbyte", korb_m_str_setbyte, 2);
     korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_b, 0);
-    korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_self, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_uminus, 0);   /* #dedup is an alias of #-@ (frozen, deduplicated) */
     korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
