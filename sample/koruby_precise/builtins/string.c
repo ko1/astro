@@ -1971,7 +1971,28 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             o = sr.value;
         }
-        if (!KORB_STRING_P(o)) return RESULT_OK(KORB_NIL);
+        if (!KORB_STRING_P(o)) {
+            /* not a String and no #to_str: fall back to -(other <=> self), sign-normalized
+             * (CRuby rb_invcmp) — e.g. an object that defines #<=> but not #to_str. */
+            const VALUE ov = VALUE_SLICE_GET(a, 0);
+            const uint32_t cmp = korb_intern(c->vm, "<=>", 3);
+            if (KORB_OBJECT_P(ov) && korb_responds_to(c, ov, cmp)) {
+                AroObjectHeader *const oh = (AroObjectHeader *)(uintptr_t)ov;
+                if (oh->flags & KORB_FL_JOIN_VISITING)       /* ov <=> self already in flight → mutual inverse-compare, CRuby returns nil */
+                    return RESULT_OK(KORB_NIL);
+                slots[0] = ov;
+                slots[1] = VALUE_REF_GET(self);
+                oh->flags |= KORB_FL_JOIN_VISITING;
+                RESULT ir = korb_send_impl(c, slots + 2, cmp, 0, 1, NULL, NULL, KORB_NIL);   /* ov <=> self */
+                ((AroObjectHeader *)(uintptr_t)slots[0])->flags &= ~KORB_FL_JOIN_VISITING;   /* re-read: dispatch may have moved ov */
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                if (FIXNUM_P(ir.value)) {
+                    const intptr_t r = FIX2LONG(ir.value);
+                    return RESULT_OK(LONG2FIX(r > 0 ? -1 : (r < 0 ? 1 : 0)));   /* negate the sign */
+                }
+            }
+            return RESULT_OK(KORB_NIL);
+        }
     }
     return RESULT_OK(LONG2FIX(korb_cmp_values(VALUE_REF_GET(self), o)));
 }
