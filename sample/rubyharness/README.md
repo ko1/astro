@@ -46,3 +46,23 @@ make clean-corpus             # 生成物 + code_store を消す
 cwd に作られるので AOT は per-sample。
 
 詳細は [`t/README.md`](t/README.md)。
+
+## DOOM アプリベンチ (clone-on-demand)
+
+[khasinski/doom](https://github.com/khasinski/doom) (純 Ruby の DOOM エンジン) を
+optcarrot 同様の**アプリ規模ベンチ**として使う。ソースと WAD は**リポジトリに入れず**
+`apps/doom/` に clone する(`.gitignore` 済)。`tools/doom.sh` が全ソースを 1 ファイルに
+bundle し(koruby は `require` 非対応)、固定視点で N フレーム headless render して
+フレームバッファの checksum を出す。CRuby と各サンプルで checksum が一致すれば正しい
+(タイミングはハーネス/利用側が外から計測)。
+
+```sh
+sh tools/doom_setup.sh         # 初回: khasinski/doom + shareware WAD を取得
+make doom                      # サンプルのツリーウォーカで render → checksum
+make doom-aot                  # --aot-compile して --compiled-only で render
+make doom DOOM_MODE=cruby      # オラクル(CRuby)の checksum
+make doom FRAMES=120           # フレーム数を増やす(sustained 計測用)
+```
+
+koruby_precise では plain / AOT / CRuby すべて checksum 一致 (E1M1, 320×240)。
+実測 (120f): CRuby 4.95s / CRuby+YJIT 2.56s / koruby AOT 3.24s。
