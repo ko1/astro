@@ -1283,19 +1283,29 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
     return RESULT_OK(val);
 }
-/* A class variable name must be @@-prefixed; otherwise NameError (CRuby). */
-static RESULT korb_cvar_name_check(CTX *c, VALUE *slots, uint32_t id) {
+/* A class variable name must be @@-prefixed; otherwise NameError (CRuby), with
+ * #name (the given name verbatim) and #receiver (self) attached. */
+static RESULT korb_cvar_name_check(CTX *c, VALUE *slots, uint32_t id, VALUE self, VALUE orig_name) {
     const char *const nm = korb_sym_name(c->vm, id);
-    if (UNLIKELY(!(nm[0] == '@' && nm[1] == '@')))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as a class variable name", nm);
-    return RESULT_OK(KORB_NIL);
+    if (LIKELY(nm[0] == '@' && nm[1] == '@')) return RESULT_OK(KORB_NIL);
+    slots[0] = self; slots[1] = orig_name;
+    RESULT ne = korb_raise(c, slots + 2, KORB_E_NAME, 0, "'%s' is not allowed as a class variable name", nm);
+    if (LIKELY(KORB_EXC_P(ne.value))) {
+        slots[2] = ne.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[2]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), slots[1]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        ne.value = slots[2];
+    }
+    return ne;
 }
 /* Module#class_variable_get(name) — name is :@@x / "@@x" (koruby keys cvars by
  * the full @@-prefixed symbol); searches self + ancestors, NameError if absent. */
 static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    { RESULT r = korb_cvar_name_check(c, slots, id, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
     const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;
@@ -1320,7 +1330,7 @@ static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_class_cvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    { RESULT r = korb_cvar_name_check(c, slots, id, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
@@ -1332,7 +1342,7 @@ static RESULT korb_m_hash_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_class_remove_cvar(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    { RESULT r = korb_cvar_name_check(c, slots, id, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     if (UNLIKELY(!KORB_CLASS_P(cls))) return korb_raise(c, slots, KORB_E_TYPE, 0, "not a class/module");
     const VALUE cvars = VAL2CLASS(cls)->cvars;
@@ -1348,7 +1358,7 @@ static RESULT korb_m_class_remove_cvar(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_class_cvar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t id;   /* Symbol/String, or #to_str-coercible */
     { RESULT nr = korb_alias_argsym(c, slots, VALUE_SLICE_GET(a, 0), &id); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
-    { RESULT r = korb_cvar_name_check(c, slots, id); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
+    { RESULT r = korb_cvar_name_check(c, slots, id, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0)); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
     const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;

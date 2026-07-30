@@ -163,6 +163,22 @@ static RESULT korb_ivar_name_arg(CTX *c, VALUE *slots, VALUE name, VALUE *out_sy
     }
     *ok = false; return RESULT_OK(KORB_NIL);
 }
+/* Raise "'<name>' is not allowed as an instance variable name" (NameError) with
+ * #name (the given name, verbatim — CRuby echoes the String/Symbol as passed)
+ * and #receiver (self) attached. */
+static RESULT korb_raise_bad_ivar_name(CTX *c, VALUE *slots, VALUE self, VALUE orig_name, uint32_t sym_id) {
+    slots[0] = self; slots[1] = orig_name;
+    RESULT ne = korb_raise(c, slots + 2, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, sym_id));
+    if (LIKELY(KORB_EXC_P(ne.value))) {
+        slots[2] = ne.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[2]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), slots[1]);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+        korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+        ne.value = slots[2];
+    }
+    return ne;
+}
 static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sym, name = VALUE_SLICE_GET(a, 0);
     bool ok; RESULT nr = korb_ivar_name_arg(c, slots, name, &sym, &ok);
@@ -170,7 +186,7 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (UNLIKELY(!ok))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+        return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     if (UNLIKELY(!AROH_IS_GC_OBJECT(VALUE_REF_GET(self))))   /* immediates (Integer/Symbol/nil/...) carry no ivars */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
@@ -184,7 +200,7 @@ static RESULT korb_m_obj_ivar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (UNLIKELY(!ok))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+        return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     (void)slots;
     return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), sym));   /* handles class/exc/container/immediate */
 }
@@ -194,7 +210,7 @@ static RESULT korb_m_obj_ivar_defined(CTX *c, VALUE *slots, VALUE_REF self, VALU
     { RESULT nr = korb_ivar_name_arg(c, slots, VALUE_SLICE_GET(a, 0), &sym, &ok); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+        return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     return RESULT_OK(korb_ivar_defined(c, VALUE_REF_GET(self), sym) ? KORB_TRUE : KORB_FALSE);   /* membership, not value (an ivar set to nil is defined) */
 }
 /* Object#remove_instance_variable(name) → the removed value; NameError if unset. */
@@ -203,7 +219,7 @@ static RESULT korb_m_obj_remove_ivar(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     { RESULT nr = korb_ivar_name_arg(c, slots, VALUE_SLICE_GET(a, 0), &sym, &ok); if (UNLIKELY(nr.state != KORB_NORMAL)) return nr; }
     if (UNLIKELY(!ok)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
-        return korb_raise(c, slots, KORB_E_NAME, 0, "'%s' is not allowed as an instance variable name", korb_sym_name(c->vm, SYM2ID(sym)));
+        return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     bool found;                                       /* true-remove from the shape / side hash */
     const VALUE old = korb_ivar_remove(c, VALUE_REF_GET(self), sym, &found);
