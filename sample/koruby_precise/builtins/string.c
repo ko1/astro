@@ -1527,11 +1527,12 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     while (i < end && korb_is_ws((unsigned char)d[i])) i++;
     intptr_t sign = 1;
     if (i < end && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
-    /* CRuby validates the radix only once there is a digit to parse: a blank /
-     * sign-only string returns 0 regardless of an otherwise-invalid radix. */
-    if (i >= end) return RESULT_OK(LONG2FIX(0));
-    if (UNLIKELY(have_base && base != 0 && (base < 2 || base > 36)))
+    /* Radix is validated for a truly-EMPTY string or when there's content to
+     * parse; a non-empty whitespace/sign-only string returns 0 without checking
+     * (CRuby quirk: ""..to_i(1) raises, but "  ".to_i(1) → 0). */
+    if (UNLIKELY(have_base && base != 0 && (base < 2 || base > 36) && (end == 0 || i < end)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %d", base);
+    if (i >= end) return RESULT_OK(LONG2FIX(0));      /* blank / sign-only (non-empty) → 0 */
     if (i + 1 < end && d[i] == '0') {                /* base prefix */
         const char p = d[i + 1] | 0x20;
         const int pb = p == 'x' ? 16 : p == 'b' ? 2 : p == 'o' ? 8 : p == 'd' ? 10 : 0;
