@@ -8514,6 +8514,10 @@ korb_register_core_methods(CTX *c)
       if (KORB_CLASS_P(bo)) {
           korb_class_def_cfn_blk(c, bo, "instance_eval", korb_m_obj_instance_eval, -1);
           korb_class_def_cfn_blk(c, bo, "instance_exec", korb_m_obj_instance_exec, -1);
+          korb_class_def_cfn(c, bo, "equal?", korb_m_obj_equal, 1);      /* BasicObject-level: a bare BasicObject responds to these */
+          korb_class_def_cfn(c, bo, "__id__", korb_m_obj_object_id, 0);
+          korb_class_def_cfn(c, bo, "==", korb_m_obj_equal, 1);          /* #== is identity — the same rfn as #equal? (alias) */
+          korb_class_def_cfn(c, bo, "!=", korb_m_obj_neq, 1);
       } }
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "loop", korb_m_loop, 0);
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "catch", korb_m_catch, -1);
