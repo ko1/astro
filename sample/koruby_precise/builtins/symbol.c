@@ -343,11 +343,11 @@ static RESULT korb_m_proc_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (p->self != KORB_NIL) {                       /* Method#to_proc (bound receiver): recv.mid(args...) */
             slots[0] = p->self;
             for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
-            return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, NULL, NULL, NULL);
+            return korb_send_impl(c, slots + 1 + argc, mid, 0, argc, block, def_env, cself);   /* forward the &block given at .call */
         }
         if (UNLIKELY(argc < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
         for (uint32_t i = 0; i < argc; i++) slots[i] = VALUE_SLICE_GET(a, i);   /* Symbol#to_proc: arg0.sym(arg1..) */
-        return korb_send_impl(c, slots + argc, mid, 0, argc - 1, NULL, NULL, NULL);
+        return korb_send_impl(c, slots + argc, mid, 0, argc - 1, block, def_env, cself);
     }
     NODE *entry = p->iseq;
     /* Lambdas enforce arity (unlike plain procs/blocks).  Positional-only check
