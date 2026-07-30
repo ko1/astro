@@ -8054,7 +8054,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_HASH, "rehash", korb_m_hash_rehash, 0);
     korb_def_cmethod(c, KORB_C_HASH, "replace", korb_m_hash_replace, 1);
     korb_def_cmethod_blk(c, KORB_C_HASH, "drop_while", korb_m_hash_drop_while, 0);
-    korb_def_cmethod(c, KORB_C_HASH, "deconstruct_keys", korb_m_ary_self, -1);   /* pattern-match hook → self */
+    korb_def_cmethod(c, KORB_C_HASH, "deconstruct_keys", korb_m_ary_self, 1);   /* pattern-match hook → self; requires exactly 1 arg (keys) */
     korb_def_cmethod(c, KORB_C_HASH, "first", korb_m_hash_first, -1);
     korb_def_cmethod(c, KORB_C_HASH, "take", korb_m_hash_take, 1);
     korb_def_cmethod(c, KORB_C_HASH, "clear", korb_m_hash_clear, 0);
