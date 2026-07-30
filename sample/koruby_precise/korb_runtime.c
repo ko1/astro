@@ -8795,6 +8795,12 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "inspect", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s (same rfn → ==) */
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "to_set", korb_m_ary_to_set, 0);
     korb_def_cmethod(c, KORB_C_HASH, "to_set", korb_m_hash_to_set, 0);
+    /* Array/Hash: #to_s is an alias of #inspect (same rfn → instance_method ==), and
+     * both are owned by Array/Hash (not Object).  Container path renders "[1, 2]" / "{a: 1}". */
+    korb_def_cmethod(c, KORB_C_ARRAY, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_ARRAY, "to_s", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "inspect", korb_m_obj_inspect, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "to_s", korb_m_obj_inspect, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "to_set", korb_m_range_to_set, 0);
 
     /* Integer/Float → Complex helpers */
