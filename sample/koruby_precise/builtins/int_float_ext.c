@@ -464,6 +464,16 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_REGEXP) {   /* Regexp → fresh copy (was aliasing self) */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbRegexp *nre = korb_alloc(c, slots + 2, sizeof(KorbRegexp), KORB_OBJ_REGEXP);
+        const KorbRegexp *sre = VAL2RE(slots[1]);          /* re-read: alloc may have GC-moved the source */
+        nre->ci = sre->ci; nre->flags = sre->flags;
+        ARO_STORE(c, nre, (VALUE *)(uintptr_t)&nre->source, sre->source);
+        slots[1] = (VALUE)nre;
+        slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE) {   /* Range → fresh (unfrozen) copy (literals/Range.new are frozen) */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbRange *nr = korb_alloc(c, slots + 2, sizeof(KorbRange), KORB_OBJ_RANGE);
