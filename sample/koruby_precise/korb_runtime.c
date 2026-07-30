@@ -6106,6 +6106,21 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
  * every `each`/`map`/`times` yield.  Anything non-simple (or a CPROC / non-entry
  * block) delegates verbatim to the full path; the frame layout, dispatch, and
  * escape handling are identical to it. */
+/* Zero the block's local slots beyond its params (Ruby: block-locals start nil).
+ * The count is 0-few for almost every block, so inline the small cases — letting
+ * the compiler emit a memset PLT call to zero ~1 slot per yield is pure waste
+ * (it showed as ~5% of a block-heavy profile). */
+static inline __attribute__((always_inline)) void
+korb_block_nil_locals(VALUE *restrict dst, uint32_t n) {
+    switch (n) {
+        case 0: return;
+        case 4: dst[3] = 0; /* fallthrough */
+        case 3: dst[2] = 0; /* fallthrough */
+        case 2: dst[1] = 0; /* fallthrough */
+        case 1: dst[0] = 0; return;
+        default: memset(dst, 0, (size_t)n * sizeof(VALUE)); return;
+    }
+}
 __attribute__((no_stack_protector)) RESULT
 korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
@@ -6136,14 +6151,12 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     bf[0]  = 0;          /* B[-1] block lexical self (set below) */
     korb_frame_magic_set(bf + 1, KORB_FT_BLOCK);
     if (LIKELY(is_lambda || !(np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])))) {   /* scalar bind (lambda never auto-splats) */
-        uint32_t i = 0;
-        for (; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
-        if (blocals > np) for (; i < blocals; i++) bf[1 + i] = KORB_NIL;
+        for (uint32_t i = 0; i < np; i++) bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
+        if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
     } else {                                                          /* auto-splat one Array */
         const KorbArray *ar = VAL2ARY(argv[0]);
-        uint32_t i = 0;
-        for (; i < np; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
-        if (blocals > np) for (; i < blocals; i++) bf[1 + i] = KORB_NIL;
+        for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? ar->items->data[i] : KORB_NIL;
+        if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
     }
     bf[0] = fwd ? VAL2PROC(*captured_self)->self : *captured_self;   /* lexical self → B[-1] */
 
