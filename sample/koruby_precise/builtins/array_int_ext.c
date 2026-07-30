@@ -365,7 +365,10 @@ static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_float_new(c, slots, fmod(s, f));   /* C fmod = truncated remainder (sign of dividend) */
     }
     if (KORB_RATIONAL_P(o)) return korb_int_rat_divmod(c, slots, VALUE_REF_GET(self), o, 3);
-    if (UNLIKELY(!KORB_INTEGER_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
+    if (UNLIKELY(!KORB_INTEGER_P(o))) {                /* non-numeric arg → the coerce protocol */
+        if (KORB_OBJECT_P(o)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), o, "remainder", 0, &h); if (h) return cr; }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Integer", korb_type_name(o));
+    }
     if (UNLIKELY(!FIXNUM_P(VALUE_REF_GET(self)) || !FIXNUM_P(o)))   /* Bignum operand/self → GMP truncated */
         return korb_int_intdiv(c, slots, VALUE_REF_GET(self), o, 3);
     intptr_t b = FIX2LONG(o);
