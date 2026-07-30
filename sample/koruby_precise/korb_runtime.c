@@ -2330,6 +2330,42 @@ static RESULT korb_m_class_new_bracket(CTX *c, VALUE *slots, VALUE_REF self, VAL
 static RESULT korb_m_struct_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
 static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);     /* fwd (defined in symbol.c) */
 RESULT korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods);   /* fwd (defined below) */
+/* Struct#initialize(*values | member: v, …) — assign members positionally (a
+ * shortfall leaves the rest nil; more than N → "struct size differs"), or by
+ * keyword for a keyword_init struct.  Registered on every Struct class so a
+ * subclass's custom #initialize can reach the member assignment via super(...). */
+static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    const VALUE klass0 = VAL2OBJ(VALUE_REF_GET(self))->klass;
+    slots[2] = VAL2CLASS(klass0)->members;                                /* member syms (rooted) */
+    const uint32_t mlen = VAL2ARY(slots[2])->len;
+    const uint32_t argc = VALUE_SLICE_LEN(a);
+    const bool kwinit = VAL2CLASS(klass0)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, argc - 1));
+    if (kwinit) {
+        slots[0] = VALUE_SLICE_GET(a, argc - 1);                          /* kwargs hash (rooted) */
+        const KorbHash *const kh = VAL2HASH(slots[0]);
+        for (uint32_t hi = 0; hi < kh->len; hi++) {                       /* reject keywords that name no member */
+            const VALUE key = kh->items->data[2 * hi];
+            bool found = false;
+            const KorbArray *const mm = VAL2ARY(slots[2]);
+            for (uint32_t mi = 0; mi < mm->len; mi++) if (mm->items->data[mi] == key) { found = true; break; }
+            if (UNLIKELY(!found))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown keywords: %s",
+                                  SYMBOL_P(key) ? korb_sym_name(vm, SYM2ID(key)) : korb_type_name(key));
+        }
+    } else if (UNLIKELY(argc > mlen)) {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "struct size differs");
+    }
+    for (uint32_t i = 0; ; i++) {
+        const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(VALUE_REF_GET(self))->klass)->members);   /* re-read (ivar_set GCs) */
+        if (i >= mem->len) break;
+        const VALUE iv = korb_member_ivar_sym(vm, mem->items->data[i]);
+        if (kwinit) { int32_t hi = korb_hash_find(VAL2HASH(slots[0]), mem->items->data[i]); slots[1] = hi >= 0 ? VAL2HASH(slots[0])->items->data[2 * hi + 1] : KORB_NIL; }
+        else slots[1] = (i < argc) ? VALUE_SLICE_GET(a, i) : KORB_NIL;
+        CHECK(korb_ivar_set(c, slots + 3, self, iv, slots[1]));
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
     struct korb_vm *const vm = c->vm;
     uint32_t mstart = 0, name_id = 0; bool has_name = false;   /* String/nil first arg = the constant name slot */
@@ -4255,7 +4291,8 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
       /* to_a / deconstruct on the base Struct too (subclasses override with their
        * own) so reflection works: Struct.instance_method(:deconstruct) == :to_a. */
       korb_class_def_cfn(c, sc, "to_a", korb_m_struct_to_a, 0);
-      korb_class_def_cfn(c, sc, "deconstruct", korb_m_struct_to_a, 0); }
+      korb_class_def_cfn(c, sc, "deconstruct", korb_m_struct_to_a, 0);
+      korb_class_def_cfn(c, sc, "initialize", korb_m_struct_initialize, -1); }   /* base-class super target for a subclass/block #initialize */
     /* Data factory class — `Data.define(*members)` builds anonymous immutable value subclasses. */
     { uint32_t s = korb_intern(vm, "Data", 4);
       slots[0] = korb_class_new(c, slots, s, korb_const_get(vm, object_sym)).value;
@@ -6887,6 +6924,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     RESULT ir = korb_invoke_method(c, ibase + argc, duinit, argc, line, vm->mid_initialize, slots[0], didef, block, def_env, KORB_CSELF_VAL(captured_self));
                     if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
                     return RESULT_OK(slots[0]);            /* re-read the (possibly moved) instance */
+                }
+            } else {                                       /* Struct: dispatch a user-overridden #initialize (ISEQ); default is the CFUNC */
+                VALUE sudef = KORB_NIL;
+                struct korb_method *const suinit = korb_class_find_method(*recv_slot, vm->mid_initialize, &sudef);
+                if (suinit && suinit->kind == KORB_METHOD_ISEQ) {   /* a real override (the built-in korb_m_struct_initialize is a CFUNC) */
+                    slots[0] = UNWRAP(korb_obj_new(c, slots, *recv_slot));   /* the instance (rooted) */
+                    VALUE *const ibase = slots + 1;
+                    for (uint32_t i = 0; i < argc; i++) ibase[i] = slots[-(intptr_t)argc + (intptr_t)i];   /* forward args (post-alloc, GC-safe) */
+                    RESULT ir = korb_invoke_method(c, ibase + argc, suinit, argc, line, vm->mid_initialize, slots[0], sudef, block, def_env, KORB_CSELF_VAL(captured_self));
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    return RESULT_OK(slots[0]);            /* members set by the override's super(...) → korb_m_struct_initialize */
                 }
             }
             if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {   /* normalize String keyword keys → Symbols (dup String/Symbol → last wins) */
