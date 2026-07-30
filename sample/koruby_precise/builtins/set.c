@@ -1299,9 +1299,20 @@ static RESULT korb_m_class_cvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const VALUE cls = VALUE_REF_GET(self);
     int32_t idx = -1;
     const VALUE owner = KORB_CLASS_P(cls) ? korb_cvar_owner(cls, ID2SYM(id), &idx) : KORB_NIL;
-    if (owner == KORB_NIL)
-        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
+    if (owner == KORB_NIL) {
+        slots[0] = cls;                                   /* root the class across raise + ivar_set */
+        RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
                           korb_sym_name(c->vm, id), korb_type_name(cls));
+        if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the class */
+            slots[1] = ne.value;
+            VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(id));
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+            ne.value = slots[1];
+        }
+        return ne;
+    }
     return RESULT_OK(VAL2HASH(VAL2CLASS(owner)->cvars)->items->data[2 * idx + 1]);
 }
 /* Module#class_variable_set(name, val) — set on the defining ancestor if one

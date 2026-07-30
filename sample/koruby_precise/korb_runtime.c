@@ -1895,8 +1895,18 @@ korb_cvar_get(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_t sym_i
     const VALUE owner = korb_cvar_owner(cref, sym, &idx);
     if (owner == KORB_NIL) {
         if (soft) return RESULT_OK(KORB_NIL);
-        return korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
+        slots[0] = cref;                                  /* root across raise + ivar_set */
+        RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
                           korb_sym_name(c->vm, sym_id), korb_type_name(cref));
+        if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the resolving class */
+            slots[1] = ne.value;
+            VALUE_REF eref = VALUE_REF_AT(&slots[1]);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__name", 7)), sym);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__has_recv", 11)), KORB_TRUE);
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__receiver", 11)), slots[0]);
+            ne.value = slots[1];
+        }
+        return ne;
     }
     return RESULT_OK(VAL2HASH(VAL2CLASS(owner)->cvars)->items->data[2 * idx + 1]);
 }
