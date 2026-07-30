@@ -964,6 +964,17 @@ static RESULT korb_collect_methods_from(CTX *c, VALUE *slots, VALUE start_class,
         korb_intern(c->vm, "module_function", 15),
         korb_intern(c->vm, "marshal_dump", 12),                     /* Marshal hooks are private wherever defined */
         korb_intern(c->vm, "marshal_load", 12),
+        korb_intern(c->vm, "method_added", 12),                     /* Module/Class definition-callback hooks are private */
+        korb_intern(c->vm, "method_removed", 14),
+        korb_intern(c->vm, "method_undefined", 16),
+        korb_intern(c->vm, "included", 8),
+        korb_intern(c->vm, "prepended", 9),
+        korb_intern(c->vm, "extended", 8),
+        korb_intern(c->vm, "inherited", 9),
+        korb_intern(c->vm, "const_added", 11),
+        korb_intern(c->vm, "append_features", 15),
+        korb_intern(c->vm, "prepend_features", 16),
+        korb_intern(c->vm, "extend_object", 13),
     };
     const uint32_t priv_n = (uint32_t)(sizeof priv_mids / sizeof priv_mids[0]);
     /* Compute the "bare module" test up front, while start_class is still fresh —
