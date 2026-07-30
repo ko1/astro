@@ -676,8 +676,14 @@ static RESULT korb_m_class_instance_method(CTX *c, VALUE *slots, VALUE_REF self,
             if (KORB_CLASS_P(objc) && korb_class_find_method(objc, mid, NULL) != NULL)
                 return korb_unbound_new(c, slots, cls, mid);   /* owned by Kernel (module): binds anywhere */
         }
-        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s' for class '%s'",
+        RESULT ne = korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, mid), korb_type_name(cls));
+        if (LIKELY(KORB_EXC_P(ne.value))) {              /* NameError#name → the missing method symbol */
+            slots[0] = ne.value;
+            korb_exc_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_intern(c->vm, "@__name", 7)), ID2SYM(mid));
+            ne.value = slots[0];
+        }
+        return ne;
     }
     return korb_unbound_new(c, slots, cls, mid);
 }
