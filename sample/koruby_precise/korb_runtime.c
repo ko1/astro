@@ -2965,7 +2965,11 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
      * owning namespace so its qualified name is Owner::Name. */
     if (KORB_CLASS_P(val) && VAL2CLASS(val)->name_sym == 0) {
         VAL2CLASS(val)->name_sym = name_sym;
-        if (KORB_CLASS_P(owner) && VAL2CLASS(val)->enclosing == KORB_NIL)
+        /* Object is the top-level namespace: a constant assigned directly under it
+         * is named by the bare constant ("X"), not "Object::X".  Only a genuine
+         * nested namespace becomes the enclosing scope. */
+        const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+        if (KORB_CLASS_P(owner) && owner != objc && VAL2CLASS(val)->enclosing == KORB_NIL)
             ARO_STORE(c, VAL2CLASS(val), (VALUE *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
     }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
