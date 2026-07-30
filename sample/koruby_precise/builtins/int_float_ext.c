@@ -464,6 +464,18 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->recv,  src->recv);
         ARO_STORE(c, m, (VALUE *)(uintptr_t)&m->owner, src->owner);
         slots[1] = (VALUE)m;
+    } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC) {   /* Proc → fresh (unfrozen) shallow copy */
+        slots[1] = v;                                      /* root the source across the alloc */
+        KorbProc *np = korb_alloc(c, slots + 2, sizeof(KorbProc), KORB_OBJ_PROC);
+        const KorbProc *sp = VAL2PROC(slots[1]);           /* re-read: alloc may have GC-moved the source */
+        np->iseq = sp->iseq; np->sym_mid = sp->sym_mid; np->is_lambda = sp->is_lambda;
+        ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->env,  sp->env);
+        ARO_STORE(c, np, (VALUE *)(uintptr_t)&np->self, sp->self);
+        slots[1] = (VALUE)np;
+        /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
+        slots[2] = VALUE_REF_GET(self);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION) {   /* Exception → fresh copy (was aliasing self) */
         slots[1] = v;                                      /* root the source across the alloc */
         KorbException *ne = korb_alloc(c, slots + 2, sizeof(KorbException), KORB_OBJ_EXCEPTION);
