@@ -44,9 +44,21 @@ EVAL(CTX *c, NODE *n, VALUE *slots)
 NODE *
 OPTIMIZE(NODE *n)
 {
-    if (!OPTION.plain) {
-        astro_cs_load(n, NULL);
-    }
+    /* No-op by design.  SD binding must happen only AFTER parse, once
+     * pop_frame's bake_add fixup has finalized every offset (self_off /
+     * lget off / ivar self_off / ...).  main.c relies on this: it dlopens
+     * the code store (INIT) only after PARSE and then binds SDs on the
+     * finalized AST via swap_in_cached_sds() (program root + code_repo
+     * bodies; inner nodes are inlined into their parent's baked SD).
+     *
+     * Calling astro_cs_load(n) here — inside every ALLOC — was a no-op for
+     * the main program (store not yet loaded during its parse) but ACTIVE
+     * and WRONG for require'd / eval'd files, which are parsed at runtime
+     * with the store already dlopen'd: it bound each node to SD_<hash> using
+     * the PRE-fixup offset, then pop_frame changed the offset but left the
+     * stale dispatcher, so e.g. `self` in a require'd class body resolved to
+     * the wrong frame slot (nil) under --compiled-only.  Runtime-parsed code
+     * now runs on the generic dispatchers, which read the fixed-up field. */
     return n;
 }
 
