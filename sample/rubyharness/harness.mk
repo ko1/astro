@@ -58,10 +58,18 @@ FRAMES ?= 60
 doom:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) DOOM_MODE=$(if $(DOOM_MODE),$(DOOM_MODE),plain) sh $(H)tools/doom.sh
 doom-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) DOOM_MODE=aot sh $(H)tools/doom.sh
 
+# ruby/ruby-bench single-file micros (clone-on-demand, not committed).  koruby
+# has no `require`, so tools/rubybench.sh bundles a run_benchmark shim + the
+# bench and prints its (deterministic) result — CRuby and the sample must agree.
+# `make rubybench BENCH=fib` runs one (RB_MODE=plain|aot|cruby|cruby-yjit,
+# BENCH_ITRS= to scale); `make rubybench-all` sweeps every micro for correctness.
+rubybench:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" BENCH="$(BENCH)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) BENCH_ITRS=$(if $(BENCH_ITRS),$(BENCH_ITRS),1) sh $(H)tools/rubybench.sh
+rubybench-all: ; INTERP="$(INTERP)" RUBY="$(RUBY)" sh $(H)tools/rubybench_sweep.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all

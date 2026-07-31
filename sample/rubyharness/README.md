@@ -66,3 +66,25 @@ make doom FRAMES=120           # フレーム数を増やす(sustained 計測用
 
 koruby_precise では plain / AOT / CRuby すべて checksum 一致 (E1M1, 320×240)。
 実測 (120f): CRuby 4.95s / CRuby+YJIT 2.56s / koruby AOT 3.24s。
+
+## ruby/ruby-bench micros (clone-on-demand)
+
+[ruby/ruby-bench](https://github.com/ruby/ruby-bench) (= yjit-bench) の**単一ファイル
+micro** を取り込む。ソースは**リポジトリに入れず** `apps/ruby-bench/` に clone
+(`.gitignore` 済)。各 micro は `run_benchmark(n){ … }` を呼ぶだけなので、koruby は
+`require` 非対応 → `tools/rubybench.sh` が `run_benchmark` shim (block を BENCH_ITRS
+回まわして結果を `p`) を前置 + `require_relative` を除去して bundle し、結果を出す
+(CRuby と一致すれば正しい、時間は外側で計測)。
+
+```sh
+sh tools/rubybench_setup.sh                 # 初回: ruby/ruby-bench を clone
+make rubybench BENCH=fib                     # 1本を走らせる(tree-walker)
+make rubybench BENCH=fib RB_MODE=aot         # AOT
+make rubybench BENCH=nqueens RB_MODE=cruby-yjit  # 参照(YJIT)
+make rubybench BENCH=matmul BENCH_ITRS=20    # 反復数を増やす(sustained 計測)
+make rubybench-all                           # 全 micro を CRuby と差分(正当性 sweep)
+```
+
+koruby_precise: **26/31 micro が CRuby と結果一致**(残 3 = Ractor.make_shareable×2 /
+toplevel define_method×1、+2 は Ractor で skip)。app 系ベンチ(rails/graphql/liquid…)
+は gem/bundler 依存で対象外。
