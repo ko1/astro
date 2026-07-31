@@ -21,17 +21,24 @@ MODE=${RB_MODE:-plain}
 INTERP=${INTERP:-./koruby_precise}
 RUBY=${RUBY:-ruby}
 : "${BENCH:?set BENCH=<name> (see apps/ruby-bench/benchmarks/*.rb)}"
-BUNDLE=${RB_BUNDLE:-/tmp/rubybench_$BENCH.rb}
 
 [ -d "$APP/benchmarks" ] || sh "$HERE/rubybench_setup.sh"
+# single-file micro (benchmarks/<name>.rb) or a self-contained app/CLBG bench
+# (benchmarks/<name>/benchmark.rb — both just require loader + run_benchmark).
 SRC="$APP/benchmarks/$BENCH.rb"
-[ -f "$SRC" ] || { echo "no such micro: benchmarks/$BENCH.rb"; exit 2; }
+[ -f "$SRC" ] || SRC="$APP/benchmarks/$BENCH/benchmark.rb"
+[ -f "$SRC" ] || { echo "no such bench: benchmarks/$BENCH(.rb | /benchmark.rb)"; exit 2; }
+# Put the bundle BESIDE the source so __dir__-relative data files (e.g.
+# blurhash/test.bin) resolve. The clone is gitignored, so this leaves no trace.
+BUNDLE=${RB_BUNDLE:-"$(cd "$(dirname "$SRC")" && pwd)/.rubybench_$BENCH.rb"}
 case "$INTERP" in /*|*" "*) ;; ./*) INTERP="$(cd "$(dirname "$INTERP")" && pwd)/$(basename "$INTERP")";; esac
 
 # --- build the require-free bundle: koruby run_benchmark shim + the bench ---
 {
   cat <<'SHIM'
 BENCH_ITRS = (ENV["BENCH_ITRS"] ? ENV["BENCH_ITRS"].to_i : 1)
+Random.srand(1337)                                 # harness-common: deterministic RNG
+def make_shareable(obj, copy: false); obj; end     # harness-common fallback (no Ractor)
 def run_benchmark(hint = 1, **opts)
   r = nil
   BENCH_ITRS.times { r = yield }
