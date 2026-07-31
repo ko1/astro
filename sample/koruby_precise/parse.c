@@ -2793,6 +2793,30 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                    ALLOC_node_seq(set, bake_lget(tc, t1))));
       }
 
+      case PM_CALL_OR_WRITE_NODE:        /* recv.attr ||= value */
+      case PM_CALL_AND_WRITE_NODE: {     /* recv.attr &&= value */
+        /* both share the layout {receiver, read_name, write_name, value}; the only
+         * difference is or (||) vs and (&&) around the read, with value evaluated
+         * lazily on the taken branch (single-eval receiver). */
+        const bool is_or = PM_NODE_TYPE_P(node, PM_CALL_OR_WRITE_NODE);
+        const pm_call_or_write_node_t *cw = (const pm_call_or_write_node_t *)node;   /* and-write has an identical prefix */
+        uint32_t read_mid  = kp_intern_cid(tc, cw->read_name);
+        uint32_t write_mid = kp_intern_cid(tc, cw->write_name);
+        uint32_t line = kp_line(tc, node);
+        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc);
+        NODE *store_recv = bake_lset(tc, t0, transduce(tc, cw->receiver));
+        NODE *g_recv;
+        WITH_CHAIN(tc, KP_SEND0_SC, (g_recv = bake_lget(tc, t0)));
+        NODE *get = kp_send0(read_mid, line, g_recv);
+        NODE *store_val = bake_lset(tc, t1, transduce(tc, cw->value));   /* only the taken branch runs it */
+        NODE *s_recv, *s_val;
+        WITH_CHAIN(tc, KP_SEND1_SC, (s_recv = bake_lget(tc, t0), s_val = bake_lget(tc, t1)));
+        NODE *set = kp_send1(write_mid, line, s_recv, s_val);
+        NODE *set_branch = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, t1)));
+        return ALLOC_node_seq(store_recv, is_or ? ALLOC_node_or(get, set_branch)
+                                                : ALLOC_node_and(get, set_branch));
+      }
+
       /* ---- control flow ---- */
       case PM_IF_NODE: {
         const pm_if_node_t *ifn = (const pm_if_node_t *)node;
