@@ -2763,6 +2763,36 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                    ALLOC_node_seq(store_newval, ALLOC_node_seq(set, bake_lget(tc, t2)))));
       }
 
+      case PM_CALL_OPERATOR_WRITE_NODE: {  /* recv.attr op= value  →  recv.attr = recv.attr op value */
+        const pm_call_operator_write_node_t *cw = (const pm_call_operator_write_node_t *)node;
+        uint32_t read_mid  = kp_intern_cid(tc, cw->read_name);    /* getter  (e.g. :hl)  */
+        uint32_t write_mid = kp_intern_cid(tc, cw->write_name);   /* setter  (e.g. :hl=) */
+        enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, cw->binary_operator));
+        uint32_t opmid = kp_intern_cid(tc, cw->binary_operator);
+        uint32_t line = kp_line(tc, node);
+        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc);
+        /* evaluate recv once into a temp (single-eval semantics) */
+        NODE *store_recv = bake_lset(tc, t0, transduce(tc, cw->receiver));
+        /* t1 = (recv.attr) op value — compute the new value first so the whole
+         * expression yields the ASSIGNED value, not the setter's return (CRuby). */
+        NODE *newval;
+        const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
+        WITH_CHAIN(tc, bsc, ({
+            NODE *g_recv, *get, *val;
+            WITH_CHAIN(tc, KP_SEND0_SC, (g_recv = bake_lget(tc, t0)));
+            get = kp_send0(read_mid, line, g_recv);
+            val = transduce(tc, cw->value);
+            newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
+        }));
+        NODE *store_newval = bake_lset(tc, t1, newval);
+        /* recv.attr = t1 */
+        NODE *s_recv, *s_val;
+        WITH_CHAIN(tc, KP_SEND1_SC, (s_recv = bake_lget(tc, t0), s_val = bake_lget(tc, t1)));
+        NODE *set = kp_send1(write_mid, line, s_recv, s_val);
+        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_newval,
+                   ALLOC_node_seq(set, bake_lget(tc, t1))));
+      }
+
       /* ---- control flow ---- */
       case PM_IF_NODE: {
         const pm_if_node_t *ifn = (const pm_if_node_t *)node;
