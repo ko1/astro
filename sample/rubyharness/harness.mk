@@ -66,10 +66,19 @@ doom-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) DOOM_MODE=aot sh 
 rubybench:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" BENCH="$(BENCH)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) BENCH_ITRS=$(if $(BENCH_ITRS),$(BENCH_ITRS),1) sh $(H)tools/rubybench.sh
 rubybench-all: ; INTERP="$(INTERP)" RUBY="$(RUBY)" sh $(H)tools/rubybench_sweep.sh
 
+# pure-Ruby Game Boy emulator app benchmark (sacckey/rubyboy, clone-on-demand,
+# not committed; see tools/rubyboy.sh).  Runs EmulatorHeadless for FRAMES frames
+# on tobu.gb and prints a framebuffer checksum — CRuby and the sample must agree.
+# `make rubyboy` runs the tree-walker, `make rubyboy-aot` bakes the (bundled)
+# engine then runs --compiled-only.  FRAMES= to scale, RB_MODE=cruby|cruby-yjit
+# for the oracle.  First run clones sacckey/rubyboy (ROM ships in the repo).
+rubyboy:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/rubyboy.sh
+rubyboy-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) RB_MODE=aot sh $(H)tools/rubyboy.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot

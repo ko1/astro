@@ -88,3 +88,24 @@ make rubybench-all                           # 全 micro を CRuby と差分(正
 koruby_precise: **26/31 micro が CRuby と結果一致**(残 3 = Ractor.make_shareable×2 /
 toplevel define_method×1、+2 は Ractor で skip)。app 系ベンチ(rails/graphql/liquid…)
 は gem/bundler 依存で対象外。
+
+## rubyboy (Game Boy emulator) アプリベンチ (clone-on-demand)
+
+[sacckey/rubyboy](https://github.com/sacckey/rubyboy)(純 Ruby の Game Boy エミュレータ)を
+optcarrot / doom 同様の**アプリ規模ベンチ**として使う。ソースは**リポジトリに入れず**
+`apps/rubyboy/` に clone する(`.gitignore` 済、テスト ROM `tobu.gb` は repo 同梱)。
+`tools/rubyboy.sh` が headless エンジン(GUI 依存の sdl/raylib/lcd を除く)を 1 ファイルに
+束ねて `EmulatorHeadless` を FRAMES フレーム走らせ、フレームバッファの checksum を出す
+(CRuby とサンプルが一致すべき)。
+
+```sh
+sh tools/rubyboy_setup.sh      # 初回: sacckey/rubyboy を clone(ROM は同梱)
+make rubyboy                   # サンプルのツリーウォーカで step → checksum
+make rubyboy-aot               # --aot-compile して --compiled-only で step
+make rubyboy RB_MODE=cruby     # オラクル(CRuby)の checksum
+make rubyboy FRAMES=200        # フレーム数を増やす(sustained 計測用)
+```
+
+koruby_precise: **plain / AOT とも CRuby とピクセル完全一致**(60f checksum
+`4747678158831331132`)。マルチファイル `require` を使う実アプリで、`require` 先の
+クラスメソッド(`Cartridge::Factory.create`)が AOT でも解決される。
