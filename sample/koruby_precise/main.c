@@ -224,6 +224,50 @@ bake_code_store(NODE *ast)
     astro_cs_reload();
 }
 
+/* Load-time specialization for a file loaded AFTER startup (require /
+ * require_relative / eval-string), whose AST is parsed at runtime.  Called by
+ * the require path once the file is parsed and its offsets are finalized (so the
+ * structural hashes used below are correct — see node.c::OPTIMIZE for why binding
+ * must not happen earlier, inside ALLOC).  `repo_from` = code_repo_count() taken
+ * just BEFORE the file was parsed, so [repo_from, count) are exactly the bodies
+ * this file registered.
+ *
+ *   - consuming run (default / hybrid / --compiled-only): bind the file's AST +
+ *     new bodies to already-baked SDs (astro_cs_load) so require'd code runs on
+ *     compiled dispatchers instead of the interpreter.
+ *   - producing run (--aot-compile / --pg-compile): compile the file's entries
+ *     NOW (emit SD_<hash>.c → build → reload) and then bind.  Baking at load —
+ *     rather than only in the end-of-run bake_code_store — means the store grows
+ *     as files load and survives an early exit / uncaught exception (main()
+ *     returns before bake_code_store on an uncaught raise).  astro_cs_reload is
+ *     dlclose-free (generation-unique .so), so rebinding mid-run is safe:
+ *     dispatchers already pointing into an older generation stay valid.
+ *
+ * No-op under --plain (ignore all compiled code) and when no store is loadable. */
+void
+korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
+{
+    (void)file;
+    if (OPTION.plain || ast == NULL) return;
+
+    if (OPTION.aot_compile || OPTION.pg_compile) {
+        astro_cs_compile(ast, NULL);
+        for (uint32_t i = repo_from; i < code_repo_count(); i++) {
+            if (code_repo_skip_specialize_at(i)) continue;
+            astro_cs_compile(code_repo_body_at(i), NULL);
+        }
+        char extra_cflags[2048];
+        koruby_extra_cflags(extra_cflags, sizeof(extra_cflags));
+        setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
+        astro_cs_build(extra_cflags);
+        astro_cs_reload();
+    }
+
+    astro_cs_load(ast, NULL);
+    for (uint32_t i = repo_from; i < code_repo_count(); i++)
+        astro_cs_load(code_repo_body_at(i), NULL);
+}
+
 /* --compiled-only poison: a body that was NOT swapped to a baked SD gets this
  * dispatcher.  Reaching it means an *avoidable* interpreter dispatch would run —
  * an AOT compile-miss.  Report which body + abort.  Installed only at startup

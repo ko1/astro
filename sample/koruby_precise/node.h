@@ -442,6 +442,12 @@ NODE *code_repo_body_at(uint32_t i);
 const char *code_repo_name_at(uint32_t i);
 bool code_repo_skip_specialize_at(uint32_t i);
 
+/* Specialize a file loaded after startup (require / eval-string): bind its AST +
+ * newly-registered bodies [repo_from, count) to baked SDs, and — under
+ * --aot-compile/--pg-compile — compile them first.  Defined in main.c.  Call
+ * once, after the file is parsed (offsets finalized).  No-op under --plain. */
+void korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file);
+
 extern size_t node_cnt;
 
 /* Frame-push headroom: covers in-frame expression staging without a per-node

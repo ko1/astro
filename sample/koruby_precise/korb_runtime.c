@@ -9447,8 +9447,10 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
 static RESULT
 korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char *fname)
 {
+    const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in %s", fname);
+    korb_load_time_specialize(ast, repo_before, fname);          /* AOT: bind (+compile when producing) at load */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
     VALUE *const fb = slots + 3;
