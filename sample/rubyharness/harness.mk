@@ -90,10 +90,18 @@ rubykon-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/rubyko
 ruby-json:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/ruby_json.sh
 ruby-json-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/ruby_json.sh
 
+# pure-Ruby Protocol Buffers benchmark (ruby/ruby-bench "protoboeuf"; generated
+# pure-Ruby codec, no C ext).  Decodes a fixed message set and re-encodes it
+# ITRS times → checksum; CRuby and the sample must agree (byte-exact decode +
+# encode).  Exercises Marshal.load, Array#pack(buffer:), String#<<(int) on
+# ASCII-8BIT.  make protoboeuf / protoboeuf-aot, ITRS= to scale.
+protoboeuf:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/protoboeuf.sh
+protoboeuf-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/protoboeuf.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot

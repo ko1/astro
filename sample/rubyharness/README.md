@@ -144,3 +144,21 @@ make ruby-json ITRS=1000       # 反復数を増やす(sustained 計測)
 
 koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`14207606204983450109` @ ITRS=50)。
 data.json のパース結果も CRuby と byte 一致。
+
+## protoboeuf (Protocol Buffers) アプリベンチ (clone-on-demand)
+
+`ruby/ruby-bench` の "protoboeuf"(C 拡張を使わない生成済み純 Ruby protobuf codec)。
+`tools/protoboeuf.sh` が Marshal で固定メッセージ集合をロード→デコード→ITRS 回リエンコードし、
+エンコード結果の checksum(`String#sum(64)`)を出す(CRuby とサンプルが decode/encode とも
+byte 一致すべき)。koruby の `Marshal.load` + `Array#pack(buffer:)` + ASCII-8BIT 上の
+`String#<<(int)` を exercise する。
+
+```sh
+make protoboeuf                # デコード→リエンコード → checksum
+make protoboeuf-aot            # --aot-compile --run → --compiled-only
+make protoboeuf RB_MODE=cruby  # オラクル(CRuby)
+make protoboeuf ITRS=100       # 反復数を増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`4011150550` @ ITRS=10)。
+decode / encode とも CRuby と byte 完全一致。
