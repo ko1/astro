@@ -76,11 +76,12 @@ static RESULT korb_md_group(CTX *c, VALUE *slots, VALUE mdv, int i) {
     if (i < 0 || i >= korb_md_ngroups(md)) return RESULT_OK(KORB_NIL);
     const long b = korb_md_off(md, i, 0), e = korb_md_off(md, i, 1);
     if (b < 0 || e < 0) return RESULT_OK(KORB_NIL);
-    slots[0] = mdv;
-    const uint32_t mlen = (uint32_t)(e - b);
-    KorbString *r = korb_str_alloc(c, slots + 1, mlen);
-    memcpy(r->buf->data, VAL2STR(VAL2MD(slots[0])->subject)->buf->data + b, mlen);
-    return RESULT_OK((VALUE)r);
+    /* Slice via korb_str_slice_new so the capture inherits the SUBJECT's
+     * encoding (like pre_match/post_match) — a match over an ASCII-8BIT string
+     * must yield ASCII-8BIT captures, else String#length counts UTF-8 chars and
+     * byte-based callers (e.g. StringScanner) desync.  Also GC-safe (re-reads). */
+    slots[0] = md->subject;
+    return korb_str_slice_new(c, slots + 1, VALUE_REF_AT(&slots[0]), (uint32_t)b, (uint32_t)(e - b));
 }
 /* resolve a named group in md's regexp → group number, or -1. */
 static int korb_md_name_idx(CTX *c, VALUE mdv, const char *name, uint32_t nlen) {
