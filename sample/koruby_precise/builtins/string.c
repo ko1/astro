@@ -384,6 +384,13 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
     if (KORB_STRING_P(o)) return korb_str_append_str(c, slots, self, oref);
     if (FIXNUM_P(o)) {
         intptr_t cp = FIX2LONG(o);
+        const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
+        if (KORB_ENC_IS_SINGLE_BYTE(enc)) {          /* ASCII-8BIT / US-ASCII: append ONE byte, no UTF-8 encoding */
+            const intptr_t hi = (enc == KORB_ENC_BINARY) ? 255 : 127;
+            if (cp < 0 || cp > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
+            char b = (char)(uint8_t)cp;
+            return korb_str_cat(c, slots, self, &b, 1);
+        }
         if (cp < 0 || cp > 0x10FFFF) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
         char buf[4]; uint32_t n = korb_utf8_encode((uint32_t)cp, buf);   /* stable C buffer */
         return korb_str_cat(c, slots, self, buf, n);
