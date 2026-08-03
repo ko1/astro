@@ -34,10 +34,13 @@ static RESULT korb_re_slice(CTX *c, VALUE *slots, VALUE *subjslot, long b, long 
     return korb_str_slice_new(c, slots, VALUE_REF_AT(subjslot), (uint32_t)b, (uint32_t)(e - b));
 }
 
-/* byte offset → character index within `s` (UTF-8). */
+/* byte offset → character index within `s`.  For single-byte encodings
+ * (US-ASCII / ASCII-8BIT) a byte IS a character, so return the offset as-is
+ * (else begin/end and StringScanner-style byte callers desync on multibyte). */
 static long korb_re_bchar(const KorbString *s, long boff) {
     if (boff <= 0) return 0;
     if (boff >= (long)s->len) boff = (long)s->len;
+    if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC((VALUE)(uintptr_t)s))) return boff;
     return (long)korb_utf8_count(s->buf->data, (uint32_t)boff);
 }
 
@@ -575,8 +578,11 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     slots[1] = subj;
     long startc = 0; if (VALUE_SLICE_LEN(a) >= 2) { intptr_t p = 0; if (korb_to_index(VALUE_SLICE_GET(a, 1), &p)) startc = (long)p; }
     const KorbString *s = VAL2STR(slots[1]);
-    if (startc < 0) startc += (long)korb_utf8_count(s->buf->data, s->len);
-    size_t startb = (startc <= 0) ? 0 : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)startc);
+    /* pos is a character index in the subject's encoding — a byte index for
+     * single-byte encodings (US-ASCII / ASCII-8BIT), else a UTF-8 char index. */
+    const bool sb = KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(slots[1]));
+    if (startc < 0) startc += sb ? (long)s->len : (long)korb_utf8_count(s->buf->data, s->len);
+    size_t startb = (startc <= 0) ? 0 : (sb ? (size_t)startc : korb_utf8_byteoff(s->buf->data, s->len, (uint32_t)startc));
     korb_re_match_t m;
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], startb, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;

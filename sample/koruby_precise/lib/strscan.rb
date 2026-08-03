@@ -41,12 +41,15 @@ class StringScanner
   # --- anchored match at @pos -----------------------------------------------
   # Both Regexp and String patterns are accepted (String → literal match at the
   # current position, like CRuby StringScanner).  Returns [matched, md|nil] or nil.
+  # Matches via Regexp#match(string, pos) + begin(0)==pos so there is NO O(n)
+  # substring copy per scan (the naive `@string[@pos..]` slice made scanning a
+  # large subject O(n^2)).
   def try(pattern)
     if pattern.is_a?(String)
       @string[@pos, pattern.length] == pattern ? [pattern, nil] : nil
     else
-      m = pattern.match(@string[@pos..] || "")
-      (m && m.pre_match.empty?) ? [m[0], m] : nil
+      m = pattern.match(@string, @pos)
+      (m && m.begin(0) == @pos) ? [m[0], m] : nil
     end
   end
   private :try
@@ -76,12 +79,11 @@ class StringScanner
   end
 
   def scan_until(re)
-    sub = @string[@pos..] || ""
-    m = re.match(sub) or return (@md = nil)
+    m = re.match(@string, @pos) or return (@md = nil)
     @md = m
-    upto = m.pre_match.length + m[0].length
-    s = sub[0, upto]
-    @pos += upto
+    stop = m.begin(0) + m[0].length      # end of the match, absolute
+    s = @string[@pos...stop]
+    @pos = stop
     s
   end
 
