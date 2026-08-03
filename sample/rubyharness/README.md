@@ -179,3 +179,21 @@ make etanni ITRS=500       # 反復数を増やす(sustained 計測)
 ```
 
 koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`13803342` @ 175817 bytes)。
+
+## json-parse (JSON パース throughput) ベンチ (clone-on-demand)
+
+`ruby/ruby-bench` の json_parse_float 系(Ractor ハーネスは外す)。ELEMENTS 個の
+float 配列 JSON を生成→パースし、パース後 float を **IEEE ビット**(`pack("E*").sum(64)`)で
+checksum する(CRuby と一致すべき)。ビットで比べるのは、CRuby の C json 拡張が float を
+`Float#to_s`(最短往復、koruby の `lib/json.rb` が使う)より桁多く出力するため — 文字列だと
+食い違うが、両者とも同じ double にデコードするのでビットは一致する。`lib/json.rb` の Float
+パースを大量に exercise する。
+
+```sh
+make json-parse                # 生成+パース → checksum
+make json-parse-aot            # --aot-compile --run → --compiled-only
+make json-parse RB_MODE=cruby  # オラクル(CRuby, C json 拡張)
+make json-parse ELEMENTS=100000  # 件数を増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`62505125` @ ELEMENTS=3000)。

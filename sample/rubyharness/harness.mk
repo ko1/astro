@@ -105,10 +105,17 @@ protoboeuf-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/pro
 etanni:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/etanni.sh
 etanni-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/etanni.sh
 
+# JSON parse-throughput benchmark (ruby/ruby-bench json_parse_float, Ractor
+# harness dropped).  Generates+parses ELEMENTS float-array JSON docs, checksumming
+# parsed floats by IEEE bits (pack("E*").sum(64)) so it agrees cross-interp
+# despite json-gem-vs-Float#to_s text formatting.  make json-parse / json-parse-aot.
+json-parse:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/json_parse.sh
+json-parse-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/json_parse.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot etanni etanni-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot etanni etanni-aot json-parse json-parse-aot
