@@ -109,3 +109,21 @@ make rubyboy FRAMES=200        # フレーム数を増やす(sustained 計測用
 koruby_precise: **plain / AOT とも CRuby とピクセル完全一致**(60f checksum
 `4747678158831331132`)。マルチファイル `require` を使う実アプリで、`require` 先の
 クラスメソッド(`Cartridge::Factory.create`)が AOT でも解決される。
+
+## rubykon (Go/囲碁 MCTS AI) アプリベンチ (clone-on-demand)
+
+[PragTob/rubykon](https://github.com/PragTob/rubykon)(純 Ruby の Monte-Carlo 木探索
+囲碁 AI、`ruby/ruby-bench` 同梱)を計算重めのアプリベンチとして使う。`tools/rubykon.sh`
+が seed 固定の MCTS バッチを**マルチファイル `require` のまま**(bundle せず=require-AOT
+経路を通す)走らせ、選ばれた best move の FNV checksum を出す(CRuby とサンプルが一致すべき)。
+
+```sh
+make rubykon                   # ツリーウォーカで MCTS → checksum
+make rubykon-aot               # --aot-compile --run で discover+bake → --compiled-only
+make rubykon RB_MODE=cruby     # オラクル(CRuby)
+make rubykon GAMES=40 ITERS=200  # ワークロードを増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`687797821343675504` @ GAMES=3 ITERS=60)。
+seed 固定 MCTS なので決定的。既定 run_benchmark は探索木全体(object id 込み)を p するため、
+専用ドライバで best move だけ抽出している。

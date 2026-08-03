@@ -75,10 +75,18 @@ rubybench-all: ; INTERP="$(INTERP)" RUBY="$(RUBY)" sh $(H)tools/rubybench_sweep.
 rubyboy:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/rubyboy.sh
 rubyboy-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) RB_MODE=aot sh $(H)tools/rubyboy.sh
 
+# pure-Ruby Go (Baduk) Monte-Carlo AI benchmark (PragTob/rubykon, shipped in
+# ruby/ruby-bench; clone-on-demand).  Seeded MCTS batch (multi-file require) →
+# best-move checksum; CRuby and the sample must agree.  `make rubykon` runs the
+# tree-walker, `make rubykon-aot` bakes (--aot-compile --run) then --compiled-only.
+# GAMES=/ITERS=/SIZE= to scale, RB_MODE=cruby|cruby-yjit for the oracle.
+rubykon:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/rubykon.sh
+rubykon-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/rubykon.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot
