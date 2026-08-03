@@ -18,7 +18,10 @@ module JSON
   # ---- parsing -------------------------------------------------------------
   class Parser
     def initialize(source, symbolize_names: false)
-      @s   = source.to_str
+      # Index a char ARRAY, not the String: String#[i] is O(i) (it walks to the
+      # i-th character), so char-by-char parsing of a large document would be
+      # O(n^2).  Array#[i] is O(1); the one-time #chars is O(n).
+      @s   = source.to_str.chars
       @i   = 0
       @len = @s.length
       @sym = symbolize_names
@@ -62,7 +65,7 @@ module JSON
     end
 
     def lit(word, val)
-      if @s[@i, word.length] == word
+      if @s[@i, word.length]&.join == word
         @i += word.length
         val
       else
@@ -155,7 +158,7 @@ module JSON
       h = @s[@i + 1, 4]
       err("invalid \\u escape") unless h && h.length == 4
       @i += 4
-      h.to_i(16)
+      h.join.to_i(16)
     end
 
     def parse_unicode
@@ -186,7 +189,7 @@ module JSON
         @i += 1 if (sg = @s[@i]) && (sg == "+" || sg == "-")
         @i += 1 while @i < @len && (d = @s[@i]) && d >= "0" && d <= "9"
       end
-      tok = @s[start...@i]
+      tok = @s[start...@i].join
       is_float ? tok.to_f : tok.to_i
     end
   end
