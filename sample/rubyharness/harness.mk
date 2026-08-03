@@ -83,10 +83,17 @@ rubyboy-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" FRAMES=$(FRAMES) RB_MODE=aot sh
 rubykon:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/rubykon.sh
 rubykon-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/rubykon.sh
 
+# pure-Ruby JSON parser benchmark (ruby/ruby-bench "ruby-json"; StringScanner-
+# based, no C json ext).  Parses data.json ITRS times → checksum; CRuby and the
+# sample must agree.  Exercises koruby's lib/strscan.rb + lib/json.rb + Regexp
+# captures over ASCII-8BIT.  make ruby-json / ruby-json-aot, ITRS= to scale.
+ruby-json:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/ruby_json.sh
+ruby-json-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/ruby_json.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot

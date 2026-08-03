@@ -127,3 +127,20 @@ make rubykon GAMES=40 ITERS=200  # ワークロードを増やす(sustained 計�
 koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`687797821343675504` @ GAMES=3 ITERS=60)。
 seed 固定 MCTS なので決定的。既定 run_benchmark は探索木全体(object id 込み)を p するため、
 専用ドライバで best move だけ抽出している。
+
+## ruby-json (StringScanner ベース JSON パーサ) アプリベンチ (clone-on-demand)
+
+`ruby/ruby-bench` の "ruby-json"(C 拡張を使わない純 Ruby の JSON パーサ)。`tools/ruby_json.sh`
+が `data.json`(public-domain のサッカーデータ)を ITRS 回パースし、結果を JSON.generate で
+正規化した checksum を出す(CRuby とサンプルが一致すべき)。koruby の `lib/strscan.rb` +
+`lib/json.rb` + ASCII-8BIT 被写体上の Regexp キャプチャを exercise する。
+
+```sh
+make ruby-json                 # ツリーウォーカでパース → checksum
+make ruby-json-aot             # --aot-compile --run → --compiled-only
+make ruby-json RB_MODE=cruby   # オラクル(CRuby, C json 拡張)
+make ruby-json ITRS=1000       # 反復数を増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`14207606204983450109` @ ITRS=50)。
+data.json のパース結果も CRuby と byte 一致。
