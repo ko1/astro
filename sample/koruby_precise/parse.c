@@ -96,6 +96,13 @@ static NODE *kp_send2(uint32_t mid, uint32_t line, NODE *recv, NODE *a0, NODE *a
     argv[0] = recv; argv[1] = a0; argv[2] = a1;
     return ALLOC_node_send(mid, line, INT32_MIN, argv, 3);
 }
+/* recv.mid(args[0..n)) — n args of any count (recv + n → n+1 children). */
+static NODE *kp_send_n(uint32_t mid, uint32_t line, NODE *recv, NODE *const *args, uint32_t n) {
+    NODE **argv = malloc(sizeof(NODE *) * (1u + n)); if (!argv) abort();
+    argv[0] = recv;
+    for (uint32_t i = 0; i < n; i++) argv[1u + i] = args[i];
+    return ALLOC_node_send(mid, line, INT32_MIN, argv, 1u + n);
+}
 /* Staging depth a caller must reserve to build a kp_sendN node.  node_send is
  * @framehdr, so its dispatcher advances the cursor by (children + KORB_FRAME_HDR)
  * — the reserved meta cells (EP/magic) sit below the staged recv/args.  Any
@@ -2680,87 +2687,109 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return ALLOC_node_or(lvar_read(tc, node, ow->name, ow->depth),
                              lvar_write(tc, node, ow->name, ow->depth, transduce(tc, ow->value)));
       }
-      case PM_INDEX_OR_WRITE_NODE: {        /* recv[key] ||= value (single index arg) */
+      case PM_INDEX_OR_WRITE_NODE:           /* recv[k...] ||= value */
+      case PM_INDEX_AND_WRITE_NODE: {        /* recv[k...] &&= value */
+        const bool is_or = PM_NODE_TYPE_P(node, PM_INDEX_OR_WRITE_NODE);
+        /* both node types share receiver/arguments/block/value field layout */
         const pm_index_or_write_node_t *iw = (const pm_index_or_write_node_t *)node;
         size_t argc = iw->arguments ? iw->arguments->arguments.size : 0;
-        if (iw->block || argc != 1)
-            return kp_unsupported(tc, node, "index ||= with block or multiple index args");
+        if (iw->block || argc < 1)
+            return kp_unsupported(tc, node, is_or ? "index ||= with block or zero index args"
+                                                  : "index &&= with block or zero index args");
         uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
         uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
         uint32_t line = kp_line(tc, node);
-        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc), t2 = alloc_synth_local(tc);
-        /* evaluate recv + key once into temps (single-eval semantics) */
-        NODE *store_recv = bake_lset(tc, t0, transduce(tc, iw->receiver));
-        NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
-        NODE *g_recv, *g_key;
-        WITH_CHAIN(tc, KP_SEND1_SC, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
-        NODE *get = kp_send1(aref, line, g_recv, g_key);
-        /* falsy branch: t2 = value; recv[key] = t2; yield t2 (the assigned value,
-         * not `[]=`'s return).  value evaluated only when get is falsy (inside the or's rhs). */
-        NODE *store_val = bake_lset(tc, t2, transduce(tc, iw->value));
-        NODE *s_recv, *s_key, *s_val;
-        WITH_CHAIN(tc, KP_SEND2_SC, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1), s_val = bake_lget(tc, t2)));
-        NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
-        NODE *set_branch = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, t2)));
-        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, ALLOC_node_or(get, set_branch)));
+        uint32_t t0 = alloc_synth_local(tc);
+        uint32_t *tk = malloc(sizeof(uint32_t) * argc); if (!tk) abort();
+        for (size_t i = 0; i < argc; i++) tk[i] = alloc_synth_local(tc);
+        uint32_t t_val = alloc_synth_local(tc);
+        const uint32_t sc_get = (uint32_t)(1 + argc) + KORB_FRAME_HDR;
+        const uint32_t sc_set = (uint32_t)(2 + argc) + KORB_FRAME_HDR;
+
+        NODE *stores = bake_lset(tc, t0, transduce(tc, iw->receiver));
+        for (size_t i = 0; i < argc; i++)
+            stores = ALLOC_node_seq(stores, bake_lset(tc, tk[i], transduce(tc, iw->arguments->arguments.nodes[i])));
+
+        NODE *g_recv, **g_k = malloc(sizeof(NODE *) * argc); if (!g_k) abort();
+        { int32_t _s = tc->chain; tc->chain = _s + (int32_t)sc_get;
+          g_recv = bake_lget(tc, t0);
+          for (size_t i = 0; i < argc; i++) g_k[i] = bake_lget(tc, tk[i]);
+          tc->chain = _s; }
+        NODE *get = kp_send_n(aref, line, g_recv, g_k, (uint32_t)argc);
+        free(g_k);
+
+        /* rhs branch (falsy for ||=, truthy for &&=): t_val = value; recv[k...] = t_val; yield t_val.
+         * value is evaluated only when the branch runs (inside the or/and's rhs). */
+        NODE *store_val = bake_lset(tc, t_val, transduce(tc, iw->value));
+        NODE *set;
+        { NODE *s_recv, **s_args = malloc(sizeof(NODE *) * (argc + 1)); if (!s_args) abort();
+          int32_t _s = tc->chain; tc->chain = _s + (int32_t)sc_set;
+          s_recv = bake_lget(tc, t0);
+          for (size_t i = 0; i < argc; i++) s_args[i] = bake_lget(tc, tk[i]);
+          s_args[argc] = bake_lget(tc, t_val);
+          tc->chain = _s;
+          set = kp_send_n(aset, line, s_recv, s_args, (uint32_t)(argc + 1));
+          free(s_args); }
+        free(tk);
+        NODE *set_branch = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, t_val)));
+        return ALLOC_node_seq(stores, is_or ? ALLOC_node_or(get, set_branch)
+                                            : ALLOC_node_and(get, set_branch));
       }
-      case PM_INDEX_AND_WRITE_NODE: {        /* recv[key] &&= value (single index arg) */
-        const pm_index_and_write_node_t *iw = (const pm_index_and_write_node_t *)node;
-        size_t argc = iw->arguments ? iw->arguments->arguments.size : 0;
-        if (iw->block || argc != 1)
-            return kp_unsupported(tc, node, "index &&= with block or multiple index args");
-        uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
-        uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
-        uint32_t line = kp_line(tc, node);
-        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc), t2 = alloc_synth_local(tc);
-        /* evaluate recv + key once into temps (single-eval semantics) */
-        NODE *store_recv = bake_lset(tc, t0, transduce(tc, iw->receiver));
-        NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
-        NODE *g_recv, *g_key;
-        WITH_CHAIN(tc, KP_SEND1_SC, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
-        NODE *get = kp_send1(aref, line, g_recv, g_key);
-        /* truthy branch: t2 = value; recv[key] = t2; yield t2.  value evaluated only
-         * when get is truthy (inside the and's rhs). */
-        NODE *store_val = bake_lset(tc, t2, transduce(tc, iw->value));
-        NODE *s_recv, *s_key, *s_val;
-        WITH_CHAIN(tc, KP_SEND2_SC, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1), s_val = bake_lget(tc, t2)));
-        NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
-        NODE *set_branch = ALLOC_node_seq(store_val, ALLOC_node_seq(set, bake_lget(tc, t2)));
-        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key, ALLOC_node_and(get, set_branch)));
-      }
-      case PM_INDEX_OPERATOR_WRITE_NODE: {  /* recv[key] op= value  →  recv[key] = recv[key] op value */
+      case PM_INDEX_OPERATOR_WRITE_NODE: {  /* recv[k...] op= value  →  recv[k...] = recv[k...] op value */
         const pm_index_operator_write_node_t *iw = (const pm_index_operator_write_node_t *)node;
         size_t argc = iw->arguments ? iw->arguments->arguments.size : 0;
-        if (iw->block || argc != 1)
-            return kp_unsupported(tc, node, "index op= with block or multiple index args");
+        if (iw->block || argc < 1)                       /* argc>=1: single OR multi index (grid[y,x] += 1) */
+            return kp_unsupported(tc, node, "index op= with block or zero index args");
         uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
         uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
         uint32_t opmid = kp_intern_cid(tc, iw->binary_operator);
         uint32_t line = kp_line(tc, node);
-        uint32_t t0 = alloc_synth_local(tc), t1 = alloc_synth_local(tc), t2 = alloc_synth_local(tc);
-        /* evaluate recv + key once into temps (single-eval semantics) */
-        NODE *store_recv = bake_lset(tc, t0, transduce(tc, iw->receiver));
-        NODE *store_key  = bake_lset(tc, t1, transduce(tc, iw->arguments->arguments.nodes[0]));
-        /* t2 = (recv[key]) op value — compute the new value into a temp first, so the
-         * whole expression can yield the ASSIGNED value, not `[]=`'s return (CRuby). */
+        /* temps: t0 = recv, tk[0..argc) = each index arg, t_new = computed value.
+         * Single-eval: recv + every index expression are evaluated exactly once. */
+        uint32_t t0 = alloc_synth_local(tc);
+        uint32_t *tk = malloc(sizeof(uint32_t) * argc); if (!tk) abort();
+        for (size_t i = 0; i < argc; i++) tk[i] = alloc_synth_local(tc);
+        uint32_t t_new = alloc_synth_local(tc);
+        const uint32_t sc_get = (uint32_t)(1 + argc) + KORB_FRAME_HDR;   /* []  children: recv + argc keys      */
+        const uint32_t sc_set = (uint32_t)(2 + argc) + KORB_FRAME_HDR;   /* []= children: recv + argc keys + val */
+
+        NODE *stores = bake_lset(tc, t0, transduce(tc, iw->receiver));
+        for (size_t i = 0; i < argc; i++)
+            stores = ALLOC_node_seq(stores, bake_lset(tc, tk[i], transduce(tc, iw->arguments->arguments.nodes[i])));
+
+        /* t_new = (recv[k...]) op value — into a temp first so the expression yields
+         * the ASSIGNED value, not `[]=`'s return (CRuby). */
         NODE *newval;
         const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
         WITH_CHAIN(tc, bsc, ({
-            NODE *g_recv, *g_key, *get, *val;
-            WITH_CHAIN(tc, KP_SEND1_SC, (g_recv = bake_lget(tc, t0), g_key = bake_lget(tc, t1)));
-            get = kp_send1(aref, line, g_recv, g_key);
+            NODE *g_recv, **g_k = malloc(sizeof(NODE *) * argc), *get, *val;
+            if (!g_k) abort();
+            { int32_t _s = tc->chain; tc->chain = _s + (int32_t)sc_get;   /* stage the [] send's children */
+              g_recv = bake_lget(tc, t0);
+              for (size_t i = 0; i < argc; i++) g_k[i] = bake_lget(tc, tk[i]);
+              tc->chain = _s; }
+            get = kp_send_n(aref, line, g_recv, g_k, (uint32_t)argc);
+            free(g_k);
             val = transduce(tc, iw->value);
             newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
+            newval;
         }));
-        NODE *store_newval = bake_lset(tc, t2, newval);
-        /* recv[key] = t2 */
-        NODE *s_recv, *s_key, *s_val;
-        WITH_CHAIN(tc, KP_SEND2_SC, (s_recv = bake_lget(tc, t0), s_key = bake_lget(tc, t1), s_val = bake_lget(tc, t2)));
-        NODE *set = kp_send2(aset, line, s_recv, s_key, s_val);
-        /* value of `recv[k] op= v` is the assigned value (t2), not `[]=`'s return */
-        return ALLOC_node_seq(store_recv, ALLOC_node_seq(store_key,
-                   ALLOC_node_seq(store_newval, ALLOC_node_seq(set, bake_lget(tc, t2)))));
+        NODE *store_newval = bake_lset(tc, t_new, newval);
+
+        /* recv[k...] = t_new */
+        NODE *set;
+        { NODE *s_recv, **s_args = malloc(sizeof(NODE *) * (argc + 1)); if (!s_args) abort();
+          int32_t _s = tc->chain; tc->chain = _s + (int32_t)sc_set;      /* stage the []= send's children */
+          s_recv = bake_lget(tc, t0);
+          for (size_t i = 0; i < argc; i++) s_args[i] = bake_lget(tc, tk[i]);
+          s_args[argc] = bake_lget(tc, t_new);
+          tc->chain = _s;
+          set = kp_send_n(aset, line, s_recv, s_args, (uint32_t)(argc + 1));
+          free(s_args); }
+        free(tk);
+        /* value of `recv[k...] op= v` is the assigned value (t_new) */
+        return ALLOC_node_seq(stores, ALLOC_node_seq(store_newval, ALLOC_node_seq(set, bake_lget(tc, t_new))));
       }
 
       case PM_CALL_OPERATOR_WRITE_NODE: {  /* recv.attr op= value  →  recv.attr = recv.attr op value */
