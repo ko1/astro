@@ -67,7 +67,11 @@ static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
 static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     /* Template lives in slots[0] for the whole call (rooted) so it survives an
      * element #to_str dispatch; self is a rooted VALUE_REF (GC re-reads it), so
-     * `ary`/`t` are re-derived after any coercion. */
+     * `ary`/`t` are re-derived after any coercion.  Arity is -1 so a trailing
+     * `buffer:` kwargs Hash can be honoured (pack appends into it, zero-copy). */
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(na < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     slots[0] = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(slots[0]))) {             /* coerce the template via #to_str */
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], korb_intern(c->vm, "to_str", 6))) {
@@ -321,6 +325,20 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (errmsg) { free(ob); return korb_raise(c, slots, errtype, 0, "%s", errmsg); }
     if (has_bad) { free(ob); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown pack directive '%c' in '%.*s'", bad, (int)t->len, t->buf->data); }
+    /* `buffer:` keyword (trailing kwargs Hash) → append the packed bytes into the
+     * given String and return it, instead of allocating a fresh result. */
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
+        const KorbHash *kh = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        const int32_t bi = korb_hash_find(kh, ID2SYM(korb_intern(c->vm, "buffer", 6)));
+        if (bi >= 0) {
+            slots[1] = kh->items->data[2 * bi + 1];                 /* root the buffer String across the cat's GC */
+            if (UNLIKELY(!KORB_STRING_P(slots[1]))) { free(ob); return korb_raise(c, slots, KORB_E_TYPE, 0, "buffer must be String"); }
+            RESULT ar = korb_str_cat(c, slots + 2, VALUE_REF_AT(&slots[1]), ob ? (const char *)ob : "", (uint32_t)olen);
+            free(ob);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+            return RESULT_OK(slots[1]);
+        }
+    }
     RESULT r = korb_str_new(c, slots, ob ? (const char *)ob : "", (uint32_t)olen);
     free(ob);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* pack yields ASCII-8BIT */

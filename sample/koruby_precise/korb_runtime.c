@@ -8020,7 +8020,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_ARRAY, "rassoc", korb_m_ary_rassoc, 1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "count", korb_m_ary_count, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "sum", korb_m_ary_sum_b, -1);
-    korb_def_cmethod(c, KORB_C_ARRAY, "pack", korb_m_ary_pack, 1);
+    korb_def_cmethod(c, KORB_C_ARRAY, "pack", korb_m_ary_pack, -1);   /* template + optional buffer: kwarg */
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "min", korb_m_ary_min, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "max", korb_m_ary_max, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "minmax", korb_m_ary_minmax, 0);
