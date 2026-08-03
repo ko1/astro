@@ -48,7 +48,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
     # Same as the base, but the operand-name suffix set also accepts @children
     # (placed before @child so it wins the alternation on "@children").
     def parse_operands(str)
-      suffix_re = /(?:@ref|@children|@child)?/
+      suffix_re = /(?:@ref|@children|@child|@sym)?/
       owner = self
       @operands = str.split(',').tap do
         @prefix_args = it.shift(common_param_count)
@@ -475,10 +475,20 @@ class KorubyNodeDef < ASTroGen::NodeDef
       def initialize(type, name)
         @children = name.end_with?('@children')
         name = name.sub(/@children$/, '') if @children
+        # `@sym` — a uint32_t operand holding an interned symbol ID.  The ID is
+        # per-process (intern-order dependent), so it must NOT enter the
+        # structural hash and must NOT be baked as a literal into an SD; the SD
+        # reads it from the node at runtime (like `line`).  This keeps the code
+        # store symbol-ID-independent so structurally-identical nodes share SDs
+        # and a store baked in one process binds in another.  (A future loader
+        # will instead hash by name + remap IDs at load; until then, exclude.)
+        @sym = name.end_with?('@sym')
+        name = name.sub(/@sym$/, '') if @sym
         super(type, name)
       end
 
       def children? = @children
+      def sym? = @sym
 
       def storage_type = children? ? 'NODE **' : super
 
@@ -513,6 +523,9 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def hash_call(val, kind: :horg)
+        # @sym: interned symbol ID — per-process, so excluded from the hash
+        # (the SD reads it at runtime; see build_specializer below).
+        return '0' if sym?
         case @type
         when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_constcache *', 'struct korb_inlcache *'
           '0'   # mutable runtime cache — not part of structure
@@ -560,9 +573,11 @@ class KorubyNodeDef < ASTroGen::NodeDef
           # runtime reference instead of baking the literal.
           return nil, "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
         when 'uint32_t'
-          if self.name == 'line'
+          if self.name == 'line' || sym?
             # hash-excluded (above) → must not be baked as a constant, or
-            # hash-equal nodes from different lines would share a wrong SD.
+            # hash-equal nodes (different lines, or different symbol IDs)
+            # would share an SD carrying the wrong constant.  Reference the
+            # node field at runtime instead.
             return nil, "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           end
           super

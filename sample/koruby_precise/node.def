@@ -925,7 +925,7 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 // `self_off` reads the default definee: inside a `class` body self is the
 // class (def attaches to it); elsewhere self is main/an instance → global table.
 NODE_DEF @noinline
-node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
+node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
 {
     (void)n; (void)body_dispatcher;
     VALUE definee = slots[self_off];
@@ -947,7 +947,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t param
 
 // `def recv.name ... end` — singleton method: attach to recv's singleton class.
 NODE_DEF @noinline
-node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, VALUE_REF recv@child)
+node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, VALUE_REF recv@child)
 {
     (void)n; (void)body_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
@@ -978,7 +978,7 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid, NODE *body, uint
 // `class Name ... end` — create/find the class + run its body with self=class.
 // @noinline: body is a per-process node_entry pointer (not bakeable).
 NODE_DEF @noinline
-node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off, uint32_t path_owner, VALUE_REF super@child)
+node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym, VALUE_REF super@child)
 {
     (void)n; (void)body_dispatcher;
     /* enclosing = the path's parent module (`class M::C`, baked const name) if
@@ -1000,7 +1000,7 @@ node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
 // `module Name ... end` — like node_class but creates a module (no superclass,
 // not instantiable; mixed into classes via `include`).
 NODE_DEF @noinline
-node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, NODE *body, int32_t self_off, uint32_t path_owner)
+node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym)
 {
     (void)n; (void)body_dispatcher;
     /* enclosing = the path's parent (`module M::Inner`) if present, else lexical self. */
@@ -1028,28 +1028,28 @@ node_attr(CTX *c, NODE *n, VALUE *slots, int32_t self_off, void *descs, uint32_t
 // `super` — `self_off`/`dc_off` read the frame's self + def_class cells; mid is
 // the enclosing method's name (baked).  args staged like a call.
 NODE_DEF
-node_super0(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off)
+node_super0(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off)
 {
     (void)n;
     return korb_super(c, slots, mid, line, 0, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
 }
 
 NODE_DEF
-node_super1(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child)
+node_super1(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child)
 {
     (void)n; (void)a0;
     return korb_super(c, slots, mid, line, 1, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
 }
 
 NODE_DEF
-node_super2(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child)
+node_super2(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child)
 {
     (void)n; (void)a0; (void)a1;
     return korb_super(c, slots, mid, line, 2, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
 }
 
 NODE_DEF
-node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
+node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF a0@child, VALUE_REF a1@child, VALUE_REF a2@child)
 {
     (void)n; (void)a0; (void)a1; (void)a2;
     return korb_super(c, slots, mid, line, 3, slots[dc_off], slots[self_off], NULL, NULL, KORB_NIL);
@@ -1059,7 +1059,7 @@ node_super3(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t 
 // Array; spread it above the cursor and dispatch with a runtime argc.  Stages
 // one child (the array), so self_off/dc_off match node_super1's.
 NODE_DEF
-node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF args@child)
+node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, VALUE_REF args@child)
 {
     (void)n; (void)args;
     const VALUE arr  = slots[-1];                         /* the staged args array */
@@ -1076,7 +1076,7 @@ node_super_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int
 // per-process NODE pointer (not bakeable).  self_off/dc_off match node_super_splat;
 // def_env_off = self_off+1 (the frame's local base), tagged for the eget path.
 NODE_DEF @noinline
-node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, NODE *block, int32_t def_env_off, VALUE_REF args@child)
+node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, NODE *block, int32_t def_env_off, VALUE_REF args@child)
 {
     (void)n; (void)args; (void)block_dispatcher;
     const VALUE arr  = slots[-1];                         /* the staged args array */
@@ -1095,7 +1095,7 @@ node_super_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32
 // threaded to korb_super so the parent method's `yield` reaches it.  A tagged
 // biseq cell (|1) means a block was passed; an untagged/zero cell → no block.
 NODE_DEF
-node_super_fwd(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF args@child)
+node_super_fwd(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, VALUE_REF args@child)
 {
     (void)n; (void)args;
     const VALUE arr  = slots[-1];                         /* the staged args array */
@@ -1126,7 +1126,7 @@ node_errinfo(CTX *c, NODE *n, VALUE *slots)
 // is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
 // re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
 NODE_DEF
-node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name, struct korb_constcache *cache@ref)
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, struct korb_constcache *cache@ref)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
@@ -1202,7 +1202,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name
 // 5="expression", 6="self", 7="method"(fixed, receiver call), 8="nil",
 // 9="true", 10="false".  Fixed kinds ignore id/self_off.
 NODE_DEF
-node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id, int32_t self_off)
+node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id@sym, int32_t self_off)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
@@ -1240,7 +1240,7 @@ node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id, int32_t 
 // defined?(recv.meth): evaluate the receiver (nil if it raises), then report
 // "method" only when the receiver actually responds to the method.
 NODE_DEF
-node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid)
+node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid@sym)
 {
     (void)n;
     RESULT rr = EVAL_ARG(c, recv);
@@ -1258,7 +1258,7 @@ node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid)
 // its (rightmost) name from the flat table, so top-level `M::X` works; a lexically
 // scoped or dynamic parent falls back to the flat probe (node_defined kind 1).
 NODE_DEF
-node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name, uint32_t name)
+node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint32_t name@sym)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
@@ -1288,7 +1288,7 @@ node_defined_yield(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
 // root-scanned), returns the value.
 NODE_DEF
-node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_name, VALUE val@child)
+node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, VALUE val@child)
 {
     (void)n; (void)slots;
     /* owner_name = the lexically-enclosing module's const name, baked at parse
@@ -1320,7 +1320,7 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym, uint32_t owner_
 // implicit-self call `mid(args...)` (any fixed arity).  argv@children stages the
 // args (no recv — self is slots[self_off]); replaces the call0..3 family.
 NODE_DEF @framehdr
-node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
     /* self is staged as the receiver (argv[0]) → base[-1], uniform with node_send.
@@ -1355,7 +1355,7 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct kor
 // keeps `base` (and self at base[-1]) at the same absolute slots, so the empty
 // Hash simply becomes callee scratch.
 NODE_DEF @framehdr
-node_call_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+node_call_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
     uint32_t argc = argv_cnt - 1;
@@ -1373,7 +1373,7 @@ node_call_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct
 // the per-process pointer — that keeps node_call_kw specializable (children get
 // their own SDs) and AOT-safe (SDs sharing across keyword sets read n->kw_syms).
 NODE_DEF @framehdr
-node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
+node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, uint32_t pos_argc, const char *kw_syms, struct korb_callcache *cc@ref, struct korb_inlcache *ic@ref, NODE **argv@children)
 {
     (void)n;
     /* self staged as receiver (argv[0]) → base[-1]; pos+kw args follow. */
@@ -1387,7 +1387,7 @@ node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, uint32_
 // runtime-computed argc.  The slots arena has ~1M cells of headroom above the
 // cursor, so the dynamic spread is safe.
 NODE_DEF
-node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
+node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
 {
     (void)n; (void)args;
     VALUE self = slots[self_off];
@@ -1413,7 +1413,7 @@ node_call_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int3
 // this stays interpreter-dispatched; the block body (node_entry) keeps its own
 // AOT entry.
 NODE_DEF @noinline
-node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF args@child)
+node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, VALUE_REF args@child)
 {
     (void)n; (void)args; (void)block_dispatcher;
     const VALUE self = slots[self_off];
@@ -1430,7 +1430,7 @@ node_call_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, 
 // `f(*arr, &proc)` (implicit self) — splat call forwarding a runtime Proc.
 // Like node_call_blkproc but positionals come from the built Array.
 NODE_DEF @noinline
-node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, int32_t proc_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
+node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t proc_off, struct korb_callcache *cc@ref, VALUE_REF args@child)
 {
     (void)n; (void)args;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
@@ -1459,7 +1459,7 @@ node_call_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t li
 // gets only the count (argv_cnt).  Replaces the send0..3 family.  Per-call-site
 // inline cache via ic@ref.  Actual `*splat` still uses node_send_splat.
 NODE_DEF @framehdr
-node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const uint32_t argc = argv_cnt - 1;
@@ -1500,7 +1500,7 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t se
 // recv at base[-1] and the empty Hash becomes callee scratch.  caller_self is
 // still read from the original `slots` (self_off indexes the caller frame).
 NODE_DEF @framehdr
-node_send_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+node_send_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     (void)n;
     uint32_t argc = argv_cnt - 1;
@@ -1516,7 +1516,7 @@ node_send_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
 // safe navigation `recv&.m(args...)` (any fixed arity).  argv@children stages
 // [recv, args...]; recv is at slots[-argv_cnt].  Replaces send_safe0..2.
 NODE_DEF @framehdr
-node_send_safe(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE **argv@children)
+node_send_safe(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, NODE **argv@children)
 {
     (void)n;
     if (slots[-(intptr_t)argv_cnt] == KORB_NIL) return RESULT_OK(KORB_NIL);
@@ -1526,7 +1526,7 @@ node_send_safe(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, NODE 
 // receiver call with splat: recv.m(*arr).  Staged [recv | args_array] at
 // slots[-2..-1]; re-lay out [recv | arg0..argN) at slots[0..N] and dispatch.
 NODE_DEF
-node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALUE_REF recv@child, VALUE_REF args@child)
+node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, VALUE_REF recv@child, VALUE_REF args@child)
 {
     (void)n; (void)recv; (void)args;
     VALUE rv = slots[-2];
@@ -1543,7 +1543,7 @@ node_send_splat(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, VALU
 // (tagged |1u) is the caller frame base.  @noinline for the same reason as
 // node_call_splat_blk (per-process block NODE pointer).
 NODE_DEF @noinline
-node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF args@child)
+node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, VALUE_REF recv@child, VALUE_REF args@child)
 {
     (void)n; (void)recv; (void)args; (void)block_dispatcher;
     const VALUE rv = slots[-2];
@@ -1561,7 +1561,7 @@ node_send_splat_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, 
 // a Proc, then dispatch with KORB_BLK_FWD (korb_block_yield re-reads proc->env
 // per yield, so a moved escaped env is never stale).
 NODE_DEF @noinline
-node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, VALUE_REF recv@child, VALUE_REF args@child)
+node_send_splat_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t proc_off, VALUE_REF recv@child, VALUE_REF args@child)
 {
     (void)n; (void)recv; (void)args;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
@@ -1738,7 +1738,7 @@ node_entry(CTX *c, NODE *n, VALUE *slots, NODE *body, uint32_t params_cnt, uint3
 // `alias new old` — copy the method `old` to `new` on the enclosing class
 // (self at base[self_off]).  Bare names are interned to ids at parse time.
 NODE_DEF
-node_alias(CTX *c, NODE *n, VALUE *slots, uint32_t new_sym, uint32_t old_sym, int32_t self_off)
+node_alias(CTX *c, NODE *n, VALUE *slots, uint32_t new_sym@sym, uint32_t old_sym@sym, int32_t self_off)
 {
     (void)n;
     return korb_do_alias(c, slots, slots[self_off], new_sym, old_sym);
@@ -1791,7 +1791,7 @@ node_nesting(CTX *c, NODE *n, VALUE *slots, const char *name_syms, uint32_t name
 // implicit-self call with a literal block, any fixed arity.  argv@children stages
 // the args (no recv).  Replaces call_blk0..1.
 NODE_DEF @noinline @framehdr
-node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
+node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
     /* self staged as receiver (argv[0]) → base[-1]; it is also the block's captured
@@ -1804,7 +1804,7 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct
 // `m(args, &proc)` (implicit self) — forward a runtime Proc as the block.  Like
 // node_send_blkproc but for an implicit-self call (no staged receiver).
 NODE_DEF @noinline @framehdr
-node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
+node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
@@ -1873,7 +1873,7 @@ node_binding(CTX *c, NODE *n, VALUE *slots, int32_t def_env_off, int32_t self_of
 // hands it the block (node_entry) + def_env so it can yield.  Replaces send_blk0..2.
 // `self_off` = the caller's self = the block's captured (lexical) self.
 NODE_DEF @noinline @framehdr
-node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children)
+node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, NODE *block, int32_t def_env_off, NODE **argv@children)
 {
     (void)n; (void)block_dispatcher;
     return korb_send_blk(c, slots, mid, line, argv_cnt - 1, block,
@@ -1885,7 +1885,7 @@ node_send_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_
 // korb_block_yield re-reads proc->env/self per yield (KORB_BLK_FWD), so a moved
 // escaped env is never stale.  argv@children stages [recv, args...].
 NODE_DEF @noinline @framehdr
-node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid, uint32_t line, int32_t proc_off, NODE **argv@children)
+node_send_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_t proc_off, NODE **argv@children)
 {
     (void)n;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
@@ -2021,7 +2021,7 @@ node_self(CTX *c, NODE *n, VALUE *slots, int32_t self_off)
 }
 
 NODE_DEF @nogc
-node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, struct korb_ivcache *ic@ref)
+node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym, struct korb_ivcache *ic@ref)
 {
     (void)n;
     VALUE self = slots[self_off];
@@ -2039,7 +2039,7 @@ node_ivar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, st
 }
 
 NODE_DEF
-node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VALUE val@child, struct korb_ivcache *ic@ref)
+node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym, VALUE val@child, struct korb_ivcache *ic@ref)
 {
     (void)n;
     if (LIKELY(KORB_OBJECT_P(slots[self_off]))) {
@@ -2068,14 +2068,14 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name, VA
 // instance method).  korb_cvar_{get,set} resolve up the superclass chain.
 
 NODE_DEF
-node_cvar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name, uint32_t soft)
+node_cvar_get(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft)
 {
     (void)n;
     return korb_cvar_get(c, slots, slots[self_off], slots[dc_off], name, soft);
 }
 
 NODE_DEF
-node_cvar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name, VALUE val@child)
+node_cvar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, VALUE val@child)
 {
     (void)n;
     return korb_cvar_set(c, slots, slots[self_off], slots[dc_off], name, val);
