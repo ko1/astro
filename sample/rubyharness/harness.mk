@@ -98,10 +98,17 @@ ruby-json-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/ruby
 protoboeuf:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/protoboeuf.sh
 protoboeuf-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/protoboeuf.sh
 
+# Etanni template-engine benchmark (ruby/ruby-bench "etanni"; eval-compiled
+# ERB-style templates rendered against JSON-loaded data).  Renders ITRS times →
+# checksum; CRuby and the sample must agree.  Exercises eval→Proc + instance_eval
+# + heredoc templates + lib/json.rb.  make etanni / etanni-aot, ITRS= to scale.
+etanni:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/etanni.sh
+etanni-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/etanni.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot etanni etanni-aot

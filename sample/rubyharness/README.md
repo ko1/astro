@@ -162,3 +162,20 @@ make protoboeuf ITRS=100       # 反復数を増やす(sustained 計測)
 
 koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`4011150550` @ ITRS=10)。
 decode / encode とも CRuby と byte 完全一致。
+
+## etanni (テンプレートエンジン) アプリベンチ (clone-on-demand)
+
+`ruby/ruby-bench` の "etanni"(`eval` で Proc にコンパイルする ERB 風テンプレートを、
+JSON ロードした gem-server データに対して描画)。`tools/etanni.sh` が固定テンプレートを
+ITRS 回描画し、出力の checksum(`String#sum(64)`)を出す(CRuby と byte 一致すべき)。
+`eval`→Proc + `instance_eval` + heredoc テンプレート + koruby の `lib/json.rb`
+(343KB の gem_specs.json を JSON.load)を exercise する。
+
+```sh
+make etanni                # テンプレート描画 → checksum
+make etanni-aot            # --aot-compile --run → --compiled-only
+make etanni RB_MODE=cruby  # オラクル(CRuby)
+make etanni ITRS=500       # 反復数を増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`13803342` @ 175817 bytes)。
