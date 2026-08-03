@@ -197,3 +197,20 @@ make json-parse ELEMENTS=100000  # 件数を増やす(sustained 計測)
 ```
 
 koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`62505125` @ ELEMENTS=3000)。
+
+## knucleotide (k-mer 頻度, CLBG) ベンチ (clone-on-demand)
+
+`ruby/ruby-bench` の "knucleotide"(Computer Language Benchmarks Game: DNA の
+k-nucleotide 頻度カウント)。upstream は IO.pipe で worker を fork するが koruby には
+無いので、純 Ruby のコア(`frequency`/`sort_by_freq`/`find_seq`)を決定的な 100KB 合成
+配列に対し **単一スレッドで** ITRS 回回して結果を checksum する(CRuby と一致すべき)。
+`Hash.new(0)` + `String#byteslice` + 重い文字列/ハッシュ処理を exercise する。
+
+```sh
+make knucleotide                # 単一スレッドでコアを回す → checksum
+make knucleotide-aot            # --aot-compile --run → --compiled-only
+make knucleotide RB_MODE=cruby  # オラクル(CRuby)
+make knucleotide ITRS=20        # 反復数を増やす(sustained 計測)
+```
+
+koruby_precise: **plain / AOT / CRuby で checksum 完全一致**(`13378`)。

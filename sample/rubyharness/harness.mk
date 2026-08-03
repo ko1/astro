@@ -112,10 +112,17 @@ etanni-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/etanni.
 json-parse:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/json_parse.sh
 json-parse-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/json_parse.sh
 
+# k-nucleotide benchmark (ruby/ruby-bench "knucleotide", CLBG task).  The upstream
+# forks workers over IO.pipe; koruby has none, so we drive the pure-Ruby core
+# (frequency/sort_by_freq/find_seq) single-threaded over a deterministic 100 KB
+# sequence ITRS times -> checksum; CRuby and the sample must agree.
+knucleotide:     ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=$(if $(RB_MODE),$(RB_MODE),plain) sh $(H)tools/knucleotide.sh
+knucleotide-aot: ; INTERP="$(INTERP)" RUBY="$(RUBY)" RB_MODE=aot sh $(H)tools/knucleotide.sh
+
 # remove the generated corpus (t/method, t/spec, generated t/syntax) + code_store;
 # hand-written tests are kept.  Regenerate with `make gen`.
 clean-corpus:
 	rm -rf $(H)t/method $(H)t/spec code_store
 	@find $(H)t/syntax -name '*.rb' ! -name 'hand_*' -delete 2>/dev/null || true
 
-.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot etanni etanni-aot json-parse json-parse-aot
+.PHONY: gen test bench clean-corpus doom doom-aot rubybench rubybench-all rubyboy rubyboy-aot rubykon rubykon-aot ruby-json ruby-json-aot protoboeuf protoboeuf-aot etanni etanni-aot json-parse json-parse-aot knucleotide knucleotide-aot
