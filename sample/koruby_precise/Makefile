@@ -117,6 +117,15 @@ clean:
 	rm -f koruby_precise $(NODE_GENFILES) .built_gc
 	rm -rf code_store
 
+# CodeQL GC-borrow gate (docs/c_ext_api_design.md §4.1).  Run after changes:
+# builds a DB from the koruby build trace and fails if any String/Array byte-
+# buffer pointer is held in a local across a may-GC call.  Also self-tests the
+# query against codeql/test/borrow_cases.c (must find its 2 injected bugs).
+# Needs the CodeQL CLI: gh extension install github/gh-codeql.
+codeql-check:
+	sh codeql/run.sh
+.PHONY: codeql-check
+
 # rubyharness (shared differential tests + bench)
 INTERP ?= ./koruby_precise
 # koruby reads BARUBY_GC_* (not the harness default ASTRO_GC_*), so override the

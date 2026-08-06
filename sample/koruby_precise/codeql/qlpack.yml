@@ -1,0 +1,4 @@
+name: koruby/gc-effect
+version: 0.0.1
+dependencies:
+  codeql/cpp-all: "*"
