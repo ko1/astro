@@ -62,7 +62,7 @@ static RESULT korb_m_obj_method_missing(CTX *c, VALUE *slots, VALUE_REF self, VA
     const VALUE name = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     char nmbuf[256];   /* copy the method name: korb_recv_desc may dispatch #name → GC → move a String arg */
     if (SYMBOL_P(name))       snprintf(nmbuf, sizeof nmbuf, "%s", korb_sym_name(c->vm, SYM2ID(name)));
-    else if (KORB_STRING_P(name)) snprintf(nmbuf, sizeof nmbuf, "%.*s", (int)VAL2STR(name)->len, VAL2STR(name)->buf->data);
+    else if (KORB_STRING_P(name)) snprintf(nmbuf, sizeof nmbuf, "%.*s", (int)VAL2STR(name)->len, korb_strbuf_data(VAL2STR(name)->buf));
     else                      snprintf(nmbuf, sizeof nmbuf, "(unknown)");
     const char *const nm = nmbuf;
     const VALUE recv = VALUE_REF_GET(self);
@@ -136,7 +136,7 @@ static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 /* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
 static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
     if (SYMBOL_P(name)) { *out = name; return true; }
-    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, s->buf->data, s->len)); return true; }
+    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(s->buf), s->len)); return true; }
     return false;
 }
 /* valid instance-variable name: '@' + (letter|'_') + (alnum|'_')*; not '@@x'. */
@@ -236,7 +236,7 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(VAL2EXC(sv)->ivars)->len));   /* alloc may GC → re-read self below */
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items->data[2 * i]));
+            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items)[2 * i]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     if (!KORB_OBJECT_P(sv)) {                                   /* container/heap object → generic-ivar side hash keys */
@@ -245,7 +245,7 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(h0)->len));   /* alloc may GC → re-read via self below */
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
         for (uint32_t i = 0; i < VAL2HASH(korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, dst, VAL2HASH(korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))->items->data[2 * i]));
+            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))->items)[2 * i]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     const uint32_t sid0 = VAL2OBJ(sv)->shape_id;                /* read shape BEFORE any alloc */
@@ -276,11 +276,11 @@ static RESULT korb_m_struct_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     VALUE_REF dst = VALUE_REF_AT(&slots[1]);
     const uint32_t n = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < n; i++) {
-        const VALUE ivsym = VAL2ARY(slots[0])->items->data[i];
+        const VALUE ivsym = korb_items_data(VAL2ARY(slots[0])->items)[i];
         const KorbArray *const mem = VAL2ARY(VAL2CLASS(VAL2OBJ(VALUE_REF_GET(self))->klass)->members);   /* re-read */
         bool is_member = false;
         for (uint32_t j = 0; j < mem->len; j++)
-            if (korb_member_ivar_sym(c->vm, mem->items->data[j]) == ivsym) { is_member = true; break; }
+            if (korb_member_ivar_sym(c->vm, korb_items_data(mem->items)[j]) == ivsym) { is_member = true; break; }
         if (!is_member) CHECK(korb_ary_push_val(c, slots + 2, dst, ivsym));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
@@ -465,7 +465,7 @@ static RESULT korb_m_proc_parameters(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1))) {
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, VALUE_SLICE_LEN(a) - 1));
         const int32_t li = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "lambda", 6)));
-        if (li >= 0 && h->items->data[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(h->items->data[2 * li + 1]);
+        if (li >= 0 && korb_items_data(h->items)[2 * li + 1] != KORB_NIL) lam = KORB_TRUTHY(korb_items_data(h->items)[2 * li + 1]);
     }
     const bool symproc = (p->iseq == NULL);
     static const char *const knames[] = { "req", "opt", "rest", "keyreq", "key", "keyrest", "block", "nokey" };

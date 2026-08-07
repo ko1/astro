@@ -127,7 +127,7 @@ static RESULT korb_m_int_chr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {
             const KorbString *nm = VAL2STR(nr.value);
-            #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(nm->buf->data, lit, nm->len) == 0)
+            #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(korb_strbuf_data(nm->buf), lit, nm->len) == 0)
             if (ENC_IS("UTF-8")) kind = 2;
             else if (ENC_IS("US-ASCII") || ENC_IS("ASCII")) kind = 1;
             else if (ENC_IS("ASCII-8BIT") || ENC_IS("BINARY")) kind = 0;

@@ -247,7 +247,7 @@ enum korb_obj_type {
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
     AroObjectHeader head;        /* KORB_OBJ_STR_BUF */
-    char data[];                 /* capa + 1 bytes, NUL-terminated; no GC edges */
+    char data_priv[];                 /* capa + 1 bytes, NUL-terminated; no GC edges */
 } KorbStrBuf;
 
 typedef struct KorbString {
@@ -430,7 +430,7 @@ typedef struct KorbException {
  * can grow the buffer without moving the KorbArray (moving-GC safe). */
 typedef struct KorbArrayItems {
     AroObjectHeader head;            /* KORB_OBJ_VALUE_ARRAY */
-    VALUE ARO_GC_EDGE data[];        /* capa slots; live count is in the owner */
+    VALUE ARO_GC_EDGE data_priv[];   /* private: reach only via korb_items_data() */
 } KorbArrayItems;
 
 typedef struct KorbArray {
@@ -538,7 +538,12 @@ typedef struct KorbClass {
  * ARO_BORROW-marked functions may reach into the raw layout, so the internal
  * representation can change by editing accessors alone (docs/c_ext_api_design.md
  * §4.1).  The returned pointer is valid only until the next allocation. */
-static inline ARO_BORROW char *korb_str_data(VALUE v) { return VAL2STR(v)->buf->data; }
+/* ARO_BORROW: the ONLY sanctioned reach into the raw movable payload buffers.
+ * The `data_priv` fields are named to force all other access through these
+ * accessors (docs/c_ext_api_design.md §4.1).  Result valid until next alloc. */
+static inline ARO_BORROW char  *korb_strbuf_data(KorbStrBuf *b)      { return b->data_priv; }
+static inline ARO_BORROW VALUE *korb_items_data (KorbArrayItems *it) { return it->data_priv; }
+static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
@@ -1040,7 +1045,7 @@ struct CTX_struct {
         KorbArrayItems *_ai = (KorbArrayItems *)(payload);                  \
         size_t _n = ((payload_size) - sizeof(KorbArrayItems)) / sizeof(VALUE); \
         for (size_t _i = 0; _i < _n; _i++)                                  \
-            ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ai->data[_i]);          \
+            ARO_GC_VISIT_EDGE((ctx), edge_visit, &korb_items_data(_ai)[_i]); \
         break;                                                               \
       }                                                                      \
       case KORB_OBJ_HASH: {                                                  \

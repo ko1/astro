@@ -118,7 +118,7 @@ static RESULT korb_m_env_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             if (UNLIKELY(!KORB_ARRAY_P(slots[1]))) return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong element type %s (expected array)", korb_type_name(r.value));
         }
         if (UNLIKELY(VAL2ARY(slots[1])->len != 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "element has wrong array length (expected 2, was %u)", VAL2ARY(slots[1])->len);
-        slots[2] = VAL2ARY(slots[1])->items->data[0]; slots[3] = VAL2ARY(slots[1])->items->data[1];
+        slots[2] = korb_items_data(VAL2ARY(slots[1])->items)[0]; slots[3] = korb_items_data(VAL2ARY(slots[1])->items)[1];
         CHECK(korb_hash_set(c, slots + 4, h, VALUE_REF_AT(&slots[2]), slots[3]));
     }
     return RESULT_OK(VALUE_REF_GET(h));
@@ -233,8 +233,8 @@ static RESULT korb_m_env_selrej(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     for (uint32_t i = 0; ; i++) {
         const KorbHash *snap = VAL2HASH(slots[1]);
         if (i >= snap->len) break;
-        slots[2] = snap->items->data[2 * i];
-        slots[3] = snap->items->data[2 * i + 1];
+        slots[2] = korb_items_data(snap->items)[2 * i];
+        slots[3] = korb_items_data(snap->items)[2 * i + 1];
         VALUE argv[2] = { slots[2], slots[3] };
         RESULT yr = korb_block_yield(c, slots + 4, block, def_env, argv, 2, cself);
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
@@ -254,8 +254,8 @@ static RESULT korb_m_env_keepdel(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; ; i++) {
         const KorbHash *snap = VAL2HASH(slots[0]);
         if (i >= snap->len) break;
-        slots[1] = snap->items->data[2 * i];
-        slots[2] = snap->items->data[2 * i + 1];
+        slots[1] = korb_items_data(snap->items)[2 * i];
+        slots[2] = korb_items_data(snap->items)[2 * i + 1];
         VALUE argv[2] = { slots[1], slots[2] };
         RESULT yr = korb_block_yield(c, slots + 3, block, def_env, argv, 2, cself);
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
@@ -284,8 +284,8 @@ static RESULT korb_m_env_merge_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         for (uint32_t i = 0; ; i++) {
             const KorbHash *h = VAL2HASH(slots[0]);
             if (i >= h->len) break;
-            slots[1] = h->items->data[2 * i];       /* key   (rooted) */
-            slots[2] = h->items->data[2 * i + 1];   /* value (rooted) */
+            slots[1] = korb_items_data(h->items)[2 * i];       /* key   (rooted) */
+            slots[2] = korb_items_data(h->items)[2 * i + 1];   /* value (rooted) */
             if (block != NULL) {                    /* conflict → yield(key, old, new) when the key already exists */
                 RESULT er; const char *name = korb_env_name(c, slots + 3, slots[1], &er);
                 if (!name) return er;
@@ -326,7 +326,7 @@ static RESULT korb_m_env_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const KorbString *ws = VAL2STR(want);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        if (strlen(val) == ws->len && memcmp(val, ws->buf->data, ws->len) == 0)
+        if (strlen(val) == ws->len && memcmp(val, korb_strbuf_data(ws->buf), ws->len) == 0)
             return korb_str_new(c, slots, key, klen);
     }
     return RESULT_OK(KORB_NIL);
@@ -354,7 +354,7 @@ static RESULT korb_m_env_rassoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const KorbString *ws = VAL2STR(want);
     for (char **e = environ; *e; e++) {
         uint32_t klen; const char *val; const char *key = korb_env_split(*e, &klen, &val);
-        if (strlen(val) == ws->len && memcmp(val, ws->buf->data, ws->len) == 0) {
+        if (strlen(val) == ws->len && memcmp(val, korb_strbuf_data(ws->buf), ws->len) == 0) {
             slots[0] = UNWRAP(korb_str_new(c, slots, key, klen));
             slots[1] = UNWRAP(korb_str_new(c, slots + 1, val, (uint32_t)strlen(val)));
             slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
@@ -411,7 +411,7 @@ static RESULT korb_m_env_except(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         bool excluded = false;                              /* skip keys named in the args */
         for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
             const VALUE one = VALUE_SLICE_GET(a, i);
-            if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(VAL2STR(one)->buf->data, key, klen) == 0) { excluded = true; break; }
+            if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(korb_strbuf_data(VAL2STR(one)->buf), key, klen) == 0) { excluded = true; break; }
         }
         if (excluded) continue;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, key, klen));
@@ -426,7 +426,7 @@ static RESULT korb_m_env_clear(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = UNWRAP(korb_m_env_to_h(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));   /* snapshot the keys */
     const KorbHash *snap = VAL2HASH(slots[0]);
     for (uint32_t i = 0; i < snap->len; i++) {
-        const VALUE key = snap->items->data[2 * i];
+        const VALUE key = korb_items_data(snap->items)[2 * i];
         if (!KORB_STRING_P(key)) continue;
         char nm[1024]; uint32_t kl; const char *kc = korb_str_cstr_len(key, &kl); if (kl >= sizeof nm) kl = sizeof nm - 1;
         memcpy(nm, kc, kl); nm[kl] = '\0'; unsetenv(nm);
@@ -442,8 +442,8 @@ static RESULT korb_m_env_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(slots[0]);
         if (i >= h->len) break;
-        slots[1] = h->items->data[2 * i];
-        slots[2] = h->items->data[2 * i + 1];
+        slots[1] = korb_items_data(h->items)[2 * i];
+        slots[2] = korb_items_data(h->items)[2 * i + 1];
         VALUE pair[2] = { slots[1], slots[2] };
         CHECK(korb_m_env_aset(c, slots + 3, self, VALUE_SLICE_MAKE(pair, 2)));
     }

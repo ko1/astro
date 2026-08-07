@@ -24,7 +24,7 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out) {
     if (KORB_FLOAT_P(v)) { *out = (intptr_t)korb_float_val(v); return true; }
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
-        const char *const p = s->buf->data; const uint32_t n = s->len;
+        const char *const p = korb_strbuf_data(s->buf); const uint32_t n = s->len;
         if ((n == 1 && p[0] == 'Z') || (n == 3 && !memcmp(p, "UTC", 3))) { *out = 0; return true; }
         if (n >= 3 && (p[0] == '+' || p[0] == '-')) {
             const int sign = (p[0] == '-') ? -1 : 1;
@@ -123,7 +123,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         double per_ns = 1000.0;                                  /* default unit = :microsecond */
         if (VALUE_SLICE_LEN(a) >= 3 && VALUE_SLICE_GET(a, 2) != KORB_NIL) {
             const VALUE u = VALUE_SLICE_GET(a, 2);
-            const char *un = SYMBOL_P(u) ? korb_sym_name(c->vm, SYM2ID(u)) : (KORB_STRING_P(u) ? VAL2STR(u)->buf->data : "");
+            const char *un = SYMBOL_P(u) ? korb_sym_name(c->vm, SYM2ID(u)) : (KORB_STRING_P(u) ? korb_strbuf_data(VAL2STR(u)->buf) : "");
             if (!strcmp(un, "millisecond")) per_ns = 1e6;
             else if (!strcmp(un, "microsecond") || !strcmp(un, "usec")) per_ns = 1000.0;
             else if (!strcmp(un, "nanosecond") || !strcmp(un, "nsec")) per_ns = 1.0;
@@ -191,7 +191,7 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
         }
         if (KORB_STRING_P(cv)) {                             /* String component → parse (month accepts names) */
             const KorbString *cs = VAL2STR(cv);
-            if (!korb_parse_time_str(cs->buf->data, cs->len, i == 1, &comp[i]))
+            if (!korb_parse_time_str(korb_strbuf_data(cs->buf), cs->len, i == 1, &comp[i]))
                 return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "argument out of range");
         }
     }
@@ -346,7 +346,7 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     char fmt[512]; uint32_t fl = VAL2STR(VALUE_SLICE_GET(a, 0))->len;
     if (fl >= sizeof fmt) fl = sizeof fmt - 1;
-    memcpy(fmt, VAL2STR(VALUE_SLICE_GET(a, 0))->buf->data, fl); fmt[fl] = 0;   /* copy off the movable source */
+    memcpy(fmt, korb_strbuf_data(VAL2STR(VALUE_SLICE_GET(a, 0))->buf), fl); fmt[fl] = 0;   /* copy off the movable source */
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     const bool is_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
     if (is_utc) tm.tm_zone = "UTC";                          /* CRuby reports "UTC" (%Z), not libc's "GMT" */

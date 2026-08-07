@@ -47,7 +47,7 @@ predicate isBorrowAccessor(Function f) {
  */
 class BorrowExpr extends Expr {
   BorrowExpr() {
-    this.(FieldAccess).getTarget().getName() = "data" and
+    this.(FieldAccess).getTarget().getName() = ["data", "data_priv"] and
     this.(FieldAccess).getTarget().getDeclaringType().getName() = ["KorbStrBuf", "KorbArrayItems"]
     or
     isBorrowAccessor(this.(FunctionCall).getTarget())

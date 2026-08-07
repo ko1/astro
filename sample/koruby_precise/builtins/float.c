@@ -123,9 +123,9 @@ static int korb_round_half_v(CTX *c, VALUE_SLICE a, uint32_t *npos, VALUE *bad) 
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t idx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "half", 4)));
         if (idx >= 0) {
-            const VALUE hv = h->items->data[2 * idx + 1];
+            const VALUE hv = korb_items_data(h->items)[2 * idx + 1];
             const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
-                           : (KORB_STRING_P(hv) ? VAL2STR(hv)->buf->data : NULL);
+                           : (KORB_STRING_P(hv) ? korb_strbuf_data(VAL2STR(hv)->buf) : NULL);
             if (nm) {
                 if (!strcmp(nm, "even")) return 1;
                 if (!strcmp(nm, "down")) return 2;

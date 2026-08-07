@@ -28,7 +28,7 @@ count_viol() { grep -c "outside an ARO_BORROW" 2>/dev/null || true; }
 
 # interior-encapsulation ratchet: fail if direct interior accesses EXCEED this.
 # Lower it as accesses are routed through ARO_BORROW inline accessors.
-ENCAP_BASELINE=1426
+ENCAP_BASELINE=0
 
 # --- 1. query self-test on the fixture (expect exactly 2) ---
 FDB=$DBDIR/fixture

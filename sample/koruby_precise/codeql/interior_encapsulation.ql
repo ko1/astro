@@ -19,7 +19,7 @@ import cpp
 /** A raw pointer into a movable GC payload buffer. */
 class PayloadField extends FieldAccess {
   PayloadField() {
-    this.getTarget().getName() = "data" and
+    this.getTarget().getName() = ["data", "data_priv"] and
     this.getTarget().getDeclaringType().getName() = ["KorbStrBuf", "KorbArrayItems"]
   }
 }

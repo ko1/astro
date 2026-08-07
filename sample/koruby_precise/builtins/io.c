@@ -55,7 +55,7 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, FILE *fp, size_t *nbyt
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         v = r.value;
     }
-    if (KORB_STRING_P(v)) { const KorbString *s = VAL2STR(v); *nbytes += fwrite(s->buf->data, 1, s->len, fp); }
+    if (KORB_STRING_P(v)) { const KorbString *s = VAL2STR(v); *nbytes += fwrite(korb_strbuf_data(s->buf), 1, s->len, fp); }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -103,7 +103,7 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     fp = korb_io_fp(c, slots[0]);                        /* re-fetch after possible GC */
     if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(s->buf->data, 1, s->len, fp); }
+    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(korb_strbuf_data(s->buf), 1, s->len, fp); }
     return RESULT_OK(KORB_NIL);
 }
 /* IO#write(*args) → total bytes written. */
@@ -350,10 +350,10 @@ static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         VALUE_REF arr = VALUE_REF_AT(&slots[1]);
         const KorbString *s = VAL2STR(VALUE_REF_GET(sref));
         for (uint32_t i = 0; i < s->len; ) {
-            const unsigned char b = (unsigned char)s->buf->data[i];
+            const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[i];
             uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
             if (i + cl > s->len) cl = 1;
-            char cbuf[8]; memcpy(cbuf, s->buf->data + i, cl);   /* copy before str_new's alloc moves `s` */
+            char cbuf[8]; memcpy(cbuf, korb_strbuf_data(s->buf) + i, cl);   /* copy before str_new's alloc moves `s` */
             slots[2] = UNWRAP(korb_str_new(c, slots + 2, cbuf, cl));
             CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
             s = VAL2STR(VALUE_REF_GET(sref));            /* re-read: push GC'd */
@@ -363,10 +363,10 @@ static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(sref));
     for (uint32_t i = 0; i < s->len; ) {
-        const unsigned char b = (unsigned char)s->buf->data[i];
+        const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[i];
         uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
         if (i + cl > s->len) cl = 1;
-        char cbuf[8]; memcpy(cbuf, s->buf->data + i, cl);   /* copy before str_new's alloc moves `s` */
+        char cbuf[8]; memcpy(cbuf, korb_strbuf_data(s->buf) + i, cl);   /* copy before str_new's alloc moves `s` */
         slots[1] = korb_str_new(c, slots + 1, cbuf, cl).value;
         RESULT yr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (yr.state != KORB_NORMAL) return yr;

@@ -63,7 +63,7 @@ static size_t korb_path_normalize(const char *src, size_t n, char *dst) {
 
 static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
     *len = VAL2STR(v)->len;
-    return VAL2STR(v)->buf->data;
+    return korb_strbuf_data(VAL2STR(v)->buf);
 }
 
 /* File.expand_path(path, base = Dir.pwd) → an absolute, normalized path. */
@@ -244,8 +244,8 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const long rf = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
     char pbuf[4096], sbuf[4096];
     if (UNLIKELY(pat->len >= sizeof pbuf || str->len >= sizeof sbuf)) return RESULT_OK(KORB_FALSE);
-    memcpy(pbuf, pat->buf->data, pat->len); pbuf[pat->len] = '\0';
-    memcpy(sbuf, str->buf->data, str->len); sbuf[str->len] = '\0';
+    memcpy(pbuf, korb_strbuf_data(pat->buf), pat->len); pbuf[pat->len] = '\0';
+    memcpy(sbuf, korb_strbuf_data(str->buf), str->len); sbuf[str->len] = '\0';
     int cf = 0;                                        /* Ruby bits → glibc bits */
     if (rf & 1)  cf |= FNM_NOESCAPE;                   /* FNM_NOESCAPE  (Ruby 1) */
     if (rf & 2)  cf |= FNM_PATHNAME;                   /* FNM_PATHNAME  (Ruby 2) */
@@ -369,8 +369,8 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (n >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {   /* trailing kwarg: mode: */
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "mode", 4)));
-        if (hx >= 0 && KORB_STRING_P(h->items->data[2 * hx + 1])) {
-            uint32_t ml; const char *m = korb_str_cstr_len(h->items->data[2 * hx + 1], &ml);
+        if (hx >= 0 && KORB_STRING_P(korb_items_data(h->items)[2 * hx + 1])) {
+            uint32_t ml; const char *m = korb_str_cstr_len(korb_items_data(h->items)[2 * hx + 1], &ml);
             if (ml >= 1 && m[0] == 'a') mode = "ab";
         }
         n--;
@@ -424,7 +424,7 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
         const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "chomp", 5)));
-        if (hx >= 0) { const VALUE v = h->items->data[2 * hx + 1]; chomp = (v != KORB_NIL && v != KORB_FALSE); }
+        if (hx >= 0) { const VALUE v = korb_items_data(h->items)[2 * hx + 1]; chomp = (v != KORB_NIL && v != KORB_FALSE); }
     }
     size_t len; char *buf = korb_file_slurp(path, &len);
     if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
@@ -634,7 +634,7 @@ static RESULT korb_m_file_abs_path_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const VALUE pv = VALUE_SLICE_GET(a, 0);
     if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const KorbString *const s = VAL2STR(pv);
-    return RESULT_OK((s->len > 0 && s->buf->data[0] == '/') ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK((s->len > 0 && korb_strbuf_data(s->buf)[0] == '/') ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_file_atime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 0); }
 static RESULT korb_m_file_ctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 1); }
@@ -740,7 +740,7 @@ static RESULT korb_m_dir_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE posv = korb_ivar_get(c, s, ID2SYM(korb_dir_pos_id(c)));
     const intptr_t pos = FIXNUM_P(posv) ? FIX2LONG(posv) : 0;
     if (pos < 0 || (uint32_t)pos >= ents->len) return RESULT_OK(KORB_NIL);
-    slots[0] = ents->items->data[pos];                          /* the entry (rooted) */
+    slots[0] = korb_items_data(ents->items)[pos];                          /* the entry (rooted) */
     CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_dir_pos_id(c)), LONG2FIX(pos + 1)));
     return RESULT_OK(slots[0]);
 }
@@ -754,7 +754,7 @@ static RESULT korb_m_dir_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (!KORB_ARRAY_P(slots[0])) return RESULT_OK(VALUE_REF_GET(self));
     const uint32_t n = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < n; i++) {
-        slots[1] = VAL2ARY(slots[0])->items->data[i];           /* re-read: yield may GC */
+        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];           /* re-read: yield may GC */
         RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -794,9 +794,9 @@ static RESULT korb_m_dir_i_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     VALUE_REF out = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
         const KorbArray *e = korb_dir_ents(c, VALUE_REF_GET(self));   /* re-read: push GCs */
-        const VALUE nm = e->items->data[i];
+        const VALUE nm = korb_items_data(e->items)[i];
         if (KORB_STRING_P(nm)) { const KorbString *s = VAL2STR(nm);
-            if ((s->len == 1 && s->buf->data[0] == '.') || (s->len == 2 && s->buf->data[0] == '.' && s->buf->data[1] == '.')) continue; }
+            if ((s->len == 1 && korb_strbuf_data(s->buf)[0] == '.') || (s->len == 2 && korb_strbuf_data(s->buf)[0] == '.' && korb_strbuf_data(s->buf)[1] == '.')) continue; }
         slots[1] = nm; CHECK(korb_ary_push_val(c, slots + 2, out, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(out));
@@ -862,7 +862,7 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         slots[1] = p0;                                              /* root the pattern array */
         const uint32_t np = VAL2ARY(slots[1])->len;
         for (uint32_t i = 0; i < np; i++) {
-            const VALUE pv = VAL2ARY(slots[1])->items->data[i];
+            const VALUE pv = korb_items_data(VAL2ARY(slots[1])->items)[i];
             if (!KORB_STRING_P(pv)) continue;
             uint32_t pl; char pbuf[8192]; const char *ps = korb_str_cstr_len(pv, &pl);
             if (pl >= sizeof pbuf) continue;
@@ -878,7 +878,7 @@ static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (block != NULL) {                                            /* yield each, return nil */
         const uint32_t n = VAL2ARY(VALUE_REF_GET(arr))->len;
         for (uint32_t i = 0; i < n; i++) {
-            slots[1] = VAL2ARY(VALUE_REF_GET(arr))->items->data[i];
+            slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(arr))->items)[i];
             CHECK(korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self));
         }
         return RESULT_OK(KORB_NIL);

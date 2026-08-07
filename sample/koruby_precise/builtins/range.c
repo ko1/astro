@@ -172,16 +172,16 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         slots[2] = VAL2RANGE(slots[0])->rbegin;          /* current = begin (rooted) */
         const VALUE end = VAL2RANGE(slots[0])->rend;
         slots[3] = end;                                  /* end (rooted) */
-        const uint32_t el = korb_utf8_count(VAL2STR(end)->buf->data, VAL2STR(end)->len);
+        const uint32_t el = korb_utf8_count(korb_strbuf_data(VAL2STR(end)->buf), VAL2STR(end)->len);
         const uint32_t mid_succ = korb_intern(c->vm, "succ", 4);
         for (int guard = 0; guard < 10000000; guard++) {
             const KorbString *cur = VAL2STR(slots[2]), *xs = VAL2STR(slots[1]);
-            const bool cur_eq_end = (cur->len == VAL2STR(slots[3])->len && memcmp(cur->buf->data, VAL2STR(slots[3])->buf->data, cur->len) == 0);
+            const bool cur_eq_end = (cur->len == VAL2STR(slots[3])->len && memcmp(korb_strbuf_data(cur->buf), korb_strbuf_data(VAL2STR(slots[3])->buf), cur->len) == 0);
             if (!(excl && cur_eq_end)) {                  /* check membership (skip end itself when exclusive) */
-                if (cur->len == xs->len && memcmp(cur->buf->data, xs->buf->data, cur->len) == 0) return RESULT_OK(KORB_TRUE);
+                if (cur->len == xs->len && memcmp(korb_strbuf_data(cur->buf), korb_strbuf_data(xs->buf), cur->len) == 0) return RESULT_OK(KORB_TRUE);
             }
             if (cur_eq_end) return RESULT_OK(KORB_FALSE); /* reached end without a match */
-            if (korb_utf8_count(cur->buf->data, cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
+            if (korb_utf8_count(korb_strbuf_data(cur->buf), cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
             slots[4] = slots[2];                          /* stage current as the #succ receiver */
             RESULT sc = korb_send_impl(c, slots + 5, mid_succ, 0, 0, NULL, NULL, KORB_NIL);   /* current = current.succ */
             if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
@@ -482,8 +482,8 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (KORB_STRING_P(SELF_RANGE->rbegin) && KORB_STRING_P(SELF_RANGE->rend)) {   /* String range via succ */
         if (VAL2STR(SELF_RANGE->rbegin)->len == 1 && VAL2STR(SELF_RANGE->rend)->len == 1) {   /* single byte → codepoint iterate (CRuby: "A".."z" spans 58, incl. punctuation) */
-            const uint8_t b0 = (uint8_t)VAL2STR(SELF_RANGE->rbegin)->buf->data[0];
-            const uint8_t e0 = (uint8_t)VAL2STR(SELF_RANGE->rend)->buf->data[0];
+            const uint8_t b0 = (uint8_t)korb_strbuf_data(VAL2STR(SELF_RANGE->rbegin)->buf)[0];
+            const uint8_t e0 = (uint8_t)korb_strbuf_data(VAL2STR(SELF_RANGE->rend)->buf)[0];
             const uint32_t end_ch = SELF_RANGE->exclude_end ? e0 : (uint32_t)e0 + 1;
             slots[0] = UNWRAP(korb_ary_new(c, slots + 1, b0 < end_ch ? end_ch - b0 : 0));
             VALUE_REF out = VALUE_REF_AT(&slots[0]);
@@ -537,7 +537,7 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (cmp > 0) break;
             if (excl && cmp == 0) break;
             const KorbString *const cs = VAL2STR(slots[1]);
-            CHECK(korb_ary_push_val(c, slots + 3, out, ID2SYM(korb_intern(c->vm, cs->buf->data, cs->len))));
+            CHECK(korb_ary_push_val(c, slots + 3, out, ID2SYM(korb_intern(c->vm, korb_strbuf_data(cs->buf), cs->len))));
             if (cmp == 0) break;
             slots[1] = UNWRAP(korb_m_str_succ(c, slots + 3, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(NULL, 0)));
         }
@@ -735,7 +735,7 @@ static RESULT korb_m_range_each_slice(CTX *c, VALUE *slots, VALUE_REF self, VALU
         return korb_enum_new(c, slots + 2, VALUE_REF_GET(out), slots[1]);
     }
     for (uint32_t i = 0; i < VAL2ARY(VALUE_REF_GET(out))->len; i++) {
-        VALUE sl = VAL2ARY(VALUE_REF_GET(out))->items->data[i];
+        VALUE sl = korb_items_data(VAL2ARY(VALUE_REF_GET(out))->items)[i];
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &sl, 1, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -983,7 +983,7 @@ static RESULT korb_m_range_flat_map(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             slots[1] = r.value;
             uint32_t sublen = VAL2ARY(slots[1])->len;
             for (uint32_t j = 0; j < sublen; j++)    /* re-read sub each push (GC may move it) */
-                CHECK(korb_ary_push_val(c, slots + 2, dst, VAL2ARY(slots[1])->items->data[j]));
+                CHECK(korb_ary_push_val(c, slots + 2, dst, korb_items_data(VAL2ARY(slots[1])->items)[j]));
         } else {
             CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
         }
@@ -1088,7 +1088,7 @@ static RESULT korb_m_range_group_by(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
             CHECK(korb_hash_set(c, slots + 4, h, VALUE_REF_AT(&slots[2]), slots[3]));
         } else {
-            slots[3] = VAL2HASH(VALUE_REF_GET(h))->items->data[2 * idx + 1];
+            slots[3] = korb_items_data(VAL2HASH(VALUE_REF_GET(h))->items)[2 * idx + 1];
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[1]));
         }
     }
@@ -1440,7 +1440,7 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (st > 0) {                                    /* (backward string stepping not supported here) */
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
             for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i += (uint32_t)st) {
-                VALUE ev = VAL2ARY(slots[0])->items->data[i];
+                VALUE ev = korb_items_data(VAL2ARY(slots[0])->items)[i];
                 RESULT r = korb_block_yield(c, slots + 1, block, def_env, &ev, 1, captured_self);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             }

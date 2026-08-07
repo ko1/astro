@@ -102,7 +102,7 @@ static VALUE korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
 static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
     const VALUE s = korb_ivar_get(c, rndobj, korb_mt_sym(c->vm));
-    return KORB_STRING_P(s) ? (KorbMT *)VAL2STR(s)->buf->data : NULL;
+    return KORB_STRING_P(s) ? (KorbMT *)korb_strbuf_data(VAL2STR(s)->buf) : NULL;
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
 /* Random.urandom(n) → n bytes of OS entropy as an ASCII-8BIT String. */
@@ -141,7 +141,7 @@ static KorbRandSrc korb_rand_src_from_kwargs(CTX *const c, VALUE_SLICE a) {
         if (KORB_HASH_P(last)) {
             const int32_t hi = korb_hash_find(VAL2HASH(last), ID2SYM(korb_intern(c->vm, "random", 6)));
             if (hi >= 0) {
-                const VALUE rng = VAL2HASH(last)->items->data[2 * hi + 1];
+                const VALUE rng = korb_items_data(VAL2HASH(last)->items)[2 * hi + 1];
                 if (korb_is_random(c, rng)) { KorbMT *st = korb_rng_of(c, rng); if (st) { KorbRandSrc s = { st, KORB_NIL }; return s; } }
                 else if (KORB_OBJECT_P(rng)) { KorbRandSrc s = { NULL, rng }; return s; }   /* custom RNG → dispatch #rand */
             }
@@ -230,7 +230,7 @@ static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     CHECK(korb_ivar_set(c, slots, self, korb_seed_sym(c->vm), seed));   /* @__seed (may GC; seed re-read below) */
     KorbString *const s = korb_str_alloc(c, slots, (uint32_t)sizeof(KorbMT));   /* binary state buffer (may GC) */
     slots[0] = (VALUE)s;                                                /* root */
-    KorbMT *const st = (KorbMT *)s->buf->data;
+    KorbMT *const st = (KorbMT *)korb_strbuf_data(s->buf);
     const VALUE seed2 = korb_ivar_get(c, VALUE_REF_GET(self), korb_seed_sym(c->vm));   /* re-read post-GC */
     if (seed2 == KORB_NIL) korb_mt_init_genrand(st, korb_mt_entropy(st));
     else                   korb_mt_seed_int(st, seed2);
