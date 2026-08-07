@@ -35,7 +35,7 @@ github/gh-codeql`)+ `codeql pack install`(run.sh が自動)が要る。フル DB
   違反。内部レイアウトが変わるかもしれないので、生ポインタに手を入れるのは
   `ARO_BORROW` を付けた inline アクセサ 1 チョークポイントに集約する(inline なので
   性能不変)ための ratchet。ARO_BORROW 検出は `MacroInvocation`(gcc ビルドで警告
-  ゼロ)。baseline は 1429(2026-08-06、まだ未アノテート)。
+  ゼロ)。baseline は完遂で 0(全アクセサ化・compiler 強制)。
 
 ## セットアップ(このマシンでの実績)
 

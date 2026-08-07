@@ -266,6 +266,14 @@ borrow-source から外す(`korb_sym_name`=stable, `korb_str_data`=movable)。�
   では `ARO_BORROW` に一本化**する。
 
 **spatial は compiler、temporal は CodeQL(役割分担)**:
+> **STATUS (2026-08-07): 完遂**。payload フィールドを `data_priv` に改名し、全
+> **1424 箇所**の直接アクセスを `korb_strbuf_data`/`korb_items_data`/`korb_str_data`
+> (ARO_BORROW inline)経由に変換済み(commit a1ec4566)。以後は**コンパイラが
+> spatial encapsulation を hard 強制**(bypass = コンパイルエラー)。検証: build
+> 0/0・make test 99808/1890 crash 0(baseline 一致)・AOT optcarrot 60838 / DOOM
+> 一致・STRESS crash 0・codeql interior-encapsulation 0。`interior_encapsulation.ql`
+> は data/data_priv 両対応で baseline 0 の belt-and-suspenders として残置。
+
 - **spatial(誰が生フィールドに触れるか)= C の field-rename + `ARO_BORROW` inline
   アクセサが最強**。payload フィールドを改名(または nested struct 化)すれば、
   直接アクセスは**全部コンパイルエラー**になり、コンパイラが箇所を列挙する。
