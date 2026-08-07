@@ -31,11 +31,11 @@ FDB=$DBDIR/fixture
     --command="gcc -c borrow_cases.c -o borrow_cases.o" ) >/dev/null 2>&1
 rm -f "$HERE/test/borrow_cases.o"
 NF=$("$CQ" query run --database="$FDB" "$HERE/borrow_after_gc.ql" 2>/dev/null | count_hits)
-if [ "$NF" -ne 2 ]; then
-  echo "FAIL: self-test expected 2 fixture bugs, got $NF — the query regressed."
+if [ "$NF" -ne 4 ]; then
+  echo "FAIL: self-test expected 4 fixture bugs, got $NF — the query regressed."
   exit 1
 fi
-echo "self-test: query catches the 2 fixture bugs (2 TP / 3 TN) ok"
+echo "self-test: query catches the 4 fixture bugs (4 TP / 3 TN) ok"
 
 # --- 2. real-code check (expect 0) ---
 KDB=$DBDIR/koruby

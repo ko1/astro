@@ -53,6 +53,16 @@ predicate borrowFlowsTo(Expr e, BorrowExpr b) {
   borrowFlowsTo(e.(Conversion).getExpr(), b)
   or
   borrowFlowsTo(e.(PointerArithmeticOperation).getAnOperand(), b)
+  or
+  // `&base[i]` — the address of an element is still an interior pointer.
+  borrowFlowsTo(e.(AddressOfExpr).getOperand().(ArrayExpr).getArrayBase(), b)
+  or
+  // alias: `q = p` where the pointer local `p` already holds the borrow.
+  exists(SsaDefinition d2, StackVariable v2 |
+    e = d2.getAUse(v2) and
+    v2.getUnspecifiedType() instanceof PointerType and
+    borrowFlowsTo(d2.getDefiningValue(v2), b)
+  )
 }
 
 /** SSA def `p = <pointer derived from str->buf->data>` — the borrow is held in `v`. */

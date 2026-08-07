@@ -53,3 +53,18 @@ void case_bug_loop_carried(CTX *c, VALUE *s, VALUE str, int n) {
     sink(p[0]);                        /* <-- expect ALERT (stale for iter >= 1) */
   }
 }
+
+/* BUG: extraction via &data[i] (address-of element). */
+void case_bug_addr_of(CTX *c, VALUE *s, VALUE str) {
+  char *p = &VAL2STR(str)->buf->data[2]; /* borrow: interior pointer */
+  korb_ary_new(c, s);                    /* may-gc */
+  sink(p[0]);                            /* <-- expect ALERT */
+}
+
+/* BUG: borrow aliased into another pointer, used after may-gc. */
+void case_bug_alias(CTX *c, VALUE *s, VALUE str) {
+  char *p = VAL2STR(str)->buf->data;  /* borrow */
+  char *q = p;                        /* alias */
+  korb_ary_new(c, s);                 /* may-gc */
+  sink(q[0]);                         /* <-- expect ALERT (q is stale too) */
+}

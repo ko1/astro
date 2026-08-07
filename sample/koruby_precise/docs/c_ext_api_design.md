@@ -248,6 +248,23 @@ method entry/interned symbol 名/slots/def_env)。immortal borrow は GC 跨ぎ�
 borrow-source から外す(`korb_sym_name`=stable, `korb_str_data`=movable)。別確保クラス
 なので構造上区別でき false positive なし。
 
+**borrow-source の与え方 — 構造マッチ vs `ARO_BORROW` 注釈**:
+- **現行 inline コード**(`VAL2STR(v)->buf->data` のようにマクロ/フィールドで取り出す)
+  は貼る関数が無いので**構造マッチ**で拾う(実装済: leaf `data` + ポインタ演算 +
+  `&elem` + local alias)。ただし interprocedural(helper 戻り値)/構造体フィールド
+  格納/整数ロンダリング/中間 movable 構造体ポインタ(`s->buf`/`ary->items` 自体の
+  保持)は**原理的に構造 local マッチでは網羅できない**(既知の非カバー)。
+- **ext API(将来)= `ARO_BORROW` 注釈**(推奨・単純・完全): 「戻り値が GC
+  オブジェクトの中/自身を指す」アクセサ関数(`korb_str_data` / `korb_str_borrow` /
+  `korb_ary_ptr` 等)に `ARO_BORROW` を貼り、borrow-source =「その関数呼び出しの
+  戻り」1 つに集約。抽出を**アクセサ 1 チョークポイントに通す**ことで、上記の
+  構造マッチの穴(cast/alias/interprocedural)を丸ごと回避できる。`ARO_NOGC`/
+  `ARO_MAYGC` と同じ `runtime/aro_gc_effect.h` に置き、CodeQL は MacroInvocation で
+  拾う(gcc ビルドを壊さない)。
+- 結論: 重い「GC 構造体ポインタ一般への構造マッチ拡張」は複雑な割に不完全なので
+  採らない。**現行 inline は構造マッチ(4 形)で据え置き、抽出を関数化する ext API
+  では `ARO_BORROW` に一本化**する。
+
 #### CodeQL クエリ 2 本(実 API)
 
 **Q1: borrow を may-gc 跨ぎで使ったら alert**

@@ -87,20 +87,25 @@ system/GMP 等ヘッダ 17,399)、本体を持つ関数 **2,997**、呼び出し
     `int n = utf8len(s->buf->data)`(引数、戻りは count)や `char c = data[i]`
     (添字、値は 1 バイト)は借用の保持ではないので除外 → ③の 48 FP が消える。
 
-**borrow-source は 2 payload**(context.h の flexible-array 全て):
+**borrow-source(取り出し)= 2 payload × 4 抽出形**。payload:
 `KorbStrBuf.data`(char*, 文字列バイト)+ `KorbArrayItems.data`(VALUE*,
-Array/Hash 要素、`ary->items->data`)。それ以外の struct フィールドは
-`VALUE ARO_GC_EDGE`(VALUE_REF/edge 管理、生ポインタでない)。
+Array/Hash 要素、`ary->items->data`)。抽出形(`borrowFlowsTo`):配列 decay /
+ポインタ演算 `data+i` / 要素アドレス `&data[i]` / local 別名 `q = p`。
 
-**結果(2026-08-05)**: 本物 koruby に held-borrow(ポインタ変数保持)は
-**44 箇所**(KorbStrBuf 28 + KorbArrayItems 16)存在し、そのうち **may-gc を
-跨ぐ stale-borrow ハザードは 0**。検証: `array_enum.c` の held `VALUE *dd0 =
-d->items->data` は GC-free path(Fixnum qsort)限定で使われ、`<=>` dispatch
-(may-gc)path は inline で re-derive している(コメントにも明記)→ 0 は正しい。
-フィクスチャ(`test/borrow_cases.c`)で **2 TP(linear hold / loop-carried hold)・
-3 TN(use-before-gc / no-gc-between / re-derive-loop)** を正しく判定。→ クエリは
-非 vacuous かつ精密で、現行 koruby はこのハザード種別についてクリーン(rooting
-規律 + RESULT_AUDIT の成果)。
+**既知の非カバー**(構造 local マッチの原理的限界):helper 関数戻り値
+(interprocedural)、構造体フィールド/ヒープへの格納、整数ロンダリング、
+中間 movable 構造体ポインタ(`s->buf` / `ary->items` 自体の保持)。→ ext API では
+これらを避けるため、抽出を `ARO_BORROW` 注釈アクセサ 1 チョークポイントに通す
+(`docs/c_ext_api_design.md` §4.1)。クエリはその戻りも borrow-source にできる。
+
+**結果(2026-08-06)**: 本物 koruby に held-borrow は **47 箇所**(KorbStrBuf 28 +
+KorbArrayItems 19)、そのうち **may-gc を跨ぐ stale-borrow ハザードは 0**。検証:
+`array_enum.c` の held `VALUE *dd0 = d->items->data` は GC-free path(Fixnum qsort)
+限定で使われ、`<=>` dispatch(may-gc)path は inline で re-derive(コメントにも
+明記)→ 0 は正しい。フィクスチャ(`test/borrow_cases.c`)で **4 TP(linear /
+loop-carried / `&data[i]` / alias)・3 TN(use-before-gc / no-gc-between /
+re-derive-loop)** を正しく判定。→ クエリは非 vacuous かつ精密で、現行 koruby は
+このハザード種別についてクリーン(rooting 規律 + RESULT_AUDIT の成果)。
 
 ## 現状 → 本設計への橋渡し
 
