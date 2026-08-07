@@ -9,11 +9,14 @@ CodeQL で試すための最小一式。
 make codeql-check      # = sh codeql/run.sh
 ```
 
-2 フェーズ、両方 pass しないと非ゼロ終了:
-1. **self-test** — `test/borrow_cases.c` から DB を作り、クエリが**その 2 バグを
+3 フェーズ、全て pass しないと非ゼロ終了:
+1. **self-test** — `test/borrow_cases.c` から DB を作り、クエリが**その 4 バグを
    ちょうど検出**することを要求(クエリが「常に 0」に退化していないか保証)。
-2. **real-code** — koruby のビルドをトレースして DB を作り、`borrow_after_gc.ql`
+2. **borrow-after-gc** — koruby のビルドをトレースして DB を作り、`borrow_after_gc.ql`
    が **0 hazard** であることを要求。
+3. **interior-encapsulation ratchet** — `interior_encapsulation.ql` の違反数が
+   baseline(`ENCAP_BASELINE`)を**超えないこと**を要求。新規に内部 payload を直接
+   触ると増えて fail。アクセサ化で減らしたら baseline を下げる。
 
 DB は `codeql/.db/`(gitignore 済)に作る。CodeQL CLI(`gh extension install
 github/gh-codeql`)+ `codeql pack install`(run.sh が自動)が要る。フル DB 再構築
@@ -27,6 +30,12 @@ github/gh-codeql`)+ `codeql pack install`(run.sh が自動)が要る。フル DB
   文字列バイトバッファへの生ポインタ)を borrow-source とし、**borrow → may-gc call
   → use** の経路(`DataFlow::localFlow` + CFG 順)を検出。re-derive(途中で取り直し)
   すると flow が届かず自動的に安全判定になる。
+- `interior_encapsulation.ql` — カプセル化強制。`KorbStrBuf::data` /
+  `KorbArrayItems::data` への直接アクセスが **`ARO_BORROW` 注釈関数の外**にあれば
+  違反。内部レイアウトが変わるかもしれないので、生ポインタに手を入れるのは
+  `ARO_BORROW` を付けた inline アクセサ 1 チョークポイントに集約する(inline なので
+  性能不変)ための ratchet。ARO_BORROW 検出は `MacroInvocation`(gcc ビルドで警告
+  ゼロ)。baseline は 1429(2026-08-06、まだ未アノテート)。
 
 ## セットアップ(このマシンでの実績)
 

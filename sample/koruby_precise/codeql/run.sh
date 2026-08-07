@@ -24,6 +24,11 @@ mkdir -p "$DBDIR"
 ( cd "$HERE" && "$CQ" pack install >/dev/null 2>&1 || true )
 
 count_hits() { grep -c "stale under moving GC" 2>/dev/null || true; }
+count_viol() { grep -c "outside an ARO_BORROW" 2>/dev/null || true; }
+
+# interior-encapsulation ratchet: fail if direct interior accesses EXCEED this.
+# Lower it as accesses are routed through ARO_BORROW inline accessors.
+ENCAP_BASELINE=1429
 
 # --- 1. query self-test on the fixture (expect exactly 2) ---
 FDB=$DBDIR/fixture
@@ -49,3 +54,13 @@ if [ "$N" -ne 0 ]; then
   exit 1
 fi
 echo "koruby_precise: borrow-after-gc clean (0 hazards) ok"
+
+# --- 3. interior-encapsulation ratchet (no NEW direct interior accesses) ---
+NV=$("$CQ" query run --database="$KDB" "$HERE/interior_encapsulation.ql" 2>/dev/null | count_viol)
+if [ "$NV" -gt "$ENCAP_BASELINE" ]; then
+  echo "FAIL: interior-encapsulation regressed: $NV > baseline $ENCAP_BASELINE."
+  echo "      Route new KorbStrBuf::data / KorbArrayItems::data access through an"
+  echo "      ARO_BORROW-marked inline accessor (or lower ENCAP_BASELINE if you removed some)."
+  exit 1
+fi
+echo "interior-encapsulation: $NV direct accesses (<= baseline $ENCAP_BASELINE) ok"
