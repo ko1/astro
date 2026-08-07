@@ -14,6 +14,10 @@ static int nogc_cmp(const char *a, const char *b) { return a[0] - b[0]; }      /
 void sink(char c);
 
 #define VAL2STR(v) ((KorbString *)(v))
+#define ARO_BORROW /* marker (empty; CodeQL keys on the MacroInvocation) */
+
+/* An ARO_BORROW accessor: its return value is a borrow-source too. */
+ARO_BORROW static char *sb_data(VALUE v) { return VAL2STR(v)->buf->data; }
 
 /* BUG: hold p across a may-gc call, then use. */
 void case_bug(CTX *c, VALUE *s, VALUE str) {
@@ -67,4 +71,11 @@ void case_bug_alias(CTX *c, VALUE *s, VALUE str) {
   char *q = p;                        /* alias */
   korb_ary_new(c, s);                 /* may-gc */
   sink(q[0]);                         /* <-- expect ALERT (q is stale too) */
+}
+
+/* BUG: borrow obtained via an ARO_BORROW accessor, held across may-gc. */
+void case_bug_via_accessor(CTX *c, VALUE *s, VALUE str) {
+  char *p = sb_data(str);             /* borrow via accessor */
+  korb_ary_new(c, s);                 /* may-gc */
+  sink(p[0]);                         /* <-- expect ALERT */
 }

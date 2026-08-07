@@ -27,16 +27,30 @@ predicate mayGcNode(ControlFlowNode n) {
   exists(Call c | c = n | mayGcFn(c.getTarget()) or not exists(c.getTarget()))
 }
 
+/** `f` is declared with the ARO_BORROW marker on its declarator line. */
+predicate isBorrowAccessor(Function f) {
+  exists(MacroInvocation mi, FunctionDeclarationEntry fde |
+    mi.getMacroName() = "ARO_BORROW" and
+    fde = f.getADeclarationEntry() and
+    mi.getFile() = fde.getFile() and
+    mi.getLocation().getStartLine() = fde.getLocation().getStartLine()
+  )
+}
+
 /**
- * A raw pointer into a movable GC payload buffer:
- *   - `str->buf->data`   (KorbStrBuf::data,   char*  — String bytes)
- *   - `ary->items->data` (KorbArrayItems::data, VALUE* — Array/Hash elements)
- * Both buffers are separately allocated (ARO_GC_EDGE) and move on GC.
+ * A raw pointer into a movable GC buffer, from either:
+ *   - an inline `->data` field access (KorbStrBuf::data / KorbArrayItems::data,
+ *     separately-allocated buffers that move on GC), or
+ *   - a call to an ARO_BORROW accessor (e.g. korb_str_data): as code is routed
+ *     through accessors the `->data` moves inside them, so the temporal check
+ *     must follow the accessor's return value to stay effective.
  */
-class BorrowExpr extends FieldAccess {
+class BorrowExpr extends Expr {
   BorrowExpr() {
-    this.getTarget().getName() = "data" and
-    this.getTarget().getDeclaringType().getName() = ["KorbStrBuf", "KorbArrayItems"]
+    this.(FieldAccess).getTarget().getName() = "data" and
+    this.(FieldAccess).getTarget().getDeclaringType().getName() = ["KorbStrBuf", "KorbArrayItems"]
+    or
+    isBorrowAccessor(this.(FunctionCall).getTarget())
   }
 }
 

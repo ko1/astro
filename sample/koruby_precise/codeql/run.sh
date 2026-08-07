@@ -28,7 +28,7 @@ count_viol() { grep -c "outside an ARO_BORROW" 2>/dev/null || true; }
 
 # interior-encapsulation ratchet: fail if direct interior accesses EXCEED this.
 # Lower it as accesses are routed through ARO_BORROW inline accessors.
-ENCAP_BASELINE=1429
+ENCAP_BASELINE=1426
 
 # --- 1. query self-test on the fixture (expect exactly 2) ---
 FDB=$DBDIR/fixture
@@ -36,11 +36,11 @@ FDB=$DBDIR/fixture
     --command="gcc -c borrow_cases.c -o borrow_cases.o" ) >/dev/null 2>&1
 rm -f "$HERE/test/borrow_cases.o"
 NF=$("$CQ" query run --database="$FDB" "$HERE/borrow_after_gc.ql" 2>/dev/null | count_hits)
-if [ "$NF" -ne 4 ]; then
-  echo "FAIL: self-test expected 4 fixture bugs, got $NF — the query regressed."
+if [ "$NF" -ne 5 ]; then
+  echo "FAIL: self-test expected 5 fixture bugs, got $NF — the query regressed."
   exit 1
 fi
-echo "self-test: query catches the 4 fixture bugs (4 TP / 3 TN) ok"
+echo "self-test: query catches the 5 fixture bugs (5 TP / 3 TN) ok"
 
 # --- 2. real-code check (expect 0) ---
 KDB=$DBDIR/koruby

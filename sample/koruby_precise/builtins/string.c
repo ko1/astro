@@ -282,13 +282,14 @@ static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
-    const KorbString *s = SELF_STR;                      /* re-read after alloc */
+    char *const sd = korb_str_data(VALUE_REF_GET(self));  /* borrow: no alloc below */
+    char *const rd = korb_str_data((VALUE)r);
     KORB_STR_ENC_SET((VALUE)r, enc);                     /* preserve encoding */
     uint32_t wi = len, i = 0;
     while (i < len) {
-        const uint32_t clen = korb_str_char_bytes(enc, (const unsigned char *)s->buf->data, i, len);   /* char-aware */
+        const uint32_t clen = korb_str_char_bytes(enc, (const unsigned char *)sd, i, len);   /* char-aware */
         wi -= clen;
-        memcpy(r->buf->data + wi, s->buf->data + i, clen);
+        memcpy(rd + wi, sd + i, clen);
         i += clen;
     }
     return RESULT_OK((VALUE)r);

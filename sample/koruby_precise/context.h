@@ -31,6 +31,7 @@
 #endif
 #include "astro_debug.h"
 #include "precise_gc/gc_types.h"
+#include "aro_gc_effect.h"   /* ARO_MAYGC / ARO_NOGC / ARO_BORROW markers */
 
 #define LIKELY(expr)   __builtin_expect(!!(expr), 1)
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
@@ -532,6 +533,12 @@ typedef struct KorbClass {
 #define VAL2EXC(v)         ((KorbException *)(uintptr_t)(v))
 #define VAL2ARY(v)         ((KorbArray *)(uintptr_t)(v))
 #define VAL2HASH(v)        ((KorbHash *)(uintptr_t)(v))
+
+/* ARO_BORROW: the sanctioned accessor for a String's movable byte buffer.  Only
+ * ARO_BORROW-marked functions may reach into the raw layout, so the internal
+ * representation can change by editing accessors alone (docs/c_ext_api_design.md
+ * §4.1).  The returned pointer is valid only until the next allocation. */
+static inline ARO_BORROW char *korb_str_data(VALUE v) { return VAL2STR(v)->buf->data; }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)(v))
