@@ -10,7 +10,7 @@ make codeql-check      # = sh codeql/run.sh
 ```
 
 3 フェーズ、全て pass しないと非ゼロ終了:
-1. **self-test** — `test/borrow_cases.c` から DB を作り、クエリが**その 4 バグを
+1. **self-test** — `test/borrow_cases.c` から DB を作り、クエリが**その 5 バグを
    ちょうど検出**することを要求(クエリが「常に 0」に退化していないか保証)。
 2. **borrow-after-gc** — koruby のビルドをトレースして DB を作り、`borrow_after_gc.ql`
    が **0 hazard** であることを要求。
