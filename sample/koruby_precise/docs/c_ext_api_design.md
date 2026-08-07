@@ -265,6 +265,19 @@ borrow-source から外す(`korb_sym_name`=stable, `korb_str_data`=movable)。�
   採らない。**現行 inline は構造マッチ(4 形)で据え置き、抽出を関数化する ext API
   では `ARO_BORROW` に一本化**する。
 
+**spatial は compiler、temporal は CodeQL(役割分担)**:
+- **spatial(誰が生フィールドに触れるか)= C の field-rename + `ARO_BORROW` inline
+  アクセサが最強**。payload フィールドを改名(または nested struct 化)すれば、
+  直接アクセスは**全部コンパイルエラー**になり、コンパイラが箇所を列挙する。
+  実測(2026-08-06): `KorbStrBuf.data`/`KorbArrayItems.data` を改名 → gcc が
+  **1427 error**(= CodeQL の 1429 とほぼ一致、独立クロス検証)。アクセサ化後は
+  bypass すると**コンパイルが通らない** = CodeQL ratchet より強い hard 強制。
+- **temporal(borrow を may-gc 跨ぎで保持)= CodeQL `borrow_after_gc.ql` 専任**。
+  「GC が borrow と use の間で起きるか」はコンパイラには判定できない。
+- したがって `interior_encapsulation.ql`(spatial)は **field-rename 移行までの
+  暫定 ratchet**。rename+アクセサが入れば spatial はコンパイラが保証し、この
+  CodeQL クエリは冗長になる。GC-safety の本体は `borrow_after_gc.ql` の temporal 検査。
+
 #### CodeQL クエリ 2 本(実 API)
 
 **Q1: borrow を may-gc 跨ぎで使ったら alert**
