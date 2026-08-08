@@ -1727,7 +1727,24 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
     if (UNLIKELY(block == NULL)) {
         if (VALUE_SLICE_LEN(a) == 0)                          /* no block and no string → ArgumentError (CRuby) */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "instance_eval with a String is not supported");
+        /* String form: eval the source with self = the receiver, so `def` in
+         * class_eval/module_eval attaches to the class (self is a Class there),
+         * and instance_eval's code sees the receiver as self.  2nd/3rd args
+         * (filename, lineno) are accepted and ignored. */
+        VALUE src = VALUE_SLICE_GET(a, 0);
+        if (UNLIKELY(!KORB_STRING_P(src))) {
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(src) && korb_responds_to_coerce_p(c, slots, &src, to_str)) {
+                slots[0] = VALUE_REF_GET(self);              /* root receiver across the dispatch */
+                slots[1] = src;
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); src = sr.value; }
+            }
+            if (UNLIKELY(!KORB_STRING_P(src)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self));
     }
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));

@@ -370,6 +370,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
+static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val);   /* defined below — for instance/class_eval(String) in set.c */
 static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -10075,6 +10076,25 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
      * arrays land in M1, return the first arg until then. */
     return RESULT_OK(VALUE_SLICE_GET(args, 0));
+}
+
+/* Parse + run `str` (a String) as a top-level program with `self_val` as self.
+ * Shared by Kernel#eval (self = a throwaway main) and instance/class/module_eval's
+ * String form (self = the receiver, so `def` in class_eval attaches to the class).
+ * The eval'd code sees its own locals only (no caller binding). */
+static RESULT
+korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val)
+{
+    const KorbString *const s = VAL2STR(str);
+    NODE *ast = koruby_parse_source(c, korb_strbuf_data(s->buf), s->len, "(eval)", false);   /* immortal AST; no GC */
+    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
+    const uint32_t locals = koruby_toplevel_locals_cnt;
+    slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
+    VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */
+    VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
+    memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
+    fb[-1] = self_val;                                  /* self cell (base[-1]) */
+    return EVAL(c, ast, cur);
 }
 
 /* Kernel#eval(string) — parse + run the string as a program in a fresh frame
