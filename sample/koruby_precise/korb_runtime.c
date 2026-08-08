@@ -2366,7 +2366,10 @@ static RESULT korb_m_struct_initialize(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     return RESULT_OK(KORB_NIL);
 }
-static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env) {
+/* `base` = the class .new was called on (Struct itself, or a Struct subclass
+ * used as a factory like `class Apple < Struct`).  The new struct class is a
+ * subclass of `base` and, when named, a constant under `base`. */
+static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE base) {
     struct korb_vm *const vm = c->vm;
     uint32_t mstart = 0, name_id = 0; bool has_name = false;   /* String/nil first arg = the constant name slot */
     if (VALUE_SLICE_LEN(a) >= 1) {
@@ -2390,7 +2393,8 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
             mstart = 1;                                       /* explicit anonymous */
         }
     }
-    { VALUE st = korb_const_get(vm, korb_intern(vm, "Struct", 6));      /* anon class, super Struct (is_a?(Struct)) */
+    { VALUE st = base;                                                 /* anon class, super = base (Struct or a Struct subclass) */
+      if (!KORB_CLASS_P(st)) st = korb_const_get(vm, korb_intern(vm, "Struct", 6));
       if (!KORB_CLASS_P(st)) st = korb_builtin_class_obj(vm, KORB_C_OBJECT);
       slots[0] = UNWRAP(korb_class_new(c, slots, 0, st)); }
     VALUE_REF cls = VALUE_REF_AT(&slots[0]);
@@ -2426,9 +2430,10 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
         }
         CHECK(korb_ary_push_val(c, slots + 2, mem, sym));   /* accessors are defined below, after the common methods */
     }
-    if (has_name) {                                                   /* Struct.new("Name",..) → Struct::Name (nested under Struct) */
-        const VALUE struct_cls = korb_const_get(vm, korb_intern(vm, "Struct", 6));
-        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(struct_cls) ? struct_cls : KORB_NIL);
+    if (has_name) {                                                   /* .new("Name",..) → base::Name (nested under the factory class) */
+        VALUE owner = base;
+        if (!KORB_CLASS_P(owner)) owner = korb_const_get(vm, korb_intern(vm, "Struct", 6));
+        korb_const_define_owned(c, name_id, VALUE_REF_GET(cls), KORB_CLASS_P(owner) ? owner : KORB_NIL);
     }
     ARO_STORE(c, VAL2CLASS(VALUE_REF_GET(cls)), (VALUE *)(uintptr_t)&VAL2CLASS(VALUE_REF_GET(cls))->members, VALUE_REF_GET(mem));
     /* common Struct instance methods (read members + @ivars generically).
@@ -6899,8 +6904,17 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(slots[1]);
         }
-        if (cname == vm->name_struct && VAL2CLASS(self)->members == KORB_NIL)
-            return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env);   /* Struct.new(*members[, kw][ do…end]) → class */
+        if (VAL2CLASS(self)->members == KORB_NIL) {
+            /* Struct.new(*members) OR a Struct-derived factory class with no
+             * members of its own (`class Apple < Struct; end; Apple.new("C", :x)`
+             * → Apple::C < Apple).  A real struct class has members set, so it
+             * falls through to instance creation. */
+            bool struct_factory = (cname == vm->name_struct);
+            for (VALUE sc = self; !struct_factory && KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
+                if (VAL2CLASS(sc)->name_sym == vm->name_struct) struct_factory = true;
+            if (struct_factory)
+                return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, self);   /* → new struct class */
+        }
         /* Struct/Data members are inherited (korb_class_new shares the member list
          * onto subclasses), so the receiver class itself carries them. */
         if (VAL2CLASS(self)->members != KORB_NIL) {        /* StructSubclass.new(*vals) / .new(member: v) → init */
@@ -7396,6 +7410,10 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||
             base == KORB_C_PROC || base == KORB_C_FIBER) kind = 2;   /* subclass of Proc/Fiber → real payload */
+        else   /* a Struct-derived class with no members of its own (`class X < Struct`)
+                * acts as a factory (X.new(...) → new struct class), not an instance */
+            for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
+                if (VAL2CLASS(sc)->name_sym == vm->name_struct) { kind = 2; break; }
     }
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
         const VALUE sing = korb_dispatch_class(c, cls);
