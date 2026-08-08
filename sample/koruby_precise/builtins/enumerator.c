@@ -935,32 +935,45 @@ static RESULT korb_m_enum_with_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE
 /* with_object(o): yield (value, o) for each; return o. */
 static RESULT korb_m_enum_with_object(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    CHECK(korb_enum_force_gen(c, slots, self));    /* a to_enum generator (mode 3) → materialized values so ->values reads are safe */
-    if (UNLIKELY(block == NULL)) {                     /* no block → Enumerator over [elem, obj] pairs */
-        slots[0] = VALUE_SLICE_GET(a, 0);             /* obj (rooted) */
-        const uint32_t n = VAL2ARY(SELF_ENUM->values)->len;
-        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));   /* pairs (rooted) */
-        VALUE_REF dst = VALUE_REF_AT(&slots[1]);
-        for (uint32_t i = 0; i < n; i++) {
-            slots[2] = korb_items_data(VAL2ARY(SELF_ENUM->values)->items)[i];   /* elem (rooted) */
-            slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));        /* [elem, obj] */
-            VALUE_REF pr = VALUE_REF_AT(&slots[3]);
-            CHECK(korb_ary_push_val(c, slots + 4, pr, slots[2]));
-            CHECK(korb_ary_push_val(c, slots + 4, pr, slots[0]));
-            CHECK(korb_ary_push_val(c, slots + 4, dst, VALUE_REF_GET(pr)));
-        }
-        slots[2] = UNWRAP(korb_enum_desc(c, slots + 2, VALUE_REF_GET(self), "with_object"));
-        return korb_enum_new(c, slots + 3, VALUE_REF_GET(dst), slots[2]);
+    /* Materialize the receiver into a rooted array we can iterate over:
+       - eager (0): `values` already holds the array
+       - generator (3): force in place, then read `values`
+       - lazy/cycle/lazy-gen (1/2/4): drive to a finite array (infinite → NotImplementedError).
+       A lazy enum has no materialized `values` field, so reading it would deref garbage. */
+    if (SELF_ENUM->mode == 3) CHECK(korb_enum_force_gen(c, slots, self));
+    if (SELF_ENUM->mode != 0) {
+        RESULT dv = korb_lazy_drive(c, slots, self, -1);
+        if (UNLIKELY(dv.state != KORB_NORMAL)) return dv;
+        slots[0] = dv.value;
+    } else {
+        slots[0] = SELF_ENUM->values;
     }
-    slots[0] = VALUE_SLICE_GET(a, 0);                  /* the memo object (rooted) */
+    VALUE_REF vals = VALUE_REF_AT(&slots[0]);       /* rooted: re-read after every may-GC call */
+    if (UNLIKELY(block == NULL)) {                     /* no block → Enumerator over [elem, obj] pairs */
+        slots[1] = VALUE_SLICE_GET(a, 0);             /* obj (rooted) */
+        const uint32_t n = VAL2ARY(VALUE_REF_GET(vals))->len;
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, n));   /* pairs (rooted) */
+        VALUE_REF dst = VALUE_REF_AT(&slots[2]);
+        for (uint32_t i = 0; i < n; i++) {
+            slots[3] = korb_items_data(VAL2ARY(VALUE_REF_GET(vals))->items)[i];   /* elem (rooted) */
+            slots[4] = UNWRAP(korb_ary_new(c, slots + 4, 2));        /* [elem, obj] */
+            VALUE_REF pr = VALUE_REF_AT(&slots[4]);
+            CHECK(korb_ary_push_val(c, slots + 5, pr, slots[3]));
+            CHECK(korb_ary_push_val(c, slots + 5, pr, slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 5, dst, VALUE_REF_GET(pr)));
+        }
+        slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), "with_object"));
+        return korb_enum_new(c, slots + 4, VALUE_REF_GET(dst), slots[3]);
+    }
+    slots[1] = VALUE_SLICE_GET(a, 0);                  /* the memo object (rooted) */
     for (uint32_t i = 0; ; i++) {
-        const KorbArray *v = VAL2ARY(SELF_ENUM->values);
+        const KorbArray *v = VAL2ARY(VALUE_REF_GET(vals));
         if (i >= v->len) break;
-        VALUE argv[2] = { korb_items_data(v->items)[i], slots[0] };
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, cself);
+        VALUE argv[2] = { korb_items_data(v->items)[i], slots[1] };
+        RESULT r = korb_block_yield(c, slots + 2, block, def_env, argv, 2, cself);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
-    return RESULT_OK(slots[0]);
+    return RESULT_OK(slots[1]);
 }
 /* non-eager next/peek: re-drive bounded to cursor+1, return the value there.
  * Generators (mode 3/4) run their proc; lazy chains / cycle (mode 1/2) drive the
