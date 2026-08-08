@@ -10068,6 +10068,11 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (UNLIKELY(!KORB_STRING_P(sv)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
     }
+    /* a non-nil 2nd arg must be a Binding (a Proc is no longer accepted) */
+    if (UNLIKELY(VALUE_SLICE_LEN(args) >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL &&
+                 !KORB_BINDING_P(VALUE_SLICE_GET(args, 1))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Binding)",
+                          korb_type_name(VALUE_SLICE_GET(args, 1)));
     const bool have_bind = VALUE_SLICE_LEN(args) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(args, 1));
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
