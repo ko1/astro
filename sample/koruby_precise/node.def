@@ -834,11 +834,21 @@ node_for(CTX *c, NODE *n, VALUE *slots, int32_t orig_off, int32_t iter_off, int3
     if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
     slots[orig_off] = cr.value;                             /* the original collection (for's value) */
     slots[iter_off] = cr.value;
-    if (!KORB_ARRAY_P(slots[iter_off])) {                   /* Range/Hash/Enumerable → to_a */
+    if (!KORB_ARRAY_P(slots[iter_off])) {
         slots[0] = slots[iter_off];
-        RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);
-        if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
-        slots[iter_off] = ta.value;
+        if (KORB_RANGE_P(slots[iter_off])) {               /* Range: #to_a is a direct C loop and == #each */
+            RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);
+            if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+            slots[iter_off] = ta.value;
+        } else {                                           /* CRuby: `for x in obj` is obj.each{|x|…} — drive #each */
+            slots[1] = ID2SYM(korb_intern(c->vm, "each", 4));                              /* [recv, :each] end at base[-1] */
+            RESULT en = korb_send(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1);   /* enum_for(:each): respects a singleton #each */
+            if (UNLIKELY(en.state != KORB_NORMAL)) return en;
+            slots[0] = en.value;
+            RESULT ta = korb_send(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0);      /* materialize (finite) */
+            if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
+            slots[iter_off] = ta.value;
+        }
         if (UNLIKELY(!KORB_ARRAY_P(slots[iter_off])))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "for: collection is not iterable");
     }
