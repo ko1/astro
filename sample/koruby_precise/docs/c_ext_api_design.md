@@ -234,57 +234,45 @@ extern は `c` を持たない → koruby オブジェクトを alloc できな�
 #### borrow-source は有限の閉集合 + immortal 除外
 
 移動ヒープから**生の内部ポインタ**が出る payload は 2 種だけ:
-- **文字列バイト** `KorbStrBuf.data`(`char data[]`)を `KorbString.buf->data` 経由。
-- **VALUE 配列要素** `KORB_OBJ_VALUE_ARRAY` の `items->data`(KorbArray/KorbHash の裏)。
+- **文字列バイト** `KorbStrBuf` の `char` 配列。**フィールドは `data_priv`**、
+  `korb_strbuf_data()` / `korb_str_data(VALUE)`(`ARO_BORROW` inline)経由でのみ取得。
+- **VALUE 配列要素** `KorbArrayItems` の `VALUE` 配列(KorbArray/KorbHash の裏)。
+  **フィールドは `data_priv`**、`korb_items_data()`(`ARO_BORROW` inline)経由でのみ取得。
+
+生 payload フィールドは `data_priv`。`ARO_BORROW` アクセサ以外から触ると**コンパイル
+エラー**(spatial encapsulation を C の型で hard 強制)。
 
 他フィールドは全て `VALUE ARO_GC_EDGE`(個別 VALUE = VALUE_REF/edge 機構が管理、生
 ポインタでない)。新型を足しても増えるのは `ARO_GC_EDGE` VALUE で新規 raw buffer では
-ない(flexible-array payload 追加は意図的でレビュー対象)。→ CodeQL は関数リストでなく
-**構造マッチ**(上記 2 payload への到達)で網羅でき、`ARO_GC_EDGE` マーカーを再利用可。
-公開 ext API ではさらに小さく、公開アクセサ数個(`korb_str_data` 等)。
+ない(flexible-array payload 追加は意図的でレビュー対象)。→ borrow-source は**この 2 つの
+`ARO_BORROW` アクセサ呼び出し**に集約され、CodeQL はその戻り値 1 点を source にする。
+公開 ext API でも同じ数個のアクセサ(`korb_str_data` 等)。
 
 **immortal は除外**: immortal = libc(calloc/mmap)確保で不動・GC 管理外(AST(NODE)/
 method entry/interned symbol 名/slots/def_env)。immortal borrow は GC 跨ぎで安定なので
 borrow-source から外す(`korb_sym_name`=stable, `korb_str_data`=movable)。別確保クラス
 なので構造上区別でき false positive なし。
 
-**borrow-source の与え方 — 構造マッチ vs `ARO_BORROW` 注釈**:
-- **現行 inline コード**(`VAL2STR(v)->buf->data` のようにマクロ/フィールドで取り出す)
-  は貼る関数が無いので**構造マッチ**で拾う(実装済: leaf `data` + ポインタ演算 +
-  `&elem` + local alias)。ただし interprocedural(helper 戻り値)/構造体フィールド
-  格納/整数ロンダリング/中間 movable 構造体ポインタ(`s->buf`/`ary->items` 自体の
-  保持)は**原理的に構造 local マッチでは網羅できない**(既知の非カバー)。
-- **ext API(将来)= `ARO_BORROW` 注釈**(推奨・単純・完全): 「戻り値が GC
-  オブジェクトの中/自身を指す」アクセサ関数(`korb_str_data` / `korb_str_borrow` /
-  `korb_ary_ptr` 等)に `ARO_BORROW` を貼り、borrow-source =「その関数呼び出しの
-  戻り」1 つに集約。抽出を**アクセサ 1 チョークポイントに通す**ことで、上記の
-  構造マッチの穴(cast/alias/interprocedural)を丸ごと回避できる。`ARO_NOGC`/
-  `ARO_MAYGC` と同じ `runtime/aro_gc_effect.h` に置き、CodeQL は MacroInvocation で
-  拾う(gcc ビルドを壊さない)。
-- 結論: 重い「GC 構造体ポインタ一般への構造マッチ拡張」は複雑な割に不完全なので
-  採らない。**現行 inline は構造マッチ(4 形)で据え置き、抽出を関数化する ext API
-  では `ARO_BORROW` に一本化**する。
+**borrow-source = `ARO_BORROW` アクセサ 1 チョークポイント**: 「戻り値が GC オブジェクト
+の中/自身を指す」アクセサ(`korb_str_data` / `korb_strbuf_data` / `korb_items_data` 等)に
+`ARO_BORROW` を貼り、borrow-source =「その呼び出しの戻り」に集約。抽出が必ずこの 1 点を
+通るので、cast/alias/interprocedural(helper 戻り値)/整数ロンダリング/中間 movable 構造体
+ポインタ保持といった、素の構造マッチでは拾えない穴を丸ごと回避できる。`ARO_NOGC`/
+`ARO_MAYGC` と同じ `runtime/aro_gc_effect.h` に置き、CodeQL は MacroInvocation で拾う
+(gcc ビルドを壊さない)。
 
 **spatial は compiler、temporal は CodeQL(役割分担)**:
-> **STATUS (2026-08-07): 完遂**。payload フィールドを `data_priv` に改名し、全
-> **1424 箇所**の直接アクセスを `korb_strbuf_data`/`korb_items_data`/`korb_str_data`
-> (ARO_BORROW inline)経由に変換済み(commit a1ec4566)。以後は**コンパイラが
-> spatial encapsulation を hard 強制**(bypass = コンパイルエラー)。検証: build
-> 0/0・make test 99808/1890 crash 0(baseline 一致)・AOT optcarrot 60838 / DOOM
-> 一致・STRESS crash 0・codeql interior-encapsulation 0。`interior_encapsulation.ql`
-> は data/data_priv 両対応で baseline 0 の belt-and-suspenders として残置。
-
-- **spatial(誰が生フィールドに触れるか)= C の field-rename + `ARO_BORROW` inline
-  アクセサが最強**。payload フィールドを改名(または nested struct 化)すれば、
-  直接アクセスは**全部コンパイルエラー**になり、コンパイラが箇所を列挙する。
-  実測(2026-08-06): `KorbStrBuf.data`/`KorbArrayItems.data` を改名 → gcc が
-  **1427 error**(= CodeQL の 1429 とほぼ一致、独立クロス検証)。アクセサ化後は
-  bypass すると**コンパイルが通らない** = CodeQL ratchet より強い hard 強制。
-- **temporal(borrow を may-gc 跨ぎで保持)= CodeQL `borrow_after_gc.ql` 専任**。
-  「GC が borrow と use の間で起きるか」はコンパイラには判定できない。
-- したがって `interior_encapsulation.ql`(spatial)は **field-rename 移行までの
-  暫定 ratchet**。rename+アクセサが入れば spatial はコンパイラが保証し、この
-  CodeQL クエリは冗長になる。GC-safety の本体は `borrow_after_gc.ql` の temporal 検査。
+- **spatial(誰が生フィールドに触れるか)= field-rename + `ARO_BORROW` inline アクセサ**。
+  payload フィールドが `data_priv` なので直接アクセスは**全部コンパイルエラー**、bypass
+  すればビルドが通らない(hard 強制)。`interior_encapsulation.ql` は同じ不変条件を CodeQL
+  側でも見る belt-and-suspenders(baseline 0)。
+- **temporal(値を may-gc 跨ぎで保持)= CodeQL 専任**（コンパイラには「GC が def と use の
+  間で起きるか」を判定できない）。2 本ある: `borrow_after_gc.ql` が**生ポインタ**
+  (`ARO_BORROW` accessor の戻り / `data_priv`)を、`value_after_gc.ql` が**裸の VALUE**
+  (may-gc 呼び出しが返した可動 heap オブジェクトを rooted な slots/VALUE_REF でなく C
+  ローカルに保持)を検出。どちらも SSA-precise（rooted から読み直す=新 def=安全）で、
+  安全イディオム(slots[] は配列要素で StackVariable でない)は false-positive しない。
+  GC-safety の本体はこの temporal 2 検査。
 
 #### CodeQL クエリ 2 本(実 API)
 

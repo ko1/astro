@@ -38,7 +38,8 @@ the `interior_encapsulation` query is the CodeQL backstop.
 
 | query | kind | what it enforces |
 |---|---|---|
-| `borrow_after_gc.ql` | **temporal** | A raw borrow (an `ARO_BORROW` accessor's return, or a `->data`/`->data_priv` field on `KorbStrBuf`/`KorbArrayItems`) held in a local and **used after a may-GC call** is stale under the moving GC → error.  SSA-precise: re-deriving the pointer (a new SSA def) is treated as safe, so the re-derive-each-iteration idiom does not false-positive.  Follows the borrow through conversions, pointer arithmetic, `&elem`, and local aliasing. |
+| `borrow_after_gc.ql` | **temporal (pointer)** | A raw borrow (an `ARO_BORROW` accessor's return, or a `->data`/`->data_priv` field on `KorbStrBuf`/`KorbArrayItems`) held in a local and **used after a may-GC call** is stale under the moving GC → error.  SSA-precise: re-deriving the pointer (a new SSA def) is treated as safe, so the re-derive-each-iteration idiom does not false-positive.  Follows the borrow through conversions, pointer arithmetic, `&elem`, and local aliasing. |
+| `value_after_gc.ql` | **temporal (VALUE)** | The VALUE companion to `borrow_after_gc`: a `VALUE` produced by a may-GC call (a potentially movable heap object) held in a plain C local and **used after another may-GC call** is stale — the moving GC updates rooted slots (`slots[]`, `VALUE_REF` cells) but not a bare local → error.  The safe idiom stages into `slots[]` (an array element, not a `StackVariable`) and re-reads it, which is not flagged; a re-read into a local (`v = slots[i]` again) is a fresh SSA def, also safe.  Follows the VALUE through conversions and local aliasing. |
 | `interior_encapsulation.ql` | **spatial** | Direct access to a raw payload field (`KorbStrBuf`/`KorbArrayItems` `::data`/`::data_priv`) **outside an `ARO_BORROW` function** → warning.  Backstops the compiler (field rename): all interior access must go through the accessor chokepoint, so the representation can change by editing accessors alone. |
 | `borrow_escape.ql` | **escape** | A raw borrow that **escapes a non-`ARO_BORROW` function** — returned from it, or stored into a struct field / global — hands the caller a borrow without its lifetime → warning.  Fix: mark the function `ARO_BORROW` (if it is deliberately an accessor) or copy the bytes out. |
 | `aro_borrow_unused.ql` | **hygiene** | A function marked `ARO_BORROW` whose body **touches no raw payload and calls no accessor** — the annotation is a lie that needlessly exempts it from `interior_encapsulation` and makes `borrow_after_gc` treat its return as a borrow (false positives on callers) → warning.  Fix: remove `ARO_BORROW`. |
@@ -49,6 +50,10 @@ the `interior_encapsulation` query is the CodeQL backstop.
 - `test/borrow_cases.c` — 5 true positives (linear hold / loop-carried hold /
   `&data[i]` / alias / via-accessor) + 3 true negatives (use-before-gc /
   no-gc-between / re-derive-loop) for `borrow_after_gc`.
+- `test/value_cases.c` — 3 true positives (local held across may-GC / held
+  across a second producer / alias) + 4 true negatives (no-gc-between /
+  staged-in-`slots[]` / re-read-from-slot / consumed-as-argument) for
+  `value_after_gc`.
 - `test/annotation_cases.c` — one escape + one unused-annotation case for
   `borrow_escape` / `aro_borrow_unused`.
 - `test/encapsulation_cases.c` — direct-access-outside-accessor case for
@@ -60,7 +65,8 @@ the `interior_encapsulation` query is the CodeQL backstop.
 qlpack.yml                  CodeQL pack (deps: codeql/cpp-all)
 run.sh                      the gate (invoked by `make codeql-check`)
 cqbuild.sh                  clean, ccache-disabled build for DB extraction
-borrow_after_gc.ql          temporal check
+borrow_after_gc.ql          temporal check (raw pointer)
+value_after_gc.ql           temporal check (bare VALUE)
 interior_encapsulation.ql   spatial check
 borrow_escape.ql            escape check
 aro_borrow_unused.ql        annotation-hygiene check

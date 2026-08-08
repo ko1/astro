@@ -37,6 +37,10 @@ ADB=$DBDIR/annot
 ( cd "$HERE/test" && "$CQ" database create "$ADB" --language=cpp --overwrite \
     --command="gcc -c annotation_cases.c -o annotation_cases.o" ) >/dev/null 2>&1
 rm -f "$HERE/test/annotation_cases.o"
+VDB=$DBDIR/vfix
+( cd "$HERE/test" && "$CQ" database create "$VDB" --language=cpp --overwrite \
+    --command="gcc -c value_cases.c -o value_cases.o" ) >/dev/null 2>&1
+rm -f "$HERE/test/value_cases.o"
 
 # ---- real koruby DB (build trace) ----
 KDB=$DBDIR/koruby
@@ -67,3 +71,9 @@ echo "borrow-escape:          self-test 1,  koruby 0 escapes                  ok
 NU=$(runq "$KDB" aro_borrow_unused.ql | n_unused)
 [ "$NU" -eq 0 ] || { runq "$KDB" aro_borrow_unused.ql; fail "$NU unused ARO_BORROW annotation(s)"; }
 echo "aro-borrow-unused:      self-test 1,  koruby 0 stale annotations        ok"
+
+# 5. value-after-gc  (temporal: a heap VALUE held in a local across a may-GC call)
+[ "$(runq "$VDB" value_after_gc.ql | n_hits)" -eq 3 ] || fail "value_after_gc self-test != 3"
+NVG=$(runq "$KDB" value_after_gc.ql | n_hits)
+[ "$NVG" -eq 0 ] || { runq "$KDB" value_after_gc.ql; fail "$NVG value-after-gc hazard(s)"; }
+echo "value-after-gc:         self-test 3 TP / 4 TN,  koruby 0 hazards        ok"
