@@ -369,6 +369,7 @@ int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-st
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
+static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
 static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -7183,7 +7184,16 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), len);   /* re-read src (moved) */
                 return RESULT_OK((VALUE)r);
             }
-            return korb_str_new(c, slots, "", 0);
+            if (argc == 0) return korb_str_new(c, slots, "", 0);
+            /* non-String source (#to_str-able) or kwargs-only: alloc empty, run
+             * #initialize (which #to_str-coerces + replaces).  Instance rooted at
+             * slots[1], args below base — same layout as the subclass path. */
+            slots[0] = *recv_slot;                              /* root recv (String class) */
+            slots[1] = UNWRAP(korb_str_new(c, slots + 1, "", 0));   /* instance (rooted) */
+            RESULT ir = korb_m_str_initialize(c, slots + 2, VALUE_REF_AT(&slots[1]),
+                                              VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            return RESULT_OK(slots[1]);
         }
         /* subclass of a constructible builtin (String/Array/Hash/Set): build that
          * payload, tag it with the subclass via the override table, run the
@@ -7780,6 +7790,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "downto", korb_m_int_downto, 1);
 
     /* String */
+    korb_def_cmethod(c, KORB_C_STRING, "initialize", korb_m_str_initialize, -1);
+    { struct korb_method *const mi = korb_cmethod_slot(c->vm, KORB_C_STRING, "initialize"); if (mi) mi->visibility = 1; }   /* #initialize is private */
     korb_def_cmethod(c, KORB_C_STRING, "length", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "size", korb_m_str_charlen, 0);
     korb_def_cmethod(c, KORB_C_STRING, "bytesize", korb_m_str_len, 0);

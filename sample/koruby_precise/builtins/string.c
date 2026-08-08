@@ -430,6 +430,18 @@ static RESULT korb_m_str_concat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     return RESULT_OK(VALUE_REF_GET(self));
 }
+/* String#initialize([str], encoding:, capacity:) — private.  With no positional
+ * string, leave self as-is (String.new / capacity:/encoding:-only forms); with a
+ * string (or #to_str-able) source, replace self's content with it (like #replace).
+ * Returns self.  A trailing kwargs Hash (encoding:/capacity:) is ignored. */
+static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd */
+static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) == 0) return RESULT_OK(VALUE_REF_GET(self));
+    if (KORB_HASH_P(VALUE_SLICE_GET(a, 0))) return RESULT_OK(VALUE_REF_GET(self));   /* kwargs-only (encoding:/capacity:) */
+    RESULT r = korb_m_str_replace(c, slots, self, a);   /* replace content from the string source (#replace reads only arg0) */
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     VALUE o = VALUE_SLICE_GET(a, 0);
@@ -444,7 +456,9 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
-    return korb_str_append_str(c, slots, self, VALUE_SLICE_REF(a, 0));
+    /* Append at slots+2: the #to_str branch parks `self` at slots[0], so the grow's
+     * korb_alloc must not use slots[0]/[1] as scratch (that would stale `self`). */
+    return korb_str_append_str(c, slots + 2, self, VALUE_SLICE_REF(a, 0));
 }
 static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
