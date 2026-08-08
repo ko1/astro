@@ -14,6 +14,7 @@ thread/
 mutex/
 conditionvariable/
 queue/
+sizedqueue/
 fiber/
 objectspace/
 gc/
@@ -24,6 +25,8 @@ kernel/srand
 kernel/system
 kernel/exec
 kernel/spawn
+kernel/abort
+kernel/exit
 kernel/`
 kernel/at_exit
 kernel/caller
