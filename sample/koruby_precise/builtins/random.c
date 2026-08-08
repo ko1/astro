@@ -100,7 +100,7 @@ static VALUE korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern
 static VALUE korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "__seed", 6)); }
 
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
-static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
+ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
     const VALUE s = korb_ivar_get(c, rndobj, korb_mt_sym(c->vm));
     return KORB_STRING_P(s) ? (KorbMT *)korb_strbuf_data(VAL2STR(s)->buf) : NULL;
 }

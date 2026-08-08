@@ -61,7 +61,7 @@ static size_t korb_path_normalize(const char *src, size_t n, char *dst) {
     return d;
 }
 
-static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
+ARO_BORROW static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
     *len = VAL2STR(v)->len;
     return korb_strbuf_data(VAL2STR(v)->buf);
 }
@@ -651,7 +651,7 @@ static RESULT korb_m_dir_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)self; return korb_m_file_stat_pred(c, slots, a, 2);
 }
 /* the sole String path arg as a NUL-terminated cstr (TypeError otherwise). */
-static const char *korb_path_arg(CTX *c, VALUE *slots, VALUE_SLICE a, RESULT *err) {
+ARO_BORROW static const char *korb_path_arg(CTX *c, VALUE *slots, VALUE_SLICE a, RESULT *err) {
     const VALUE pv = VALUE_SLICE_GET(a, 0);
     if (UNLIKELY(!KORB_STRING_P(pv))) { *err = korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv)); return NULL; }
     err->state = KORB_NORMAL; uint32_t plen; return korb_str_cstr_len(pv, &plen);

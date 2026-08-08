@@ -2295,7 +2295,7 @@ static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char
     return ll;
 }
 /* resolve the line separator arg (a[0]) → bytes; default "\n". */
-static const char *korb_line_sep(VALUE_SLICE a, uint32_t *seplen) {
+ARO_BORROW static const char *korb_line_sep(VALUE_SLICE a, uint32_t *seplen) {
     if (VALUE_SLICE_LEN(a) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
         const KorbString *sp = VAL2STR(VALUE_SLICE_GET(a, 0));
         *seplen = sp->len; return korb_strbuf_data(sp->buf);

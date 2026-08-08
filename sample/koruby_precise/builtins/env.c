@@ -6,7 +6,7 @@
 extern char **environ;
 
 /* arg → a NUL-terminated env name; raises TypeError on a non-String. */
-static const char *korb_env_name(CTX *c, VALUE *slots, VALUE v, RESULT *err) {
+ARO_BORROW static const char *korb_env_name(CTX *c, VALUE *slots, VALUE v, RESULT *err) {
     if (UNLIKELY(!KORB_STRING_P(v))) {
         *err = korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
         return NULL;
