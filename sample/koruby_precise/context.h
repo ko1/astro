@@ -194,6 +194,7 @@ enum korb_obj_type {
     KORB_OBJ_PROC        = 21,  /* Proc/lambda: iseq(immortal) + captured env + self */
     KORB_OBJ_MATCHDATA   = 22,  /* MatchData (whole-match substring; no captures) */
     KORB_OBJ_BINDING     = 23,  /* Binding: captured local scope (env) + self + name table */
+    KORB_OBJ_THREAD      = 24,  /* green thread handle (rep is libc; docs/io_design.md) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -414,6 +415,48 @@ typedef struct KorbFiber {
     struct KorbFiberRep *rep;
 } KorbFiber;
 
+/* korb_thread — a Ruby Thread (green thread; docs/io_design.md).  Phase 1:
+ * native 1 本 + M green threads、切替は blocking 点のみ (協調)。全 mutable 状態と
+ * GC roots はこの libc-stable な rep に置き、vm->thread_list 経由で scan する。
+ * KorbThread heap object は薄い可動 handle。 */
+struct korb_blop;                    /* blop 層 (M2) — fwd */
+enum korb_thread_state { KORB_TH_READY = 0, KORB_TH_RUNNING, KORB_TH_PENDED, KORB_TH_DEAD };
+struct korb_thread {
+    /* GC roots (AROH_VISIT_ROOTS が thread_list 経由で visit) */
+    VALUE thval;                     /* KorbThread handle (movable) */
+    VALUE args;                      /* Thread.new の引数 Array (起動後 nil) */
+    VALUE blk;                       /* body の Proc (escape-safe に env を close 済) —
+                                        生 def_env 保持は作成フレームが thread 実行前に
+                                        死ぬパターン (n.times { Thread.new{…} }) で壊れる */
+    VALUE captured_self;             /* (未使用予約; blk が self を持つ) */
+    VALUE result;                    /* body の戻り値 (#join / #value) */
+    VALUE exc;                       /* thread を殺した例外 (raised=1 のとき) */
+    VALUE tls;                       /* thread-local storage Hash (#[] / #[]=) */
+    VALUE name;                      /* Thread#name */
+    VALUE pending_ints;              /* pending interrupt queue (M3) */
+    /* stacks / context */
+    VALUE *vslots;                   /* 自分の value stack base (main: main slots) */
+    VALUE *vslots_limit;
+    VALUE *saved_base, *saved_top, *saved_hw;   /* suspend 中の c->slots tuple */
+    const char *saved_cstack_limit;
+    void  *uctx;                     /* ucontext_t* */
+    void  *cstack;                   /* malloc native stack (NULL = main/process stack) */
+    /* scheduling */
+    uint8_t state;                   /* enum korb_thread_state */
+    uint8_t started;                 /* trampoline が走るまで 0 */
+    uint8_t raised;                  /* body が例外で終了 */
+    struct korb_thread *rq_next;     /* run queue link (READY FIFO) */
+    struct korb_thread *next;        /* vm->thread_list link (全 rep; 解放しない) */
+    struct korb_thread *joiners;     /* 自分の死を #join で待つ thread 群 */
+    struct korb_thread *join_next;
+    struct korb_blop *blop;          /* PENDED 中に待っている blop (M2)、他は NULL */
+};
+
+typedef struct KorbThread {
+    AroObjectHeader head;            /* KORB_OBJ_THREAD (no GC edges; rep is libc) */
+    struct korb_thread *rep;
+} KorbThread;
+
 typedef struct KorbException {
     AroObjectHeader head;
     uint32_t etype;          /* enum korb_etype (korb_runtime.c) */
@@ -566,6 +609,8 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
 #define VAL2BIND(v)        ((KorbBinding *)(uintptr_t)(v))
 #define KORB_FIBER_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER)
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
+#define KORB_THREAD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD)
+#define VAL2THREAD(v)      ((KorbThread *)(uintptr_t)(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
 #define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
 #define KORB_MATCHDATA_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MATCHDATA)
@@ -613,7 +658,7 @@ enum korb_class {
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
     KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA, KORB_C_BINDING,
-    KORB_C_RANDOM, KORB_C_UNBOUND_METHOD,
+    KORB_C_RANDOM, KORB_C_UNBOUND_METHOD, KORB_C_THREAD,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -781,6 +826,15 @@ struct korb_vm {
     struct KorbFiberRep *running_fiber;
     struct KorbFiberRep *starting_fiber;
     VALUE *main_slots, *main_slots_top;
+
+    /* green threads (Thread) — docs/io_design.md。cur_thread == NULL は
+     * thread サブシステム未起動 (最初の Thread API 使用で boot): それまで
+     * fast path はゼロコスト。rep は libc-stable、解放しない。 */
+    struct korb_thread *thread_list;   /* 全 rep (GC scan 用) */
+    struct korb_thread *cur_thread;    /* RUNNING (NULL = single-threaded) */
+    struct korb_thread *main_thread;
+    struct korb_thread *runq_head, *runq_tail;   /* READY FIFO */
+    uint32_t name_thread;              /* interned "Thread" */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
@@ -1003,6 +1057,25 @@ struct CTX_struct {
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
         }                                                                    \
     }                                                                        \
+    /* every green thread rep's roots + (suspended) stack range.  The running \
+     * thread's stack is the c->slots scan above; an unstarted thread has no  \
+     * stack yet (args root covers its inputs); a DEAD thread's stack is      \
+     * freed (result/exc stay as roots). */                                   \
+    for (struct korb_thread *_t = (c)->vm->thread_list; _t; _t = _t->next) {  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->thval);                     \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->args);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->blk);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->captured_self);             \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->result);                    \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->exc);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tls);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->name);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
+        if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
+            for (VALUE *_p = _t->saved_base - 2; _p < _t->saved_top; _p++)    \
+                ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
+        }                                                                    \
+    }                                                                        \
 } while (0)
 
 #define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {         \
@@ -1117,7 +1190,8 @@ struct CTX_struct {
         break;                                                               \
       }                                                                      \
       case KORB_OBJ_FIBER:                                                   \
-        /* handle only; rep (libc) roots scanned via the vm fiber list */    \
+      case KORB_OBJ_THREAD:                                                  \
+        /* handle only; rep (libc) roots scanned via the vm fiber/thread list */ \
         (void)(payload_size);                                               \
         break;                                                               \
       case KORB_OBJ_ARITHSEQ: {                                              \

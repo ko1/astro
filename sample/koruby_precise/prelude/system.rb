@@ -3,40 +3,17 @@
 # just enough surface to load mspec and run non-concurrent specs.  Real behavior
 # is out of scope (Thread.new runs its block synchronously).
 
+# Thread 本体 (new/join/value/pass/current/...) は C 実装 (builtins/thread.c、
+# green thread M:1 — docs/io_design.md)。ここは Ruby で足りる補助だけ。
 class Thread
-  def self.current; @current ||= allocate; end
-  def self.main; current; end
-  def self.list; [current]; end
-  def self.pass; nil; end
-  def self.stop; nil; end
-  def self.new(*args, &block)
-    t = allocate
-    # Lazily run the block on first #value/#join instead of at creation, so
-    # Thread.new { loop {} } (concurrency specs) doesn't hang the whole file.
-    t.instance_variable_set(:@__blk, block)
-    t.instance_variable_set(:@__args, args)
-    t
-  end
   def self.start(*a, &b); new(*a, &b); end
-  def __run
-    return @__value if defined?(@__value) && @__ran
-    @__ran = true
-    @__value = @__blk ? @__blk.call(*@__args) : nil
-  end
-  def self.report_on_exception; @roe; end
+  def self.fork(*a, &b); new(*a, &b); end
+  def self.stop; pass; end                  # sleep-until-wakeup は blop 層 (M2) で
+  def self.exclusive; yield; end
+  def self.report_on_exception; @roe.nil? ? true : @roe; end
   def self.report_on_exception=(v); @roe = v; end
-  def self.abort_on_exception; @aoe; end
+  def self.abort_on_exception; @aoe.nil? ? false : @aoe; end
   def self.abort_on_exception=(v); @aoe = v; end
-  def value; __run; end
-  def join(*); __run; self; end
-  def alive?; false; end
-  def kill; self; end
-  def name; @__name; end
-  def name=(n); @__name = n; end
-  def [](k); (@__tls ||= {})[k]; end
-  def []=(k, v); (@__tls ||= {})[k] = v; end
-  def report_on_exception; @roe; end
-  def report_on_exception=(v); @roe = v; end
 end
 
 class Mutex

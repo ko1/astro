@@ -4246,6 +4246,7 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
         { "MatchData", KORB_C_MATCHDATA }, { "Binding", KORB_C_BINDING },
         { "Random", KORB_C_RANDOM }, { "UnboundMethod", KORB_C_UNBOUND_METHOD },
+        { "Thread", KORB_C_THREAD },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -5665,6 +5666,7 @@ static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
+static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* thread.c */
 
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
@@ -6477,6 +6479,7 @@ korb_class_of(VALUE v)
           case KORB_OBJ_METHOD:
             return VAL2METH(v)->unbound ? KORB_C_UNBOUND_METHOD : KORB_C_METHOD;
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
+          case KORB_OBJ_THREAD: return KORB_C_THREAD;
           case KORB_OBJ_PROC:   return KORB_C_PROC;
           case KORB_OBJ_MATCHDATA: return KORB_C_MATCHDATA;
           case KORB_OBJ_BINDING:   return KORB_C_BINDING;
@@ -6505,6 +6508,7 @@ korb_class_name(enum korb_class cls)
       case KORB_C_METHOD: return "Method";
       case KORB_C_UNBOUND_METHOD: return "UnboundMethod";
       case KORB_C_FIBER:  return "Fiber";
+      case KORB_C_THREAD: return "Thread";
       case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
       case KORB_C_MATCHDATA: return "MatchData";
@@ -6884,6 +6888,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
         if (cname == vm->name_fiber)
             return korb_fiber_new(c, slots, block, def_env, captured_self);
+        if (cname == vm->name_thread)
+            return korb_thread_s_new(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
         if (cname == vm->class_name[KORB_C_CLASS] || cname == vm->name_module) {   /* Class.new([super]) / Module.new [do…end] */
             const bool is_mod = (cname == vm->name_module);
             slots[0] = (!is_mod && argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
@@ -7405,6 +7411,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     const uint32_t cname = k->name_sym;
     uint8_t kind = 1;
     if (k->is_module || k->members != KORB_NIL || cname == vm->name_fiber ||
+        cname == vm->name_thread ||
         (cname == vm->name_struct) || cname == vm->name_module ||
         cname == vm->class_name[KORB_C_CLASS]  ||   /* Class.new / Module.new → real class, not a generic object */
         cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
@@ -7681,6 +7688,7 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* de
 #include "builtins/array_ext.c"
 #include "builtins/int_float_ext.c"
 #include "builtins/fiber.c"
+#include "builtins/thread.c"
 #include "builtins/arithseq.c"
 #include "builtins/string_ext.c"
 korb_register_core_methods(CTX *c)
@@ -8386,6 +8394,25 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "join", korb_m_thread_join, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "value", korb_m_thread_value, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "alive?", korb_m_thread_alive, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "status", korb_m_thread_status, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "name", korb_m_thread_name, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "name=", korb_m_thread_name_set, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "[]", korb_m_thread_aref, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "[]=", korb_m_thread_aset, 2);
+    korb_def_cmethod(c, KORB_C_THREAD, "key?", korb_m_thread_key_p, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_get", korb_m_thread_aref, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_set", korb_m_thread_aset, 2);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable?", korb_m_thread_key_p, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "kill", korb_m_thread_kill, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "exit", korb_m_thread_kill, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "terminate", korb_m_thread_kill, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);
@@ -10869,6 +10896,7 @@ korb_ctx_new(void)
     c->vm->mid_initialize  = korb_intern(c->vm, "initialize", 10);
     c->vm->mid_yield       = korb_intern(c->vm, "yield", 5);
     c->vm->name_fiber      = korb_intern(c->vm, "Fiber", 5);
+    c->vm->name_thread     = korb_intern(c->vm, "Thread", 6);
     c->vm->name_struct     = korb_intern(c->vm, "Struct", 6);
     c->vm->mid_aref        = korb_intern(c->vm, "[]", 2);
     c->vm->mid_aset        = korb_intern(c->vm, "[]=", 3);
