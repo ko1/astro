@@ -20,7 +20,9 @@ select/epoll/io_uring の差し替え可能な backend で多重化する。**Ph
 - **post** = engine/worker が完了を書き込み waiter を runnable にする。
 - **engine** = backend 実装 (poll / epoll / uring)。
 - **pump** = 完了回収ループ。scheduler の idle ループが呼ぶ、**native thread が眠る唯一の場所**。
-- gthread 状態: `RUNNING / READY / PENDED / DEAD`。
+- **korb_thread** = Ruby の Thread (green thread)。CRuby の `rb_thread_t` に対応。
+  native 側は Phase 2 以降に `korb_native_thread` (CRuby の `struct rb_native_thread`
+  と同じ対応関係)。状態: `RUNNING / READY / PENDED / DEAD`。
 
 ## 全体像
 
@@ -68,7 +70,7 @@ struct korb_blop {
        READ/WRITE/POLL に deadline を課すため union に入れない */
     struct timespec timeout;
     ssize_t  result;                  /* 完了時に engine が埋める (下表) */
-    struct korb_gthread *waiter;      /* 内部用: wait が埋める */
+    struct korb_thread *waiter;      /* 内部用: wait が埋める */
     union {                           /* op 固有 (NODE の u. と同じ流儀) */
         struct { struct pollfd *fds; nfds_t nfds; }             poll;
         struct { int fd; void *buf; size_t len; int64_t off; }  rw;    /* READ/WRITE 共用 */
@@ -172,7 +174,7 @@ Phase 1 の単純化: **kill を発行する側も green thread なので、発�
 RUNNING ではあり得ない** (同時に走るのは 1 人)。対象は READY か PENDED のみ。
 
 ```c
-struct korb_gthread {
+struct korb_thread {
     uint8_t  state;                 /* RUNNING / READY / PENDED / DEAD */
     struct korb_blop *blop;         /* PENDED 中に待っている blop (それ以外 NULL)。
                                        CRuby 3.4 の rb_io_blocking_operation_enter/exit
@@ -181,8 +183,8 @@ struct korb_gthread {
     ...
 };
 
-void   korb_gthread_interrupt (struct korb_vm *vm, struct korb_gthread *t, VALUE exc_or_kill);
-RESULT korb_gthread_check_ints(CTX *c, VALUE *slots);   /* RUBY_VM_CHECK_INTS 相当 */
+void   korb_thread_interrupt (struct korb_vm *vm, struct korb_thread *t, VALUE exc_or_kill);
+RESULT korb_thread_check_ints(CTX *c, VALUE *slots);   /* RUBY_VM_CHECK_INTS 相当 */
 ```
 
 - `interrupt`: pending_ints に積む。対象が PENDED なら
@@ -254,5 +256,5 @@ preemption (quantum) / RUNNING への非同期割り込み / STW GC の safepoin
 **3 つとも「実行中コードが定期的に踏む check point (safepoint)」1 機構に還元**
 される。fastpath に check を入れる設計 (method entry のカウンタ / Go 流 signal
 差し込み / GC poll 点との共用) は N native フェーズでまとめて払う。Phase 1 で
-先払いするのは形だけ: `korb_gthread_interrupt` / `check_ints` の API 形、
+先払いするのは形だけ: `korb_thread_interrupt` / `check_ints` の API 形、
 `t->blop` 逆リンク、eventfd チャネル — いずれも N native でそのまま使う。
