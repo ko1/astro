@@ -452,6 +452,8 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
     IOB("each_char", each_char, 0);   IOM("getc", getc, 0);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
+    IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */
+    IOM("wait_writable", wait_writable, -1);
     korb_const_define(c, korb_intern(vm, "SEEK_SET", 8), LONG2FIX(SEEK_SET));
     korb_const_define(c, korb_intern(vm, "SEEK_CUR", 8), LONG2FIX(SEEK_CUR));
     korb_const_define(c, korb_intern(vm, "SEEK_END", 8), LONG2FIX(SEEK_END));
@@ -463,6 +465,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "binwrite",  korb_m_file_write,     -1);
     korb_class_def_cfn(c, io_sing, "readlines", korb_m_file_readlines, -1);
     korb_class_def_cfn_blk(c, io_sing, "foreach", korb_m_file_foreach, -1);
+    korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods.

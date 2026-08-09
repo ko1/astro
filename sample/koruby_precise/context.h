@@ -839,6 +839,7 @@ struct korb_vm {
      * 登録済みで完了待ちの blop の連結リスト (rep 同様 C スタック上の実体)。 */
     struct korb_blop *blop_pending;
     uint32_t blop_npending;
+    VALUE thread_kill_exc;             /* Thread#kill 用内部例外 class (遅延生成; GC root) */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
@@ -1037,6 +1038,8 @@ struct CTX_struct {
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->yielder_class);            \
     /* Enumerator::Lazy class object. */                                       \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->lazy_class);               \
+    /* Thread#kill 内部例外 class (KORB_NIL まで未生成)。 */                    \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->thread_kill_exc);          \
     /* cached frozen nil/true/false #to_s strings. */                          \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_nil_to_s);             \
     ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->str_true_to_s);            \

@@ -7678,6 +7678,10 @@ RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out);   /* 
 #include "builtins/env.c"
 static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp);   /* defined below; io.c IO#puts uses it */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
+/* IO の readiness 系は blop 層 (builtins/thread.c、io.c より後に include) 実装 */
+static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 #include "builtins/io.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
@@ -8410,10 +8414,14 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "kill", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "exit", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "terminate", korb_m_thread_kill, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "raise", korb_m_thread_raise, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "wakeup", korb_m_thread_wakeup, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "run", korb_m_thread_wakeup, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "stop", korb_m_thread_s_stop, 0);
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);

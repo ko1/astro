@@ -2219,3 +2219,12 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
   - `defined?`(match global/nil-ivar-gvar, 231→276)、`!=` override + `Object#!=` latent、index massign target、定数 MRO ancestry(91→102)、`super` rest+block forward(48→66)。
   - **差分ソートネスファザー `tools/fuzz_soundness.rb`**（`--stress` で GC crash 検出）。node.def の slot/frame offset 型バグは静的+動的とも残存無し確認。
 - **残（到達可能）**: `super` block forward は depth==0 のみ（nested block 内 super 未対応）。`X::Foo`(X 非module)→TypeError（node に explicit-path/bare-read 区別が必要）。method/massign の mock-protocol coercion（除外）。
+
+## Thread/IO (io_design.md Phase 1 実装後の残)
+- [ ] Time.now の秒未満精度 (to_f が整数秒 — IO.select/timeout テストの時間検証が偽陰性になる)
+- [ ] IO#close → korb_blop_cancel_fd (待機中 thread に IOError "stream closed in another thread")
+- [ ] dead thread の vslots/cstack reap (現状リーク; 別 stack から free する reaper)
+- [ ] IO read/write 本体の blop 化 (fd ベース IO 層への作り直し; 現状 FILE* 同期のまま)
+- [ ] epoll / io_uring engine (現状 poll(2) のみ; vtable 化と probe は io_design.md 通り)
+- [ ] pump wake eventfd + signal 配送 (pump 睡眠中の Ctrl-C)
+- [ ] rescue Exception が Thread::Kill を捕まえてしまう (CRuby は kill を rescue 不能)

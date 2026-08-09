@@ -95,32 +95,12 @@ korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno)
     korb_blop_post(vm, b, neg_errno);
 }
 
-/* pump: 完了回収。block=1 なら次の deadline まで (無ければ無期限) native に眠る —
- * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。 */
+/* 期限切れ deadline を post。戻り値: post した数 */
 static int
-korb_blop_pump(struct korb_vm *vm, int block)
+korb_blop_expire(struct korb_vm *vm)
 {
     struct timespec now; korb_blop_now(&now);
     int posted = 0;
-    for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {   /* 期限切れを post */
-        nx = b->bl_next;
-        if (korb_blop_deadline_passed(b, &now)) {
-            korb_blop_post(vm, b, b->kind == KORB_BLOP_TIMER ? 0 : -ETIMEDOUT);
-            posted++;
-        }
-    }
-    if (posted || !block) return posted;
-    /* 眠る長さ = 最短 deadline (無ければ無期限)。M3 でここが poll(fds…) になる */
-    int ms = -1;
-    for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next) {
-        if (!(b->flags & KORB_BLOP_F_TIMEOUT)) continue;
-        long d = (long)(b->deadline.tv_sec - now.tv_sec) * 1000
-               + (b->deadline.tv_nsec - now.tv_nsec) / 1000000L;
-        if (d < 0) d = 0;
-        if (ms < 0 || d < ms) ms = (int)d;
-    }
-    poll(NULL, 0, ms);
-    korb_blop_now(&now);
     for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
         nx = b->bl_next;
         if (korb_blop_deadline_passed(b, &now)) {
@@ -129,6 +109,76 @@ korb_blop_pump(struct korb_vm *vm, int block)
         }
     }
     return posted;
+}
+
+/* pump: 完了回収。block=1 なら fd readiness / 次の deadline まで native に眠る —
+ * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。
+ * POLL blop の pollfd 群を 1 本の poll(2) に束ね、revents を書き戻して post。 */
+static int
+korb_blop_pump(struct korb_vm *vm, int block)
+{
+    int posted = korb_blop_expire(vm);
+    /* fd 収集 (POLL blops) */
+    nfds_t total = 0;
+    for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+        if (b->kind == KORB_BLOP_POLL) total += b->u.poll.nfds;
+    struct pollfd sbuf[64];
+    struct pollfd *pf = (total <= 64) ? sbuf : malloc(sizeof(*pf) * total);
+    if (!pf) abort();
+    nfds_t k = 0;
+    for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next)
+        if (b->kind == KORB_BLOP_POLL)
+            for (nfds_t i = 0; i < b->u.poll.nfds; i++) {
+                pf[k] = b->u.poll.fds[i]; pf[k].revents = 0; k++;
+            }
+    /* 眠る長さ: 既に post 済み or 非 block なら 0、それ以外は最短 deadline (無ければ無期限) */
+    int ms = 0;
+    if (!posted && block) {
+        ms = -1;
+        struct timespec now; korb_blop_now(&now);
+        for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next) {
+            if (!(b->flags & KORB_BLOP_F_TIMEOUT)) continue;
+            long d = (long)(b->deadline.tv_sec - now.tv_sec) * 1000
+                   + (b->deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            if (d < 0) d = 0;
+            if (ms < 0 || d < ms) ms = (int)d;
+        }
+    }
+    if (total == 0 && ms == 0) { if (pf != sbuf) free(pf); return posted; }
+    const int rc = poll(pf, total, ms);
+    if (rc > 0) {                                   /* revents を各 blop に書き戻し */
+        k = 0;
+        for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
+            nx = b->bl_next;
+            if (b->kind != KORB_BLOP_POLL) continue;
+            int ready = 0;
+            for (nfds_t i = 0; i < b->u.poll.nfds; i++) {
+                b->u.poll.fds[i].revents = pf[k + i].revents;
+                if (pf[k + i].revents) ready++;
+            }
+            k += b->u.poll.nfds;
+            if (ready) { korb_blop_post(vm, b, ready); posted++; }
+        }
+    }
+    if (pf != sbuf) free(pf);
+    posted += korb_blop_expire(vm);
+    return posted;
+}
+
+/* POLL blop 1 発: fds (stable メモリ) の readiness を待つ。timeout_sec < 0 =
+ * 無期限。*out_ready = ready fd 数 (0 = timeout)。per-fd 結果は fds[i].revents。 */
+static RESULT korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b);   /* fwd */
+static RESULT
+korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds_t nfds,
+                    double timeout_sec, ssize_t *out_ready)
+{
+    struct korb_blop b; memset(&b, 0, sizeof b);
+    b.kind = KORB_BLOP_POLL;
+    b.u.poll.fds = fds; b.u.poll.nfds = nfds;
+    if (timeout_sec >= 0) korb_blop_deadline_in(&b, timeout_sec);
+    CHECK(korb_blop_wait(c, slots, &b));
+    *out_ready = (b.result > 0) ? b.result : 0;     /* -ETIMEDOUT / -ECANCELED → 0 */
+    return RESULT_OK(KORB_NIL);
 }
 
 /* ---- ThreadError (const-only class) -------------------------------------- */
@@ -275,6 +325,69 @@ korb_thread_exit_switch(CTX *c)
     setcontext((ucontext_t *)next->uctx);     /* never returns */
 }
 
+/* ==== 割り込み (Thread#raise / #kill) ======================================
+ * pending_ints (Array) に例外 VALUE (kill は KORB_FALSE マーカ) を積み、対象が
+ * PENDED なら blop cancel / 直接 unpark で蹴り起こす。配送は check_ints
+ * (blop_wait 戻り・join/pass/stop の wake 直後) — RUBY_VM_CHECK_INTS 相当。
+ * Phase 1 は発行側も green thread なので対象が RUNNING のことはない。 */
+
+/* Thread#kill 用の内部例外 class (遅延生成; 定数非公開)。rescue Exception には
+ * 掛かる (CRuby の完全な rescue 不能とは差異; ensure は走る)。 */
+static VALUE
+korb_thread_kill_class(CTX *c, VALUE *slots)
+{
+    struct korb_vm *const vm = c->vm;
+    if (vm->thread_kill_exc == KORB_NIL) {
+        const VALUE sup = korb_const_get(vm, korb_intern(vm, "Exception", 9));
+        vm->thread_kill_exc = korb_class_new(c, slots, korb_intern(vm, "Thread::Kill", 12), sup).value;
+    }
+    return vm->thread_kill_exc;
+}
+
+/* kill 例外インスタンスを作って RAISE RESULT で返す */
+static RESULT
+korb_thread_kill_raise(CTX *c, VALUE *slots)
+{
+    slots[0] = korb_thread_kill_class(c, slots + 1);
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "killed thread");
+    if (KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+
+/* 割り込みを積んで、対象が PENDED なら起こす。exc = 例外 VALUE / KORB_FALSE (kill)。
+ * exc は caller が slots に root 済みであること。 */
+static RESULT
+korb_thread_interrupt(CTX *c, VALUE *slots, struct korb_thread *t, VALUE exc)
+{
+    struct korb_vm *const vm = c->vm;
+    slots[0] = exc;
+    if (t->pending_ints == KORB_NIL)
+        t->pending_ints = UNWRAP(korb_ary_new(c, slots + 1, 2));
+    CHECK(korb_ary_push_val(c, slots + 1, VALUE_REF_AT(&t->pending_ints), slots[0]));
+    if (t->state == KORB_TH_PENDED) {
+        if (t->blop) korb_blop_cancel(vm, t->blop, -ECANCELED);   /* post が unpark する */
+        else { t->state = KORB_TH_READY; korb_thread_runq_push(vm, t); }   /* stop / join 待ち */
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+/* 配送点: pending があれば先頭を取り出して RAISE で返す (無ければ NORMAL)。 */
+static RESULT
+korb_thread_check_ints(CTX *c, VALUE *slots)
+{
+    struct korb_thread *const cur = c->vm->cur_thread;
+    if (cur == NULL || cur->pending_ints == KORB_NIL) return RESULT_OK(KORB_NIL);
+    KorbArray *const pa = VAL2ARY(cur->pending_ints);
+    if (pa->len == 0) return RESULT_OK(KORB_NIL);
+    const VALUE exc = korb_items_data(pa->items)[0];      /* shift (要素移動のみ; 新 edge なし) */
+    memmove(&korb_items_data(pa->items)[0], &korb_items_data(pa->items)[1],
+            (size_t)(pa->len - 1) * sizeof(VALUE));
+    pa->len--;
+    if (exc == KORB_FALSE) return korb_thread_kill_raise(c, slots);
+    return RESULT_RAISE_(exc);
+}
+
 /* ---- korb_blop_wait: 唯一の suspension point ------------------------------ */
 /* b を engine に登録し、完了 (F_DONE) まで現 thread を park する。戻ったら
  * b->result 確定。green thread を眠らせるだけで native thread はブロックしない
@@ -295,7 +408,7 @@ korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b)
         cur->blop = NULL;
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_thread_check_ints(c, slots);   /* 割り込み配送点 (Thread#raise/#kill) */
 }
 
 /* Kernel#sleep([sec]) — TIMER blop。他の green thread はその間走れる。
@@ -343,8 +456,13 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
     }
     RESULT r = korb_send(c, base + 1 + n, korb_intern(c->vm, "call", 4), 0, n);
     if (r.state == KORB_RAISE) {
-        t->raised = 1; t->exc = r.value;
-        korb_report_uncaught(c, r.value);     /* report_on_exception (CRuby default: true) */
+        if (KORB_EXC_P(r.value) && c->vm->thread_kill_exc != KORB_NIL &&
+            VAL2EXC(r.value)->exc_class == c->vm->thread_kill_exc) {
+            t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
+        } else {
+            t->raised = 1; t->exc = r.value;
+            korb_report_uncaught(c, r.value); /* report_on_exception (CRuby default: true) */
+        }
     } else {
         t->result = r.value;                  /* NORMAL (break/return unwinds folded in M1) */
     }
@@ -450,10 +568,17 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
                 korb_blop_cancel(vm, &tb, -ECANCELED);      /* 死亡側が先: timer を回収 */
             else if (t->state != KORB_TH_DEAD) {            /* timeout 側が先 */
                 korb_thread_joiners_remove(t, vm->cur_thread);
+                RESULT ci = korb_thread_check_ints(c, slots);
+                if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
                 return RESULT_OK(KORB_NIL);                 /* CRuby: join(tmo) 失敗 = nil */
             }
         }
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        RESULT ci = korb_thread_check_ints(c, slots);       /* 割り込みで起こされた? */
+        if (UNLIKELY(ci.state != KORB_NORMAL)) {
+            korb_thread_joiners_remove(t, vm->cur_thread);  /* 登録を残さない */
+            return ci;
+        }
     }
     if (t->raised) return RESULT_RAISE_(t->exc);   /* CRuby: join は死因の例外を再 raise */
     return RESULT_OK(VALUE_REF_GET(self));
@@ -541,14 +666,16 @@ korb_m_thread_key_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return RESULT_OK(korb_hash_find(VAL2HASH(t->tls), k) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
-/* #kill / #exit — M1: 未起動 thread の取り消しのみ (実行中の kill は M3 の
- * pending-interrupt 経由; ここでは CRuby 同様 self を返すが何もしない) */
+/* #kill / #exit / #terminate — 未起動は即取り消し、自分なら即 unwind、
+ * 実行済みの他 thread へは pending interrupt (KORB_FALSE マーカ) で配送。 */
 static RESULT
 korb_m_thread_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
-    (void)slots; (void)a;
+    (void)a;
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    if (!t->started && t->state == KORB_TH_READY) {
+    korb_thread_boot(c);
+    if (t->state == KORB_TH_DEAD) return RESULT_OK(VALUE_REF_GET(self));
+    if (!t->started && t->state == KORB_TH_READY) {    /* 未起動: 走らせず葬る */
         t->state = KORB_TH_DEAD;                       /* runq からは pop 時に skip */
         for (struct korb_thread *j = t->joiners; j; ) {
             struct korb_thread *nx = j->join_next;
@@ -557,8 +684,77 @@ korb_m_thread_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             j = nx;
         }
         t->joiners = NULL;
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    if (t == c->vm->cur_thread) return korb_thread_kill_raise(c, slots);   /* 自殺: 即 unwind */
+    CHECK(korb_thread_interrupt(c, slots, t, KORB_FALSE));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* #raise(exc_class_or_instance_or_msg[, msg]) — 対象 thread に例外を配送。 */
+static RESULT
+korb_m_thread_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    korb_thread_boot(c);
+    /* 例外オブジェクトを組み立てて slots[0] に root */
+    if (VALUE_SLICE_LEN(a) == 0) {
+        RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "unhandled exception");
+        slots[0] = r.value;
+    } else {
+        const VALUE arg0 = VALUE_SLICE_GET(a, 0);
+        if (KORB_EXC_P(arg0)) slots[0] = arg0;
+        else if (KORB_CLASS_P(arg0)) {                /* Class[.new(msg)] */
+            slots[1] = arg0;
+            uint32_t argc = 0;
+            if (VALUE_SLICE_LEN(a) >= 2) { slots[2] = VALUE_SLICE_GET(a, 1); argc = 1; }
+            RESULT nr = korb_send(c, slots + 2 + argc, korb_intern(c->vm, "new", 3), 0, argc);
+            if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+            slots[0] = nr.value;
+        } else if (KORB_STRING_P(arg0)) {             /* String → RuntimeError */
+            RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%.*s",
+                                  (int)VAL2STR(arg0)->len, korb_strbuf_data(VAL2STR(arg0)->buf));
+            slots[0] = r.value;
+        } else {
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+        }
+    }
+    if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);   /* CRuby: dead へは無視 */
+    if (t == c->vm->cur_thread) return RESULT_RAISE_(slots[0]); /* 自分: 即 raise */
+    CHECK(korb_thread_interrupt(c, slots + 1, t, slots[0]));
+    return RESULT_OK(KORB_NIL);
+}
+
+/* #wakeup / #run — PENDED を起こす (sleep は中断され早期 return、stop は解除)。 */
+static RESULT
+korb_m_thread_wakeup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)a;
+    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    if (t->state == KORB_TH_DEAD)
+        return korb_raise_thread_error(c, slots, "killed thread");
+    if (t->state == KORB_TH_PENDED) {
+        if (t->blop) korb_blop_cancel(c->vm, t->blop, -ECANCELED);   /* sleep 等を中断 */
+        else { t->state = KORB_TH_READY; korb_thread_runq_push(c->vm, t); }
     }
     return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Thread.stop — #wakeup / 割り込みまで park。 */
+static RESULT
+korb_m_thread_s_stop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)self; (void)a;
+    struct korb_vm *const vm = c->vm;
+    korb_thread_boot(c);
+    if (UNLIKELY(vm->running_fiber != NULL))
+        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
+    if (vm->runq_head == NULL && vm->blop_npending == 0)
+        return korb_raise_thread_error(c, slots, "stopping only thread");
+    struct korb_thread *const cur = vm->cur_thread;
+    cur->state = KORB_TH_PENDED;                       /* blop なしの素の park */
+    CHECK(korb_thread_yield_cpu(c, slots));
+    return korb_thread_check_ints(c, slots);
 }
 
 /* ---- class methods --------------------------------------------------------- */
@@ -589,7 +785,7 @@ korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     cur->state = KORB_TH_READY;
     korb_thread_runq_push(vm, cur);
     CHECK(korb_thread_yield_cpu(c, slots));
-    return RESULT_OK(KORB_NIL);
+    return korb_thread_check_ints(c, slots);
 }
 
 static RESULT
@@ -605,4 +801,105 @@ korb_m_thread_s_list(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
+}
+
+/* ==== IO 連携 (M3): wait_readable / wait_writable / IO.select ============= */
+
+static RESULT
+korb_thread_tmo_arg(CTX *c, VALUE *slots, VALUE v, double *out)
+{
+    if (v == KORB_NIL) { *out = -1.0; return RESULT_OK(KORB_NIL); }
+    if (FIXNUM_P(v)) *out = (double)FIX2LONG(v);
+    else if (KORB_FLOAT_P(v)) *out = korb_float_val(v);
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
+    return RESULT_OK(KORB_NIL);
+}
+
+/* IO#wait_readable([tmo]) / #wait_writable([tmo]) — POLL blop 1 fd。
+ * ready → self、timeout → nil (CRuby)。 */
+static RESULT
+korb_m_io_wait_ev(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, short ev)
+{
+    FILE *const fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(fp == NULL)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    double tmo = -1.0;
+    if (VALUE_SLICE_LEN(a) >= 1) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 0), &tmo));
+    struct pollfd p; p.fd = fileno(fp); p.events = ev; p.revents = 0;
+    ssize_t ready = 0;
+    CHECK(korb_blop_poll_wait(c, slots, &p, 1, tmo, &ready));
+    return RESULT_OK(ready ? VALUE_REF_GET(self) : KORB_NIL);
+}
+
+static RESULT
+korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ return korb_m_io_wait_ev(c, slots, self, a, POLLIN); }
+
+static RESULT
+korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ return korb_m_io_wait_ev(c, slots, self, a, POLLOUT); }
+
+/* IO.select(reads[, writes[, excepts[, timeout]]]) — pollfd 配列を 1 個の
+ * POLL blop に (poll(2) 意味論そのまま: その時点で ready な全部が返る)。 */
+static RESULT
+korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)self;
+    const uint32_t alen = VALUE_SLICE_LEN(a);
+    double tmo = -1.0;
+    if (alen >= 4) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 3), &tmo));
+    uint32_t cnt[3] = { 0, 0, 0 };
+    for (uint32_t s = 0; s < 3; s++) {
+        const VALUE av = (alen > s) ? VALUE_SLICE_GET(a, s) : KORB_NIL;
+        if (av == KORB_NIL) continue;
+        if (UNLIKELY(!KORB_ARRAY_P(av)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Array)", korb_type_name(av));
+        cnt[s] = VAL2ARY(av)->len;
+    }
+    const nfds_t total = cnt[0] + cnt[1] + cnt[2];
+    if (total == 0) {                              /* fd なし: ただの (無期限) sleep */
+        struct korb_blop b; memset(&b, 0, sizeof b);
+        b.kind = KORB_BLOP_TIMER;
+        if (tmo >= 0) korb_blop_deadline_in(&b, tmo);
+        CHECK(korb_blop_wait(c, slots, &b));
+        return RESULT_OK(KORB_NIL);
+    }
+    struct pollfd pbuf[64];
+    struct pollfd *pf = (total <= 64) ? pbuf : malloc(sizeof(*pf) * total);
+    if (!pf) abort();
+    static const short evs[3] = { POLLIN, POLLOUT, POLLPRI };
+    nfds_t k = 0;
+    for (uint32_t s = 0; s < 3; s++) {             /* fill (no alloc in this loop) */
+        if (cnt[s] == 0) continue;
+        const KorbArray *arr = VAL2ARY(VALUE_SLICE_GET(a, s));
+        for (uint32_t i = 0; i < cnt[s]; i++) {
+            FILE *fp = korb_io_fp(c, korb_items_data(arr->items)[i]);
+            if (UNLIKELY(fp == NULL)) {
+                if (pf != pbuf) free(pf);
+                return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+            }
+            pf[k].fd = fileno(fp); pf[k].events = evs[s]; pf[k].revents = 0; k++;
+        }
+    }
+    ssize_t ready = 0;
+    { RESULT r = korb_blop_poll_wait(c, slots, pf, total, tmo, &ready);
+      if (UNLIKELY(r.state != KORB_NORMAL)) { if (pf != pbuf) free(pf); return r; } }
+    if (ready == 0) { if (pf != pbuf) free(pf); return RESULT_OK(KORB_NIL); }   /* timeout */
+    /* [[r], [w], [e]] — alloc を跨ぐので IO は毎回 arg 配列 (rooted) から再読出 */
+    static const short want[3] = { POLLIN | POLLHUP | POLLERR, POLLOUT | POLLERR, POLLPRI };
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 3));
+    VALUE_REF outer = VALUE_REF_AT(&slots[0]);
+    nfds_t base = 0;
+    for (uint32_t s = 0; s < 3; s++) {
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, cnt[s] ? cnt[s] : 1));
+        VALUE_REF sub = VALUE_REF_AT(&slots[1]);
+        for (uint32_t i = 0; i < cnt[s]; i++) {
+            if (!(pf[base + i].revents & want[s])) continue;
+            slots[2] = korb_items_data(VAL2ARY(VALUE_SLICE_GET(a, s))->items)[i];   /* 再読出 */
+            CHECK(korb_ary_push_val(c, slots + 3, sub, slots[2]));
+        }
+        base += cnt[s];
+        CHECK(korb_ary_push_val(c, slots + 2, outer, VALUE_REF_GET(sub)));
+    }
+    if (pf != pbuf) free(pf);
+    return RESULT_OK(VALUE_REF_GET(outer));
 }

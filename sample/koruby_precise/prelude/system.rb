@@ -8,7 +8,6 @@
 class Thread
   def self.start(*a, &b); new(*a, &b); end
   def self.fork(*a, &b); new(*a, &b); end
-  def self.stop; pass; end                  # sleep-until-wakeup は blop 層 (M2) で
   def self.exclusive; yield; end
   def self.report_on_exception; @roe.nil? ? true : @roe; end
   def self.report_on_exception=(v); @roe = v; end
