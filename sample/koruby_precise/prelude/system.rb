@@ -6,8 +6,6 @@
 # Thread 本体 (new/join/value/pass/current/...) は C 実装 (builtins/thread.c、
 # green thread M:1 — docs/io_design.md)。ここは Ruby で足りる補助だけ。
 class Thread
-  def self.start(*a, &b); new(*a, &b); end
-  def self.fork(*a, &b); new(*a, &b); end
   def self.exclusive; yield; end
   def self.report_on_exception; @roe.nil? ? true : @roe; end
   def self.report_on_exception=(v); @roe = v; end
@@ -19,9 +17,19 @@ end
 
 # Queue / SizedQueue — Mutex + ConditionVariable (C 実装) の上の純 Ruby。
 class Queue
-  def initialize
+  def initialize(enum = nil)
     @__items = []; @__mutex = Mutex.new; @__cond = ConditionVariable.new
     @__closed = false
+    unless enum.nil?
+      if enum.is_a?(Array)
+        @__items.concat(enum)
+      else
+        raise TypeError, "can't convert #{enum.class} into Array" unless enum.respond_to?(:to_a)
+        arr = enum.to_a
+        raise TypeError, "can't convert #{enum.class} to Array (#{enum.class}#to_a gives #{arr.class})" unless arr.is_a?(Array)
+        @__items.concat(arr)
+      end
+    end
   end
   def push(x)
     @__mutex.synchronize do

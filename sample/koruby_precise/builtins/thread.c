@@ -225,7 +225,7 @@ korb_thread_boot(CTX *c)
     struct korb_thread *m = calloc(1, sizeof *m);
     if (!m) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
     m->thval = KORB_NIL; m->args = KORB_NIL; m->blk = KORB_NIL; m->captured_self = KORB_NIL;
-    m->result = KORB_NIL; m->exc = KORB_NIL; m->tls = KORB_NIL;
+    m->result = KORB_NIL; m->exc = KORB_NIL; m->tls = KORB_NIL; m->tvars = KORB_NIL;
     m->name = KORB_NIL; m->pending_ints = KORB_NIL;
     /* main の stack base: fiber 内から boot されたら c->slots は fiber base なので
      * 保留し、最初の切替 (fiber 外が保証される) で埋める */
@@ -480,14 +480,37 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
 }
 
 /* ---- Thread.new ----------------------------------------------------------- */
+/* 未初期化 thread (rep + handle のみ; stacks なし・未 queue)。blk==NIL が未初期化の印。
+ * Thread subclass の .new が user #initialize を走らせる前段。 */
 static RESULT
-korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)
+korb_thread_alloc_handle(CTX *c, VALUE *slots)
 {
+    korb_thread_boot(c);
+    struct korb_thread *t = calloc(1, sizeof *t);
+    if (!t) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
+    t->thval = KORB_NIL; t->captured_self = KORB_NIL; t->args = KORB_NIL; t->blk = KORB_NIL;
+    t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL; t->tvars = KORB_NIL;
+    t->name = KORB_NIL; t->pending_ints = KORB_NIL;
+    t->roe = 1;
+    t->state = KORB_TH_DEAD;                 /* 初期化まで scheduler から不可視 (queue にも入れない) */
+    t->next = c->vm->thread_list; c->vm->thread_list = t;
+    CHECK(korb_thread_handle(c, slots, t));
+    return RESULT_OK(t->thval);
+}
+
+/* Thread#initialize の実体: body/args を束ね、stacks を作って READY に。
+ * Thread class obj 上の cfn としても登録され、subclass の super がここに届く。 */
+static RESULT
+korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                      NODE *block, VALUE *def_env, VALUE *captured_self)
+{
+    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(t->blk != KORB_NIL || t->started))
+        return korb_raise_thread_error(c, slots, "already initialized thread");
     if (UNLIKELY(block == NULL))
         return korb_raise_thread_error(c, slots, "must be called with a block");
     if (UNLIKELY(block == KORB_BLK_CPROC))
         return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Thread.new with a forwarded C proc");
-    korb_thread_boot(c);
     const uint32_t n = VALUE_SLICE_LEN(a);
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));   /* args (rooted) */
     { VALUE_REF ar = VALUE_REF_AT(&slots[0]);
@@ -496,14 +519,8 @@ korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_e
      * (n.times { Thread.new {…} }) なので、生の def_env は保持できない。 */
     if (def_env == KORB_BLK_FWD) slots[1] = *captured_self;   /* &blk: 既に Proc */
     else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
-    struct korb_thread *t = calloc(1, sizeof *t);
-    if (!t) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
-    t->thval = KORB_NIL; t->captured_self = KORB_NIL;
-    t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL;
-    t->name = KORB_NIL; t->pending_ints = KORB_NIL;
     t->args = slots[0];
     t->blk = slots[1];
-    t->roe = 1;
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (vs == MAP_FAILED) { perror("koruby_precise: mmap thread vslots"); abort(); }
@@ -521,10 +538,30 @@ korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_e
     makecontext((ucontext_t *)t->uctx, (void (*)(void))korb_thread_trampoline, 2,
                 (unsigned)((uintptr_t)c >> 32), (unsigned)((uintptr_t)c & 0xFFFFFFFFu));
     t->state = KORB_TH_READY;
-    t->next = c->vm->thread_list; c->vm->thread_list = t;   /* GC scan 対象に (roots 設定後) */
     korb_thread_runq_push(c->vm, t);
-    CHECK(korb_thread_handle(c, slots + 1, t));
-    return RESULT_OK(t->thval);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* Thread.new / Thread.start (exact Thread): alloc + init 一体 (initialize は経由しない) */
+static RESULT
+korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self)
+{
+    slots[0] = UNWRAP(korb_thread_alloc_handle(c, slots + 1));
+    CHECK(korb_thread_init_body(c, slots + 1, VALUE_REF_AT(&slots[0]), a, block, def_env, captured_self));
+    return RESULT_OK(slots[0]);
+}
+
+/* Thread.start/fork — subclass でも #initialize を呼ばない (CRuby 意味論) */
+static RESULT
+korb_m_thread_s_start(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                      NODE *block, VALUE *def_env, VALUE *cself)
+{
+    slots[0] = VALUE_REF_GET(self);                       /* class (root) */
+    slots[1] = UNWRAP(korb_thread_s_new(c, slots + 2, a, block, def_env, cself));
+    if (KORB_CLASS_P(slots[0]) &&
+        VAL2CLASS(slots[0])->name_sym != c->vm->name_thread)
+        korb_klass_override_set(c, slots[1], slots[0]);   /* subclass tag */
+    return RESULT_OK(slots[1]);
 }
 
 /* ---- instance methods ------------------------------------------------------ */
@@ -549,6 +586,8 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
     }
     korb_thread_boot(c);
+    if (UNLIKELY(!t->started && t->blk == KORB_NIL))
+        return korb_raise_thread_error(c, slots, "uninitialized thread");
     if (UNLIKELY(t == vm->cur_thread))
         return korb_raise_thread_error(c, slots, "Target thread must not be current thread");
     while (t->state != KORB_TH_DEAD) {
@@ -622,51 +661,109 @@ korb_m_thread_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT
 korb_m_thread_name_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
-    (void)c; (void)slots;
-    VAL2THREAD(VALUE_REF_GET(self))->rep->name = VALUE_SLICE_GET(a, 0);   /* rep は libc: barrier 不要 (root visit が forward) */
-    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+    VALUE v = VALUE_SLICE_GET(a, 0);
+    if (v != KORB_NIL) {
+        if (!KORB_STRING_P(v)) {
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
+                slots[0] = v;
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (KORB_STRING_P(sr.value)) v = sr.value;
+            }
+            if (UNLIKELY(!KORB_STRING_P(v)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
+        }
+        const KorbString *const ns = VAL2STR(v);
+        if (UNLIKELY(memchr(korb_strbuf_data(ns->buf), 0, ns->len) != NULL))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
+    }
+    VAL2THREAD(VALUE_REF_GET(self))->rep->name = v;   /* rep は libc: barrier 不要 (root visit が forward) */
+    return RESULT_OK(v);
 }
 
-/* #[] / #[]= / #key? — TLS (CRuby: fiber-local だが Phase 1 は thread-local 一枚) */
-static VALUE
-korb_thread_tls_key(CTX *c, VALUE k)
+/* #[] / #[]= / #key? — TLS (CRuby: fiber-local だが Phase 1 は thread-local 一枚)。
+ * key は Symbol / String / #to_str。他は TypeError。 */
+static RESULT
+korb_thread_tls_key(CTX *c, VALUE *slots, VALUE k, VALUE *out)
 {
-    if (KORB_STRING_P(k))
-        return ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len));
-    return k;
+    if (SYMBOL_P(k)) { *out = k; return RESULT_OK(KORB_NIL); }
+    if (!KORB_STRING_P(k)) {
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(k) && korb_responds_to_coerce_p(c, slots, &k, to_str)) {
+            slots[0] = k;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) k = sr.value;
+        }
+        if (UNLIKELY(!KORB_STRING_P(k))) {            /* CRuby は inspect 形式で報告 */
+            char kb[64]; kb[0] = '?'; kb[1] = 0;
+            slots[0] = k;
+            RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
+            if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
+                const uint32_t il = VAL2STR(ir.value)->len < 60 ? VAL2STR(ir.value)->len : 60;
+                memcpy(kb, korb_strbuf_data(VAL2STR(ir.value)->buf), il); kb[il] = 0;   /* raise (may-GC) 前に copy */
+            }
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", kb);
+        }
+    }
+    *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len));
+    return RESULT_OK(KORB_NIL);
+}
+
+/* 汎用 hash-slot ops (tls / tvars 共用; hp は rep 内の Hash root フィールド) */
+static RESULT
+korb_thread_hget(CTX *c, VALUE *slots, VALUE *hp, VALUE key)
+{
+    VALUE k; CHECK(korb_thread_tls_key(c, slots, key, &k));
+    if (*hp == KORB_NIL) return RESULT_OK(KORB_NIL);
+    const int32_t i = korb_hash_find(VAL2HASH(*hp), k);
+    return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(*hp)->items)[2 * i + 1] : KORB_NIL);
+}
+
+static RESULT
+korb_thread_hset(CTX *c, VALUE *slots, VALUE *hp, VALUE key, VALUE val)
+{
+    slots[0] = val;
+    VALUE k; CHECK(korb_thread_tls_key(c, slots + 1, key, &k));
+    slots[1] = k;
+    if (*hp == KORB_NIL) *hp = UNWRAP(korb_hash_new(c, slots + 2, 4));
+    CHECK(korb_hash_set(c, slots + 2, VALUE_REF_AT(hp), VALUE_REF_AT(&slots[1]), slots[0]));
+    return RESULT_OK(slots[0]);
+}
+
+static RESULT
+korb_thread_hkey_p(CTX *c, VALUE *slots, VALUE *hp, VALUE key)
+{
+    VALUE k; CHECK(korb_thread_tls_key(c, slots, key, &k));
+    if (*hp == KORB_NIL) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_hash_find(VAL2HASH(*hp), k) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT
 korb_m_thread_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{
-    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    (void)slots;
-    if (t->tls == KORB_NIL) return RESULT_OK(KORB_NIL);
-    const VALUE k = korb_thread_tls_key(c, VALUE_SLICE_GET(a, 0));
-    const int32_t i = korb_hash_find(VAL2HASH(t->tls), k);
-    return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(t->tls)->items)[2 * i + 1] : KORB_NIL);
-}
+{ return korb_thread_hget(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0)); }
 
 static RESULT
 korb_m_thread_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{
-    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    if (t->tls == KORB_NIL) t->tls = UNWRAP(korb_hash_new(c, slots, 4));
-    slots[0] = korb_thread_tls_key(c, VALUE_SLICE_GET(a, 0));
-    slots[1] = VALUE_SLICE_GET(a, 1);
-    CHECK(korb_hash_set(c, slots + 2, VALUE_REF_AT(&t->tls), VALUE_REF_AT(&slots[0]), slots[1]));
-    return RESULT_OK(slots[1]);
-}
+{ return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
 
 static RESULT
 korb_m_thread_key_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
-{
-    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    (void)slots;
-    if (t->tls == KORB_NIL) return RESULT_OK(KORB_FALSE);
-    const VALUE k = korb_thread_tls_key(c, VALUE_SLICE_GET(a, 0));
-    return RESULT_OK(korb_hash_find(VAL2HASH(t->tls), k) >= 0 ? KORB_TRUE : KORB_FALSE);
-}
+{ return korb_thread_hkey_p(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls, VALUE_SLICE_GET(a, 0)); }
+
+/* thread_variable_* — CRuby では fiber-local (#[]) と別空間 */
+static RESULT
+korb_m_thread_tvar_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ return korb_thread_hget(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars, VALUE_SLICE_GET(a, 0)); }
+
+static RESULT
+korb_m_thread_tvar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ return korb_thread_hset(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars, VALUE_SLICE_GET(a, 0), VALUE_SLICE_GET(a, 1)); }
+
+static RESULT
+korb_m_thread_tvar_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ return korb_thread_hkey_p(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars, VALUE_SLICE_GET(a, 0)); }
 
 /* #kill / #exit / #terminate — 未起動は即取り消し、自分なら即 unwind、
  * 実行済みの他 thread へは pending interrupt (KORB_FALSE マーカ) で配送。 */
@@ -705,20 +802,36 @@ korb_m_thread_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         slots[0] = r.value;
     } else {
         const VALUE arg0 = VALUE_SLICE_GET(a, 0);
-        if (KORB_EXC_P(arg0)) slots[0] = arg0;
-        else if (KORB_CLASS_P(arg0)) {                /* Class[.new(msg)] */
+        if (KORB_STRING_P(arg0)) {                    /* String → RuntimeError (追加引数は TypeError) */
+            if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%.*s",
+                                  (int)VAL2STR(arg0)->len, korb_strbuf_data(VAL2STR(arg0)->buf));
+            slots[0] = r.value;
+        } else if (KORB_CLASS_P(arg0)) {              /* Class[.new(msg)] */
             slots[1] = arg0;
             uint32_t argc = 0;
             if (VALUE_SLICE_LEN(a) >= 2) { slots[2] = VALUE_SLICE_GET(a, 1); argc = 1; }
             RESULT nr = korb_send(c, slots + 2 + argc, korb_intern(c->vm, "new", 3), 0, argc);
             if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
             slots[0] = nr.value;
-        } else if (KORB_STRING_P(arg0)) {             /* String → RuntimeError */
-            RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%.*s",
-                                  (int)VAL2STR(arg0)->len, korb_strbuf_data(VAL2STR(arg0)->buf));
-            slots[0] = r.value;
-        } else {
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            if (UNLIKELY(!KORB_EXC_P(slots[0])))
+                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "exception class/object expected");
+        } else if (KORB_EXC_P(arg0) && VALUE_SLICE_LEN(a) < 2) {
+            slots[0] = arg0;
+        } else {                                       /* #exception protocol (instance+msg / custom) */
+            const uint32_t exc_mid = korb_intern(c->vm, "exception", 9);
+            VALUE recv = arg0;
+            if (UNLIKELY(!(KORB_EXC_P(recv) || (KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots, &recv, exc_mid)))))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+            slots[1] = recv;
+            uint32_t argc = 0;
+            if (VALUE_SLICE_LEN(a) >= 2) { slots[2] = VALUE_SLICE_GET(a, 1); argc = 1; }
+            RESULT er = korb_send(c, slots + 2 + argc, exc_mid, 0, argc);
+            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+            if (UNLIKELY(!KORB_EXC_P(er.value)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
+            slots[0] = er.value;
         }
     }
     if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);   /* CRuby: dead へは無視 */
@@ -822,7 +935,7 @@ korb_m_thread_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    const VALUE k = korb_thread_tls_key(c, VALUE_SLICE_GET(a, 0));
+    VALUE k; CHECK(korb_thread_tls_key(c, slots, VALUE_SLICE_GET(a, 0), &k));
     if (t->tls != KORB_NIL) {
         const int32_t i = korb_hash_find(VAL2HASH(t->tls), k);
         if (i >= 0) return RESULT_OK(korb_items_data(VAL2HASH(t->tls)->items)[2 * i + 1]);
@@ -836,19 +949,25 @@ korb_m_thread_fetch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
 }
 
 static RESULT
-korb_m_thread_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+korb_thread_hkeys(CTX *c, VALUE *slots, const VALUE *hp)
 {
-    (void)a;
-    struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
-    const uint32_t n = (t->tls == KORB_NIL) ? 0 : VAL2HASH(t->tls)->len;
+    const uint32_t n = (*hp == KORB_NIL) ? 0 : VAL2HASH(*hp)->len;
     slots[0] = UNWRAP(korb_ary_new(c, slots, n ? n : 1));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (uint32_t i = 0; i < n; i++) {
-        slots[1] = korb_items_data(VAL2HASH(t->tls)->items)[2 * i];   /* t は libc: 再読可 */
+        slots[1] = korb_items_data(VAL2HASH(*hp)->items)[2 * i];   /* hp は libc rep 内: 再読可 */
         CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+
+static RESULT
+korb_m_thread_keys(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ (void)a; return korb_thread_hkeys(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tls); }
+
+static RESULT
+korb_m_thread_tvars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{ (void)a; return korb_thread_hkeys(c, slots, &VAL2THREAD(VALUE_REF_GET(self))->rep->tvars); }
 
 static RESULT
 korb_m_thread_priority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
@@ -902,6 +1021,15 @@ korb_m_thread_pending_interrupt_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     else t = c->vm->cur_thread;                            /* Thread.pending_interrupt? (class 経由) */
     if (t == NULL || t->pending_ints == KORB_NIL) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(VAL2ARY(t->pending_ints)->len > 0 ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT
+korb_m_thread_native_thread_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots; (void)a;
+    const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
+    return RESULT_OK(LONG2FIX((long)gettid()));   /* green: 全員同じ native tid */
 }
 
 /* #to_s / #inspect — "#<Thread:0x… name? status>" */

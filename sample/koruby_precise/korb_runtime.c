@@ -5671,6 +5671,9 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* thread.c */
 static RESULT korb_mutex_s_new(CTX *c, VALUE *slots);      /* thread.c */
+static RESULT korb_thread_alloc_handle(CTX *c, VALUE *slots);   /* thread.c: 未初期化 thread */
+static RESULT korb_raise_thread_error(CTX *c, VALUE *slots, const char *msg);   /* thread.c */
+static RESULT korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_condvar_s_new(CTX *c, VALUE *slots);    /* thread.c */
 
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
@@ -7220,6 +7223,31 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             enum korb_class base = korb_builtin_base_class(vm, self);
             /* subclass of Proc / Fiber: build the real payload via its constructor
              * (which consumes the block), then tag it with the subclass class. */
+            if (base == KORB_C_THREAD) {                       /* Thread subclass: 実 rep + user #initialize */
+                slots[0] = *recv_slot;                         /* subclass (root) */
+                slots[1] = UNWRAP(korb_thread_alloc_handle(c, slots + 2));   /* 未初期化 thread */
+                korb_klass_override_set(c, slots[1], slots[0]);
+                VALUE tidef = KORB_NIL;
+                struct korb_method *const tinit = korb_class_find_method(slots[0], vm->mid_initialize, &tidef);
+                if (tinit != NULL && tinit->kind == KORB_METHOD_ISEQ) {
+                    /* user #initialize(args…) — super は Thread class obj 上の cfn (init_body) に届く。
+                     * invoke_method が [self|args] を組み直し recv slot に instance を書く
+                     * (String subclass path と同型) */
+                    VALUE *const ibase = slots - argc;
+                    RESULT ir = korb_invoke_method(c, slots, tinit, argc, line, vm->mid_initialize,
+                                                   slots[1], tidef, block, def_env, KORB_CSELF_VAL(captured_self));
+                    if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                    if (UNLIKELY(VAL2THREAD(ibase[-1])->rep->blk == KORB_NIL))   /* initialize が super を呼ばなかった */
+                        return korb_raise_thread_error(c, slots, "uninitialized thread - check 'initialize'");
+                    return RESULT_OK(ibase[-1]);
+                }
+                RESULT ir = korb_thread_init_body(c, slots + 2, VALUE_REF_AT(&slots[1]),
+                                                  VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
+                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+                return RESULT_OK(slots[1]);
+            }
+            if (base == KORB_C_MUTEX)   { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_mutex_s_new(c, slots + 2));   korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
+            if (base == KORB_C_CONDVAR) { slots[0] = *recv_slot; slots[1] = UNWRAP(korb_condvar_s_new(c, slots + 2)); korb_klass_override_set(c, slots[1], slots[0]); return RESULT_OK(slots[1]); }
             if (base == KORB_C_PROC || base == KORB_C_FIBER) {
                 if (UNLIKELY(block == NULL))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line,
@@ -7439,7 +7467,8 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     } else {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||
-            base == KORB_C_PROC || base == KORB_C_FIBER) kind = 2;   /* subclass of Proc/Fiber → real payload */
+            base == KORB_C_PROC || base == KORB_C_FIBER ||
+            base == KORB_C_THREAD || base == KORB_C_MUTEX || base == KORB_C_CONDVAR) kind = 2;   /* subclass → real payload */
         else   /* a Struct-derived class with no members of its own (`class X < Struct`)
                 * acts as a factory (X.new(...) → new struct class), not an instance */
             for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
@@ -8419,9 +8448,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "[]", korb_m_thread_aref, 1);
     korb_def_cmethod(c, KORB_C_THREAD, "[]=", korb_m_thread_aset, 2);
     korb_def_cmethod(c, KORB_C_THREAD, "key?", korb_m_thread_key_p, 1);
-    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_get", korb_m_thread_aref, 1);
-    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_set", korb_m_thread_aset, 2);
-    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable?", korb_m_thread_key_p, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_get", korb_m_thread_tvar_get, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_set", korb_m_thread_tvar_set, 2);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variable?", korb_m_thread_tvar_p, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "native_thread_id", korb_m_thread_native_thread_id, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "kill", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "exit", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "terminate", korb_m_thread_kill, 0);
@@ -8431,7 +8461,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "stop?", korb_m_thread_stop_p, 0);
     korb_def_cmethod_blk(c, KORB_C_THREAD, "fetch", korb_m_thread_fetch, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "keys", korb_m_thread_keys, 0);
-    korb_def_cmethod(c, KORB_C_THREAD, "thread_variables", korb_m_thread_keys, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variables", korb_m_thread_tvars, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "priority", korb_m_thread_priority, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "priority=", korb_m_thread_priority_set, 1);
     korb_def_cmethod(c, KORB_C_THREAD, "report_on_exception", korb_m_thread_roe, 0);
@@ -8457,6 +8487,10 @@ korb_register_core_methods(CTX *c)
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "stop", korb_m_thread_s_stop, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
+    korb_class_def_cfn_blk(c, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "initialize", korb_thread_init_body, -1);   /* subclass の super 到達先 */
+    { VALUE tsing = korb_obj_singleton(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD)).value;
+      korb_class_def_cfn_blk(c, tsing, "start", korb_m_thread_s_start, -1);   /* #initialize を経由しない (CRuby) */
+      korb_class_def_cfn_blk(c, tsing, "fork",  korb_m_thread_s_start, -1); }
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);

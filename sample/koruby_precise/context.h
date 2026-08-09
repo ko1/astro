@@ -433,7 +433,8 @@ struct korb_thread {
     VALUE captured_self;             /* (未使用予約; blk が self を持つ) */
     VALUE result;                    /* body の戻り値 (#join / #value) */
     VALUE exc;                       /* thread を殺した例外 (raised=1 のとき) */
-    VALUE tls;                       /* thread-local storage Hash (#[] / #[]=) */
+    VALUE tls;                       /* fiber-local storage Hash (#[] / #[]=) */
+    VALUE tvars;                     /* thread_variable_get/set の Hash (tls とは別空間; CRuby 準拠) */
     VALUE name;                      /* Thread#name */
     VALUE pending_ints;              /* pending interrupt queue (M3) */
     /* stacks / context */
@@ -1099,6 +1100,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->result);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->exc);                       \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tls);                       \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tvars);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->name);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
