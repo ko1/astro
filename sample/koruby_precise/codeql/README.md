@@ -10,7 +10,7 @@ Design & rationale: [`../docs/c_ext_api_design.md`](../docs/c_ext_api_design.md)
 ## Run it after changes
 
 ```sh
-make codeql-check        # = sh codeql/run.sh   (~2–3 min; full DB rebuild)
+make codeql-check        # = sh codeql/run.sh   (~100 s warm, 4–7 min cold)
 ```
 
 Each rule is **self-tested on a fixture** (so a broken query can't silently pass)
@@ -18,6 +18,22 @@ and then **required clean on the real koruby build**.  Non-zero exit on any
 failure.  Needs the CodeQL CLI (`gh extension install github/gh-codeql`);
 `codeql pack install` and the DBs (under `codeql/.db/`, gitignored) are handled
 automatically.
+
+### Where the time goes
+
+| step | time |
+|---|---|
+| koruby DB (make clean + full rebuild under CodeQL tracing) | ~37 s |
+| fixture DBs ×3 | ~3 s each |
+| query evaluation, per query (koruby DB, warm) | ~6–7 s |
+| whole gate, warm (5 koruby runs + 4 self-tests) | **~100 s** |
+| first run / empty `.cache` (adds ~20 s query compilation each + pack install) | 4–7 min |
+
+Per-query cost is flat (~6–7 s regardless of rule complexity — dominated by
+evaluator startup + DB load, not query logic), and the koruby DB rebuild is a
+fixed cost independent of rule count.  **Adding a rule costs ~+6 s warm**, so
+the barrier to new rules is low.  Query compilation is cached under `.cache/`
+next to the pack; only cold runs pay it.
 
 ## The `ARO_*` attributes (`runtime/aro_gc_effect.h`)
 
