@@ -8487,6 +8487,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CONDVAR, "wait", korb_m_condvar_wait, -1);
     korb_def_cmethod(c, KORB_C_CONDVAR, "signal", korb_m_condvar_signal, 0);
     korb_def_cmethod(c, KORB_C_CONDVAR, "broadcast", korb_m_condvar_broadcast, 0);
+    korb_def_cmethod(c, KORB_C_CONDVAR, "__num_waiting", korb_m_condvar_num_waiting, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);

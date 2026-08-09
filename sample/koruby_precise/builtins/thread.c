@@ -1296,10 +1296,12 @@ korb_m_mutex_synchronize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
 static RESULT
 korb_m_mutex_sleep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
-    double sec = -1.0;
-    if (VALUE_SLICE_LEN(a) >= 1) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 0), &sec));
-    if (UNLIKELY(sec >= 0 && sec < 0))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");
+    double sec = -1.0;                                 /* -1 = 無期限 (引数なし / nil) */
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 0), &sec));
+        if (UNLIKELY(sec < 0))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");
+    }
     CHECK(korb_mutex_unlock_core(c, slots, self));
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
@@ -1378,6 +1380,16 @@ korb_m_condvar_broadcast(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     KorbCondVar *const cv = VAL2CONDVAR(VALUE_REF_GET(self));
     while (cv->wq_head) korb_waitq_wake_one(c->vm, &cv->wq_head, &cv->wq_tail);
     return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* ConditionVariable の waiter 数 (Queue#num_waiting 用) */
+static RESULT
+korb_m_condvar_num_waiting(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots; (void)a;
+    long n = 0;
+    for (const struct korb_thread *t = VAL2CONDVAR(VALUE_REF_GET(self))->wq_head; t; t = t->join_next) n++;
+    return RESULT_OK(LONG2FIX(n));
 }
 
 /* .new (korb_send_impl の name 特例から) */

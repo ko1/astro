@@ -80,11 +80,18 @@ class Queue
   end
   alias << push
   alias enq push
-  def pop(non_block = false)
+  def pop(non_block = false, timeout: nil)
+    timeout = __q_tmo(timeout)
     @__mutex.synchronize do
+      raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
         return nil if @__closed
         raise ThreadError, "queue empty" if non_block
+        if timeout
+          @__cond.wait(@__mutex, timeout)
+          return @__items.shift unless @__items.empty?
+          return nil                    # timed out (single-shot; clock は秒精度)
+        end
         @__cond.wait(@__mutex)
       end
       @__items.shift
@@ -101,7 +108,16 @@ class Queue
     self
   end
   def closed?; @__closed; end
-  def num_waiting; 0; end
+  def num_waiting; @__cond.__num_waiting; end
+  def __q_tmo(t)                      # CRuby: 入口で Float 化 (nil のみ「無期限」)
+    return nil if t.nil?
+    unless t.is_a?(Numeric)
+      d = (t == true || t == false) ? t.inspect : t.class
+      raise TypeError, "no implicit conversion of #{d} into Float"
+    end
+    t.to_f
+  end
+  private :__q_tmo
   def freeze; raise TypeError, "cannot freeze #{self}"; end
 end
 
@@ -114,32 +130,53 @@ class SizedQueue < Queue
     @__max = max
     @__cond_full = ConditionVariable.new
   end
+  def num_waiting; @__cond.__num_waiting + @__cond_full.__num_waiting; end
   def max; @__max; end
   def max=(v)
     raise ArgumentError, "queue size must be positive" unless v.is_a?(Integer) && v > 0
     @__mutex.synchronize { @__max = v; @__cond_full.broadcast }
     v
   end
-  def push(x, non_block = false)
-    @__mutex.synchronize do
+  def push(x, non_block = false, timeout: nil)
+    timeout = __q_tmo(timeout)
+    r = @__mutex.synchronize do
+      raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       raise ClosedQueueError, "queue closed" if @__closed
       while @__items.size >= @__max
         raise ThreadError, "queue full" if non_block
+        if timeout
+          @__cond_full.wait(@__mutex, timeout)
+          raise ClosedQueueError, "queue closed" if @__closed
+          break if @__items.size < @__max
+          break :timeout
+        end
         @__cond_full.wait(@__mutex)
         raise ClosedQueueError, "queue closed" if @__closed
       end
-      @__items << x
-      @__cond.signal
+      if @__items.size < @__max
+        @__items << x
+        @__cond.signal
+        nil
+      else
+        :timeout
+      end
     end
-    self
+    r == :timeout ? nil : self
   end
   alias << push
   alias enq push
-  def pop(non_block = false)
+  def pop(non_block = false, timeout: nil)
+    timeout = __q_tmo(timeout)
     @__mutex.synchronize do
+      raise ArgumentError, "can't set a timeout if non_block is enabled" if timeout && non_block
       while @__items.empty?
         return nil if @__closed
         raise ThreadError, "queue empty" if non_block
+        if timeout
+          @__cond.wait(@__mutex, timeout)
+          break unless @__items.empty?
+          return nil
+        end
         @__cond.wait(@__mutex)
       end
       v = @__items.shift
