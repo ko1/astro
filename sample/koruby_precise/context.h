@@ -195,6 +195,8 @@ enum korb_obj_type {
     KORB_OBJ_MATCHDATA   = 22,  /* MatchData (whole-match substring; no captures) */
     KORB_OBJ_BINDING     = 23,  /* Binding: captured local scope (env) + self + name table */
     KORB_OBJ_THREAD      = 24,  /* green thread handle (rep is libc; docs/io_design.md) */
+    KORB_OBJ_MUTEX       = 25,  /* Thread::Mutex (owner/waiters は libc thread rep へのポインタ; no GC edges) */
+    KORB_OBJ_CONDVAR     = 26,  /* Thread::ConditionVariable (waiters のみ; no GC edges) */
 };
 /* `flags` is a dedicated 16-bit sample-owned field; low 5 bits = type tag
  * (1..16; widened from 4 bits to make room for KORB_OBJ_METHOD). */
@@ -445,6 +447,8 @@ struct korb_thread {
     uint8_t state;                   /* enum korb_thread_state */
     uint8_t started;                 /* trampoline が走るまで 0 */
     uint8_t raised;                  /* body が例外で終了 */
+    uint8_t roe;                     /* Thread#report_on_exception (default 1) */
+    int     priority;                /* Thread#priority (保持のみ; scheduler は無視) */
     struct korb_thread *rq_next;     /* run queue link (READY FIFO) */
     struct korb_thread *next;        /* vm->thread_list link (全 rep; 解放しない) */
     struct korb_thread *joiners;     /* 自分の死を #join で待つ thread 群 */
@@ -456,6 +460,21 @@ typedef struct KorbThread {
     AroObjectHeader head;            /* KORB_OBJ_THREAD (no GC edges; rep is libc) */
     struct korb_thread *rep;
 } KorbThread;
+
+/* Mutex / ConditionVariable — 純 green-thread プリミティブ (OS lock 不要)。
+ * owner / waiters は libc-stable な korb_thread rep へのポインタなので GC edge
+ * なし (payload が動いてもポインタ値ごと写るだけ)。待ち行列のリンクは
+ * korb_thread.join_next を流用 (thread は同時に 1 つしか待てない)。 */
+typedef struct KorbMutex {
+    AroObjectHeader head;            /* KORB_OBJ_MUTEX */
+    struct korb_thread *owner;       /* NULL = unlocked */
+    struct korb_thread *wq_head, *wq_tail;
+} KorbMutex;
+
+typedef struct KorbCondVar {
+    AroObjectHeader head;            /* KORB_OBJ_CONDVAR */
+    struct korb_thread *wq_head, *wq_tail;
+} KorbCondVar;
 
 typedef struct KorbException {
     AroObjectHeader head;
@@ -611,6 +630,10 @@ static inline ARO_BORROW char  *korb_str_data   (VALUE v)           { return kor
 #define VAL2FIBER(v)       ((KorbFiber *)(uintptr_t)(v))
 #define KORB_THREAD_P(v)   (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD)
 #define VAL2THREAD(v)      ((KorbThread *)(uintptr_t)(v))
+#define KORB_MUTEX_P(v)    (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MUTEX)
+#define VAL2MUTEX(v)       ((KorbMutex *)(uintptr_t)(v))
+#define KORB_CONDVAR_P(v)  (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_CONDVAR)
+#define VAL2CONDVAR(v)     ((KorbCondVar *)(uintptr_t)(v))
 #define KORB_ARITHSEQ_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_ARITHSEQ)
 #define VAL2ASEQ(v)        ((KorbArithSeq *)(uintptr_t)(v))
 #define KORB_MATCHDATA_P(v) (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_MATCHDATA)
@@ -658,7 +681,7 @@ enum korb_class {
     KORB_C_EXCEPTION, KORB_C_FLOAT, KORB_C_RATIONAL, KORB_C_COMPLEX, KORB_C_OBJECT,
     KORB_C_ENUMERATOR, KORB_C_SET, KORB_C_REGEXP, KORB_C_METHOD, KORB_C_FIBER,
     KORB_C_ARITHSEQ, KORB_C_PROC, KORB_C_MATCHDATA, KORB_C_BINDING,
-    KORB_C_RANDOM, KORB_C_UNBOUND_METHOD, KORB_C_THREAD,
+    KORB_C_RANDOM, KORB_C_UNBOUND_METHOD, KORB_C_THREAD, KORB_C_MUTEX, KORB_C_CONDVAR,
     KORB_NCLASS
 };
 typedef RESULT (*korb_method_fn)(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE args);
@@ -1198,7 +1221,9 @@ struct CTX_struct {
       }                                                                      \
       case KORB_OBJ_FIBER:                                                   \
       case KORB_OBJ_THREAD:                                                  \
-        /* handle only; rep (libc) roots scanned via the vm fiber/thread list */ \
+      case KORB_OBJ_MUTEX:                                                   \
+      case KORB_OBJ_CONDVAR:                                                 \
+        /* handle / libc-ptr のみ (fiber・thread rep は vm list 経由で scan) */ \
         (void)(payload_size);                                               \
         break;                                                               \
       case KORB_OBJ_ARITHSEQ: {                                              \

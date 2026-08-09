@@ -4247,7 +4247,8 @@ korb_init_builtin_classes(CTX *c, VALUE *slots)
         { "ArithmeticSequence", KORB_C_ARITHSEQ }, { "Proc", KORB_C_PROC },
         { "MatchData", KORB_C_MATCHDATA }, { "Binding", KORB_C_BINDING },
         { "Random", KORB_C_RANDOM }, { "UnboundMethod", KORB_C_UNBOUND_METHOD },
-        { "Thread", KORB_C_THREAD },
+        { "Thread", KORB_C_THREAD }, { "Mutex", KORB_C_MUTEX },
+        { "ConditionVariable", KORB_C_CONDVAR },
     };
     for (int i = 0; i < KORB_NCLASS; i++) vm->class_obj_idx[i] = UINT32_MAX;
     /* Object's superclass is nil; every other builtin inherits Object.  Re-fetch
@@ -4421,6 +4422,7 @@ korb_init_exception_classes(CTX *c, VALUE *slots)
         { "EOFError",            -1,                "IOError" },
         { "FiberError",          -1,                "StandardError" },
         { "ThreadError",         -1,                "StandardError" },
+        { "ClosedQueueError",    -1,                "StopIteration" },
         { "RegexpError",         KORB_E_REGEXP,     "StandardError" },
         { "SystemCallError",     -1,                "StandardError" },
     };
@@ -5668,6 +5670,8 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
                              NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* thread.c */
+static RESULT korb_mutex_s_new(CTX *c, VALUE *slots);      /* thread.c */
+static RESULT korb_condvar_s_new(CTX *c, VALUE *slots);    /* thread.c */
 
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
@@ -6481,6 +6485,8 @@ korb_class_of(VALUE v)
             return VAL2METH(v)->unbound ? KORB_C_UNBOUND_METHOD : KORB_C_METHOD;
           case KORB_OBJ_FIBER:  return KORB_C_FIBER;
           case KORB_OBJ_THREAD: return KORB_C_THREAD;
+          case KORB_OBJ_MUTEX:  return KORB_C_MUTEX;
+          case KORB_OBJ_CONDVAR: return KORB_C_CONDVAR;
           case KORB_OBJ_PROC:   return KORB_C_PROC;
           case KORB_OBJ_MATCHDATA: return KORB_C_MATCHDATA;
           case KORB_OBJ_BINDING:   return KORB_C_BINDING;
@@ -6510,6 +6516,8 @@ korb_class_name(enum korb_class cls)
       case KORB_C_UNBOUND_METHOD: return "UnboundMethod";
       case KORB_C_FIBER:  return "Fiber";
       case KORB_C_THREAD: return "Thread";
+      case KORB_C_MUTEX:  return "Mutex";
+      case KORB_C_CONDVAR: return "ConditionVariable";
       case KORB_C_PROC:   return "Proc";
       case KORB_C_ARITHSEQ: return "Enumerator::ArithmeticSequence";
       case KORB_C_MATCHDATA: return "MatchData";
@@ -6891,6 +6899,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_fiber_new(c, slots, block, def_env, captured_self);
         if (cname == vm->name_thread)
             return korb_thread_s_new(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
+        if (cname == vm->class_name[KORB_C_MUTEX])   return korb_mutex_s_new(c, slots);
+        if (cname == vm->class_name[KORB_C_CONDVAR]) return korb_condvar_s_new(c, slots);
         if (cname == vm->class_name[KORB_C_CLASS] || cname == vm->name_module) {   /* Class.new([super]) / Module.new [do…end] */
             const bool is_mod = (cname == vm->name_module);
             slots[0] = (!is_mod && argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
@@ -7413,6 +7423,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     uint8_t kind = 1;
     if (k->is_module || k->members != KORB_NIL || cname == vm->name_fiber ||
         cname == vm->name_thread ||
+        cname == vm->class_name[KORB_C_MUTEX] || cname == vm->class_name[KORB_C_CONDVAR] ||
         (cname == vm->name_struct) || cname == vm->name_module ||
         cname == vm->class_name[KORB_C_CLASS]  ||   /* Class.new / Module.new → real class, not a generic object */
         cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
@@ -8417,11 +8428,35 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "raise", korb_m_thread_raise, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "wakeup", korb_m_thread_wakeup, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "run", korb_m_thread_wakeup, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "stop?", korb_m_thread_stop_p, 0);
+    korb_def_cmethod_blk(c, KORB_C_THREAD, "fetch", korb_m_thread_fetch, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "keys", korb_m_thread_keys, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "thread_variables", korb_m_thread_keys, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "priority", korb_m_thread_priority, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "priority=", korb_m_thread_priority_set, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "report_on_exception", korb_m_thread_roe, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "report_on_exception=", korb_m_thread_roe_set, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "backtrace", korb_m_thread_backtrace, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "backtrace_locations", korb_m_thread_backtrace, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
+    korb_def_cmethod(c, KORB_C_THREAD, "to_s", korb_m_thread_to_s, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "inspect", korb_m_thread_to_s, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "lock", korb_m_mutex_lock, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "unlock", korb_m_mutex_unlock, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "try_lock", korb_m_mutex_try_lock, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "locked?", korb_m_mutex_locked_p, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "owned?", korb_m_mutex_owned_p, 0);
+    korb_def_cmethod_blk(c, KORB_C_MUTEX, "synchronize", korb_m_mutex_synchronize, 0);
+    korb_def_cmethod(c, KORB_C_MUTEX, "sleep", korb_m_mutex_sleep, -1);
+    korb_def_cmethod(c, KORB_C_CONDVAR, "wait", korb_m_condvar_wait, -1);
+    korb_def_cmethod(c, KORB_C_CONDVAR, "signal", korb_m_condvar_signal, 0);
+    korb_def_cmethod(c, KORB_C_CONDVAR, "broadcast", korb_m_condvar_broadcast, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "current", korb_m_thread_s_current, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "main", korb_m_thread_s_main, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pass", korb_m_thread_s_pass, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "list", korb_m_thread_s_list, 0);
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "stop", korb_m_thread_s_stop, 0);
+    korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);

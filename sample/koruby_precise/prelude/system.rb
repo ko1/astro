@@ -13,17 +13,106 @@ class Thread
   def self.report_on_exception=(v); @roe = v; end
   def self.abort_on_exception; @aoe.nil? ? false : @aoe; end
   def self.abort_on_exception=(v); @aoe = v; end
+  def abort_on_exception; @aoe.nil? ? false : @aoe; end
+  def abort_on_exception=(v); @aoe = v; end
 end
 
-class Mutex
-  def lock; @locked = true; self; end
-  def unlock; @locked = false; self; end
-  def locked?; @locked ? true : false; end
-  def try_lock; @locked ? false : (@locked = true); end
-  def synchronize; lock; begin; yield; ensure; unlock; end; end
-  def owned?; @locked ? true : false; end
+# Queue / SizedQueue — Mutex + ConditionVariable (C 実装) の上の純 Ruby。
+class Queue
+  def initialize
+    @__items = []; @__mutex = Mutex.new; @__cond = ConditionVariable.new
+    @__closed = false
+  end
+  def push(x)
+    @__mutex.synchronize do
+      raise ClosedQueueError, "queue closed" if @__closed
+      @__items << x
+      @__cond.signal
+    end
+    self
+  end
+  alias << push
+  alias enq push
+  def pop(non_block = false)
+    @__mutex.synchronize do
+      while @__items.empty?
+        return nil if @__closed
+        raise ThreadError, "queue empty" if non_block
+        @__cond.wait(@__mutex)
+      end
+      @__items.shift
+    end
+  end
+  alias shift pop
+  alias deq pop
+  def empty?; @__items.empty?; end
+  def size; @__items.size; end
+  alias length size
+  def clear; @__mutex.synchronize { @__items.clear }; self; end
+  def close
+    @__mutex.synchronize { @__closed = true; @__cond.broadcast }
+    self
+  end
+  def closed?; @__closed; end
+  def num_waiting; 0; end
+  def freeze; raise TypeError, "cannot freeze #{self}"; end
 end
-Thread::Mutex = Mutex
+
+class SizedQueue < Queue
+  def initialize(max)
+    raise TypeError, "no implicit conversion from #{max.nil? ? 'nil' : max.class} to integer" unless max.is_a?(Numeric)
+    max = max.to_i
+    raise ArgumentError, "queue size must be positive" unless max > 0
+    super()
+    @__max = max
+    @__cond_full = ConditionVariable.new
+  end
+  def max; @__max; end
+  def max=(v)
+    raise ArgumentError, "queue size must be positive" unless v.is_a?(Integer) && v > 0
+    @__mutex.synchronize { @__max = v; @__cond_full.broadcast }
+    v
+  end
+  def push(x, non_block = false)
+    @__mutex.synchronize do
+      raise ClosedQueueError, "queue closed" if @__closed
+      while @__items.size >= @__max
+        raise ThreadError, "queue full" if non_block
+        @__cond_full.wait(@__mutex)
+        raise ClosedQueueError, "queue closed" if @__closed
+      end
+      @__items << x
+      @__cond.signal
+    end
+    self
+  end
+  alias << push
+  alias enq push
+  def pop(non_block = false)
+    @__mutex.synchronize do
+      while @__items.empty?
+        return nil if @__closed
+        raise ThreadError, "queue empty" if non_block
+        @__cond.wait(@__mutex)
+      end
+      v = @__items.shift
+      @__cond_full.signal
+      v
+    end
+  end
+  alias shift pop
+  alias deq pop
+  def close
+    @__mutex.synchronize { @__closed = true; @__cond.broadcast; @__cond_full.broadcast }
+    self
+  end
+end
+
+# CRuby: これらは Thread:: の下が本体で toplevel は alias
+Thread.const_set(:Mutex, Mutex)
+Thread.const_set(:Queue, Queue)
+Thread.const_set(:SizedQueue, SizedQueue)
+Thread.const_set(:ConditionVariable, ConditionVariable)
 
 module Process
   CLOCK_MONOTONIC = 1

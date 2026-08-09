@@ -106,6 +106,37 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(korb_strbuf_data(s->buf), 1, s->len, fp); }
     return RESULT_OK(KORB_NIL);
 }
+/* IO.pipe → [r, w]  (block form: yield r, w; ensure both closed).
+ * fd を pipe(2) で作り fdopen で FILE* 化。w は unbuffered (setvbuf _IONBF) にして
+ * 「write → 相手が即 read できる」という pipe の期待通りに振る舞わせる。 */
+static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
+                               NODE *block, VALUE *def_env, VALUE *cself) {
+    (void)a;
+    int fds[2];
+    if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
+    FILE *rf = fdopen(fds[0], "rb");
+    FILE *wf = fdopen(fds[1], "wb");
+    if (!rf || !wf) {
+        if (rf) fclose(rf); else close(fds[0]);
+        if (wf) fclose(wf); else close(fds[1]);
+        return korb_raise_errno(c, slots, errno, "fdopen", "");
+    }
+    setvbuf(wf, NULL, _IONBF, 0);
+    slots[0] = VALUE_REF_GET(self);                       /* IO class (root) */
+    slots[1] = UNWRAP(korb_io_make(c, slots + 2, slots[0], rf, 1));   /* r (read) */
+    slots[2] = UNWRAP(korb_io_make(c, slots + 3, slots[0], wf, 2));   /* w (write) */
+    slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
+    { VALUE_REF pr = VALUE_REF_AT(&slots[3]);
+      CHECK(korb_ary_push_val(c, slots + 4, pr, slots[1]));
+      CHECK(korb_ary_push_val(c, slots + 4, pr, slots[2])); }
+    if (block == NULL) return RESULT_OK(slots[3]);
+    /* block form: yield(r, w) して ensure 相当で両方 close */
+    RESULT r = korb_block_yield(c, slots + 4, block, def_env, &slots[1], 2, cself);
+    { FILE *f1 = korb_io_fp(c, slots[1]); if (f1) { fclose(f1); c->vm->io_fps[FIX2LONG(korb_ivar_get(c, slots[1], ID2SYM(korb_io_fp_mid(c))))] = NULL; } }
+    { FILE *f2 = korb_io_fp(c, slots[2]); if (f2) { fclose(f2); c->vm->io_fps[FIX2LONG(korb_ivar_get(c, slots[2], ID2SYM(korb_io_fp_mid(c))))] = NULL; } }
+    return r;
+}
+
 /* IO#write(*args) → total bytes written. */
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
@@ -466,6 +497,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "readlines", korb_m_file_readlines, -1);
     korb_class_def_cfn_blk(c, io_sing, "foreach", korb_m_file_foreach, -1);
     korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
+    korb_class_def_cfn_blk(c, io_sing, "pipe",  korb_m_io_s_pipe,      -1);
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods.
