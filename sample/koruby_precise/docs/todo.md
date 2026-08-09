@@ -2228,3 +2228,10 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
 - [ ] epoll / io_uring engine (現状 poll(2) のみ; vtable 化と probe は io_design.md 通り)
 - [ ] pump wake eventfd + signal 配送 (pump 睡眠中の Ctrl-C)
 - [ ] rescue Exception が Thread::Kill を捕まえてしまう (CRuby は kill を rescue 不能)
+
+## stdlib vendor 後の残 (2026-08-09)
+- [ ] CSV.parse が2行目以降を落とす (strscan の each_line/scan 系の挙動差疑い)
+- [ ] `(...)` argument forwarding (PM_FORWARDING_*) — forwardable は回避済みだが言語機能として未対応
+- [ ] Fiber.current / Fiber.storage (logger は Thread.current で回避済み)
+- [ ] proc 内 outer-yield を FWD 実行すると "no block given" (timeout.rb は明示 capture で回避済み)
+- [ ] 中間の重複 `_` block param が位置 staging と衝突 (tmpdir は改名で回避済み)
