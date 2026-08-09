@@ -8452,6 +8452,10 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "thread_variable_set", korb_m_thread_tvar_set, 2);
     korb_def_cmethod(c, KORB_C_THREAD, "thread_variable?", korb_m_thread_tvar_p, 1);
     korb_def_cmethod(c, KORB_C_THREAD, "native_thread_id", korb_m_thread_native_thread_id, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "__group", korb_m_thread_group_raw, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "__set_group", korb_m_thread_group_set, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "__defer_ints_begin", korb_m_thread_defer_begin, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "__defer_ints_end", korb_m_thread_defer_end, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "kill", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "exit", korb_m_thread_kill, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "terminate", korb_m_thread_kill, 0);

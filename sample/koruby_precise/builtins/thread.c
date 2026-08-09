@@ -226,7 +226,7 @@ korb_thread_boot(CTX *c)
     if (!m) { fprintf(stderr, "koruby_precise: oom (thread rep)\n"); abort(); }
     m->thval = KORB_NIL; m->args = KORB_NIL; m->blk = KORB_NIL; m->captured_self = KORB_NIL;
     m->result = KORB_NIL; m->exc = KORB_NIL; m->tls = KORB_NIL; m->tvars = KORB_NIL;
-    m->name = KORB_NIL; m->pending_ints = KORB_NIL;
+    m->name = KORB_NIL; m->pending_ints = KORB_NIL; m->tgroup = KORB_NIL;
     /* main の stack base: fiber 内から boot されたら c->slots は fiber base なので
      * 保留し、最初の切替 (fiber 外が保証される) で埋める */
     if (vm->running_fiber == NULL) { m->vslots = c->slots; m->vslots_limit = c->slots_limit; }
@@ -379,6 +379,7 @@ korb_thread_check_ints(CTX *c, VALUE *slots)
 {
     struct korb_thread *const cur = c->vm->cur_thread;
     if (cur == NULL || cur->pending_ints == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (cur->defer_ints) return RESULT_OK(KORB_NIL);   /* handle_interrupt(:never) 区間 */
     KorbArray *const pa = VAL2ARY(cur->pending_ints);
     if (pa->len == 0) return RESULT_OK(KORB_NIL);
     const VALUE exc = korb_items_data(pa->items)[0];      /* shift (要素移動のみ; 新 edge なし) */
@@ -496,6 +497,7 @@ korb_thread_alloc_handle(CTX *c, VALUE *slots)
     t->thval = KORB_NIL; t->captured_self = KORB_NIL; t->args = KORB_NIL; t->blk = KORB_NIL;
     t->result = KORB_NIL; t->exc = KORB_NIL; t->tls = KORB_NIL; t->tvars = KORB_NIL;
     t->name = KORB_NIL; t->pending_ints = KORB_NIL;
+    t->tgroup = c->vm->cur_thread ? c->vm->cur_thread->tgroup : KORB_NIL;   /* 親 group を継承 (CRuby) */
     t->roe = 1;
     t->state = KORB_TH_DEAD;                 /* 初期化まで scheduler から不可視 (queue にも入れない) */
     t->next = c->vm->thread_list; c->vm->thread_list = t;
@@ -1100,6 +1102,41 @@ korb_m_thread_native_thread_id(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX((long)gettid()));   /* green: 全員同じ native tid */
+}
+
+/* ThreadGroup 連携 (本体は prelude の Ruby class; 所属だけ rep が持つ) */
+static RESULT
+korb_m_thread_group_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots; (void)a;
+    return RESULT_OK(VAL2THREAD(VALUE_REF_GET(self))->rep->tgroup);
+}
+
+static RESULT
+korb_m_thread_group_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots;
+    VAL2THREAD(VALUE_REF_GET(self))->rep->tgroup = VALUE_SLICE_GET(a, 0);   /* rep は libc: visit が forward */
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+
+/* handle_interrupt(:never) の配送延期区間 (prelude が begin/end を呼ぶ) */
+static RESULT
+korb_m_thread_defer_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self; (void)a;
+    korb_thread_boot(c)->defer_ints++;
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT
+korb_m_thread_defer_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)self; (void)a;
+    struct korb_thread *const cur = korb_thread_boot(c);
+    if (cur->defer_ints) cur->defer_ints--;
+    if (cur->defer_ints == 0) return korb_thread_check_ints(c, slots);   /* 区間終了で即配送 (CRuby) */
+    return RESULT_OK(KORB_NIL);
 }
 
 /* #to_s / #inspect — "#<Thread:0x… name? status>" */

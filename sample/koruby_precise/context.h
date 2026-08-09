@@ -437,6 +437,7 @@ struct korb_thread {
     VALUE tvars;                     /* thread_variable_get/set の Hash (tls とは別空間; CRuby 準拠) */
     VALUE name;                      /* Thread#name */
     VALUE pending_ints;              /* pending interrupt queue (M3) */
+    VALUE tgroup;                    /* ThreadGroup (NIL = Default; 生成時に親から継承) */
     /* stacks / context */
     VALUE *vslots;                   /* 自分の value stack base (main: main slots) */
     VALUE *vslots_limit;
@@ -450,6 +451,7 @@ struct korb_thread {
     uint8_t raised;                  /* body が例外で終了 */
     uint8_t roe;                     /* Thread#report_on_exception (default 1) */
     uint8_t aoe;                     /* Thread#abort_on_exception (死時に main へ例外転送) */
+    uint8_t defer_ints;              /* >0 = handle_interrupt(:never) 区間 (配送延期) */
     int     priority;                /* Thread#priority (保持のみ; scheduler は無視) */
     struct korb_thread *rq_next;     /* run queue link (READY FIFO) */
     struct korb_thread *next;        /* vm->thread_list link (全 rep; 解放しない) */
@@ -1105,6 +1107,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tvars);                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->name);                      \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->pending_ints);              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_t->tgroup);                     \
         if (_t != (c)->vm->cur_thread && _t->started && _t->state != KORB_TH_DEAD) { \
             for (VALUE *_p = _t->saved_base - 2; _p < _t->saved_top; _p++)    \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \

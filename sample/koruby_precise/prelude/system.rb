@@ -5,8 +5,46 @@
 
 # Thread 本体 (new/join/value/pass/current/...) は C 実装 (builtins/thread.c、
 # green thread M:1 — docs/io_design.md)。ここは Ruby で足りる補助だけ。
+class ThreadGroup
+  def initialize; @enclosed = false; end
+  def enclose; @enclosed = true; self; end
+  def enclosed?; @enclosed ? true : false; end
+  def add(thread)
+    raise ThreadError, "can't move to the enclosed thread group" if @enclosed
+    g = thread.group
+    raise ThreadError, "can't move from the enclosed thread group" if g && g.enclosed?
+    thread.__set_group(self)
+    self
+  end
+  def list; Thread.list.select { |t| t.group.equal?(self) }; end
+end
+ThreadGroup::Default = ThreadGroup.new
+
 class Thread
   def self.exclusive; yield; end
+  def self.exit; current.kill; end        # 明示定義 (無いと explicit-recv quirk で Kernel#exit に落ちる)
+  def self.kill(th); th.kill; end
+  def group; __group || ThreadGroup::Default; end
+  # handle_interrupt 簡易版: :never を含む mask は区間全体を配送延期。
+  # クラス別マスク / :on_blocking の精密な意味論は未対応 (自明の外)。
+  def self.handle_interrupt(hash, &blk)
+    raise ArgumentError, "block is needed" unless blk
+    raise ArgumentError, "unknown mask signature" unless hash.is_a?(Hash) && !hash.empty?
+    hash.each do |k, v|
+      raise TypeError, "class or module required for rescue clause" unless k.is_a?(Module)
+      raise ArgumentError, "unknown mask signature" unless [:immediate, :on_blocking, :never].include?(v)
+    end
+    if hash.values.include?(:never)
+      current.__defer_ints_begin
+      begin
+        yield
+      ensure
+        current.__defer_ints_end
+      end
+    else
+      yield
+    end
+  end
   def self.each_caller_location(*args, &blk)
     raise LocalJumpError, "no block given" unless blk
     (caller_locations(2) || []).each(&blk)
