@@ -8466,6 +8466,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_THREAD, "priority=", korb_m_thread_priority_set, 1);
     korb_def_cmethod(c, KORB_C_THREAD, "report_on_exception", korb_m_thread_roe, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "report_on_exception=", korb_m_thread_roe_set, 1);
+    korb_def_cmethod(c, KORB_C_THREAD, "abort_on_exception", korb_m_thread_aoe, 0);
+    korb_def_cmethod(c, KORB_C_THREAD, "abort_on_exception=", korb_m_thread_aoe_set, 1);
     korb_def_cmethod(c, KORB_C_THREAD, "backtrace", korb_m_thread_backtrace, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "backtrace_locations", korb_m_thread_backtrace, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "pending_interrupt?", korb_m_thread_pending_interrupt_p, -1);
@@ -8490,7 +8492,9 @@ korb_register_core_methods(CTX *c)
     korb_class_def_cfn_blk(c, korb_builtin_class_obj(c->vm, KORB_C_THREAD), "initialize", korb_thread_init_body, -1);   /* subclass の super 到達先 */
     { VALUE tsing = korb_obj_singleton(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_THREAD)).value;
       korb_class_def_cfn_blk(c, tsing, "start", korb_m_thread_s_start, -1);   /* #initialize を経由しない (CRuby) */
-      korb_class_def_cfn_blk(c, tsing, "fork",  korb_m_thread_s_start, -1); }
+      korb_class_def_cfn_blk(c, tsing, "fork",  korb_m_thread_s_start, -1);
+      korb_class_def_cfn(c, tsing, "abort_on_exception",  korb_m_thread_s_aoe, 0);
+      korb_class_def_cfn(c, tsing, "abort_on_exception=", korb_m_thread_s_aoe_set, 1); }
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);

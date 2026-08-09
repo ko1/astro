@@ -462,7 +462,12 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
             t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
         } else {
             t->raised = 1; t->exc = r.value;
-            if (t->roe) korb_report_uncaught(c, r.value);   /* report_on_exception */
+            if (t->aoe || c->vm->thread_aoe_global) {       /* abort_on_exception: main へ転送 */
+                if (c->vm->main_thread != t)
+                    (void)korb_thread_interrupt(c, c->slots, c->vm->main_thread, r.value);
+            } else if (t->roe) {
+                korb_report_uncaught(c, r.value);           /* report_on_exception */
+            }
         }
     } else {
         t->result = r.value;                  /* NORMAL (break/return unwinds folded in M1) */
@@ -796,9 +801,30 @@ korb_m_thread_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     korb_thread_boot(c);
+    /* 末尾の kwargs Hash から cause: を抜く (CRuby Thread#raise(..., cause: exc)) */
+    uint32_t alen = VALUE_SLICE_LEN(a);
+    int cause_given = 0;
+    slots[4] = KORB_NIL;                                  /* cause (rooted) */
+    if (alen >= 1) {
+        const VALUE last = VALUE_SLICE_GET(a, alen - 1);
+        if (KORB_HASH_P(last)) {
+            const VALUE ck = ID2SYM(korb_intern(c->vm, "cause", 5));
+            const int32_t ci = korb_hash_find(VAL2HASH(last), ck);
+            if (ci >= 0) {
+                cause_given = 1;
+                slots[4] = korb_items_data(VAL2HASH(last)->items)[2 * ci + 1];
+                alen--;
+            }
+        }
+    }
+    if (UNLIKELY(cause_given && alen == 0))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "only cause is given with no arguments");
+    if (UNLIKELY(cause_given && slots[4] != KORB_NIL && !KORB_EXC_P(slots[4])))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
+    a = VALUE_SLICE_MAKE(a.p, alen);                      /* kwargs を除いた view */
     /* 例外オブジェクトを組み立てて slots[0] に root */
     if (VALUE_SLICE_LEN(a) == 0) {
-        RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "unhandled exception");
+        RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* CRuby: message は "" */
         slots[0] = r.value;
     } else {
         const VALUE arg0 = VALUE_SLICE_GET(a, 0);
@@ -833,6 +859,15 @@ korb_m_thread_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
             slots[0] = er.value;
         }
+    }
+    if (cause_given && KORB_EXC_P(slots[0])) {
+        /* cause は kwargs Hash (caller frame に rooted、a.p[alen]) から再読出 —
+         * slots に置くと exc 構築の korb_send が潰す */
+        const VALUE h = a.p[alen];
+        const int32_t ci = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "cause", 5)));
+        const VALUE cv = (ci >= 0) ? korb_items_data(VAL2HASH(h)->items)[2 * ci + 1] : KORB_NIL;
+        if (slots[0] != cv)
+            ARO_STORE(c, VAL2EXC(slots[0]), (VALUE *)(uintptr_t)&VAL2EXC(slots[0])->cause, cv);
     }
     if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);   /* CRuby: dead へは無視 */
     if (t == c->vm->cur_thread) return RESULT_RAISE_(slots[0]); /* 自分: 即 raise */
@@ -906,8 +941,12 @@ korb_m_thread_s_pass(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT
 korb_m_thread_s_list(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
-    (void)self; (void)a;
     korb_thread_boot(c);
+    /* 協調 scheduler の観測点: CRuby では任意の呼び出しで preempt され得るので、
+     * list の度に一回 yield しても意味論上不可視。`while t.alive?; Thread.list; end`
+     * 型の busy-poll (preemption 前提の spec 頻出) がこれで前進する。 */
+    CHECK(korb_m_thread_s_pass(c, slots, self, a));
+    (void)self; (void)a;
     slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (struct korb_thread *t = c->vm->thread_list; t; t = t->next) {
@@ -984,6 +1023,37 @@ korb_m_thread_priority_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
     VAL2THREAD(VALUE_REF_GET(self))->rep->priority = (int)FIX2LONG(v);   /* 保持のみ (協調 scheduler) */
     return RESULT_OK(v);
+}
+
+static RESULT
+korb_m_thread_aoe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots; (void)a;
+    return RESULT_OK(VAL2THREAD(VALUE_REF_GET(self))->rep->aoe ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT
+korb_m_thread_aoe_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)c; (void)slots;
+    VAL2THREAD(VALUE_REF_GET(self))->rep->aoe = KORB_TRUTHY(VALUE_SLICE_GET(a, 0)) ? 1 : 0;
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+
+/* class-level (singleton 専用登録) */
+static RESULT
+korb_m_thread_s_aoe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self; (void)a;
+    return RESULT_OK(c->vm->thread_aoe_global ? KORB_TRUE : KORB_FALSE);
+}
+
+static RESULT
+korb_m_thread_s_aoe_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)slots; (void)self;
+    c->vm->thread_aoe_global = KORB_TRUTHY(VALUE_SLICE_GET(a, 0)) ? 1 : 0;
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
 }
 
 static RESULT

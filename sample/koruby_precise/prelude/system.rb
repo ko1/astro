@@ -7,12 +7,13 @@
 # green thread M:1 — docs/io_design.md)。ここは Ruby で足りる補助だけ。
 class Thread
   def self.exclusive; yield; end
+  def self.each_caller_location(*args, &blk)
+    raise LocalJumpError, "no block given" unless blk
+    (caller_locations(2) || []).each(&blk)
+    nil
+  end
   def self.report_on_exception; @roe.nil? ? true : @roe; end
   def self.report_on_exception=(v); @roe = v; end
-  def self.abort_on_exception; @aoe.nil? ? false : @aoe; end
-  def self.abort_on_exception=(v); @aoe = v; end
-  def abort_on_exception; @aoe.nil? ? false : @aoe; end
-  def abort_on_exception=(v); @aoe = v; end
 end
 
 # Queue / SizedQueue — Mutex + ConditionVariable (C 実装) の上の純 Ruby。

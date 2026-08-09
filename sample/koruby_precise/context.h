@@ -449,6 +449,7 @@ struct korb_thread {
     uint8_t started;                 /* trampoline が走るまで 0 */
     uint8_t raised;                  /* body が例外で終了 */
     uint8_t roe;                     /* Thread#report_on_exception (default 1) */
+    uint8_t aoe;                     /* Thread#abort_on_exception (死時に main へ例外転送) */
     int     priority;                /* Thread#priority (保持のみ; scheduler は無視) */
     struct korb_thread *rq_next;     /* run queue link (READY FIFO) */
     struct korb_thread *next;        /* vm->thread_list link (全 rep; 解放しない) */
@@ -864,6 +865,7 @@ struct korb_vm {
     struct korb_blop *blop_pending;
     uint32_t blop_npending;
     VALUE thread_kill_exc;             /* Thread#kill 用内部例外 class (遅延生成; GC root) */
+    uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
