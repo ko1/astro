@@ -13,6 +13,124 @@
  *  - Thread#join(timeout) / #kill(実行中) / sleep 連携は M2/M3 (blop 層)。
  *  - dead thread の stack は未回収 (M2 で reap; rep 自体は意図的に不滅)。 */
 
+/* ==== blop 層 — blocking operations (docs/io_design.md) ====================
+ * 唯一の suspension point は korb_blop_wait。M2 実装範囲: TIMER (sleep /
+ * join timeout) + pump (poll(2) ベース)。POLL/READ/WRITE の fd 系は M3。 */
+
+enum korb_blop_kind  { KORB_BLOP_POLL, KORB_BLOP_READ, KORB_BLOP_WRITE, KORB_BLOP_TIMER, KORB_BLOP_CFUNC };
+enum korb_blop_flags { KORB_BLOP_F_TIMEOUT = 1, KORB_BLOP_F_DONE = 2 };
+
+static void korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t);   /* fwd (下の scheduler 節) */
+
+struct korb_blop {
+    uint8_t  kind, flags;
+    struct timespec deadline;         /* 絶対時刻 (CLOCK_MONOTONIC)。F_TIMEOUT 時有効 */
+    ssize_t  result;                  /* 完了時: TIMER 0=満了 / -ETIMEDOUT / -ECANCELED */
+    struct korb_thread *waiter;
+    struct korb_blop *bl_prev, *bl_next;   /* vm->blop_pending 双方向リスト */
+    union {                           /* op 固有 (M3 で使用) */
+        struct { struct pollfd *fds; nfds_t nfds; }             poll;
+        struct { int fd; void *buf; size_t len; int64_t off; }  rw;
+        struct { void *(*fn)(void *); void *arg;
+                 void  (*ubf)(void *); void *ubf_arg; }         cfunc;
+    } u;
+};
+
+static void
+korb_blop_now(struct timespec *ts)
+{
+    clock_gettime(CLOCK_MONOTONIC, ts);
+}
+
+/* deadline = now + sec (秒は double) */
+static void
+korb_blop_deadline_in(struct korb_blop *b, double sec)
+{
+    struct timespec now; korb_blop_now(&now);
+    double whole = 0.0, frac = 0.0;
+    frac = sec - (double)(long)sec; whole = (double)(long)sec;
+    b->deadline.tv_sec  = now.tv_sec + (time_t)whole;
+    b->deadline.tv_nsec = now.tv_nsec + (long)(frac * 1e9);
+    if (b->deadline.tv_nsec >= 1000000000L) { b->deadline.tv_sec++; b->deadline.tv_nsec -= 1000000000L; }
+    b->flags |= KORB_BLOP_F_TIMEOUT;
+}
+
+static bool
+korb_blop_deadline_passed(const struct korb_blop *b, const struct timespec *now)
+{
+    if (!(b->flags & KORB_BLOP_F_TIMEOUT)) return false;
+    return now->tv_sec > b->deadline.tv_sec ||
+           (now->tv_sec == b->deadline.tv_sec && now->tv_nsec >= b->deadline.tv_nsec);
+}
+
+/* engine への登録 (M2: pending リストに繋ぐだけ; fd 系の kernel 登録は M3) */
+static void
+korb_blop_prep(struct korb_vm *vm, struct korb_blop *b)
+{
+    b->flags &= (uint8_t)~KORB_BLOP_F_DONE;
+    b->bl_prev = NULL; b->bl_next = vm->blop_pending;
+    if (vm->blop_pending) vm->blop_pending->bl_prev = b;
+    vm->blop_pending = b;
+    vm->blop_npending++;
+}
+
+/* 完了: 登録を外し result を書き、waiter を runnable に (二重 wake は state 検査で冪等) */
+static void
+korb_blop_post(struct korb_vm *vm, struct korb_blop *b, ssize_t result)
+{
+    if (b->flags & KORB_BLOP_F_DONE) return;
+    if (b->bl_prev) b->bl_prev->bl_next = b->bl_next; else vm->blop_pending = b->bl_next;
+    if (b->bl_next) b->bl_next->bl_prev = b->bl_prev;
+    b->bl_prev = b->bl_next = NULL;
+    vm->blop_npending--;
+    b->result = result;
+    b->flags |= KORB_BLOP_F_DONE;
+    struct korb_thread *const w = b->waiter;
+    if (w && w->state == KORB_TH_PENDED) { w->state = KORB_TH_READY; korb_thread_runq_push(vm, w); }
+}
+
+static void
+korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno)
+{
+    korb_blop_post(vm, b, neg_errno);
+}
+
+/* pump: 完了回収。block=1 なら次の deadline まで (無ければ無期限) native に眠る —
+ * scheduler idle が呼ぶ、native thread が眠る唯一の場所。戻り値: post した数。 */
+static int
+korb_blop_pump(struct korb_vm *vm, int block)
+{
+    struct timespec now; korb_blop_now(&now);
+    int posted = 0;
+    for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {   /* 期限切れを post */
+        nx = b->bl_next;
+        if (korb_blop_deadline_passed(b, &now)) {
+            korb_blop_post(vm, b, b->kind == KORB_BLOP_TIMER ? 0 : -ETIMEDOUT);
+            posted++;
+        }
+    }
+    if (posted || !block) return posted;
+    /* 眠る長さ = 最短 deadline (無ければ無期限)。M3 でここが poll(fds…) になる */
+    int ms = -1;
+    for (const struct korb_blop *b = vm->blop_pending; b; b = b->bl_next) {
+        if (!(b->flags & KORB_BLOP_F_TIMEOUT)) continue;
+        long d = (long)(b->deadline.tv_sec - now.tv_sec) * 1000
+               + (b->deadline.tv_nsec - now.tv_nsec) / 1000000L;
+        if (d < 0) d = 0;
+        if (ms < 0 || d < ms) ms = (int)d;
+    }
+    poll(NULL, 0, ms);
+    korb_blop_now(&now);
+    for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {
+        nx = b->bl_next;
+        if (korb_blop_deadline_passed(b, &now)) {
+            korb_blop_post(vm, b, b->kind == KORB_BLOP_TIMER ? 0 : -ETIMEDOUT);
+            posted++;
+        }
+    }
+    return posted;
+}
+
 /* ---- ThreadError (const-only class) -------------------------------------- */
 static RESULT
 korb_raise_thread_error(CTX *c, VALUE *slots, const char *msg)
@@ -114,10 +232,18 @@ korb_thread_yield_cpu(CTX *c, VALUE *slots)
 {
     struct korb_vm *const vm = c->vm;
     struct korb_thread *const cur = vm->cur_thread;
-    struct korb_thread *const next = korb_thread_runq_pop(vm);
+    struct korb_thread *next = korb_thread_runq_pop(vm);
     if (next == NULL) {
         if (cur->state == KORB_TH_READY) { cur->state = KORB_TH_RUNNING; return RESULT_OK(KORB_NIL); }
-        korb_thread_deadlock_fatal();
+        /* PENDED で他に runnable 無し: blop の完了を pump で待つ (native thread が
+         * 眠る唯一の場所)。待てる blop も無ければ本物の deadlock。 */
+        for (;;) {
+            if (vm->blop_npending == 0) korb_thread_deadlock_fatal();
+            korb_blop_pump(vm, 1);
+            next = korb_thread_runq_pop(vm);
+            if (next) break;
+        }
+        if (next == cur) { cur->state = KORB_TH_RUNNING; return RESULT_OK(KORB_NIL); }   /* 自分の blop が完了 */
     }
     if (cur->vslots == NULL) {                /* boot が fiber 内だった main (遅延分) */
         cur->vslots = c->slots; cur->vslots_limit = c->slots_limit;
@@ -137,12 +263,64 @@ static void
 korb_thread_exit_switch(CTX *c)
 {
     struct korb_vm *const vm = c->vm;
-    struct korb_thread *const next = korb_thread_runq_pop(vm);
-    if (next == NULL) korb_thread_deadlock_fatal();
+    struct korb_thread *next = korb_thread_runq_pop(vm);
+    while (next == NULL) {                         /* 残りは全員 blop 待ち → pump */
+        if (vm->blop_npending == 0) korb_thread_deadlock_fatal();
+        korb_blop_pump(vm, 1);
+        next = korb_thread_runq_pop(vm);
+    }
     vm->cur_thread = next;
     next->state = KORB_TH_RUNNING;
     korb_thread_ctx_load(c, next);
     setcontext((ucontext_t *)next->uctx);     /* never returns */
+}
+
+/* ---- korb_blop_wait: 唯一の suspension point ------------------------------ */
+/* b を engine に登録し、完了 (F_DONE) まで現 thread を park する。戻ったら
+ * b->result 確定。green thread を眠らせるだけで native thread はブロックしない
+ * (runnable 皆無時の pump 内を除く)。may-GC (park 中に他 thread が alloc)。 */
+static RESULT
+korb_blop_wait(CTX *c, VALUE *slots, struct korb_blop *b)
+{
+    struct korb_vm *const vm = c->vm;
+    korb_thread_boot(c);
+    if (UNLIKELY(vm->running_fiber != NULL))
+        return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
+    b->waiter = vm->cur_thread;
+    korb_blop_prep(vm, b);
+    while (!(b->flags & KORB_BLOP_F_DONE)) {
+        struct korb_thread *const cur = vm->cur_thread;
+        cur->state = KORB_TH_PENDED; cur->blop = b;
+        RESULT r = korb_thread_yield_cpu(c, slots);
+        cur->blop = NULL;
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Kernel#sleep([sec]) — TIMER blop。他の green thread はその間走れる。
+ * 戻り値は眠った秒数 (CRuby 同様、丸めた Integer)。引数なし = 無期限。 */
+static RESULT
+korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    double sec = -1.0;                              /* forever */
+    if (VALUE_SLICE_LEN(args) >= 1 && VALUE_SLICE_GET(args, 0) != KORB_NIL) {
+        const VALUE v = VALUE_SLICE_GET(args, 0);
+        if (FIXNUM_P(v)) sec = (double)FIX2LONG(v);
+        else if (KORB_FLOAT_P(v)) sec = korb_float_val(v);
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
+        if (sec < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");
+    }
+    struct korb_blop b; memset(&b, 0, sizeof b);
+    b.kind = KORB_BLOP_TIMER;
+    if (sec >= 0) korb_blop_deadline_in(&b, sec);
+    struct timespec t0; korb_blop_now(&t0);
+    CHECK(korb_blop_wait(c, slots, &b));
+    struct timespec t1; korb_blop_now(&t1);
+    long slept = (long)(t1.tv_sec - t0.tv_sec);
+    const long nd = t1.tv_nsec - t0.tv_nsec;
+    if (nd > 500000000L) slept++; else if (nd < -500000000L) slept--;
+    return RESULT_OK(LONG2FIX(slept < 0 ? 0 : slept));
 }
 
 /* ---- thread body (runs on the thread's own stacks) ----------------------- */
@@ -230,13 +408,26 @@ korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_e
 }
 
 /* ---- instance methods ------------------------------------------------------ */
+static void
+korb_thread_joiners_remove(struct korb_thread *target, struct korb_thread *w)
+{
+    struct korb_thread **pp = &target->joiners;
+    while (*pp && *pp != w) pp = &(*pp)->join_next;
+    if (*pp) { *pp = w->join_next; w->join_next = NULL; }
+}
+
 static RESULT
 korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     struct korb_vm *const vm = c->vm;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL))
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Thread#join with a timeout (needs the blop layer)");
+    double tmo = -1.0;
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        const VALUE v = VALUE_SLICE_GET(a, 0);
+        if (FIXNUM_P(v)) tmo = (double)FIX2LONG(v);
+        else if (KORB_FLOAT_P(v)) tmo = korb_float_val(v);
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
+    }
     korb_thread_boot(c);
     if (UNLIKELY(t == vm->cur_thread))
         return korb_raise_thread_error(c, slots, "Target thread must not be current thread");
@@ -244,9 +435,25 @@ korb_m_thread_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         if (UNLIKELY(vm->running_fiber != NULL))
             return korb_raise_thread_error(c, slots, "can't switch threads from inside a Fiber");
         struct korb_thread *const cur = vm->cur_thread;
+        struct korb_blop tb;                        /* join(timeout): TIMER blop を併走 */
+        if (tmo >= 0) {
+            memset(&tb, 0, sizeof tb);
+            tb.kind = KORB_BLOP_TIMER; tb.waiter = cur;
+            korb_blop_deadline_in(&tb, tmo);
+            korb_blop_prep(vm, &tb);
+        }
         cur->state = KORB_TH_PENDED;
         cur->join_next = t->joiners; t->joiners = cur;
-        CHECK(korb_thread_yield_cpu(c, slots));
+        RESULT r = korb_thread_yield_cpu(c, slots);
+        if (tmo >= 0) {
+            if (!(tb.flags & KORB_BLOP_F_DONE))
+                korb_blop_cancel(vm, &tb, -ECANCELED);      /* 死亡側が先: timer を回収 */
+            else if (t->state != KORB_TH_DEAD) {            /* timeout 側が先 */
+                korb_thread_joiners_remove(t, vm->cur_thread);
+                return RESULT_OK(KORB_NIL);                 /* CRuby: join(tmo) 失敗 = nil */
+            }
+        }
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     if (t->raised) return RESULT_RAISE_(t->exc);   /* CRuby: join は死因の例外を再 raise */
     return RESULT_OK(VALUE_REF_GET(self));

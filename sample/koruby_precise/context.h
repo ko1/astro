@@ -835,6 +835,10 @@ struct korb_vm {
     struct korb_thread *main_thread;
     struct korb_thread *runq_head, *runq_tail;   /* READY FIFO */
     uint32_t name_thread;              /* interned "Thread" */
+    /* blop 層 (blocking operations; docs/io_design.md)。pending は engine に
+     * 登録済みで完了待ちの blop の連結リスト (rep 同様 C スタック上の実体)。 */
+    struct korb_blop *blop_pending;
+    uint32_t blop_npending;
 
     /* direct-mapped user-object method cache (klass,mid)→method.  Valid while
      * serial == method_serial (bumped on def AND on GC, so a moved/reused class
