@@ -648,6 +648,11 @@ static RESULT korb_set_class_visibility(CTX *c, VALUE *slots, VALUE_REF self, VA
             *dst = tmp; dst->mid = mid; dst->owner = slots[0]; dst->visibility = vis;
             continue;
         }
+        /* .new / .allocate は method entry でなく korb_send_impl の特例 dispatch —
+         * 可視性 mark 先が無い (Singleton module 等の private_class_method :new,
+         * :allocate はこれ)。enforcement は失うが no-op で通す。 */
+        { const char *const nm = korb_sym_name(c->vm, mid);
+          if (nm && (strcmp(nm, "new") == 0 || strcmp(nm, "allocate") == 0)) continue; }
         return korb_raise(c, slots + 1, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* not a class method → NameError */
                           korb_sym_name(c->vm, mid), korb_type_name(VALUE_REF_GET(self)));
     }

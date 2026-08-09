@@ -29,6 +29,18 @@ class StringIO
     args.each { |a| s = a.to_s; @buf << s; n += s.length }
     n
   end
+  def internal_encoding; nil; end
+  def external_encoding; @buf.encoding; end
+  def binmode; self; end
+  def seek(amount, whence = 0)
+    case whence
+    when 1 then @pos += amount
+    when 2 then @pos = @buf.bytesize + amount
+    else        @pos = amount
+    end
+    @pos = 0 if @pos < 0
+    0
+  end
 
   def <<(obj)
     @buf << obj.to_s

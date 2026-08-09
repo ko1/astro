@@ -242,6 +242,35 @@ module ObjectSpace
   def self.garbage_collect(*); nil; end
 end
 
+class File
+  NULL = "/dev/null"
+  LOCK_SH = 1; LOCK_EX = 2; LOCK_NB = 4; LOCK_UN = 8
+  def flock(_op); 0; end       # 単一プロセス: no-op が正しい近似
+  SEPARATOR = "/"
+  ALT_SEPARATOR = nil
+  PATH_SEPARATOR = ":"
+  Separator = SEPARATOR
+end
+
+# ARGF: class 判別のためだけの最小 stub (CSV 等が ARGF.class を参照する)
+class ARGFClass
+  def argv; ARGV; end
+  def filename; "-"; end
+end
+ARGF = ARGFClass.new
+
+module ObjectSpace
+  # WeakMap: 弱参照なしの機能 stub (weakref.rb 用)
+  class WeakMap
+    def initialize; @h = {}; end
+    def [](k); @h[k]; end
+    def []=(k, v); @h[k] = v; end
+    def key?(k); @h.key?(k); end
+    def delete(k); @h.delete(k); end
+    def size; @h.size; end
+  end
+end
+
 module Signal
   def self.trap(*); nil; end
   def self.signame(_n); nil; end

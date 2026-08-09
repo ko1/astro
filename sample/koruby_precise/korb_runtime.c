@@ -8720,6 +8720,8 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("prepended", korb_m_lit_nil, 1);
     MOD_CFN("extended", korb_m_lit_nil, 1);
     MOD_CFN_BLK("define_method", korb_m_define_method, -1);
+    MOD_CFN("private_class_method", korb_m_private_class_method, -1);
+    MOD_CFN("public_class_method", korb_m_public_class_method, -1);
     MOD_CFN_BLK("class_eval", korb_m_obj_instance_eval, -1);
     MOD_CFN_BLK("module_eval", korb_m_obj_instance_eval, -1);
     MOD_CFN_BLK("class_exec", korb_m_obj_instance_exec, -1);

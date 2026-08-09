@@ -155,6 +155,73 @@ kp_intern_cid(struct kp_ctx *tc, pm_constant_id_t cid)
     return korb_intern(tc->c->vm, (const char *)ct->start, ct->length);
 }
 
+/* ---- `alias $NEW $OLD` — parse 時の名前 alias (process-wide、English.rb 用) ----
+ * gvar は const table 流用なので、NEW の read/write を OLD の read/write として
+ * transduce すれば常に live な alias になる。$! / $& 等の特例 read も解決後の
+ * 名前で既存分岐に落ちるため自動で正しく合成される。 */
+static struct { uint32_t nw, old; } *kp_gvar_aliases = NULL;
+static uint32_t kp_gvar_alias_cnt = 0, kp_gvar_alias_cap = 0;
+
+static void kp_gvar_alias_seed(struct kp_ctx *tc);   /* fwd */
+static uint32_t
+kp_gvar_resolve(uint32_t id)
+{
+    for (uint32_t hops = 0; hops < 8; hops++) {        /* 転送の連鎖 (循環は打ち切り) */
+        uint32_t next = id;
+        for (uint32_t i = 0; i < kp_gvar_alias_cnt; i++)
+            if (kp_gvar_aliases[i].nw == id) { next = kp_gvar_aliases[i].old; break; }
+        if (next == id) return id;
+        id = next;
+    }
+    return id;
+}
+
+/* English.rb の標準 alias 集合を先付け seed する。alias は parse 時解決なので、
+ * 同一ファイル内で `require "English"` → 即 $ERROR_INFO 使用というパターンに
+ * 対応するには、require の実行を待たず最初から解決できる必要がある。
+ * (English.rb 本体の alias 文は同じ内容の再登録になるだけ) */
+static void kp_gvar_alias_add(uint32_t nw, uint32_t old);
+static void
+kp_gvar_alias_seed(struct kp_ctx *tc)
+{
+    static bool seeded = false;
+    if (seeded) return;
+    seeded = true;
+    static const char *const pairs[][2] = {
+        { "$ERROR_INFO", "$!" }, { "$ERROR_POSITION", "$@" },
+        { "$FS", "$;" }, { "$FIELD_SEPARATOR", "$;" },
+        { "$OFS", "$," }, { "$OUTPUT_FIELD_SEPARATOR", "$," },
+        { "$RS", "$/" }, { "$INPUT_RECORD_SEPARATOR", "$/" },
+        { "$ORS", "$\\" }, { "$OUTPUT_RECORD_SEPARATOR", "$\\" },
+        { "$INPUT_LINE_NUMBER", "$." }, { "$NR", "$." },
+        { "$LAST_READ_LINE", "$_" }, { "$DEFAULT_OUTPUT", "$>" },
+        { "$DEFAULT_INPUT", "$<" }, { "$PID", "$$" }, { "$PROCESS_ID", "$$" },
+        { "$CHILD_STATUS", "$?" }, { "$LAST_MATCH_INFO", "$~" },
+        { "$IGNORECASE", "$=" }, { "$ARGV", "$*" }, { "$MATCH", "$&" },
+        { "$PREMATCH", "$`" }, { "$POSTMATCH", "$'" },
+        { "$LAST_PAREN_MATCH", "$+" }, { "$LOADED_FEATURES", "$\"" },
+        { "$PROGRAM_NAME", "$0" },
+    };
+    for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
+        kp_gvar_alias_add(korb_intern(tc->c->vm, pairs[i][0], (uint32_t)strlen(pairs[i][0])),
+                          korb_intern(tc->c->vm, pairs[i][1], (uint32_t)strlen(pairs[i][1])));
+}
+
+static void
+kp_gvar_alias_add(uint32_t nw, uint32_t old)
+{
+    for (uint32_t i = 0; i < kp_gvar_alias_cnt; i++)
+        if (kp_gvar_aliases[i].nw == nw) { kp_gvar_aliases[i].old = old; return; }
+    if (kp_gvar_alias_cnt == kp_gvar_alias_cap) {
+        kp_gvar_alias_cap = kp_gvar_alias_cap ? kp_gvar_alias_cap * 2 : 32;
+        kp_gvar_aliases = realloc(kp_gvar_aliases, sizeof(*kp_gvar_aliases) * kp_gvar_alias_cap);
+        if (!kp_gvar_aliases) abort();
+    }
+    kp_gvar_aliases[kp_gvar_alias_cnt].nw = nw;
+    kp_gvar_aliases[kp_gvar_alias_cnt].old = old;
+    kp_gvar_alias_cnt++;
+}
+
 static const char *
 kp_cid_cstr(struct kp_ctx *tc, pm_constant_id_t cid)
 {
@@ -1905,7 +1972,7 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
     }
     if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {   /* $g = ... (globals reuse the const table, $-prefixed name) */
-        uint32_t name = kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name));
         NODE *v; uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (v = mw_index_get(tc, src_tmp, idx, aref, line)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
@@ -1964,7 +2031,7 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
     }
     if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
-        uint32_t name = kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name));
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
     }
@@ -2301,6 +2368,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         size_t len = pm_string_length(&sn->unescaped);
         uint32_t id = korb_intern(tc->c->vm, (const char *)pm_string_source(&sn->unescaped), len);
         return ALLOC_node_lit(ID2SYM(id));
+      }
+      case PM_ALIAS_GLOBAL_VARIABLE_NODE: {   /* alias $NEW $OLD — parse 時 alias (English.rb) */
+        const pm_alias_global_variable_node_t *ag = (const pm_alias_global_variable_node_t *)node;
+        uint32_t nw = UINT32_MAX, old = UINT32_MAX;
+        if (PM_NODE_TYPE_P(ag->new_name, PM_GLOBAL_VARIABLE_READ_NODE))
+            nw = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)ag->new_name)->name);
+        if (PM_NODE_TYPE_P(ag->old_name, PM_GLOBAL_VARIABLE_READ_NODE))
+            old = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)ag->old_name)->name);
+        else if (PM_NODE_TYPE_P(ag->old_name, PM_BACK_REFERENCE_READ_NODE))
+            old = kp_intern_cid(tc, ((const pm_back_reference_read_node_t *)ag->old_name)->name);
+        if (nw == UINT32_MAX || old == UINT32_MAX)
+            return kp_unsupported(tc, node, "alias of a numbered reference");
+        kp_gvar_alias_add(nw, kp_gvar_resolve(old));
+        return lit_nil();
       }
       case PM_ALIAS_METHOD_NODE: {   /* alias new old — copy a method on the enclosing class */
         const pm_alias_method_node_t *al = (const pm_alias_method_node_t *)node;
@@ -3325,8 +3406,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       /* Global variables `$x` reuse the flat const table — the `$` in the name
        * keeps them in a distinct namespace from constants.  Unset reads → nil. */
       case PM_GLOBAL_VARIABLE_READ_NODE: {
-        const uint32_t gn = kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name);
+        const uint32_t gn = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name));
         if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
+        if (gn == korb_intern(tc->c->vm, "$&", 2)) return ALLOC_node_backref(0);  /* alias 経由 ($MATCH 等) */
+        if (gn == korb_intern(tc->c->vm, "$`", 2)) return ALLOC_node_backref(1);
+        if (gn == korb_intern(tc->c->vm, "$'", 2)) return ALLOC_node_backref(2);
+        if (gn == korb_intern(tc->c->vm, "$+", 2)) return ALLOC_node_backref(3);
         return ALLOC_node_const(gn, 0);
       }
       case PM_NUMBERED_REFERENCE_READ_NODE: {   /* $1..$9 → group n of the last match ($~) */
@@ -3344,7 +3429,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
-        uint32_t name = kp_intern_cid(tc, gw->name);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
         return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
@@ -3354,7 +3439,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             (const pm_global_variable_operator_write_node_t *)node;
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, gw->binary_operator));
         if (op == KP_BINOP_NONE) return kp_unsupported(tc, node, "global operator-assign");
-        uint32_t name = kp_intern_cid(tc, gw->name), line = kp_line(tc, node);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name)), line = kp_line(tc, node);
         NODE *binop = WITH_CHAIN(tc, kind_node_const_set.slot_count, ({
             NODE *lhs, *rhs;
             WITH_CHAIN(tc, kind_node_plus.slot_count,
@@ -3365,14 +3450,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {          /* `$x ||= v` (globals live in the const table) */
         const pm_global_variable_or_write_node_t *gw = (const pm_global_variable_or_write_node_t *)node;
-        uint32_t name = kp_intern_cid(tc, gw->name);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
         return ALLOC_node_or(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
       }
       case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
         const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;
-        uint32_t name = kp_intern_cid(tc, gw->name);
+        uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
         return ALLOC_node_and(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
