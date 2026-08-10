@@ -5,6 +5,13 @@
 
 ## 既知バグ (socket / require)
 
+- **socket の blocking spec が whole-file timeout する** (2026-08-10 計測)。
+  accept/recv/connect を実際に待つ 15 files
+  (tcpserver/accept, tcpsocket/recv, udpsocket/bind, socket/pair, …) と
+  core/io/syswrite_spec。green thread + 素の blocking syscall なので
+  scheduler ごと止まる。fd ベース IO 層 (blop 経由の read/write) が入るまでは
+  timeout のまま。それまでは 20s×16 files の計測コストがかかる点に注意。
+
 - **`library/socket/spec_helper.rb` を読んでも `Addrinfo` が定義されない**
   (2026-08-10)。同じ helper を単体で `require_relative` しても `defined?(Addrinfo)`
   は nil、その直後に明示 `require 'socket'` すると true を返して定義される
