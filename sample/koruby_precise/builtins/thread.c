@@ -1440,6 +1440,26 @@ static RESULT
 korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 { return korb_m_io_wait_ev(c, slots, self, a, POLLIN); }
 
+/* IO#__io_poll(events_int, timeout_or_nil) → ready revents mask (0 = timeout)。
+ * prelude の IO#wait (io/wait) が使う汎用形。 */
+static RESULT
+korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    FILE *const fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(fp == NULL)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "events must be an Integer");
+    double tmo = -1.0;
+    if (VALUE_SLICE_LEN(a) >= 2) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 1), &tmo));
+    struct pollfd p;
+    p.fd = fileno(fp);
+    p.events = (short)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    p.revents = 0;
+    ssize_t ready = 0;
+    CHECK(korb_blop_poll_wait(c, slots, &p, 1, tmo, &ready));
+    return RESULT_OK(LONG2FIX(ready ? p.revents : 0));
+}
+
 static RESULT
 korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 { return korb_m_io_wait_ev(c, slots, self, a, POLLOUT); }

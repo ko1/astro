@@ -404,13 +404,14 @@ def DelegateClass(superclass, &block)
       placeholder_name = :__delegate
     end
 
+    # koruby: `(...)` forwarding 未対応 → 明示展開
     send_source =
       if is_protected || placeholder_name
-        "__getobj__.__send__(#{target_name.inspect}, ...)"
+        "__getobj__.__send__(#{target_name.inspect}, *args, &block)"
       else
-        "__getobj__.#{target_name}(...)"
+        "__getobj__.#{target_name}(*args, &block)"
       end
-    source << "def #{placeholder_name || target_name}(...); #{send_source}; end"
+    source << "def #{placeholder_name || target_name}(*args, &block); #{send_source}; end"
 
     if placeholder_name
       source << "alias_method #{target_name.inspect}, :#{placeholder_name}"

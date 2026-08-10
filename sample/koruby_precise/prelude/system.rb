@@ -240,6 +240,58 @@ module ObjectSpace
   end
   def self.count_objects(*); {}; end
   def self.garbage_collect(*); nil; end
+  def self.define_finalizer(obj, proc = nil, &blk); 0; end     # no-op (GC finalizer 未対応)
+  def self.undefine_finalizer(obj); obj; end
+end
+
+# 定義済みグローバル (CRuby 初期値)
+$/ = "\n"        # input record separator
+$\ = nil         # output record separator
+$, = nil         # output field separator
+$; = nil         # input field separator
+$DEBUG = false
+$VERBOSE = false
+$stdin  = STDIN  if defined?(STDIN)
+$stdout = STDOUT if defined?(STDOUT)
+$stderr = STDERR if defined?(STDERR)
+
+class IO
+  READABLE = 1   # POLLIN
+  PRIORITY = 2   # POLLPRI
+  WRITABLE = 4   # POLLOUT
+  def path; @__io_path; end
+  def to_path; @__io_path; end
+  def size; stat.size; end
+  # io/wait: IO#wait(events_int|symbols…, timeout) — POLL blop 1 発
+  def wait(*args)
+    events = 0
+    timeout = nil
+    int_form = false
+    args.each do |x|
+      case x
+      when Integer
+        if events.zero? && !int_form && args.length >= 1 && x == args[0] && !x.between?(0, 7)
+          timeout = x           # wait(10) 形: 大きい Integer は timeout と解釈しない (CRuby は events)
+        end
+        events |= x
+        int_form = true
+      when Float   then timeout = x
+      when nil     then timeout = nil
+      when Symbol
+        case x
+        when :read, :r, :readable        then events |= READABLE
+        when :write, :w, :writable       then events |= WRITABLE
+        when :read_write, :rw, :readable_writable then events |= (READABLE | WRITABLE)
+        else raise ArgumentError, "unsupported mode: #{x}"
+        end
+      when Numeric then timeout = x
+      end
+    end
+    events = READABLE if events.zero?
+    r = __io_poll(events, timeout)
+    return nil if r.zero?
+    int_form ? r : self
+  end
 end
 
 class File

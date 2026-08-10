@@ -7722,6 +7722,7 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* de
 static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 #include "builtins/io.c"
 #include "builtins/time.c"
 #include "builtins/random.c"

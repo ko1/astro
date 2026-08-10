@@ -270,6 +270,16 @@ static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kin
       default: return RESULT_OK(LONG2FIX((intptr_t)st.st_size));            /* size */
     }
 }
+static RESULT korb_m_file_symlink_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    struct stat st;
+    if (lstat(path, &st) != 0) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(S_ISLNK(st.st_mode) ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_file_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)     { (void)self; return korb_m_file_stat_pred(c, slots, a, 0); }
 static RESULT korb_m_file_file_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)      { (void)self; return korb_m_file_stat_pred(c, slots, a, 1); }
 static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_m_file_stat_pred(c, slots, a, 2); }
@@ -916,6 +926,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "fnmatch",     korb_m_file_fnmatch,     -1);
     korb_class_def_cfn(c, slots[1], "fnmatch?",    korb_m_file_fnmatch,     -1);
     korb_class_def_cfn(c, slots[1], "exist?",      korb_m_file_exist_p,     1);
+    korb_class_def_cfn(c, slots[1], "symlink?",    korb_m_file_symlink_p,   1);
     korb_class_def_cfn(c, slots[1], "exists?",     korb_m_file_exist_p,     1);
     korb_class_def_cfn(c, slots[1], "file?",       korb_m_file_file_p,      1);
     korb_class_def_cfn(c, slots[1], "directory?",  korb_m_file_directory_p, 1);

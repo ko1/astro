@@ -443,6 +443,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     if (binary)   /* remember binary mode → reads produce ASCII-8BIT strings */
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_path", 10)),
+                        VALUE_SLICE_GET(a, 0)));   /* File#path / #to_path */
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
@@ -485,6 +487,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */
     IOM("wait_writable", wait_writable, -1);
+    IOM("__io_poll", poll_raw, -1);            /* 汎用 events poll (IO#wait 用) */
     korb_const_define(c, korb_intern(vm, "SEEK_SET", 8), LONG2FIX(SEEK_SET));
     korb_const_define(c, korb_intern(vm, "SEEK_CUR", 8), LONG2FIX(SEEK_CUR));
     korb_const_define(c, korb_intern(vm, "SEEK_END", 8), LONG2FIX(SEEK_END));
