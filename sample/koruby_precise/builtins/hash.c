@@ -122,8 +122,11 @@ static RESULT korb_m_hash_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     const VALUE k0 = VALUE_SLICE_GET(a, 0);
     /* CRuby dups + freezes a mutable String key, so later mutation of the caller's
-     * string can't corrupt the stored key (symbols/other keys are stored as-is). */
-    if (UNLIKELY(KORB_STRING_P(k0) && !(((const AroObjectHeader *)(uintptr_t)k0)->flags & KORB_FL_FROZEN))) {
+     * string can't corrupt the stored key (symbols/other keys are stored as-is).
+     * A compare_by_identity Hash keeps the caller's object instead — duping it
+     * would give a key no later lookup could ever match. */
+    if (UNLIKELY(KORB_STRING_P(k0) && !(((const AroObjectHeader *)(uintptr_t)k0)->flags & KORB_FL_FROZEN) &&
+                 !(VAL2HASH(VALUE_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID))) {
         slots[0] = k0;
         RESULT dr = korb_send(c, slots + 1, korb_intern(c->vm, "dup", 3), 0, 0);   /* GC-safe copy via #dup */
         if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
