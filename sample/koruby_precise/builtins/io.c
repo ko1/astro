@@ -520,6 +520,87 @@ static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     return korb_io_make(c, slots, korb_class_obj_of(c, VALUE_REF_GET(self)), nf, rw);
 }
 
+/* IO#binmode — switch to byte semantics (reads produce ASCII-8BIT). */
+static RESULT korb_m_io_binmode(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* IO#ungetc / IO#ungetbyte — push one byte back onto the read buffer. */
+static RESULT korb_m_io_ungetc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    int b = -1;
+    if (FIXNUM_P(v)) b = (int)(FIX2LONG(v) & 0xff);
+    else if (KORB_STRING_P(v)) {
+        uint32_t n; const char *p = korb_str_cstr_len(v, &n);
+        if (n == 0) return RESULT_OK(KORB_NIL);
+        b = (unsigned char)p[n - 1];          /* only one byte fits in a FILE* pushback */
+    } else if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
+    if (ungetc(b, fp) == EOF) return korb_raise(c, slots, KORB_E_IOERROR, 0, "ungetc failed");
+    return RESULT_OK(KORB_NIL);
+}
+
+/* IO#syswrite / IO#sysread — unbuffered write(2)/read(2) on the descriptor. */
+static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(slots[0])) {                       /* #to_s first (may GC) */
+        const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
+    }
+    fflush(fp);
+    uint32_t n; const char *p = korb_str_cstr_len(slots[0], &n);
+    const ssize_t w = write(fileno(fp), p, n);
+    if (w < 0) return korb_raise_errno(c, slots, errno, "syswrite", "");
+    return RESULT_OK(LONG2FIX((intptr_t)w));
+}
+static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    intptr_t want = 4096;
+    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
+    char stackbuf[8192];
+    char *buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want);
+    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+    const ssize_t r = read(fileno(fp), buf, (size_t)want);
+    if (r < 0) { if (buf != stackbuf) free(buf); return korb_raise_errno(c, slots, errno, "sysread", ""); }
+    if (r == 0 && want > 0) { if (buf != stackbuf) free(buf); return korb_raise(c, slots, KORB_E_IOERROR, 0, "end of file reached"); }
+    const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)r);
+    if (buf != stackbuf) free(buf);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
+    return sr;
+}
+
+/* IO#__init_fd(fd, mode) — wire an already-allocated IO (or subclass) to a
+ * descriptor.  IO.new is a C singleton, so a subclass that needs a real
+ * #initialize (the socket classes) allocates and calls this instead. */
+static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    char mode[16] = "r";
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
+        !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
+    if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots, errno, "", "");
+    FILE *fp = fdopen(fd, mode);
+    if (!fp) return korb_raise_errno(c, slots, errno, "", "");
+    const uint32_t idx = korb_io_register(c->vm, fp);
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)idx)));
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
+    if (strchr(mode, 'b'))
+        CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
 /* IO#pid — the child's pid for a popen'd stream, else nil. */
 static RESULT korb_m_io_pid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
@@ -700,6 +781,10 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("binmode?", binmode_p, 0);
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
     IOM("dup", dup, 0);              IOM("clone", dup, 0);
+    IOM("__init_fd", init_fd, -1);
+    IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
+    IOM("ungetbyte", ungetc, 1);
+    IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
     IOM("close_on_exec?", close_on_exec_p, 0);
     IOM("close_on_exec=", close_on_exec_set, 1);
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */

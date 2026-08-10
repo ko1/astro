@@ -405,5 +405,6 @@ module Process
   def self.kill(*a) = __kill(*a)
   def self.getpgid(*a) = __getpgid(*a)
   def self.getpgrp = __getpgid(0)
+  def self.last_status = $?
   def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
 end

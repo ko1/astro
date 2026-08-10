@@ -38,6 +38,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->def_env = def_env;
     rep->captured_self = KORB_CSELF_VAL(captured_self);
     rep->transfer = KORB_NIL;
+    rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
     rep->fstate = 0;
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -106,6 +107,35 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 
     if (rep->raised) { rep->raised = 0; return RESULT_RAISE_(rep->transfer); }
     return RESULT_OK(rep->transfer);
+}
+
+/* Fiber.current — the running fiber, or the implicit root fiber on the main
+ * stack (CRuby returns a Fiber object there too; koruby has no object for the
+ * root, so it reports nil rather than inventing one). */
+static RESULT
+korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)a;
+    const KorbFiberRep *const rep = c->vm->running_fiber;
+    if (rep) return RESULT_OK(rep->fibobj);
+    /* The main stack has no rep of its own; hand out a stand-in Fiber (built
+     * once, kept alive through fiber_list's fibobj edge) so callers still get a
+     * Fiber.  It is permanently "running", so #resume reports a double resume
+     * exactly as resuming the current fiber does. */
+    if (c->vm->root_fiber != NULL) return RESULT_OK(c->vm->root_fiber->fibobj);
+    KorbFiber *fb = korb_alloc(c, slots, sizeof(KorbFiber), KORB_OBJ_FIBER);   /* no GC below */
+    KorbFiberRep *rp = calloc(1, sizeof(KorbFiberRep));
+    if (!rp) { fprintf(stderr, "koruby_precise: oom (root fiber rep)\n"); abort(); }
+    fb->rep = rp;
+    rp->fibobj = (VALUE)fb;
+    rp->transfer = KORB_NIL;
+    rp->captured_self = KORB_NIL;
+    rp->fstate = 1;                                    /* running: never resumable */
+    rp->link = c->vm->fiber_list;                      /* rooted via the fibobj edge */
+    c->vm->fiber_list = rp;
+    c->vm->root_fiber = rp;
+    (void)self;
+    return RESULT_OK(rp->fibobj);
 }
 
 static RESULT

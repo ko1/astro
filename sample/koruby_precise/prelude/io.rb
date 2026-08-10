@@ -44,3 +44,28 @@ class IO
     nil
   end
 end
+
+class IO
+  # IO.open(fd, mode) — like ::new, but a block form closes the stream after.
+  # (File overrides this on its own singleton with the path-taking version.)
+  def self.open(*args)
+    io = new(*args)
+    return io unless block_given?
+    begin
+      yield io
+    ensure
+      io.close unless io.closed?
+    end
+  end
+end
+
+# FileTest — the File predicates as module functions.
+module FileTest
+  %i[exist? exists? file? directory? readable? writable? executable? size size?
+     zero? symlink? blockdev? chardev? pipe? socket? setgid? setuid? sticky?
+     owned? grpowned? world_readable? world_writable? identical? empty?].each do |m|
+    next unless File.respond_to?(m)
+    define_method(m) { |*a| File.__send__(m, *a) }
+    module_function m
+  end
+end

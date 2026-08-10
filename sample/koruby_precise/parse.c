@@ -2483,6 +2483,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
       case PM_SOURCE_FILE_NODE: return ALLOC_node_str(tc->fname, (uint32_t)strlen(tc->fname));   /* __FILE__ */
       case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)kp_line(tc, node)));    /* __LINE__ */
+      case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
+        const char *nm = tc->src_enc == KORB_ENC_USASCII ? "US-ASCII"
+                       : tc->src_enc == KORB_ENC_BINARY  ? "ASCII-8BIT" : "UTF-8";
+        NODE *recv, *arg;
+        WITH_CHAIN(tc, KP_SEND1_SC, (recv = ALLOC_node_const(korb_intern(tc->c->vm, "Encoding", 8), 0),
+                                     arg = ALLOC_node_str(nm, (uint32_t)strlen(nm))));
+        return kp_send1(korb_intern(tc->c->vm, "find", 4), kp_line(tc, node), recv, arg);
+      }
 
       /* ---- self / instance variables (self cell at base[fs-1], -1-chain) ---- */
       case PM_SELF_NODE:

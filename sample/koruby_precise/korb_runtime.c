@@ -5759,6 +5759,7 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
     }
 }
 static RESULT korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -6654,8 +6655,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self);
     }
     /* class receiver → Klass.new (allocate + initialize). */
-    else if (KORB_CLASS_P(self) && mid == vm->mid_yield && VAL2CLASS(self)->name_sym == vm->name_fiber) {
-        return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->name_fiber &&
+             (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7))) {
+        if (mid == vm->mid_yield)
+            return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+        return korb_m_fiber_s_current(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module &&
              VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6)) {     /* Kernel.Integer / .Float / .puts ... → the global function */
@@ -7725,6 +7729,7 @@ static RESULT korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 #include "builtins/io.c"
 #include "builtins/process.c"
+#include "builtins/socket.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
@@ -10961,6 +10966,7 @@ korb_ctx_new(void)
     korb_init_file(c, c->slots);
     korb_init_io(c, c->slots);
     korb_init_process(c, c->slots);
+    korb_init_socket(c, c->slots);
     korb_init_time(c, c->slots);
     /* RUBY_* version constants (specs/guards reference these).  Values track the
      * CRuby the differential tests run against so version guards behave the same. */

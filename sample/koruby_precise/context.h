@@ -398,6 +398,7 @@ typedef struct KorbProc {
 typedef struct KorbFiberRep {
     VALUE transfer;                  /* value passed across resume/yield (root) */
     VALUE captured_self;             /* the block's lexical self (root) */
+    VALUE fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
     VALUE *vslots;                   /* fiber value-stack base (fixed mmap) */
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
@@ -850,6 +851,7 @@ struct korb_vm {
      * GC roots), the currently-running fiber (NULL = main), the main stack's
      * saved scan bounds while a fiber runs, and the trampoline hand-off. */
     struct KorbFiberRep *fiber_list;
+    struct KorbFiberRep *root_fiber;   /* stand-in rep for the main stack (Fiber.current) */
     struct KorbFiberRep *running_fiber;
     struct KorbFiberRep *starting_fiber;
     VALUE *main_slots, *main_slots_top;
@@ -1087,6 +1089,7 @@ struct CTX_struct {
     for (struct KorbFiberRep *_fr = (c)->vm->fiber_list; _fr; _fr = _fr->link) { \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
         if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
             for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \

@@ -3,6 +3,21 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (socket / require)
+
+- **`library/socket/spec_helper.rb` を読んでも `Addrinfo` が定義されない**
+  (2026-08-10)。同じ helper を単体で `require_relative` しても `defined?(Addrinfo)`
+  は nil、その直後に明示 `require 'socket'` すると true を返して定義される
+  (= それまで未ロード扱い)。helper の 2 行目は `require 'socket'` なので、
+  その require が「例外も出さず、ロードもせず」に返っている。
+  `korb_resolve_load` / `korb_load_abspath` の feature 重複判定が
+  `library/socket/` というディレクトリ名と衝突している疑い。
+  addrinfo だけで 48 spec files が待っている。
+- **green thread 下で socket の blocking read が scheduler を止める**。
+  `accept` / `recv` は `wait_readable` (blop) を挟んで回避したが、
+  `IO#read` は素の fread なので、accept 側 thread と read 側 thread が
+  同居すると deadlock する。docs/io_design.md の fd ベース IO 本体待ち。
+
 ## 既知バグ (プロセス / IO)
 
 - **Signal.trap が無いので signal 系 spec が自分を殺す** (2026-08-10 に発生)。
