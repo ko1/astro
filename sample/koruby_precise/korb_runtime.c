@@ -1030,7 +1030,11 @@ korb_str_interp(CTX *c, VALUE *slots, VALUE_REF aref, VALUE part)
     VALUE p = VALUE_REF_GET(pref);
     if (KORB_STRING_P(p))
         return korb_str_plus_ref(c, slots, aref, pref);
-    if (KORB_OBJECT_P(p)) {                              /* user object → its to_s (user or default) */
+    /* Regexp and MatchData have a meaningful #to_s that the C printer below does
+     * not know about — it would render them as "#<Object>".  `/#{re}/` (a Regexp
+     * interpolated into a Regexp literal) goes through here, so getting this
+     * wrong silently corrupts composed patterns. */
+    if (KORB_OBJECT_P(p) || KORB_REGEXP_P(p) || KORB_MATCHDATA_P(p)) {   /* dispatch its to_s (user or builtin) */
         RESULT tsr = korb_send(c, slots, korb_intern(c->vm, "to_s", 4), 0, 0);   /* recv = pref slot */
         if (UNLIKELY(tsr.state != KORB_NORMAL)) return tsr;
         VALUE_REF_SET(pref, tsr.value);                  /* reuse the rooted slot to hold the result */

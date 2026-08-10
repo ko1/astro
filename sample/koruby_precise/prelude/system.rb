@@ -302,6 +302,15 @@ class File
   ALT_SEPARATOR = nil
   PATH_SEPARATOR = ":"
   Separator = SEPARATOR
+
+  # File.path(obj) — the path String an object names: #to_path if it has one,
+  # else the String itself (#to_str-coerced).  Pathname is built on this.
+  def self.path(obj)
+    return obj if obj.is_a?(String)
+    return obj.to_path.to_str if obj.respond_to?(:to_path)
+    return obj.to_str if obj.respond_to?(:to_str)
+    raise TypeError, "no implicit conversion of #{obj.nil? ? 'nil' : obj.class} into String"
+  end
 end
 
 # ARGF: class 判別のためだけの最小 stub (CSV 等が ARGF.class を参照する)
