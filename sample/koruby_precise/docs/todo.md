@@ -5,6 +5,13 @@
 
 ## 既知バグ (プロセス / IO)
 
+- **Signal.trap が無いので signal 系 spec が自分を殺す** (2026-08-10 に発生)。
+  `Process.kill` を実装した結果、`Process.kill :INT, Process.pid` を撃つ spec が
+  ハンドラ不在でインタプリタごと落ちるようになった。whole-file-fail:
+  core/exception/{interrupt,signal_exception,signm,signo}_spec.rb と
+  core/signal/trap_spec.rb の 5 本。最小 `Signal.trap` (IGNORE/DEFAULT/Proc) を
+  入れて、C ハンドラで pending flag を立て thread.c の check_ints で走らせるのが筋。
+
 - **`File.for_fd` / `File.sysopen` が見えない**。`IO.for_fd` は IO の singleton に
   定義してあるが File の singleton がそれを継承していない
   (`File.for_fd` → NoMethodError)。singleton class の継承リンクを確認すること。
