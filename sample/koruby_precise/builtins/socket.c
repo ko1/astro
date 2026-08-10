@@ -138,6 +138,12 @@ static RESULT korb_m_sock_listen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     const int bl = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : 5;
     if (listen(fd, bl) != 0) return korb_raise_errno(c, slots, errno, "listen", "");
+    /* "poll says readable" does not guarantee accept(2) won't block — a spurious
+       wakeup or a connection aborted between poll and accept both do.  Make the
+       listening fd non-blocking so accept returns EAGAIN instead of freezing the
+       scheduler; lib/socket.rb parks on POLL and retries. */
+    const int fl = fcntl(fd, F_GETFL);
+    if (fl >= 0) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     return RESULT_OK(LONG2FIX(0));
 }
 
@@ -147,7 +153,10 @@ static RESULT korb_m_sock_accept(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     struct sockaddr_storage ss; socklen_t len = sizeof ss;
     const int nfd = accept(fd, (struct sockaddr *)&ss, &len);
-    if (nfd < 0) return korb_raise_errno(c, slots, errno, "accept", "");
+    if (nfd < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return RESULT_OK(KORB_NIL);
+        return korb_raise_errno(c, slots, errno, "accept", "");
+    }
     (void)fcntl(nfd, F_SETFD, FD_CLOEXEC);
     slots[0] = UNWRAP(korb_sock_addr_ary(c, slots, (struct sockaddr *)&ss, len));
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
@@ -240,8 +249,13 @@ static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char stackbuf[8192];
     char *buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want);
     if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
-    const ssize_t r = recv(fd, buf, (size_t)want, fl);
-    if (r < 0) { if (buf != stackbuf) free(buf); return korb_raise_errno(c, slots, errno, "recv", ""); }
+    const ssize_t r = recv(fd, buf, (size_t)want, fl | MSG_DONTWAIT);
+    if (r < 0) {
+        const int e = errno;
+        if (buf != stackbuf) free(buf);
+        if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return RESULT_OK(KORB_NIL);   /* caller parks + retries */
+        return korb_raise_errno(c, slots, e, "recv", "");
+    }
     const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)r);
     if (buf != stackbuf) free(buf);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;

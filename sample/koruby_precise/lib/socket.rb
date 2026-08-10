@@ -62,9 +62,14 @@ class BasicSocket < IO
   end
 
   def send(mesg, flags = 0, dest = nil) = __sock_send(fileno, mesg.to_s, flags)
+  # Try the non-blocking op first and park only when it says EAGAIN: a POLL
+  # wakeup is not a guarantee that the next call won't block.
   def recv(maxlen, flags = 0)
-    wait_readable
-    __sock_recv(fileno, maxlen, flags)
+    loop do
+      r = __sock_recv(fileno, maxlen, flags)
+      return r if r
+      wait_readable
+    end
   end
   def recv_nonblock(maxlen, flags = 0, exception: true) = recv(maxlen, flags | Socket::MSG_DONTWAIT)
   def connect_address = local_address
@@ -119,9 +124,14 @@ class TCPServer < TCPSocket
   end
 
   def accept
-    wait_readable
-    nfd, _addr = __sock_accept(fileno)
-    TCPSocket.for_fd(nfd)
+    loop do
+      pair = __sock_accept(fileno)
+      if pair
+        nfd, _addr = pair
+        return TCPSocket.for_fd(nfd)
+      end
+      wait_readable
+    end
   end
 
   def accept_nonblock(exception: true) = accept
@@ -181,9 +191,14 @@ class UNIXServer < UNIXSocket
   end
 
   def accept
-    wait_readable
-    nfd, _addr = __sock_accept(fileno)
-    UNIXSocket.for_fd(nfd)
+    loop do
+      pair = __sock_accept(fileno)
+      if pair
+        nfd, _addr = pair
+        return UNIXSocket.for_fd(nfd)
+      end
+      wait_readable
+    end
   end
 
   def accept_nonblock(exception: true) = accept
@@ -271,9 +286,14 @@ class Socket < BasicSocket
   def listen(backlog) = (__sock_listen(fileno, backlog); 0)
 
   def accept
-    wait_readable
-    nfd, addr = __sock_accept(fileno)
-    [Socket.for_fd(nfd), Addrinfo.__from_ary(addr)]
+    loop do
+      pair = __sock_accept(fileno)
+      if pair
+        nfd, addr = pair
+        return [Socket.for_fd(nfd), Addrinfo.__from_ary(addr)]
+      end
+      wait_readable
+    end
   end
 
   def self.pair(family, type, protocol = 0)
