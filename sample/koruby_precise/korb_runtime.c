@@ -8920,6 +8920,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_index", korb_m_enum_with_index, 0);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "with_object", korb_m_enum_with_object, -1);
     korb_def_cmethod_blk(c, KORB_C_ENUMERATOR, "each_with_object", korb_m_enum_with_object, 1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "__enum_mode", korb_m_enum_mode, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "next", korb_m_enum_next, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "peek", korb_m_enum_peek, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "rewind", korb_m_enum_rewind, 0);

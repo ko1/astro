@@ -990,6 +990,14 @@ static RESULT korb_enum_gen_at_cursor(CTX *c, VALUE *slots, VALUE_REF self, bool
     if (advance) SELF_ENUM->cursor = cur + 1;
     return RESULT_OK(v);
 }
+/* __enum_mode: the internal mode (0 eager, 1 lazy, 2 cycle, 3/4 generator).
+ * Exposed to the prelude, which drives external iteration (next/peek) of a
+ * non-eager enumerator through a Fiber: those `each` bodies are not restartable
+ * (a generator may have side effects), so re-driving to cursor+1 loses values. */
+static RESULT korb_m_enum_mode(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c;(void)slots;(void)a;
+    return RESULT_OK(LONG2FIX(SELF_ENUM->mode));
+}
 static RESULT korb_m_enum_next(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     if (SELF_ENUM->mode != 0) return korb_enum_gen_at_cursor(c, slots, self, true);
