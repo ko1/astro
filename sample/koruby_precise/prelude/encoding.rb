@@ -49,6 +49,9 @@ class Encoding
     n = name.to_s
     return default_external if n == 'external' || n == 'filesystem' || n == 'locale'
     return (default_internal || default_external) if n == 'internal'
+    # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
+    # rather than a fresh Encoding that merely prints the same.
+    aliases.each { |a, canon| (n = canon; break) if a.upcase == n.upcase }
     constants.each do |cn|
       e = const_get(cn)
       return e if e.is_a?(Encoding) && (e.name == n || e.name.upcase == n.upcase)

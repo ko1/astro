@@ -407,6 +407,99 @@ static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* IO#binmode? — the prelude's encoding accessors need to see the 'b' flag,
+ * which lives in a non-@ internal ivar. */
+static RESULT korb_m_io_binmode_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    return RESULT_OK(korb_io_is_binary(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
+}
+
+/* A Ruby mode string ("r", "w+", "ab", …) → open(2) flags.  false = not a mode
+ * string koruby understands. */
+static bool korb_io_mode_to_flags(const char *mode, int *out) {
+    const bool plus = strchr(mode, '+') != NULL;
+    switch (mode[0]) {
+      case 'r': *out = plus ? O_RDWR : O_RDONLY;                          return true;
+      case 'w': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;    return true;
+      case 'a': *out = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;   return true;
+      default:  return false;
+    }
+}
+
+/* The rw bits korb_io_make wants: 1 read, 2 write, 3 both. */
+static int korb_io_mode_rw(const char *mode) {
+    const bool plus = strchr(mode, '+') != NULL;
+    if (mode[0] == 'r') return plus ? 3 : 1;
+    return plus ? 3 : 2;
+}
+
+/* Read a mode argument (String or Integer O_* flags) into a fopen(3)-style
+ * string.  Returns false for a mode koruby rejects. */
+static bool korb_io_mode_arg(VALUE mv, char *mode, size_t cap) {
+    if (FIXNUM_P(mv)) {
+        const int fl = (int)FIX2LONG(mv);
+        const int acc = fl & 3;
+        const char *m = acc == 1 ? ((fl & O_APPEND) ? "a" : "w") : acc == 2 ? "r+" : "r";
+        if (strlen(m) >= cap) return false;
+        strcpy(mode, m);
+        return true;
+    }
+    if (!KORB_STRING_P(mv)) return false;
+    uint32_t ml; const char *m = korb_str_cstr_len(mv, &ml);
+    if (ml == 0 || ml >= cap) return false;
+    memcpy(mode, m, ml); mode[ml] = '\0';
+    return strchr("rwa", mode[0]) != NULL;
+}
+
+/* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
+static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    int flags = O_RDONLY;
+    if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
+        const VALUE mv = VALUE_SLICE_GET(a, 1);
+        if (FIXNUM_P(mv)) flags = (int)FIX2LONG(mv);
+        else {
+            char mode[16];
+            if (!korb_io_mode_arg(mv, mode, sizeof mode) || !korb_io_mode_to_flags(mode, &flags))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
+        }
+    }
+    mode_t perm = 0666;
+    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) perm = (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    const int fd = open(path, flags, perm);
+    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+    return RESULT_OK(LONG2FIX(fd));
+}
+
+/* IO.new(fd, mode = "r") / IO.for_fd — wrap an already-open descriptor.  A
+ * trailing options Hash (autoclose:, encoding:, …) is accepted and ignored. */
+static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    uint32_t n = VALUE_SLICE_LEN(a);
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) n--;          /* drop the options Hash */
+    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    const VALUE fv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!FIXNUM_P(fv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(fv));
+    const int fd = (int)FIX2LONG(fv);   /* a negative or stale fd falls out of the fcntl check below as EBADF */
+    char mode[16] = "r";
+    if (n >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
+        !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
+    if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots, errno, "", "");
+    /* fdopen dups nothing: the FILE* and the caller share the descriptor. */
+    FILE *fp = fdopen(fd, mode);
+    if (!fp) return korb_raise_errno(c, slots, errno, "", "");
+    const bool binary = strchr(mode, 'b') != NULL;
+    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, korb_io_mode_rw(mode)));
+    if (binary)
+        CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    return RESULT_OK(slots[0]);
+}
+
 /* File.open(path, mode = "r") [ { |io| ... } ] — with a block, yields the IO and
  * closes it after (returning the block value); without, returns the IO. */
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -485,6 +578,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
     IOB("each_char", each_char, 0);   IOM("getc", getc, 0);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
+    IOM("binmode?", binmode_p, 0);
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */
     IOM("wait_writable", wait_writable, -1);
     IOM("__io_poll", poll_raw, -1);            /* 汎用 events poll (IO#wait 用) */
@@ -501,6 +595,9 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn_blk(c, io_sing, "foreach", korb_m_file_foreach, -1);
     korb_class_def_cfn(c, io_sing, "select",    korb_m_io_s_select,    -1);   /* POLL blop (thread.c) */
     korb_class_def_cfn_blk(c, io_sing, "pipe",  korb_m_io_s_pipe,      -1);
+    korb_class_def_cfn(c, io_sing, "sysopen",   korb_m_io_s_sysopen,   -1);
+    korb_class_def_cfn(c, io_sing, "new",       korb_m_io_s_new_fd,    -1);
+    korb_class_def_cfn(c, io_sing, "for_fd",    korb_m_io_s_new_fd,    -1);
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods.

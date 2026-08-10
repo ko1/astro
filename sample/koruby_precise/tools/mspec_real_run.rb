@@ -5,7 +5,14 @@
 # one file per koruby process (isolation), tally the summary line.
 # Usage: ruby mspec_run.rb <spec-root-dir> <jobs> [DUMP=path]
 require 'open3'
+require 'fileutils'
 K    = ENV['KORUBY'] || "/home/ko1/ruby/astro/sample/koruby_precise/koruby_precise"
+# mspec's default temp dir is <cwd>/rubyspec_temp, i.e. inside the (possibly
+# read-only) rubyspec checkout — every file/io spec then dies in `before :each`
+# with EROFS.  Give each spawned process its own writable dir instead.
+TMPBASE = ENV['SPEC_TEMP_BASE'] || "#{ENV['TMPDIR'] || '/tmp'}/koruby_spec_tmp"
+FileUtils.rm_rf(TMPBASE)
+FileUtils.mkdir_p(TMPBASE)
 root = ARGV[0] || "#{ENV['HOME']}/ruby/src/master/spec/ruby/core"
 jobs = (ARGV[1] || 16).to_i
 specdir = "#{ENV['HOME']}/ruby/src/master/spec/ruby"
@@ -20,7 +27,11 @@ workers = Array.new([jobs, files.size].min) do
   Thread.new do
     while (f = (q.pop(true) rescue nil))
       rel = f.sub("#{specdir}/", "")
-      out, st = Open3.capture2e({ 'MSPEC_RUNNER' => nil }, "timeout", "20", K, f, chdir: specdir, stdin_data: "")
+      td = "#{TMPBASE}/#{rel.gsub(%r{[/.]}, '_')}"
+      FileUtils.mkdir_p(td)
+      out, st = Open3.capture2e({ 'MSPEC_RUNNER' => nil, 'SPEC_TEMP_DIR' => td },
+                                "timeout", "20", K, f, chdir: specdir, stdin_data: "")
+      FileUtils.rm_rf(td)
       m = RE.match(out.dup.force_encoding("UTF-8").scrub)
       mutex.synchronize do
         tot[:files] += 1

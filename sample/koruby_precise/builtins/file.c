@@ -133,22 +133,46 @@ static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALU
 }
 
 /* File.join(*parts) → parts joined with a single '/'. */
+/* Append one File.join component.  Separator rule (CRuby's rb_file_join): for
+ * every component after the first, a leading separator on the right absorbs any
+ * trailing separators on the left, otherwise one is inserted when the left does
+ * not already end with it.  No allocation happens here, so the interior string
+ * pointers stay valid for the whole walk. */
+static RESULT korb_file_join_str(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first) {
+    if (UNLIKELY(!KORB_STRING_P(pv)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    uint32_t plen; const char *p = korb_str_cstr_len(pv, &plen);
+    if (!*first) {
+        if (plen > 0 && p[0] == '/') { while (*d > 0 && buf[*d - 1] == '/') (*d)--; }
+        else if (!(*d > 0 && buf[*d - 1] == '/') && *d + 1 < cap) buf[(*d)++] = '/';
+    }
+    *first = false;
+    if (*d + plen >= cap) plen = (uint32_t)(cap - 1 - *d);
+    memcpy(buf + *d, p, plen); *d += plen;
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Arrays are flattened; an empty one still counts as an (empty) component, so
+ * File.join("a", []) is "a/" just as in CRuby. */
+static RESULT korb_file_join_val(CTX *c, VALUE *slots, VALUE pv, char *buf, size_t cap, size_t *d, bool *first, uint32_t depth) {
+    if (!KORB_ARRAY_P(pv)) return korb_file_join_str(c, slots, pv, buf, cap, d, first);
+    if (UNLIKELY(depth > 16)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array");
+    const uint32_t n = VAL2ARY(pv)->len;
+    if (n == 0) {
+        if (!*first && !(*d > 0 && buf[*d - 1] == '/') && *d + 1 < cap) buf[(*d)++] = '/';
+        *first = false;
+        return RESULT_OK(KORB_NIL);
+    }
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(korb_file_join_val(c, slots, korb_items_data(VAL2ARY(pv)->items)[i], buf, cap, d, first, depth + 1));
+    return RESULT_OK(KORB_NIL);
+}
+
 static RESULT korb_m_file_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    char buf[8192]; size_t d = 0;
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
-        const VALUE pv = VALUE_SLICE_GET(a, i);
-        if (UNLIKELY(!KORB_STRING_P(pv)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
-        uint32_t plen; const char *p = korb_str_cstr_len(pv, &plen);
-        if (i > 0) {                                  /* drop a trailing sep on the left + a leading sep on the right */
-            while (d > 0 && buf[d - 1] == '/') d--;
-            while (plen > 0 && p[0] == '/') { p++; plen--; }
-            if (d + 1 < sizeof buf) buf[d++] = '/';
-        }
-        if (d + plen >= sizeof buf) plen = (uint32_t)(sizeof buf - 1 - d);
-        memcpy(buf + d, p, plen); d += plen;
-    }
+    char buf[8192]; size_t d = 0; bool first = true;
+    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++)
+        CHECK(korb_file_join_val(c, slots, VALUE_SLICE_GET(a, i), buf, sizeof buf, &d, &first, 0));
     return korb_str_new(c, slots, buf, (uint32_t)d);
 }
 
