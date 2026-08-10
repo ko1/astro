@@ -5,7 +5,7 @@
 # one file per koruby process (isolation), tally the summary line.
 # Usage: ruby mspec_run.rb <spec-root-dir> <jobs> [DUMP=path]
 require 'open3'
-K    = "/home/ko1/ruby/astro/sample/koruby_precise/koruby_precise"
+K    = ENV['KORUBY'] || "/home/ko1/ruby/astro/sample/koruby_precise/koruby_precise"
 root = ARGV[0] || "#{ENV['HOME']}/ruby/src/master/spec/ruby/core"
 jobs = (ARGV[1] || 16).to_i
 specdir = "#{ENV['HOME']}/ruby/src/master/spec/ruby"
