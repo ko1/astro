@@ -175,6 +175,53 @@ poll は regular file に対し常に ready を返し、read(2) は O_NONBLOCK �
 - `IO.select` は io.c 側で pollfd 配列を組んで POLL blop 1 個
   (真の意味論 =「その時点で ready な全部」が revents で一発で返る)。
 
+### 実装状況と残作業 (2026-08-10)
+
+- 済: `korb_io_read_bytes` / `korb_io_read_all_bytes` / `korb_io_write_bytes` に
+  byte 単位 I/O を集約。read は `korb_str_alloc` の未初期化バッファへ直接転送
+  (malloc + copy を廃止)。
+- 済: `vm->io_fps` (FILE* 配列) → `vm->io_reps` (KorbIORep* 配列)。rep は
+  libc alloc で不動。今は `fp` と `fd` を両方持ち、`fp != NULL` が stdio 経路。
+- **残: `fp` の全廃**。以下を rep の自前バッファで書き直す。
+
+```c
+typedef struct KorbIORep {
+    int      fd;
+    uint8_t  flags;      /* READABLE/WRITABLE/EOF/BINARY/APPEND/TTY */
+    char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead */
+    char    *wbuf; uint32_t wlen, wcapa;         /* write buffer */
+    off_t    pos;                                /* 論理位置 (rbuf 補正込み) */
+} KorbIORep;
+```
+
+置き換え対象と方針:
+
+| 現行 | 置き換え |
+|---|---|
+| `fread` | `rbuf` から供給。空なら `read(2)`。EAGAIN → `wait_readable` で park → retry |
+| `fwrite` | `wbuf` に積む。閾値超え / flush / close / tty なら `write(2)` (部分書き込みループ)。EAGAIN → `wait_writable` |
+| `fgetc` ×3 | `rbuf[rpos++]`、空なら refill |
+| `ungetc` ×1 | `rpos > 0` なら `rpos--`。先頭なら rbuf を 1 バイト右シフト (`rcapa` 保証済み) |
+| `fseek`/`ftell` | `lseek(2)` + `rlen - rpos` 補正。seek 時に rbuf 破棄、wbuf は flush |
+| `feof` | `rpos == rlen` かつ refill が 0 を返したとき |
+| `fflush` | wbuf を書き切る |
+| `fdopen`/`fclose` | 不要 (fd を直接持つ)。close は flush + `close(2)` |
+| `freopen` (reopen) | `open(2)` + `dup2(2)` + バッファ破棄 |
+| `isatty(fileno(fp))` | `isatty(rep->fd)` |
+
+**park 規律**: rbuf/wbuf は rep 内 (不動) なので park を跨いでポインタが stale に
+ならない。String との境界は helper 内の copy 1 回に閉じる。ポインタを String から
+取って park を跨ぐのは禁止 (readiness でも completion でも壊れる)。
+
+**順序規律**: 「poll が readable と言っても次の read が block しない保証は無い」ので、
+必ず **nonblock で試す → EAGAIN → park → retry**。逆順 (park してから blocking 呼び出し)
+は spurious wakeup / abort された接続 / 複数 reader の競合で scheduler ごと固まる。
+
+**移行時の注意**: stdio と生 fd を同じ fd に混在させるとバッファが二重になって
+データを落とすので、切り替えは IO オブジェクト単位で一括。$stdout の
+`KORB_FL_DEFAULT_IO` 高速パスは wbuf 経路に載せ替える (unbuffered にすると
+`puts` ごとに syscall が飛んで benchmark が落ちる)。
+
 ## cancel / 割り込み (Thread#kill / #raise / signal)
 
 Phase 1 の単純化: **kill を発行する側も green thread なので、発行時点で対象は
