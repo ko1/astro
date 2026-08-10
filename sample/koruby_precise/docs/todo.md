@@ -10,25 +10,28 @@
   (`docs/io_design.md` の「実装状況」参照)。残っている whole-file 失敗は
   blocking ではなく機能不足側なので、個別に切り分けが要る。
 
-- **mspec の spec_helper を読んだ後は `require` が無効になる** (2026-08-10 に切り分け)。
-  再現最小形は 2 行 —
-  `require_relative '<spec>/spec_helper'` の直後に `require 'socket'` を書いた
-  ファイルを *require_relative 経由で* 読むと、例外もロードもなく返り
-  `defined?(Socket)` が nil。同じ 2 行をメインスクリプトに直接書くと動く。
-  ネストした require_relative 自体は正常 (単体テスト済)。
-  **真因 (2026-08-10 確定)**: bare な `require` はメソッド探索を通らず
-  builtin 直行で解決される。`class Object; def require(f); …; super; end; end`
-  を書いても、その後の `require "csv"` は override を呼ばない (確認済み)。
-  builtin は `korb_method_slot` の global method table に
-  `KORB_METHOD_BUILTIN` として入っており、bare call はそこを先に見る。
-  そのため mspec の require 上書きが素通りし、上書き前提の spec が動かない。
-  ("super: no superclass method 'require'" 60 件も同じ根。)
-  対処として require/require_relative/load を Kernel の実メソッドとしても
-  登録済み (super の解決先を用意した)。**残りは bare call の解決順を
-  「self の class chain に user-defined があればそちらを優先」に変えること**。
-  Object に直接生やす素朴版は無限再帰で core dump したので、
-  再入ガードか、builtin entry を Kernel メソッドの薄い alias にする設計が要る。
-  これが直れば addrinfo 48 files + require/load 系の 137 エラーが動く。
+- ~~mspec の spec_helper を読んだ後は `require` が無効になる~~
+  **(2026-08-11 解消。真因は koruby ではなく harness だった)**。
+  症状は「`library/socket/**` の spec で `Socket` / `Addrinfo` が
+  uninitialized constant」。前回「bare な `require` がメソッド探索を通らず
+  builtin 直行だから mspec の require 上書きが素通りする」と書いたが、
+  **これは誤り**。切り分け直した結果:
+  - `library/socket/addrinfo/afamily_spec.rb` を **CRuby で直接実行しても
+    同じ 3 errors** になる。つまり koruby 固有の問題ではない。
+  - 原因は ruby/spec の `spec_helper.rb` が `MSPEC_RUNNER` 未設定のとき
+    `ARGV.unshift $0; MSpecRun.main` で **自分自身を再入実行する**こと。
+    `foo_spec.rb` → `library/socket/spec_helper.rb` →
+    `spec_helper.rb` (ここで MSpecRun.main) → `foo_spec.rb` を再ロード →
+    describe/example が走る、という順になるので、
+    `library/socket/spec_helper.rb` の 2 行目 `require 'socket'` が
+    **example の後**にしか実行されない。
+  - 直し方は harness 側。`tools/mspec_launch.rb` が MSpecRun を自分で駆動し、
+    spec file を top level に置く (`MSPEC_MODE=self` で旧挙動)。
+  なお「bare `require` はメソッド探索を通らない」自体は事実だが、
+  mspec が使う `CodeLoadingSpecs::Method#require` は明示レシーバ呼び出しなので
+  その経路は通らない。**この 2 つは別の話**として扱うこと。
+  bare call の解決順変更は Object に直接生やすと無限再帰で core dump した
+  実績があり、今のところ実測された利得もないので着手しない。
 - ~~green thread 下で socket の blocking read が scheduler を止める~~
   **(2026-08-10 解消)**。`IO#read` / `gets` / `getc` / `eof?` / `write` が
   rep 経由になり、EAGAIN を park に変換するようになった。`IO.pipe` で

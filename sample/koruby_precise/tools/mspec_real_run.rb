@@ -17,6 +17,20 @@ root = ARGV[0] || "#{ENV['HOME']}/ruby/src/master/spec/ruby/core"
 jobs = (ARGV[1] || 16).to_i
 specdir = "#{ENV['HOME']}/ruby/src/master/spec/ruby"
 files = Dir.glob("#{root}/**/*_spec.rb").sort
+# Two ways to run a spec file:
+#   launch (default) — drive MSpecRun ourselves so the spec file stays at top
+#                      level and its require_relative chain finishes first.
+#   self             — let ruby/spec's spec_helper self-run (`MSpecRun.main`).
+#                      Broken for specs behind an intermediate spec_helper that
+#                      requires a library; see tools/mspec_launch.rb.
+LAUNCHER = File.expand_path("mspec_launch.rb", __dir__)
+if ENV['MSPEC_MODE'] == 'self'
+  SPAWN_ENV = { 'MSPEC_RUNNER' => nil }
+  ARGS_FOR  = ->(f) { [f] }
+else
+  SPAWN_ENV = { 'MSPEC_RUNNER' => '1' }
+  ARGS_FOR  = ->(f) { [LAUNCHER, f] }
+end
 # summary line: "1 file, N examples, M expectations, F failures, E errors, T tagged"
 RE = /(\d+) examples?, \d+ expectations?, (\d+) failures?, (\d+) errors?/
 require 'thread'
@@ -33,8 +47,8 @@ workers = Array.new([jobs, files.size].min) do
       # inherits the capture descriptor) would otherwise keep the pipe open past
       # the timeout kill and hang the read forever.
       log = "#{td}/.out"
-      pid = Process.spawn({ 'MSPEC_RUNNER' => nil, 'SPEC_TEMP_DIR' => td },
-                          "timeout", "-k", "5", "20", K, f,
+      pid = Process.spawn(SPAWN_ENV.merge('SPEC_TEMP_DIR' => td),
+                          "timeout", "-k", "5", "20", K, *ARGS_FOR.call(f),
                           chdir: specdir, in: "/dev/null", out: log, err: [:child, :out])
       _, st = Process.waitpid2(pid)
       out = File.exist?(log) ? File.binread(log) : ""
