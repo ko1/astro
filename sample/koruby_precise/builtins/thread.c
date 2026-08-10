@@ -1426,11 +1426,11 @@ korb_thread_tmo_arg(CTX *c, VALUE *slots, VALUE v, double *out)
 static RESULT
 korb_m_io_wait_ev(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, short ev)
 {
-    FILE *const fp = korb_io_fp(c, VALUE_REF_GET(self));
-    if (UNLIKELY(fp == NULL)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const int wfd = korb_io_fd(c, VALUE_REF_GET(self));
+    if (UNLIKELY(wfd < 0)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     double tmo = -1.0;
     if (VALUE_SLICE_LEN(a) >= 1) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 0), &tmo));
-    struct pollfd p; p.fd = fileno(fp); p.events = ev; p.revents = 0;
+    struct pollfd p; p.fd = wfd; p.events = ev; p.revents = 0;
     ssize_t ready = 0;
     CHECK(korb_blop_poll_wait(c, slots, &p, 1, tmo, &ready));
     return RESULT_OK(ready ? VALUE_REF_GET(self) : KORB_NIL);
@@ -1445,14 +1445,14 @@ korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 static RESULT
 korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
-    FILE *const fp = korb_io_fp(c, VALUE_REF_GET(self));
-    if (UNLIKELY(fp == NULL)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const int wfd = korb_io_fd(c, VALUE_REF_GET(self));
+    if (UNLIKELY(wfd < 0)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "events must be an Integer");
     double tmo = -1.0;
     if (VALUE_SLICE_LEN(a) >= 2) CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(a, 1), &tmo));
     struct pollfd p;
-    p.fd = fileno(fp);
+    p.fd = wfd;
     p.events = (short)FIX2LONG(VALUE_SLICE_GET(a, 0));
     p.revents = 0;
     ssize_t ready = 0;
@@ -1498,12 +1498,12 @@ korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         if (cnt[s] == 0) continue;
         const KorbArray *arr = VAL2ARY(VALUE_SLICE_GET(a, s));
         for (uint32_t i = 0; i < cnt[s]; i++) {
-            FILE *fp = korb_io_fp(c, korb_items_data(arr->items)[i]);
-            if (UNLIKELY(fp == NULL)) {
+            const int efd = korb_io_fd(c, korb_items_data(arr->items)[i]);
+            if (UNLIKELY(efd < 0)) {
                 if (pf != pbuf) free(pf);
                 return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
             }
-            pf[k].fd = fileno(fp); pf[k].events = evs[s]; pf[k].revents = 0; k++;
+            pf[k].fd = efd; pf[k].events = evs[s]; pf[k].revents = 0; k++;
         }
     }
     ssize_t ready = 0;

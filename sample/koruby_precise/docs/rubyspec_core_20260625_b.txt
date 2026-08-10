@@ -1,0 +1,3 @@
+files=1557 (file-clean=394)  whole-file-fail/crash=563
+examples: pass=7551 fail=1520 err=4617 skip=309
+example pass-rate (of pass+fail+err) = 55.2%

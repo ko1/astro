@@ -148,8 +148,8 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
     }
     /* an IO → its descriptor */
     if (KORB_OBJECT_P(v)) {
-        FILE *fp = korb_io_fp(c, v);
-        if (fp) { r->to = fileno(fp); p->nredir++; return true; }
+        const KorbIORep *const rep = korb_io_rep(c, v);
+        if (korb_io_open_p(rep)) { r->to = rep->fd; p->nredir++; return true; }
     }
     return false;
 }
@@ -284,6 +284,7 @@ static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
+    korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) return korb_raise_errno(c, slots, errno, "spawn", plan.argv[0]);
     return RESULT_OK(LONG2FIX(pid));
@@ -319,6 +320,7 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
+    korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) return RESULT_OK(KORB_NIL);
     int raw = 0;
@@ -341,6 +343,7 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     int fds[2];
     if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
     fflush(NULL);
+    korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = fork();
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     if (pid == 0) {
@@ -450,12 +453,11 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     r->from = reading ? 1 : 0;
     r->to = fds[reading ? 1 : 0];
     r->path[0] = '\0'; r->oflags = 0;
+    korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     close(fds[reading ? 1 : 0]);
-    FILE *fp = fdopen(fds[reading ? 0 : 1], reading ? "r" : "w");
-    if (!fp) { close(fds[reading ? 0 : 1]); return korb_raise_errno(c, slots, errno, "fdopen", ""); }
-    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, reading ? 1 : 2));
+    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fds[reading ? 0 : 1], reading ? 1 : 2));
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));
     if (strchr(mode, 'b'))

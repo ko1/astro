@@ -7720,7 +7720,7 @@ RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out);   /* 
 #include "builtins/regexp.c"
 #include "builtins/file.c"
 #include "builtins/env.c"
-static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp);   /* defined below; io.c IO#puts uses it */
+static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep);   /* defined below; io.c IO#puts uses it */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 /* IO の readiness 系は blop 層 (builtins/thread.c、io.c より後に include) 実装 */
 static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
@@ -9563,18 +9563,18 @@ void korb_fprint_inspect(CTX *c, FILE *fp, VALUE v) { korb_fprint_inspect_s(c, N
  * on its own line), matching CRuby.  An empty array prints nothing.  User
  * objects dispatch their to_s method (slots-threaded, may GC). */
 static RESULT
-korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
+korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
 {
     if (KORB_ARRAY_P(v)) {
         if (VAL2ARY(v)->head.flags & KORB_FL_JOIN_VISITING) {   /* recursive array → CRuby prints "[...]" */
-            fputs("[...]\n", fp);
+            (void)korb_io_wr(rep, "[...]\n", 6);
             return RESULT_OK(KORB_NIL);
         }
         slots[0] = v;                                   /* root across to_s GC in recursion */
         VAL2ARY(slots[0])->head.flags |= KORB_FL_JOIN_VISITING;
         RESULT r = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
-            r = korb_puts_one_to(c, slots + 1, korb_items_data(VAL2ARY(slots[0])->items)[i], fp);
+            r = korb_puts_one_to(c, slots + 1, korb_items_data(VAL2ARY(slots[0])->items)[i], rep);
             if (UNLIKELY(r.state != KORB_NORMAL)) break;
         }
         VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: source may have moved */
@@ -9588,12 +9588,21 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, FILE *fp)
     }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v);
-        fwrite(korb_strbuf_data(s->buf), 1, s->len, fp);
-        if (s->len == 0 || korb_strbuf_data(s->buf)[s->len - 1] != '\n') fputc('\n', fp);
+        (void)korb_io_wr(rep, korb_strbuf_data(s->buf), s->len);
+        if (s->len == 0 || korb_strbuf_data(s->buf)[s->len - 1] != '\n') (void)korb_io_wr(rep, "\n", 1);
         return RESULT_OK(KORB_NIL);
     }
-    korb_fprint_to_s(c, fp, v);
-    fputc('\n', fp);
+    /* Everything else renders through the FILE*-based printer, which builds a
+     * string in memory (open_memstream — no descriptor involved) before the one
+     * write below.  Keeping that split means the printers stay untouched. */
+    char *buf = NULL; size_t sz = 0;
+    FILE *const ms = open_memstream(&buf, &sz);
+    if (!ms) return RESULT_OK(KORB_NIL);
+    korb_fprint_to_s(c, ms, v);
+    fputc('\n', ms);
+    fclose(ms);
+    (void)korb_io_wr(rep, buf, sz);
+    free(buf);
     return RESULT_OK(KORB_NIL);
 }
 
@@ -9835,20 +9844,20 @@ korb_bi_exit(CTX *c, VALUE *slots, VALUE_SLICE args)
         else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
     }
     korb_drain_at_exit(c, slots);
-    fflush(stdout); fflush(stderr);
+    korb_io_flush_std(c->vm);
     exit(code);
 }
 static RESULT
 korb_bi_exit_bang(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)c; (void)slots;
+    (void)slots;
     int code = 0;
     if (VALUE_SLICE_LEN(args) >= 1) {
         const VALUE s = VALUE_SLICE_GET(args, 0);
         if (s == KORB_FALSE) code = 1;
         else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
     }
-    fflush(stdout); fflush(stderr);
+    korb_io_flush_std(c->vm);   /* _exit skips at_exit, but buffered output is still ours to deliver */
     _exit(code);
 }
 /* Kernel#abort([msg]) — write msg to stderr (if given) and exit(1). */
@@ -9857,10 +9866,12 @@ korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     if (VALUE_SLICE_LEN(args) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(args, 0))) {
         const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 0));
-        fwrite(korb_strbuf_data(s->buf), 1, s->len, stderr); fputc('\n', stderr);
+        KorbIORep *const er = korb_io_std_rep(c->vm, 2);
+        (void)korb_io_wr(er, korb_strbuf_data(s->buf), s->len);
+        (void)korb_io_wr(er, "\n", 1);
     }
     korb_drain_at_exit(c, slots);
-    fflush(stdout); fflush(stderr);
+    korb_io_flush_std(c->vm);
     exit(1);
 }
 /* Run at_exit blocks (reverse order); guarded so an at_exit block calling exit
@@ -9886,7 +9897,7 @@ korb_drain_at_exit(CTX *c, VALUE *slots)
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing
  * keyword Hash, e.g. uplevel:/category:, is ignored). */
 static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_default);   /* fwd (defined below) */
-static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, FILE *fb, const char *data, size_t len);   /* fwd */
+static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len);   /* fwd */
 /* Kernel#gets / #readline — read a line from $stdin (forwarding any sep/limit). */
 static RESULT korb_bi_gets_impl(CTX *c, VALUE *slots, VALUE_SLICE args, const char *meth, uint32_t mlen) {
     const VALUE in = korb_const_get(c->vm, korb_intern(c->vm, "$stdin", 6));
@@ -9925,16 +9936,15 @@ korb_bi_warn(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (n == 0) return RESULT_OK(KORB_NIL);
     bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
-    char *buf = NULL; size_t sz = 0; FILE *ms = def ? NULL : open_memstream(&buf, &sz);
-    FILE *const fp = ms ? ms : stderr;
+    KorbIORep mem = KORB_IO_MEM_SINK;
+    KorbIORep *const sink = def ? korb_io_std_rep(c->vm, 2) : &mem;
     for (uint32_t i = 0; i < n; i++) {
-        RESULT r = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), fp);
-        if (UNLIKELY(r.state != KORB_NORMAL)) { if (ms) { fclose(ms); free(buf); } return r; }
+        RESULT r = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), sink);
+        if (UNLIKELY(r.state != KORB_NORMAL)) { free(mem.wbuf); return r; }
     }
-    if (!ms) return RESULT_OK(KORB_NIL);
-    fclose(ms);
-    RESULT er = korb_out_emit(c, slots, out, stderr, buf, sz);
-    free(buf);
+    if (def) return RESULT_OK(KORB_NIL);
+    RESULT er = korb_out_emit(c, slots, out, 2, mem.wbuf, mem.wlen);
+    free(mem.wbuf);
     return er;
 }
 
@@ -9946,8 +9956,8 @@ static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_de
     return o;
 }
 /* Emit a byte run to a reassigned/mocked output object via #write. */
-static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, FILE *fb, const char *data, size_t len) {
-    if (UNLIKELY(!KORB_OBJECT_P(out))) { if (len) fwrite(data, 1, len, fb); return RESULT_OK(KORB_NIL); }
+static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len) {
+    if (UNLIKELY(!KORB_OBJECT_P(out))) { if (len) (void)korb_io_wr(korb_io_std_rep(c->vm, stdidx), data, len); return RESULT_OK(KORB_NIL); }
     slots[0] = out;
     slots[1] = UNWRAP(korb_str_new(c, slots + 1, data, (uint32_t)len));
     RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1);
@@ -9967,30 +9977,29 @@ void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     const int ml = snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
     bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
-    (void)korb_out_emit(c, slots, out, stderr, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
 }
 static RESULT
 korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool def; (void)korb_out_target(c, "$stdout", 7, &def);
-    if (def) {                                           /* default $stdout → direct fwrite */
-        if (n == 0) { fputc('\n', stdout); return RESULT_OK(KORB_NIL); }
-        for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), stdout));
+    if (def) {                                           /* default $stdout → straight to the descriptor */
+        KorbIORep *const rep = korb_io_std_rep(c->vm, 1);
+        if (n == 0) { (void)korb_io_wr(rep, "\n", 1); return RESULT_OK(KORB_NIL); }
+        for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), rep));
         return RESULT_OK(KORB_NIL);
     }
-    /* redirected → buffer, then $stdout.write (NOT $stdout.puts, which is
+    /* redirected → capture, then $stdout.write (NOT $stdout.puts, which is
      * Kernel#puts on a plain object and would recurse forever). */
-    char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
-    if (!ms) return RESULT_OK(KORB_NIL);
-    if (n == 0) fputc('\n', ms);
+    KorbIORep mem = KORB_IO_MEM_SINK;
+    if (n == 0) (void)korb_io_wr(&mem, "\n", 1);
     else for (uint32_t i = 0; i < n; i++) {
-        RESULT pr = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), ms);
-        if (UNLIKELY(pr.state != KORB_NORMAL)) { fclose(ms); free(buf); return pr; }
+        RESULT pr = korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), &mem);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) { free(mem.wbuf); return pr; }
     }
-    fclose(ms);
     bool def2; const VALUE out = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: buffering may have GC'd */
-    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz); free(buf);
+    RESULT er = korb_out_emit(c, slots, out, 1, mem.wbuf, mem.wlen); free(mem.wbuf);
     return er;
 }
 
@@ -10195,8 +10204,12 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
     uint32_t n = VALUE_SLICE_LEN(args);
     if (n == 0) return RESULT_OK(KORB_NIL);              /* p() → nil, no output */
     bool def; const VALUE outobj = korb_out_target(c, "$stdout", 7, &def);
-    char *buf = NULL; size_t sz = 0; FILE *ms = def ? NULL : open_memstream(&buf, &sz);
-    FILE *const out = ms ? ms : stdout;                 /* default → straight to stdout; redirected → buffer + $stdout.write */
+    /* Always render into memory first: the inspect printers are FILE*-based, but
+     * the bytes have to reach the same sink Kernel#puts uses, or the two
+     * buffers would deliver a program's output out of order. */
+    char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
+    if (!ms) return RESULT_OK(KORB_NIL);
+    FILE *const out = ms;
     for (uint32_t i = 0; i < n; i++) {
         const VALUE v = VALUE_SLICE_GET(args, i);
         /* user-class instance → honour a (possibly user-defined) #inspect via
@@ -10205,7 +10218,7 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (KORB_OBJECT_P(v) && VAL2OBJ(v)->klass != KORB_NIL) {
             slots[0] = v;
             RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0, NULL, NULL, NULL);
-            if (UNLIKELY(r.state != KORB_NORMAL)) { if (ms) { fclose(ms); free(buf); } return r; }
+            if (UNLIKELY(r.state != KORB_NORMAL)) { fclose(ms); free(buf); return r; }
             if (LIKELY(KORB_STRING_P(r.value))) fwrite(korb_strbuf_data(VAL2STR(r.value)->buf), 1, VAL2STR(r.value)->len, out);
             else korb_fprint_inspect(c, out, r.value);
         } else {
@@ -10213,7 +10226,10 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
         }
         fputc('\n', out);
     }
-    if (ms) { fclose(ms); RESULT er = korb_out_emit(c, slots, outobj, stdout, buf, sz); free(buf); if (UNLIKELY(er.state != KORB_NORMAL)) return er; }
+    fclose(ms);
+    if (def) (void)korb_io_wr(korb_io_std_rep(c->vm, 1), buf, sz);
+    else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
+    free(buf);
     /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
      * arrays land in M1, return the first arg until then. */
     return RESULT_OK(VALUE_SLICE_GET(args, 0));
@@ -10562,7 +10578,7 @@ korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     if (def || target == KORB_NIL || !KORB_OBJECT_P(target)) {   /* default $stdout → raw stdout */
-        if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(korb_strbuf_data(s->buf), 1, s->len, stdout); }
+        if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); (void)korb_io_wr(korb_io_std_rep(c->vm, 1), korb_strbuf_data(s->buf), s->len); }
         return RESULT_OK(KORB_NIL);
     }
     slots[0] = target; slots[1] = fr.value;               /* target.write(formatted) */
@@ -10754,18 +10770,21 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool def; (void)korb_out_target(c, "$stdout", 7, &def);
-    if (def) {                                           /* default $stdout → direct fwrite */
-        for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, stdout, VALUE_SLICE_GET(args, i));
-        return RESULT_OK(KORB_NIL);
-    }
-    /* redirected → buffer, then $stdout.write (NOT $stdout.print, which is
-     * Kernel#print on a plain object and would recurse forever). */
+    /* Rendering goes through the FILE*-based printer into memory (no descriptor
+     * involved); the bytes then make one trip to the sink. */
     char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
     if (!ms) return RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, ms, VALUE_SLICE_GET(args, i));
     fclose(ms);
+    if (def) {                                           /* default $stdout → straight to the descriptor */
+        (void)korb_io_wr(korb_io_std_rep(c->vm, 1), buf, sz);
+        free(buf);
+        return RESULT_OK(KORB_NIL);
+    }
+    /* redirected → $stdout.write (NOT $stdout.print, which is Kernel#print on a
+     * plain object and would recurse forever). */
     bool def2; const VALUE out = korb_out_target(c, "$stdout", 7, &def2);   /* re-read: buffering may have GC'd */
-    RESULT er = korb_out_emit(c, slots, out, stdout, buf, sz); free(buf);
+    RESULT er = korb_out_emit(c, slots, out, 1, buf, sz); free(buf);
     return er;
 }
 

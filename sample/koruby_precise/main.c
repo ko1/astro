@@ -429,6 +429,7 @@ main(int argc, char *argv[])
     if (OPTION.dump_ast) {
         DUMP(stdout, ast, true);
         printf("\n");
+        korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
         return 0;
     }
 
@@ -450,6 +451,7 @@ main(int argc, char *argv[])
         if (getenv("ASTRO_AOT_STRICT") && swaps == 0) {
             fprintf(stderr, "koruby_precise: ASTRO_AOT_STRICT: no cached SD matched "
                     "(hash mismatch or empty code store)\n");
+            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
             return 3;
         }
     }
@@ -461,10 +463,10 @@ main(int argc, char *argv[])
     if (prelude_ast && !skip_run) {
         VALUE *pcur = c->slots + prelude_locals;
         RESULT pm = korb_obj_new(c, pcur, KORB_NIL);
-        if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); return 1; }
+        if (pm.state == KORB_RAISE) { korb_report_uncaught(c, pm.value); korb_io_flush_std(c->vm); return 1; }
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
         RESULT pr = EVAL(c, prelude_ast, pcur);
-        if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); return 1; }
+        if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
     }
 
     /* Run (unless `--aot-compile` alone — then we bake below without running).
@@ -477,7 +479,7 @@ main(int argc, char *argv[])
          * (they must exist before core-method registration). */
         {
             RESULT mr = korb_obj_new(c, toplevel_cursor, KORB_NIL);   /* klass=nil → `main` */
-            if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); return 1; }
+            if (mr.state == KORB_RAISE) { korb_report_uncaught(c, mr.value); korb_io_flush_std(c->vm); return 1; }
             c->slots[-1] = mr.value;                  /* main self at base[-1] (bottom header) */
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
@@ -499,10 +501,12 @@ main(int argc, char *argv[])
         fflush(stdout);
         if (r.state == KORB_RAISE) {
             korb_report_uncaught(c, r.value);
+            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
             return 1;
         }
         if (r.state == KORB_THROW) {
             fprintf(stderr, "uncaught throw\n");
+            korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
             return 1;
         }
 
@@ -526,5 +530,6 @@ main(int argc, char *argv[])
     }
 
     korb_ctx_free(c);
+    korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
     return 0;
 }

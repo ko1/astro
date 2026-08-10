@@ -1,0 +1,67 @@
+files=1823 (file-clean=421)  whole-file-fail/crash=297
+examples: pass=7493 fail=1517 err=6291 skip=519
+example pass-rate (of pass+fail+err) = 49.0%
+
+# worst (fail+err):
+  encoding/compatible_spec.rb: pass=0 fail=3 err=382
+  time/new_spec.rb: pass=0 fail=2 err=79
+  string/modulo_spec.rb: pass=250 fail=24 err=47
+  range/step_spec.rb: pass=34 fail=4 err=62
+  symbol/inspect_spec.rb: pass=69 fail=48 err=2
+  string/valid_encoding/utf_8_spec.rb: pass=15 fail=48 err=0
+  marshal/load_spec.rb: pass=0 fail=0 err=46
+  string/element_set_spec.rb: pass=44 fail=2 err=43
+  io/gets_spec.rb: pass=0 fail=0 err=43
+  file/fnmatch_spec.rb: pass=0 fail=0 err=42
+  time/at_spec.rb: pass=0 fail=0 err=41
+  string/unpack/m_spec.rb: pass=0 fail=37 err=2
+  string/bytesplice_spec.rb: pass=41 fail=18 err=21
+  string/upcase_spec.rb: pass=10 fail=28 err=10
+  string/swapcase_spec.rb: pass=12 fail=28 err=10
+  file/constants_spec.rb: pass=0 fail=34 err=4
+  string/downcase_spec.rb: pass=12 fail=30 err=8
+  string/capitalize_spec.rb: pass=19 fail=28 err=10
+  string/encode_spec.rb: pass=8 fail=26 err=9
+  string/unpack/h_spec.rb: pass=0 fail=28 err=4
+  module/module_function_spec.rb: pass=10 fail=18 err=14
+  encoding/converter/primitive_convert_spec.rb: pass=2 fail=0 err=32
+  array/element_reference_spec.rb: pass=214 fail=0 err=32
+  string/unpack/b_spec.rb: pass=0 fail=28 err=4
+  string/slice_spec.rb: pass=53 fail=2 err=29
+  io/each_line_spec.rb: pass=0 fail=0 err=31
+  regexp/union_spec.rb: pass=0 fail=0 err=30
+  process/setrlimit_spec.rb: pass=0 fail=0 err=30
+  fiber/storage_spec.rb: pass=0 fail=0 err=29
+  file/expand_path_spec.rb: pass=0 fail=0 err=29
+
+# whole-file fail/crash:
+  argf/binmode_spec.rb: code=1
+  argf/argv_spec.rb: code=1
+  argf/close_spec.rb: code=1
+  argf/each_codepoint_spec.rb: code=1
+  argf/each_byte_spec.rb: code=1
+  argf/each_line_spec.rb: code=1
+  argf/eof_spec.rb: code=1
+  argf/file_spec.rb: code=1
+  argf/fileno_spec.rb: code=1
+  argf/getc_spec.rb: code=1
+  argf/lineno_spec.rb: code=1
+  argf/closed_spec.rb: code=1
+  argf/readchar_spec.rb: code=1
+  argf/filename_spec.rb: code=1
+  argf/each_char_spec.rb: code=1
+  argf/gets_spec.rb: code=1
+  argf/readline_spec.rb: code=1
+  argf/pos_spec.rb: code=1
+  argf/rewind_spec.rb: code=1
+  argf/set_encoding_spec.rb: code=1
+  argf/readlines_spec.rb: code=1
+  argf/read_nonblock_spec.rb: code=1
+  argf/read_spec.rb: code=1
+  argf/skip_spec.rb: code=1
+  array/any_spec.rb: code=1
+  argf/to_io_spec.rb: code=1
+  argf/readpartial_spec.rb: code=1
+  argf/to_s_spec.rb: code=1
+  argf/seek_spec.rb: code=1
+  array/bsearch_index_spec.rb: code=1

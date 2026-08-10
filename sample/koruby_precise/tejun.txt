@@ -1,0 +1,43 @@
+koruby_precise（/home/ko1/ruby/astro/sample/koruby_precise）を CRuby drop-in に近づける作業の継続。
+master 上で直接進めてよい（他に作業者なし）。とにかく止まらず自律的に進める。
+
+## 現状（前セッション終了時）
+- branch: master。golden `make test` = 92759 PASS / 0 FAIL（method 86977 は絶対 0 fail 死守）。
+- rubyspec core sweep（tools/rubyspec_run.rb ~/ruby/src/master/spec/ruby/core）: pass率 ~78.9%、
+  whole-file SEGV(code=139) はゼロ。
+- 直近で ENV/ARGV/File/Dir(glob **)/IO オブジェクト/StringIO/Marshal/Errno/custom `def self.new`/
+  Module#const_* namespace-aware/Latin-1 case/Time 拡充/Comparable#== 再帰SEGV修正/mspec_shim の
+  NotImplementedError rescue、を実装済み（docs/todo.md 末尾「続き1〜9」に詳細）。
+
+## 手法（厳守）
+1. 穴出し = 差分プローブ。/tmp に Ruby を書き `diff <(ruby f) <(./koruby_precise f)`。
+   ※ `!`（upcase! 等）を含む fixture は **Write tool** で書く（bash heredoc は `!`→`\!` に化ける）。
+2. 実装が正しいか = 各機能を diff-vs-ruby でゲート。
+3. moving GC で壊れないか = `BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./koruby_precise f`（diff では出ない層）。
+4. 系統的ギャップ = rubyspec sweep。`WORST=1 ruby tools/rubyspec_run.rb <core> 12` で worst file と
+   whole-file crash を列挙。code=139(SEGV) を最優先。crash 再現は shim+fixtures+spec+trailer を連結し gdb:
+   `cat tools/mspec_shim.rb <dir>/fixtures/classes.rb <spec>.rb tools/mspec_trailer.rb > /tmp/f.rb`。
+5. commit gate: ビルドは `rm -f main.o; make` で必ず force-rebuild。CORPUS_MATCH を**別コマンドで確認**
+   してから commit（arity ミスで failing test を commit した前科あり）。node.def 変更時は `rm -f node_eval.c`。
+   corpus test は `../rubyharness/t/hand/<name>.rb`、自己完結（/tmp dir は自分で mkdir/rmdir、$$依存や
+   TZ依存・%Z・warning出力は避ける）。
+6. コミットは1論理単位ずつ。メッセージ末尾に Co-Authored-By: Claude Opus 4.8 (1M context) と
+   Claude-Session 行（Claude-Session は koruby では付けてよい運用）。docs/todo.md も随時更新。
+
+## GC 罠（何度も踏んだ）
+String の内部ポインタ（korb_str_cstr_len / s->buf->data+i）を alloc（korb_str_new 等）を跨いで使うと
+moving GC で source が動いて crash。alloc 前に stack buffer へ copy するか、arg の VALUE を直接使う。
+C コメント内の `*/` や `**/` はコメントを閉じるので glob 系のコメントは避ける。
+
+## 次の候補（ROI 順、非 regex/encoding）
+- 残 whole-file fail(code=1) に parser gap / 別の uncaught 例外 abort が無いか（shim 拡張は高レバレッジ）。
+- error-class 差分（例: Enumerable#inject の TypeError vs ArgumentError）。
+- instance_eval/class_eval の String 版（eval(str,binding) 機構の再利用、self 再束縛）。
+- 大物（別途判断）: encoding の Unicode case/normalize table、real syscall(process/spawn, io/popen/pipe=
+  fork/exec)、refinements(module/refine/using)。これらは大機能なので着手前に方針確認してよい。
+
+## メモリ参照（recall される）
+project_koruby_precise_stdlib / _rubyspec_wholefile / _visibility_enforcement、
+feedback_koruby_fastpath_no_slowdown / _bash_heredoc_bang / _dev_test_gc_aot ほか。
+
+まず `make test` で 92759/0 を確認 → rubyspec sweep で現状把握 → worst/crash から潰す、で再開して。
