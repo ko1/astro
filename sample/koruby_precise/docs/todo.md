@@ -12,14 +12,19 @@
   scheduler ごと止まる。fd ベース IO 層 (blop 経由の read/write) が入るまでは
   timeout のまま。それまでは 20s×16 files の計測コストがかかる点に注意。
 
-- **`library/socket/spec_helper.rb` を読んでも `Addrinfo` が定義されない**
-  (2026-08-10)。同じ helper を単体で `require_relative` しても `defined?(Addrinfo)`
-  は nil、その直後に明示 `require 'socket'` すると true を返して定義される
-  (= それまで未ロード扱い)。helper の 2 行目は `require 'socket'` なので、
-  その require が「例外も出さず、ロードもせず」に返っている。
-  `korb_resolve_load` / `korb_load_abspath` の feature 重複判定が
-  `library/socket/` というディレクトリ名と衝突している疑い。
-  addrinfo だけで 48 spec files が待っている。
+- **mspec の spec_helper を読んだ後は `require` が無効になる** (2026-08-10 に切り分け)。
+  再現最小形は 2 行 —
+  `require_relative '<spec>/spec_helper'` の直後に `require 'socket'` を書いた
+  ファイルを *require_relative 経由で* 読むと、例外もロードもなく返り
+  `defined?(Socket)` が nil。同じ 2 行をメインスクリプトに直接書くと動く。
+  ネストした require_relative 自体は正常 (単体テスト済)。
+  真因は mspec が `Kernel#require` を Ruby で上書きして `super` すること
+  (全 spec のエラー集計で "super: no superclass method 'require'" が 60 件)。
+  koruby の require は builtin function で Object のメソッド実体が無いため
+  super が解決できない。**Object に require/require_relative/load を
+  実メソッドとして生やす修正を試したが無限再帰で core dump したので revert 済み**
+  (builtin function 経路とメソッド経路の二重定義になるため要設計)。
+  これが直れば addrinfo 48 files + require/load 系の 137 エラーが動く。
 - **green thread 下で socket の blocking read が scheduler を止める**。
   `accept` / `recv` は `wait_readable` (blop) を挟んで回避したが、
   `IO#read` は素の fread なので、accept 側 thread と read 側 thread が
