@@ -43,25 +43,45 @@
 
 ## 既知バグ (プロセス / IO)
 
-- **既定の signal 配送が SignalException にならない**。
-  `Signal.trap` / `Signal.list` / `.signame` / `.signo` / `Kernel#trap` は実装済みで、
-  明示的に trap した signal ではもうインタプリタは死なない (IGNORE/DEFAULT は
-  本物の signal(2)、Proc は記録するだけで実行はしない)。
-  残っているのは **trap していない signal の既定動作**: CRuby は
-  `Process.kill(:TERM, Process.pid)` を SignalException として raise するが、
-  koruby は SIG_DFL のまま死ぬ。core/exception/{interrupt,signal_exception,
-  signm,signo}_spec.rb と core/signal/trap_spec.rb の 5 本がこれで
-  whole-file-fail。筋は「起動時に trappable な signal へ C ハンドラを張り、
-  pending flag を立てて thread.c の既存 check_ints で SignalException を raise」。
-  Proc ハンドラの実行も同じ経路に乗る。
+- ~~既定の signal 配送が SignalException にならない~~ **(2026-08-11 実装)**。
+  C の signal handler を使わず、「配送したい signal を block して pending の
+  まま置き、check point で `sigtimedwait(2)` で刈り取る」方式
+  (builtins/process.c の signal delivery 節)。刈り取り点は
+  `korb_thread_check_ints` (sleep / Thread.pass / IO 待ち) と `Process.kill`。
+  ignore / Proc 実行 / raise の方針は prelude の `Signal.__deliver`。
+  `SignalException` / `Interrupt` に `#signo` / `#signm` を実装。
+  **残っている差**: 外から届いた未 trap の signal は OS の既定動作のまま
+  (= プロセスが死ぬ)。startup から block すると CPU ループ中に
+  `timeout` / Ctrl-C / `kill` が効かなくなるため意図的にそうしている
+  (実際に一度踏んだ)。CRuby と同じ即時配送にするには handler + flag +
+  VM ループの check point が要り、新規 global が必要になるので未着手。
+  そのため `ruby_exe`/`IO.popen` 越しに外から signal を送る 2-3 例は落ちる。
 
-- **`File.for_fd` / `File.sysopen` が見えない**。`IO.for_fd` は IO の singleton に
-  定義してあるが File の singleton がそれを継承していない
-  (`File.for_fd` → NoMethodError)。singleton class の継承リンクを確認すること。
-  core/process/spawn_spec の fixture がこれで落ちる。
+- ~~`File.for_fd` / `File.sysopen` が見えない~~ **(2026-08-11 修正)**。
+  File の singleton は file.c で File がまだ Object 継承だった時点に作られて
+  おり、io.c で File を IO の下に付け替えても metaclass の親が Object の
+  singleton のままだった。io.c で metaclass も同時に付け替えるようにした。
 - **`Process.spawn` の未対応オプション**: `umask:`、`pgroup:`、`unsetenv_others:`、
   `rlimit_*`、`:in` に IO 以外の Ruby オブジェクト。`close_others:` と `chdir:` と
   fd リダイレクトは実装済み。
+
+## 既知バグ (定数 / Enumerator)
+
+- **定数テーブルが flat**。`module Foo; class Bar; end; end` の `Bar` は
+  グローバルにも見えてしまう (`defined?(Bar)` が "constant")。CRuby は nil。
+  読み側は owner-aware に直してあり (lexical scope → ancestry → top-level →
+  flat fallback の順)、prelude の入れ子定数がユーザの top-level 定数を
+  横取りする問題は解決済み。だが「入れ子定数が unqualified でも見える」
+  こと自体は残っている。直すには flat fallback を落として
+  `Module#const_missing` まで通す必要があり、既存コードへの影響が大きい。
+  `Enumerator::Chain` / `::Product` / `::Lazy` を足すたびにこの穴が
+  効いてくるので、いずれ潰すこと。
+
+- **Ruby で書いた Enumerator サブクラスは #next / #peek が使えない**。
+  `Enumerator.inherited` が Enumerable の実装を include するので
+  `#to_a` / `#map` 等は #each 駆動で動くが、`#next` / `#peek` / `#with_index`
+  は Enumerator の C 実装のままで、C 側の enumerator struct を読む。
+  `Enumerator::Chain#next` が CRuby では動く。
 
 ## 既知バグ (moving GC, 未修正)
 

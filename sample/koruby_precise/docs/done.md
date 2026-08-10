@@ -3,6 +3,30 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
+## 2026-08-11 に入れたもの
+
+- **rubyspec runner を mspec-run 駆動に** (`tools/mspec_launch.rb`)。
+  ruby/spec の spec_helper が `$0` を再ロードして自分で走らせる仕様のため、
+  spec file を直接渡すと中間 spec_helper の `require` が example の後に
+  なっていた。socket 系が丸ごと動くようになった。
+- **本物の sockaddr pack/unpack** (`Socket.sockaddr_in` / `sockaddr_un` /
+  `Addrinfo#to_sockaddr` が struct そのもののバイト列を返す)。
+  `Addrinfo#inspect` / `#inspect_sockaddr` を CRuby 準拠に。
+- **File の metaclass 再親付け** — `File.for_fd` / `File.sysopen` が通る。
+- **break のオーナー識別** — `&block` / `Proc#call` 越しの `break` が
+  途中の `each` に食われず、ブロックリテラルを渡した呼び出しから抜ける。
+- **`Enumerator::Chain` / `Enumerator::Product`** (純 Ruby)。
+  `Enumerable#chain` / `Enumerator#+` / `Enumerator.product` も。
+  Ruby で書いた Enumerator サブクラスは `Enumerator.inherited` 経由で
+  Enumerable の実装を先に置く (C 実装が enumerator struct を読んで SEGV
+  するのを回避)。
+- **signal を SignalException として配送**。block + `sigtimedwait(2)` 方式。
+  `SignalException#signo` / `#signm`、`Interrupt`。
+- **`ObjectSpace::WeakKeyMap`** 新規、`WeakMap` を identity 比較 +
+  each 系 / keys / values / inspect に拡充。
+- `Array` / `String` / `Hash` の `#replace(self)` が中身を空にするバグ修正。
+- bare な定数読みで top-level 定数を入れ子定数より優先するよう修正。
+
 ## テストスイートの現状 (2026-05-09, tenth pass)
 
 ### 集計
