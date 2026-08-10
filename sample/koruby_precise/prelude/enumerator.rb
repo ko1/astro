@@ -1,19 +1,159 @@
-# Enumerator.product(*enums) — an enumerator over the Cartesian product.
 class Enumerator
-  def self.product(*enums)
-    result = [[]]
-    enums.each do |e|
-      arr = e.to_a
-      np = []
-      result.each { |combo| arr.each { |x| np << (combo + [x]) } }
-      result = np
+  # An Enumerator subclass written in Ruby (Enumerator::Chain / ::Product below,
+  # or a user's) keeps its state in ivars, not in the C enumerator struct that
+  # Enumerator's own #to_a / #map / #first / … read — reading that struct off a
+  # plain object crashes.  In CRuby those methods are Enumerable's anyway (they
+  # just drive #each), so hand every Ruby-defined subclass the Enumerable
+  # implementations, inserted ahead of Enumerator's C ones.
+  module EachDriven
+    Enumerable.instance_methods(false).each do |m|
+      define_method(m, Enumerable.instance_method(m))
     end
-    if block_given?
-      result.each { |c| yield c }
-      nil
-    else
-      result.each
+  end
+
+  def self.inherited(sub)
+    sub.include(EachDriven)
+    super
+  end
+
+  def +(other)
+    Enumerator::Chain.new(self, other)
+  end
+
+  # Enumerator::Chain — the concatenation of several enumerables.
+  class Chain < Enumerator
+    def initialize(*enums)
+      raise FrozenError, "can't modify frozen #{self.class}" if frozen?
+      @__enums = enums
+      @__pos = -1          # index last iterated; -1 = never iterated
+      self
     end
+    private :initialize
+
+    def each(&block)
+      return to_enum(:each) { size } unless block
+      raise ArgumentError, "uninitialized chain" unless @__enums
+      @__enums.each_with_index do |e, i|
+        @__pos = i
+        e.each { |*x| block.call(*x) }
+      end
+      self
+    end
+
+    # Rewinds the constituents that have actually been iterated, in reverse
+    # order, and only those that respond to #rewind.
+    def rewind
+      while @__pos >= 0 && @__pos < @__enums.size
+        e = @__enums[@__pos]
+        e.rewind if e.respond_to?(:rewind)
+        @__pos -= 1
+      end
+      self
+    end
+
+    # The sum of the constituents' sizes, short-circuiting on the first nil or
+    # infinite one (later constituents are not asked at all).
+    def size
+      total = 0
+      @__enums.each do |e|
+        return nil unless e.respond_to?(:size)
+        s = e.size
+        return s if s.nil? || (s.is_a?(Float) && s.infinite?)
+        total += s
+      end
+      total
+    end
+
+    def inspect
+      return "#<#{self.class}: uninitialized>" unless @__enums
+      return "#<#{self.class}: ...>" if @__inspecting
+      @__inspecting = true
+      begin
+        "#<#{self.class}: [#{@__enums.map { |e| e.inspect }.join(', ')}]>"
+      ensure
+        @__inspecting = false
+      end
+    end
+    alias_method :to_s, :inspect
+  end
+
+  # Enumerator::Product — the Cartesian product of several enumerables.  The
+  # last enumerable varies fastest.  Constituents are driven with #each_entry.
+  class Product < Enumerator
+    def initialize(*enums)
+      raise FrozenError, "can't modify frozen #{self.class}" if frozen?
+      @__enums = enums
+      self
+    end
+    private :initialize
+
+    def initialize_copy(other)
+      return self if other.equal?(self)
+      raise FrozenError, "can't modify frozen #{self.class}" if frozen?
+      raise TypeError, "initialize_copy should take same class object" unless other.class == self.class
+      oe = other.instance_variable_get(:@__enums)
+      raise ArgumentError, "uninitialized product" unless oe
+      @__enums = oe
+      self
+    end
+    private :initialize_copy
+
+    def each(&block)
+      return to_enum(:each) { size } unless block
+      raise ArgumentError, "uninitialized product" unless @__enums
+      __each_from(0, [], block)
+      self
+    end
+
+    def rewind
+      @__enums.each { |e| e.rewind if e.respond_to?(:rewind) }
+      self
+    end
+
+    # The product of the constituents' sizes; nil unless every one of them
+    # reports an Integer (or one reports Infinity, which wins).
+    def size
+      total = 1
+      @__enums.each do |e|
+        return nil unless e.respond_to?(:size)
+        s = e.size
+        return s if s.is_a?(Float) && s.infinite?
+        return nil unless s.is_a?(Integer)
+        total *= s
+      end
+      total
+    end
+
+    def inspect
+      return "#<#{self.class}: uninitialized>" unless @__enums
+      return "#<#{self.class}: ...>" if @__inspecting
+      @__inspecting = true
+      begin
+        "#<#{self.class}: [#{@__enums.map { |e| e.inspect }.join(', ')}]>"
+      ensure
+        @__inspecting = false
+      end
+    end
+    alias_method :to_s, :inspect
+
+    private
+
+    def __each_from(i, acc, block)
+      if i == @__enums.size
+        block.call(acc)
+      else
+        @__enums[i].each_entry { |x| __each_from(i + 1, acc + [x], block) }
+      end
+    end
+  end
+
+  # Enumerator.product(*enums) — an enumerator over the Cartesian product.
+  def self.product(*enums, **kw, &block)
+    raise ArgumentError, "unknown keywords: #{kw.keys.map { |k| k.inspect }.join(', ')}" unless kw.empty?
+    e = Product.new(*enums)
+    return e unless block
+    e.each { |c| block.call(c) }
+    nil
   end
 end
 

@@ -25,11 +25,7 @@ module Enumerable
   def grep_v(pattern, &blk); r = []; each { |*a| e = a.size <= 1 ? a[0] : a; r << (blk ? blk.call(e) : e) unless pattern === e }; r; end
   # chain(*others) → an Enumerator over self's elements followed by each other's.
   # (koruby's Enumerator is eager, so this materializes; fine for finite sources.)
-  def chain(*others)
-    combined = to_a.dup
-    others.each { |o| o.each { |*x| combined << (x.size <= 1 ? x[0] : x) } }
-    combined.each
-  end
+  def chain(*others) = Enumerator::Chain.new(self, *others)
   def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil, &blk); return to_enum(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
