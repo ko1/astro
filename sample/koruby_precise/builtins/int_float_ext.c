@@ -383,6 +383,7 @@ static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         if (!KORB_ARRAY_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Array", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    if (slots[0] == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* a.replace(a) is a no-op (clear-then-copy would empty it) */
     VAL2ARY(VALUE_REF_GET(self))->len = 0;               /* clear, then copy other */
     const uint32_t on = VAL2ARY(slots[0])->len;
     for (uint32_t i = 0; i < on; i++)

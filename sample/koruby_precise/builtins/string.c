@@ -455,6 +455,7 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         }
         if (UNLIKELY(!KORB_STRING_P(o))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
+    if (o == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* s.replace(s) is a no-op (clear-then-append would empty it) */
     VAL2STR(VALUE_REF_GET(self))->len = 0;             /* clear, then append other */
     /* Append at slots+2: the #to_str branch parks `self` at slots[0], so the grow's
      * korb_alloc must not use slots[0]/[1] as scratch (that would stale `self`). */

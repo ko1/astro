@@ -866,6 +866,7 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));            /* re-check (self could move under the dispatch) */
+    if (ov == VALUE_REF_GET(self)) return RESULT_OK(VALUE_REF_GET(self));   /* h.replace(h) is a no-op (clear-then-copy would empty it) */
     KORB_HASH_DROP_INDEX(VAL2HASH(VALUE_REF_GET(self)));
     VAL2HASH(VALUE_REF_GET(self))->len = 0;                       /* clear, then copy other's pairs */
     slots[0] = ov;
