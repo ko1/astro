@@ -5,12 +5,10 @@
 
 ## 既知バグ (socket / require)
 
-- **socket の blocking spec が whole-file timeout する** (2026-08-10 計測)。
-  accept/recv/connect を実際に待つ 15 files
-  (tcpserver/accept, tcpsocket/recv, udpsocket/bind, socket/pair, …) と
-  core/io/syswrite_spec。green thread + 素の blocking syscall なので
-  scheduler ごと止まる。fd ベース IO 層 (blop 経由の read/write) が入るまでは
-  timeout のまま。それまでは 20s×16 files の計測コストがかかる点に注意。
+- ~~socket の blocking spec が whole-file timeout~~ **(2026-08-10 解消)**。
+  fd ベース IO 層が入り、pipe/socket は `O_NONBLOCK` + park になった
+  (`docs/io_design.md` の「実装状況」参照)。残っている whole-file 失敗は
+  blocking ではなく機能不足側なので、個別に切り分けが要る。
 
 - **mspec の spec_helper を読んだ後は `require` が無効になる** (2026-08-10 に切り分け)。
   再現最小形は 2 行 —
@@ -31,10 +29,14 @@
   Object に直接生やす素朴版は無限再帰で core dump したので、
   再入ガードか、builtin entry を Kernel メソッドの薄い alias にする設計が要る。
   これが直れば addrinfo 48 files + require/load 系の 137 エラーが動く。
-- **green thread 下で socket の blocking read が scheduler を止める**。
-  `accept` / `recv` は `wait_readable` (blop) を挟んで回避したが、
-  `IO#read` は素の fread なので、accept 側 thread と read 側 thread が
-  同居すると deadlock する。docs/io_design.md の fd ベース IO 本体待ち。
+- ~~green thread 下で socket の blocking read が scheduler を止める~~
+  **(2026-08-10 解消)**。`IO#read` / `gets` / `getc` / `eof?` / `write` が
+  rep 経由になり、EAGAIN を park に変換するようになった。`IO.pipe` で
+  実測確認済み (read 待ちの裏で別 green thread が進行する)。
+  **残る穴**: regular file。poll は regular file を常に ready と報告し、
+  `read(2)` は `O_NONBLOCK` を無視してディスク待ちするので、遅いディスク read は
+  今も native thread ごと止まる。readiness engine では原理的に解決できず、
+  io_uring engine (READ を SQE で投げる) 待ち。
 
 ## 既知バグ (プロセス / IO)
 
