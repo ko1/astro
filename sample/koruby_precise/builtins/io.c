@@ -252,11 +252,33 @@ static int korb_io_getb_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *pe
     return (unsigned char)rep->rbuf[rep->rpos++];
 }
 
+/* Write to a sink, reporting a vanished reader as Errno::EPIPE.
+ *
+ * SIGPIPE is ignored process-wide (see korb_init_io), so nothing kills us on a
+ * broken pipe any more — the write path itself has to notice.  Without this a
+ * `loop { puts }` into a closed pipe would spin forever instead of ending the
+ * program, which is what CRuby does. */
+static RESULT korb_io_wr_checked(CTX *c, VALUE *slots, KorbIORep *const rep, const char *p, size_t n) {
+    RESULT werr = RESULT_OK(KORB_NIL);
+    errno = 0;
+    if (!korb_io_wr_p(c, slots, rep, p, n, &werr)) {
+        if (UNLIKELY(werr.state != KORB_NORMAL)) return werr;
+        if (errno == EPIPE) return korb_raise_errno(c, slots, EPIPE, "write", "");
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
 /* Write, propagating a raise delivered while parked (Thread#raise / #kill). */
 #define KORB_IO_WR(c_, slots_, rep_, p_, n_) do {                              \
     RESULT werr__ = RESULT_OK(KORB_NIL);                                       \
-    (void)korb_io_wr_p((c_), (slots_), (rep_), (p_), (n_), &werr__);           \
+    errno = 0;                                                                 \
+    const bool wok__ = korb_io_wr_p((c_), (slots_), (rep_), (p_), (n_), &werr__); \
     if (UNLIKELY(werr__.state != KORB_NORMAL)) return werr__;                  \
+    /* Only EPIPE: CRuby reports a vanished reader, but a write that fails for  \
+       any other reason (a closed or bad descriptor) has always been silent     \
+       here, and turning those into raises changes unrelated paths. */          \
+    if (UNLIKELY(!wok__ && errno == EPIPE))                                    \
+        return korb_raise_errno((c_), (slots_), EPIPE, "write", "");           \
 } while (0)
 
 /* Push bytes back so the next read returns them.  Unlike a FILE*'s one-byte
@@ -945,9 +967,19 @@ static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         slots[0] = r.value;
     }
     (void)korb_io_flush_rep(rep);
-    uint32_t n; const char *p = korb_str_cstr_len(slots[0], &n);
-    const ssize_t w = write(rep->fd, p, n);
-    if (w < 0) return korb_raise_errno(c, slots, errno, "syswrite", "");
+    ssize_t w;
+    for (;;) {
+        uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);   /* re-derive after any park */
+        w = write(rep->fd, p, n);
+        if (w >= 0) break;
+        if (errno == EINTR) continue;
+        if (korb_io_would_block(errno) && rep->nonblk) {
+            const RESULT pr = korb_io_park(c, slots + 1, rep, POLLOUT);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+            continue;
+        }
+        return korb_raise_errno(c, slots, errno, "syswrite", "");
+    }
     return RESULT_OK(LONG2FIX((intptr_t)w));
 }
 static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -956,12 +988,26 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t want = 4096;
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = FIX2LONG(VALUE_SLICE_GET(a, 0));
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
-    KorbString *s = korb_str_alloc(c, slots, (uint32_t)want);
-    slots[0] = (VALUE)s;                                  /* root: read(2) allocates nothing */
-    const ssize_t r = read(rep->fd, korb_strbuf_data(s->buf), (size_t)want);
-    if (r < 0) return korb_raise_errno(c, slots + 1, errno, "sysread", "");
+    slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);
+    ssize_t r;
+    for (;;) {
+        /* re-derive each round: the park below may GC and move the String.
+           read(2) itself allocates nothing, so the borrow is safe up to it. */
+        KorbString *const sb = VAL2STR(slots[0]);
+        r = read(rep->fd, korb_strbuf_data(sb->buf), (size_t)want);
+        if (r >= 0) break;
+        if (errno == EINTR) continue;
+        /* sysread blocks in CRuby; on a descriptor koruby made non-blocking we
+           reproduce that by parking rather than surfacing EAGAIN. */
+        if (korb_io_would_block(errno) && rep->nonblk) {
+            const RESULT pr = korb_io_park(c, slots + 1, rep, POLLIN);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+            continue;
+        }
+        return korb_raise_errno(c, slots + 1, errno, "sysread", "");
+    }
     if (r == 0 && want > 0) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "end of file reached");
-    s = VAL2STR(slots[0]);
+    KorbString *const s = VAL2STR(slots[0]);
     s->len = (uint32_t)r;
     korb_strbuf_data(s->buf)[r] = '\0';
     KORB_STR_ENC_SET(slots[0], KORB_ENC_BINARY);
@@ -1145,6 +1191,10 @@ void korb_init_io(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     /* index 0/1/2 = the std streams (never closed).  stderr is sync so a
        diagnostic is on the descriptor before anything that follows it. */
+    /* A write to a pipe whose reader has gone must surface as Errno::EPIPE, not
+       kill the interpreter — same as CRuby, which also runs with SIGPIPE
+       ignored.  Without this, `koruby ... | head` dies on signal 13. */
+    signal(SIGPIPE, SIG_IGN);
     korb_io_register(vm, STDIN_FILENO, false);
     /* On a terminal stdout is sync so a prompt written without a newline is
        visible before the read that follows it; piped output stays buffered. */

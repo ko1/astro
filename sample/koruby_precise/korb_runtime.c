@@ -9570,7 +9570,7 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
 {
     if (KORB_ARRAY_P(v)) {
         if (VAL2ARY(v)->head.flags & KORB_FL_JOIN_VISITING) {   /* recursive array → CRuby prints "[...]" */
-            (void)korb_io_wr(rep, "[...]\n", 6);
+            CHECK(korb_io_wr_checked(c, slots, rep, "[...]\n", 6));
             return RESULT_OK(KORB_NIL);
         }
         slots[0] = v;                                   /* root across to_s GC in recursion */
@@ -9591,8 +9591,9 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
     }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v);
-        (void)korb_io_wr(rep, korb_strbuf_data(s->buf), s->len);
-        if (s->len == 0 || korb_strbuf_data(s->buf)[s->len - 1] != '\n') (void)korb_io_wr(rep, "\n", 1);
+        CHECK(korb_io_wr_checked(c, slots, rep, korb_strbuf_data(s->buf), s->len));
+        if (s->len == 0 || korb_strbuf_data(s->buf)[s->len - 1] != '\n')
+            CHECK(korb_io_wr_checked(c, slots, rep, "\n", 1));
         return RESULT_OK(KORB_NIL);
     }
     /* Everything else renders through the FILE*-based printer, which builds a
@@ -9604,9 +9605,9 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
     korb_fprint_to_s(c, ms, v);
     fputc('\n', ms);
     fclose(ms);
-    (void)korb_io_wr(rep, buf, sz);
+    const RESULT wr = korb_io_wr_checked(c, slots, rep, buf, sz);
     free(buf);
-    return RESULT_OK(KORB_NIL);
+    return wr;
 }
 
 /* Evaluate `src` as a top-level program (fresh `main` self, shared globals /
@@ -9985,7 +9986,7 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
     bool def; (void)korb_out_target(c, "$stdout", 7, &def);
     if (def) {                                           /* default $stdout → straight to the descriptor */
         KorbIORep *const rep = korb_io_std_rep(c->vm, 1);
-        if (n == 0) { (void)korb_io_wr(rep, "\n", 1); return RESULT_OK(KORB_NIL); }
+        if (n == 0) return korb_io_wr_checked(c, slots, rep, "\n", 1);
         for (uint32_t i = 0; i < n; i++) CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(args, i), rep));
         return RESULT_OK(KORB_NIL);
     }
@@ -10226,7 +10227,7 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
         fputc('\n', out);
     }
     fclose(ms);
-    if (def) (void)korb_io_wr(korb_io_std_rep(c->vm, 1), buf, sz);
+    if (def) { const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz); if (UNLIKELY(wr.state != KORB_NORMAL)) { free(buf); return wr; } }
     else { RESULT er = korb_out_emit(c, slots, outobj, 1, buf, sz); if (UNLIKELY(er.state != KORB_NORMAL)) { free(buf); return er; } }
     free(buf);
     /* M0: p(a) → a; p() → nil; p(a, b, ...) returns an Array in CRuby —
@@ -10577,7 +10578,7 @@ korb_bi_printf(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     if (def || target == KORB_NIL || !KORB_OBJECT_P(target)) {   /* default $stdout → raw stdout */
-        if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); (void)korb_io_wr(korb_io_std_rep(c->vm, 1), korb_strbuf_data(s->buf), s->len); }
+        if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); CHECK(korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), korb_strbuf_data(s->buf), s->len)); }
         return RESULT_OK(KORB_NIL);
     }
     slots[0] = target; slots[1] = fr.value;               /* target.write(formatted) */
@@ -10771,9 +10772,9 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
     for (uint32_t i = 0; i < n; i++) korb_fprint_to_s(c, ms, VALUE_SLICE_GET(args, i));
     fclose(ms);
     if (def) {                                           /* default $stdout → straight to the descriptor */
-        (void)korb_io_wr(korb_io_std_rep(c->vm, 1), buf, sz);
+        const RESULT wr = korb_io_wr_checked(c, slots, korb_io_std_rep(c->vm, 1), buf, sz);
         free(buf);
-        return RESULT_OK(KORB_NIL);
+        return wr;
     }
     /* redirected → $stdout.write (NOT $stdout.print, which is Kernel#print on a
      * plain object and would recurse forever). */
