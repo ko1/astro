@@ -308,17 +308,34 @@ class Socket < BasicSocket
     __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype)
   end
 
-  def self.sockaddr_in(port, host) = __pack(["AF_INET", Integer(port), host.to_s, host.to_s])
+  # nil family = infer from the host string, so sockaddr_in accepts IPv6 too.
+  def self.sockaddr_in(port, host) = __sock_pack(nil, Integer(port), host.to_s)
   class << self; alias_method :pack_sockaddr_in, :sockaddr_in; end
-  def self.sockaddr_un(path) = __pack(["AF_UNIX", 0, path.to_s, path.to_s])
+  def self.sockaddr_un(path) = __sock_pack(AF_UNIX, 0, path.to_s)
   class << self; alias_method :pack_sockaddr_un, :sockaddr_un; end
-  def self.unpack_sockaddr_in(sa) = (a = __unpack(sa); [a[1], a[3]])
-  def self.unpack_sockaddr_un(sa) = __unpack(sa)[2]
 
-  # A "packed" address here is the descriptive Array itself, wrapped so that
-  # #unpack_sockaddr_* round-trips.  koruby has no C sockaddr struct to expose.
-  def self.__pack(ary) = ary
-  def self.__unpack(sa) = sa.is_a?(Array) ? sa : ["AF_INET", 0, sa.to_s, sa.to_s]
+  def self.unpack_sockaddr_in(sa)
+    a = __unpack(sa)
+    raise ArgumentError, "not an AF_INET/AF_INET6 sockaddr" if a[0] == "AF_UNIX"
+    [a[1], a[3]]
+  end
+
+  def self.unpack_sockaddr_un(sa)
+    a = __unpack(sa)
+    raise ArgumentError, "not an AF_UNIX sockaddr" unless a[0] == "AF_UNIX"
+    a[2]
+  end
+
+  # A packed address is the real struct sockaddr bytes (binary String); the
+  # descriptive [family, port, host, addr] Array is what the rest of this file
+  # passes around, so __pack/__unpack convert between the two.  An Array given
+  # where a packed address is expected is accepted as already-unpacked.
+  def self.__pack(ary) = __sock_pack(ary[0], ary[1] || 0, (ary[3] || ary[2]).to_s)
+  def self.__unpack(sa)
+    return sa if sa.is_a?(Array)
+    return sa.to_a if sa.is_a?(Addrinfo)
+    __sock_unpack(sa.to_str)
+  end
 
   def self.__family(f)
     return f if f.is_a?(Integer)
@@ -373,10 +390,12 @@ class Addrinfo
     Socket.getaddrinfo(host, service, family, socktype, protocol, flags).map { |a| __from_ary(a) }
   end
 
+  # Addrinfo.ip leaves socktype/protocol unspecified (0), unlike .tcp/.udp.
   def self.ip(host)
     r = getaddrinfo(host, nil, nil, Socket::SOCK_STREAM)
     raise SocketError, "getaddrinfo: no address for #{host}" if r.empty?
-    r[0]
+    a = r[0].to_a
+    __from_ary([a[0], 0, a[2], a[3], 0, 0])
   end
 
   def self.tcp(host, port) = getaddrinfo(host, port, nil, Socket::SOCK_STREAM).first
@@ -395,8 +414,26 @@ class Addrinfo
   def unix_path = (raise SocketError, "need AF_UNIX address" unless unix?; @host.to_s)
   def to_a = [@famname, @port, @host, @addr]
   def to_s = @addr.to_s
-  def inspect = "#<Addrinfo: #{ip? ? "#{@addr}:#{@port}" : @host}>"
-  def inspect_sockaddr = ip? ? "#{@addr}:#{@port}" : @host.to_s
+
+  def inspect_sockaddr
+    return @host.to_s unless ip?
+    a = ipv6? ? "[#{@addr}]" : @addr.to_s
+    @port.to_i == 0 ? a : "#{a}:#{@port}"
+  end
+
+  # "#<Addrinfo: 127.0.0.1:80 TCP>" — the trailing word names the socktype,
+  # spelled TCP/UDP for the two combinations that have a common name.
+  def inspect
+    tail =
+      if ip? && @socktype == Socket::SOCK_STREAM && @protocol == Socket::IPPROTO_TCP then " TCP"
+      elsif ip? && @socktype == Socket::SOCK_DGRAM && @protocol == Socket::IPPROTO_UDP then " UDP"
+      elsif @socktype == Socket::SOCK_STREAM then " SOCK_STREAM"
+      elsif @socktype == Socket::SOCK_DGRAM  then " SOCK_DGRAM"
+      elsif @socktype == Socket::SOCK_RAW    then " SOCK_RAW"
+      else ""
+      end
+    "#<Addrinfo: #{inspect_sockaddr}#{tail}>"
+  end
   def to_sockaddr = Socket.__pack(to_a)
   alias_method :to_str, :to_sockaddr
   def canonname = nil

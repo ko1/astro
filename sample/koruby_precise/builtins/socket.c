@@ -300,6 +300,46 @@ static RESULT korb_m_sock_hostname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return korb_str_new(c, slots, h, (uint32_t)strlen(h));
 }
 
+/* __sock_pack(family_or_nil, port, host) → the packed sockaddr as a binary String.
+ * Ruby code passes addresses around as the descriptive 4-element Array, but
+ * Socket.sockaddr_in / Addrinfo#to_sockaddr are specified to hand back the raw
+ * struct bytes (16 for sockaddr_in, 28 for sockaddr_in6, 110 for sockaddr_un),
+ * and specs both check the size and feed the bytes back in.  nil family means
+ * "infer from the host", which is what Socket.sockaddr_in(port, host) wants. */
+static RESULT korb_m_sock_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE fv = VALUE_SLICE_GET(a, 0);
+    const int fam = (fv == KORB_NIL) ? AF_UNSPEC : korb_sock_family_of(c, fv);
+    const VALUE pv = VALUE_SLICE_GET(a, 1);
+    const int port = FIXNUM_P(pv) ? (int)FIX2LONG(pv) : 0;
+    char host[512];
+    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct sockaddr_storage ss; socklen_t len = 0;
+    if (!korb_sock_fill_addr(fam, host, port, &ss, &len))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot resolve address '%s'", host);
+    const RESULT sr = korb_str_new(c, slots, (const char *)&ss, (uint32_t)len);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
+    return sr;
+}
+
+/* __sock_unpack(str) → [family, port, host, addr], the same shape as
+ * __sock_name / __sock_accept report. */
+static RESULT korb_m_sock_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);
+    /* Copy out before anything can allocate: `p` points into a movable String. */
+    struct sockaddr_storage ss;
+    if (n < sizeof(sa_family_t) || n > sizeof ss)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "not a valid sockaddr (%u bytes)", n);
+    memset(&ss, 0, sizeof ss);
+    memcpy(&ss, p, n);
+    return korb_sock_addr_ary(c, slots, (struct sockaddr *)&ss, (socklen_t)n);
+}
+
 /* __sock_const("AF_INET") → the platform's numeric value.  A lookup keeps
  * lib/socket.rb free of platform ifdefs without inventing 40 constants whose
  * names Ruby could not spell. */
@@ -348,4 +388,6 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_pair",        korb_m_sock_pair,        -1);
     korb_class_def_cfn(c, obj, "__sock_hostname",    korb_m_sock_hostname,     0);
     korb_class_def_cfn(c, obj, "__sock_const",       korb_m_sock_const,        1);
+    korb_class_def_cfn(c, obj, "__sock_pack",        korb_m_sock_pack,         3);
+    korb_class_def_cfn(c, obj, "__sock_unpack",      korb_m_sock_unpack,       1);
 }

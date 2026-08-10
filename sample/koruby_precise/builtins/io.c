@@ -1262,7 +1262,15 @@ void korb_init_io(CTX *c, VALUE *slots) {
     if (KORB_CLASS_P(file_cls) && KORB_CLASS_P(io_cls_live)) {
         ARO_STORE(c, VAL2CLASS(file_cls), (VALUE *)(uintptr_t)&VAL2CLASS(file_cls)->superclass, io_cls_live);   /* GC edge: barriered write */
         vm->method_serial++;
-        const VALUE fsing = korb_obj_singleton(c, slots + 1, file_cls).value;
+        slots[3] = korb_obj_singleton(c, slots + 4, file_cls).value;
+        /* File's singleton was built back in file.c, while File still inherited
+         * from Object, so its metaclass still points at Object's singleton and
+         * File.for_fd / File.sysopen / File.pipe would miss.  Re-parent the
+         * metaclass to match the class re-parenting above. */
+        slots[4] = korb_obj_singleton(c, slots + 5, korb_const_get(vm, korb_intern(vm, "IO", 2))).value;
+        ARO_STORE(c, VAL2CLASS(slots[3]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[3])->superclass, slots[4]);
+        vm->method_serial++;
+        const VALUE fsing = slots[3];
         korb_class_def_cfn_blk(c, fsing, "open", korb_m_file_open, -1);   /* File.open (block) */
         korb_class_def_cfn_blk(c, fsing, "new", korb_m_file_open, -1);    /* File.new = open, no block-close */
     }
