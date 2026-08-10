@@ -18,12 +18,18 @@
   ファイルを *require_relative 経由で* 読むと、例外もロードもなく返り
   `defined?(Socket)` が nil。同じ 2 行をメインスクリプトに直接書くと動く。
   ネストした require_relative 自体は正常 (単体テスト済)。
-  真因は mspec が `Kernel#require` を Ruby で上書きして `super` すること
-  (全 spec のエラー集計で "super: no superclass method 'require'" が 60 件)。
-  koruby の require は builtin function で Object のメソッド実体が無いため
-  super が解決できない。**Object に require/require_relative/load を
-  実メソッドとして生やす修正を試したが無限再帰で core dump したので revert 済み**
-  (builtin function 経路とメソッド経路の二重定義になるため要設計)。
+  **真因 (2026-08-10 確定)**: bare な `require` はメソッド探索を通らず
+  builtin 直行で解決される。`class Object; def require(f); …; super; end; end`
+  を書いても、その後の `require "csv"` は override を呼ばない (確認済み)。
+  builtin は `korb_method_slot` の global method table に
+  `KORB_METHOD_BUILTIN` として入っており、bare call はそこを先に見る。
+  そのため mspec の require 上書きが素通りし、上書き前提の spec が動かない。
+  ("super: no superclass method 'require'" 60 件も同じ根。)
+  対処として require/require_relative/load を Kernel の実メソッドとしても
+  登録済み (super の解決先を用意した)。**残りは bare call の解決順を
+  「self の class chain に user-defined があればそちらを優先」に変えること**。
+  Object に直接生やす素朴版は無限再帰で core dump したので、
+  再入ガードか、builtin entry を Kernel メソッドの薄い alias にする設計が要る。
   これが直れば addrinfo 48 files + require/load 系の 137 エラーが動く。
 - **green thread 下で socket の blocking read が scheduler を止める**。
   `accept` / `recv` は `wait_readable` (blop) を挟んで回避したが、

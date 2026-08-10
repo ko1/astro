@@ -9766,6 +9766,23 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
             return RESULT_OK(korb_mark_loaded(c->vm, stem) ? KORB_TRUE : KORB_FALSE);
     return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", namebuf);
 }
+/* Method-shaped wrappers for require / require_relative / load.  They go on the
+ * Kernel module (which Object includes), so a Ruby-level `def require` on Object
+ * — mspec installs one — finds them via `super` instead of hitting BasicObject.
+ * Defining them on Object itself would be replaced by that very override. */
+static RESULT korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args);
+static RESULT korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args);
+static RESULT korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args);
+static RESULT korb_m_kernel_require(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_bi_require(c, slots, a);
+}
+static RESULT korb_m_kernel_require_relative(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_bi_require_relative(c, slots, a);
+}
+static RESULT korb_m_kernel_load(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; return korb_bi_load(c, slots, a);
+}
+
 /* require_relative(name): resolve against the current file's directory. */
 static RESULT
 korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
@@ -10934,6 +10951,14 @@ korb_ctx_new(void)
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
+    {   /* the same three as Kernel instance methods, for `super` (see above) */
+        const VALUE kmod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+        if (KORB_CLASS_P(kmod)) {
+            korb_class_def_cfn(c, kmod, "require",          korb_m_kernel_require,          -1);
+            korb_class_def_cfn(c, kmod, "require_relative", korb_m_kernel_require_relative, -1);
+            korb_class_def_cfn(c, kmod, "load",             korb_m_kernel_load,             -1);
+        }
+    }
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
     korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
