@@ -39,7 +39,10 @@ struct kp_frame {
     uint32_t class_name_sym;  /* enclosing class/module body's const name (0 = not a class body) — for Module.nesting */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
+    int32_t  fwd_blk_slot;    /* `def m(...)` → synth local holding the caller's block as a Proc (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
+    int32_t  anon_blk_slot;   /* `def m(&)` → synth local holding the block as a Proc; bare `&` forwards it (-1 = none) */
+    int32_t  anon_kwrest_slot;/* `def m(**)` → synth local holding the collected keywords; bare `**` forwards it (-1 = none) */
     int32_t  method_rest_slot;/* `def m(*rest)` → the rest param's local slot, for forwarding super (-1 = none) */
     int32_t  method_post_base;/* `def m(*rest, a, b)` → first post-param slot, for forwarding super (-1 = none) */
     uint32_t method_post_cnt; /* number of post params (params after *rest), for forwarding super */
@@ -59,7 +62,21 @@ struct kp_ctx {
     int32_t **bake_list;      /* lvar-offset cells awaiting locals_cnt fixup */
     uint32_t bake_cnt, bake_capa;
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
+    uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
 };
+
+/* The file's `# encoding:` magic comment, as prism resolved it, mapped onto the
+ * 3-bit string encoding tag.  Anything koruby has no tag for stays UTF-8 (the
+ * literal's bytes are unaffected either way). */
+static uint8_t
+kp_src_enc(const pm_parser_t *parser)
+{
+    const char *const name = parser->encoding ? parser->encoding->name : NULL;
+    if (name == NULL) return KORB_ENC_UTF8;
+    if (!strcmp(name, "US-ASCII")) return KORB_ENC_USASCII;
+    if (!strcmp(name, "ASCII-8BIT") || !strcmp(name, "BINARY")) return KORB_ENC_BINARY;
+    return KORB_ENC_UTF8;
+}
 
 /* Evaluate BODY (allocations / transduction of the children of a node
  * whose dispatcher claims `n_slots` staging slots).  The dispatcher
@@ -244,7 +261,10 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->method_mid = 0;
     f->method_params = 0;
     f->fwd_slot = -1;
+    f->fwd_blk_slot = -1;
     f->anon_rest_slot = -1;
+    f->anon_blk_slot = -1;
+    f->anon_kwrest_slot = -1;
     f->method_rest_slot = -1;
     f->method_post_base = -1;
     f->method_post_cnt = 0;
@@ -1387,12 +1407,16 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 return mk;
             }
         }
-        /* `m(args, &proc)` (implicit self) — forward a runtime Proc. */
+        /* `m(args, &proc)` (implicit self) — forward a runtime Proc.  A bare `&`
+         * forwards the enclosing `def m(&)`'s block straight from its synth slot. */
         if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
-            if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
-                uint32_t pslot = alloc_synth_local(tc);
-                NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+            if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
+                const bool anon_blk = (ba->expression == NULL);
+                if (anon_blk && tc->frame->anon_blk_slot < 0)
+                    return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
+                uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
+                NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
@@ -1406,7 +1430,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                     NODE *_cs = ALLOC_node_call_splat_blkproc(mid, line, self_off, proc_off, arr);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
-                    return ALLOC_node_seq(pset, _cs);
+                    return pset ? ALLOC_node_seq(pset, _cs) : _cs;
                 }
                 uint32_t cnt = 1u + (uint32_t)argc;     /* self receiver + args */
                 NODE **argv = malloc(sizeof(NODE *) * cnt);
@@ -1419,7 +1443,7 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 tc->chain = saved;
                 NODE *call = ALLOC_node_call_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)cnt - KORB_FRAME_HDR, argv, cnt);
                 bake_add(tc, &call->u.node_call_blkproc.proc_off);
-                return ALLOC_node_seq(pset, call);
+                return pset ? ALLOC_node_seq(pset, call) : call;
             }
         }
         NODE *entry = kp_block_entry(tc, cn->block);
@@ -1445,14 +1469,20 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     }
 
     /* `inner(...)` — forward the enclosing `def m(...)`'s collected args: splat the
-     * synth rest local (args-only; a forwarded block/kwargs is not threaded). */
+     * synth rest local (keywords ride in its trailing hash) and thread the block
+     * from the synth forwarding slot.  node_call_splat_blkproc treats a nil proc
+     * as "no block", so the blockless call needs no separate node. */
     if (argc == 1 && PM_NODE_TYPE_P(args->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
         if (tc->frame->fwd_slot < 0)
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
         int32_t self_off = -1 - tc->chain - 1;
+        int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 1;
         NODE *arr;
         WITH_CHAIN(tc, 1, (arr = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
-        { NODE *_cs = ALLOC_node_call_splat(mid, line, self_off, arr); bake_add(tc, &_cs->u.node_call_splat.self_off); return _cs; }
+        NODE *_cs = ALLOC_node_call_splat_blkproc(mid, line, self_off, proc_off, arr);
+        bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
+        bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
+        return _cs;
     }
 
     /* actual `*splat` call f(*arr): build the args Array, dispatch dynamically */
@@ -1591,9 +1621,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
          * a rooted synth local, then node_send_blkproc reads it. */
         if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
             const pm_block_argument_node_t *ba = (const pm_block_argument_node_t *)cn->block;
-            if (ba->expression && !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
-                uint32_t pslot = alloc_synth_local(tc);
-                NODE *pset = bake_lset(tc, pslot, transduce(tc, ba->expression));
+            if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
+                const bool anon_blk = (ba->expression == NULL);
+                if (anon_blk && tc->frame->anon_blk_slot < 0)
+                    return kp_unsupported(tc, (const pm_node_t *)cn, "bare & outside a (&) method body");
+                uint32_t pslot = anon_blk ? (uint32_t)tc->frame->anon_blk_slot : alloc_synth_local(tc);
+                NODE *pset = anon_blk ? NULL : bake_lset(tc, pslot, transduce(tc, ba->expression));
                 bool has_splat = false;
                 for (size_t i = 0; i < argc; i++)
                     if (PM_NODE_TYPE_P(cn->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
@@ -1606,7 +1639,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                                        arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
                     NODE *_cs = ALLOC_node_send_splat_blkproc(mid, line, proc_off, recv, arr);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
-                    return ALLOC_node_seq(pset, _cs);
+                    return pset ? ALLOC_node_seq(pset, _cs) : _cs;
                 }
                 uint32_t sc = 1u + (uint32_t)argc;
                 NODE **argv = malloc(sizeof(NODE *) * sc);
@@ -1619,7 +1652,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 tc->chain = saved;
                 NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc - KORB_FRAME_HDR, argv, sc);
                 bake_add(tc, &call->u.node_send_blkproc.proc_off);
-                return ALLOC_node_seq(pset, call);
+                return pset ? ALLOC_node_seq(pset, call) : call;
             }
         }
         NODE *entry = kp_block_entry(tc, cn->block);
@@ -1659,6 +1692,19 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         bake_add(tc, &call->u.node_send_blk.def_env_off);
         bake_add(tc, &call->u.node_send_blk.self_off);    /* captured self at base[-1] (bottom header) */
         return call;
+    }
+    /* `recv.m(...)` — same forwarding as the implicit-self case, with the receiver
+     * as the extra staged child. */
+    if (argc == 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
+        if (tc->frame->fwd_slot < 0)
+            return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
+        int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 2;
+        NODE *recv, *arr;
+        WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                           arr  = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+        NODE *_cs = ALLOC_node_send_splat_blkproc(mid, line, proc_off, recv, arr);
+        bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
+        return _cs;
     }
     /* actual `*splat` receiver call recv.m(*arr): build args Array, dynamic dispatch */
     {
@@ -1719,11 +1765,11 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     uint32_t params_cnt = 0, req_cnt = 0, opt_cnt = 0;
     const pm_parameters_node_t *ps = dn->parameters;
     pm_constant_id_t blk_param_name = 0;   /* &blk param name (0 = none) */
+    bool anon_blk_param = false;           /* `def m(&)` — slot allocated after push_frame */
     if (ps) {
         if (ps->block) {
-            if (!ps->block->name)
-                return kp_unsupported(tc, (const pm_node_t *)dn, "anonymous/forwarding block parameter (&)");
-            blk_param_name = ps->block->name;
+            if (!ps->block->name) anon_blk_param = true;
+            else                  blk_param_name = ps->block->name;
         }
         /* posts without a rest = required params after optionals, e.g. `def m(a=1, b)`:
          * supported — they bind from the tail, optionals fill the middle. */
@@ -1787,12 +1833,17 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         tc->frame->method_rest_slot = rest_slot;                 /* for forwarding super (`super` re-splats the rest) */
     }
     /* `def m(...)` — prism gives no locals, so collect ALL positional args into a
-     * synth rest local; `inner(...)` in the body splats it (args-only forward;
-     * a forwarded block/kwargs is not yet threaded). */
+     * synth rest local; `inner(...)` in the body splats it.  Keywords ride along
+     * as the trailing hash (re-bound by name at the callee).  A second synth
+     * local receives the caller's block, materialized by node_blkparam below. */
     if (ps && ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
         rest_slot = (int32_t)alloc_synth_local(tc);
         tc->frame->fwd_slot = rest_slot;
+        tc->frame->fwd_blk_slot = (int32_t)alloc_synth_local(tc);
     }
+    /* anonymous `&` → a synth local the body can't name; a bare `&` at a call
+     * site inside the body forwards it. */
+    if (anon_blk_param) tc->frame->anon_blk_slot = (int32_t)alloc_synth_local(tc);
 
     /* post params (after *rest): plain requireds occupying the slots right after
      * the rest slot, bound from the tail of the positional args. */
@@ -1839,7 +1890,10 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {
             pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
             if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
-            else    kw_info->kwrest_slot = -2;   /* anonymous `**` : accept & discard all keywords */
+            else {                               /* anonymous `**` : collect into a synth local so bare `**` can forward it */
+                kw_info->kwrest_slot = (int32_t)alloc_synth_local(tc);
+                tc->frame->anon_kwrest_slot = kw_info->kwrest_slot;
+            }
         } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE))
             kw_info->kwrest_slot = -3;           /* `**nil` : no keywords accepted (positional Hash stays positional) */
     }
@@ -1862,6 +1916,13 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         tc->frame->uses_block = true;      /* reserve the frame's block cells */
         int32_t dst = (int32_t)lvar_index(tc, (const pm_node_t *)ps->block, blk_param_name) - tc->chain;
         NODE *bp = ALLOC_node_blkparam(dst, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
+        bake_add(tc, &bp->u.node_blkparam.dst_off);
+        body = ALLOC_node_seq(bp, body);
+    } else if (tc->frame->fwd_blk_slot >= 0 || tc->frame->anon_blk_slot >= 0) {
+        /* `def m(...)` / `def m(&)` → same, into the synth forwarding slot */
+        tc->frame->uses_block = true;
+        int32_t slot = tc->frame->fwd_blk_slot >= 0 ? tc->frame->fwd_blk_slot : tc->frame->anon_blk_slot;
+        NODE *bp = ALLOC_node_blkparam(slot - tc->chain, -4 - tc->chain, -3 - tc->chain, -2 - tc->chain);
         bake_add(tc, &bp->u.node_blkparam.dst_off);
         body = ALLOC_node_seq(bp, body);
     }
@@ -2189,7 +2250,15 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
     const pm_node_t *last = assocs[n - 1];
     if (PM_NODE_TYPE_P(last, PM_ASSOC_SPLAT_NODE)) {       /* `**h` → merge */
         const pm_node_t *expr = (const pm_node_t *)((const pm_assoc_splat_node_t *)last)->value;
-        if (expr == NULL) return build_hash(tc, assocs, n - 1, capa);   /* bare `**` */
+        if (expr == NULL) {                                 /* bare `**` — anonymous kwrest forward */
+            const int32_t aks = tc->frame->anon_kwrest_slot;
+            if (aks < 0) return build_hash(tc, assocs, n - 1, capa);   /* no anon kwrest in scope → nothing */
+            NODE *acc0, *src0;
+            uint32_t sc0 = kind_node_hash_merge.slot_count;
+            WITH_CHAIN(tc, sc0, (acc0 = build_hash(tc, assocs, n - 1, capa),
+                                 src0 = bake_lget(tc, (uint32_t)aks)));
+            return ALLOC_node_hash_merge(acc0, src0);
+        }
         NODE *acc, *src;
         uint32_t sc = kind_node_hash_merge.slot_count;
         WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
@@ -2349,6 +2418,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
+        if (tc->src_enc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, tc->src_enc);
         return ALLOC_node_str(bytes, len);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
@@ -3663,6 +3733,7 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
         .parser = &parser,
         .c = c,
         .fname = fname,
+        .src_enc = kp_src_enc(&parser),
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
@@ -3710,7 +3781,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
-    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname };
+    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(&parser) };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     free(tc.bake_list);

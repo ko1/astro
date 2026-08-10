@@ -32,6 +32,17 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// Same, for a source file whose `# encoding:` magic comment is not UTF-8: the
+// literal carries the file's encoding tag (`enc` is a KORB_ENC_* index).
+NODE_DEF
+node_str_enc(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len, uint32_t enc)
+{
+    (void)n;
+    const RESULT r = korb_str_new(c, slots, bytes, len);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, enc);
+    return r;
+}
+
 // Integer literal beyond Fixnum range (e.g. 10**100 written literally).  The
 // VALUE (a heap Bignum) can't be baked into an SD, so we bake the source digits
 // (`digits`, base 0 = auto-detect 0x/0b/0o/_) and rebuild the Bignum each eval.
