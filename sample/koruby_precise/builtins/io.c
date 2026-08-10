@@ -457,9 +457,23 @@ static bool korb_io_mode_arg(VALUE mv, char *mode, size_t cap) {
     }
     if (!KORB_STRING_P(mv)) return false;
     uint32_t ml; const char *m = korb_str_cstr_len(mv, &ml);
+    /* "r:utf-8:euc-jp" — only the part before the first ':' is the access mode;
+       the encoding suffix is resolved by the prelude from @__io_modestr. */
+    for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
     if (ml == 0 || ml >= cap) return false;
     memcpy(mode, m, ml); mode[ml] = '\0';
     return strchr("rwa", mode[0]) != NULL;
+}
+
+/* Encoding.default_internal is captured when the stream is created: changing it
+ * afterwards must not affect an already-open IO. */
+static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF io) {
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+    if (!KORB_CLASS_P(slots[0])) return RESULT_OK(KORB_NIL);
+    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "default_internal", 16), 0, 0);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    slots[0] = r.value;
+    return korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__int_enc0", 11)), slots[0]);
 }
 
 /* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
@@ -506,9 +520,13 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (!fp) return korb_raise_errno(c, slots, errno, "", "");
     const bool binary = strchr(mode, 'b') != NULL;
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, korb_io_mode_rw(mode)));
+    VALUE_REF nio = VALUE_REF_AT(&slots[0]);
     if (binary)
-        CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
-    return RESULT_OK(slots[0]);
+        CHECK(korb_ivar_set(c, slots + 1, nio, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1)))
+        CHECK(korb_ivar_set(c, slots + 1, nio, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), VALUE_SLICE_GET(a, 1)));
+    CHECK(korb_io_capture_default_internal(c, slots + 1, nio));
+    return RESULT_OK(VALUE_REF_GET(nio));
 }
 
 /* IO.popen(cmd, mode = "r") [ { |io| ... } ] — run cmd through the shell and
@@ -589,6 +607,9 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         char mode[8] = "r";
         if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {
             uint32_t ml; const char *m = korb_str_cstr_len(VALUE_SLICE_GET(a, 1), &ml);
+            /* "r:utf-8:euc-jp" — the encoding suffix is not part of the fopen
+               mode; the prelude reads it back off @__io_modestr. */
+            for (uint32_t i = 0; i < ml; i++) if (m[i] == ':') { ml = i; break; }
             if (ml > 0 && ml < sizeof(mode)) { memcpy(mode, m, ml); mode[ml] = '\0'; }
         }
         const char b = mode[0]; const bool plus = strchr(mode, '+') != NULL;   /* validate + derive rw bits */
@@ -605,6 +626,10 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_path", 10)),
                         VALUE_SLICE_GET(a, 0)));   /* File#path / #to_path */
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1)))
+        CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)),
+                            VALUE_SLICE_GET(a, 1)));
+    CHECK(korb_io_capture_default_internal(c, slots + 1, io));
     if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
     slots[1] = VALUE_REF_GET(io);
     RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);

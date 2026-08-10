@@ -3,13 +3,31 @@ class IO
   # binary mode); these record what was requested so the accessors round-trip
   # and #set_encoding is not a hard error.
   def external_encoding
-    e = @__ext_enc
-    return e if e
+    __resolve_enc
+    return @__ext_enc if @__ext_enc
     return Encoding::BINARY if binmode?
     Encoding.default_external
   end
 
-  def internal_encoding = @__int_enc
+  def internal_encoding
+    __resolve_enc
+    @__int_enc
+  end
+
+  # A mode string may carry "…:external[:internal]"; if it does not, the
+  # Encoding.default_internal captured when the stream was opened applies.
+  private def __resolve_enc
+    return if @__enc_done
+    @__enc_done = true
+    spec = @__io_modestr
+    if spec && (i = spec.index(":"))
+      ext, int = spec[(i + 1)..-1].split(":", 2)
+      @__ext_enc ||= Encoding.find(ext) if ext && !ext.empty?
+      @__int_enc ||= Encoding.find(int) if int && !int.empty?
+    end
+    @__int_enc ||= @__int_enc0
+    @__int_enc = nil if @__int_enc && @__int_enc == (@__ext_enc || Encoding.default_external)
+  end
 
   def set_encoding(ext = nil, int = nil, **opts)
     if int.nil? && ext.is_a?(String) && ext.include?(":")
@@ -18,6 +36,7 @@ class IO
     @__ext_enc = ext.nil? ? nil : (ext.is_a?(Encoding) ? ext : Encoding.find(ext))
     @__int_enc = int.nil? ? nil : (int.is_a?(Encoding) ? int : Encoding.find(int))
     @__int_enc = nil if @__int_enc && @__int_enc == @__ext_enc
+    @__enc_done = true          # an explicit set_encoding wins over the mode string
     self
   end
 
