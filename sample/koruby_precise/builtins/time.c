@@ -306,9 +306,23 @@ static RESULT korb_m_time_getutc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     (void)a; const VALUE t = VALUE_REF_GET(self);
     return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t), true);
 }
+/* getlocal / localtime: with no argument the process time zone renders the
+ * instant; with a utc_offset ("+09:00" or seconds) the result carries that fixed
+ * offset instead, the same representation Time.new(..., utc_offset) produces. */
 static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; const VALUE t = VALUE_REF_GET(self);
-    return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t), false);
+    const VALUE t = VALUE_REF_GET(self);
+    const double e = korb_time_epoch(c, t);
+    const VALUE cls = korb_class_obj_of(c, t);
+    if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        intptr_t off;
+        if (!korb_parse_tz_offset(VALUE_SLICE_GET(a, 0), &off))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+        if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
+        slots[0] = UNWRAP(korb_time_make(c, slots, cls, e, false));
+        (void)korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off));
+        return RESULT_OK(slots[0]);
+    }
+    return korb_time_make(c, slots, cls, e, false);
 }
 static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
@@ -498,10 +512,10 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "gmt?",  korb_m_time_utc_q, 0);
     korb_class_def_cfn(c, t, "getutc",   korb_m_time_getutc,   0);
     korb_class_def_cfn(c, t, "getgm",    korb_m_time_getutc,   0);
-    korb_class_def_cfn(c, t, "getlocal", korb_m_time_getlocal, 0);
+    korb_class_def_cfn(c, t, "getlocal", korb_m_time_getlocal, -1);
     korb_class_def_cfn(c, t, "utc",       korb_m_time_getutc,   0);   /* instance utc/gmtime → UTC view */
     korb_class_def_cfn(c, t, "gmtime",    korb_m_time_getutc,   0);
-    korb_class_def_cfn(c, t, "localtime", korb_m_time_getlocal, 0);
+    korb_class_def_cfn(c, t, "localtime", korb_m_time_getlocal, -1);
     korb_class_def_cfn(c, t, "+",   korb_m_time_plus,  1);
     korb_class_def_cfn(c, t, "-",   korb_m_time_minus, 1);
     korb_class_def_cfn(c, t, "<=>", korb_m_time_cmp,   1);

@@ -3,6 +3,24 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (moving GC, 未修正)
+
+- **`t/hand/struct_data_inherit.rb` / `t/hand/struct_name_arg.rb` が STRESS+PURGE で
+  SEGV** (2026-08-10 確認)。通常実行は PASS。commit 3c96fc83 の時点でも同じく落ちる
+  ので既存の moving-GC stale pointer。Struct/Data のサブクラス生成経路で
+  alloc を跨いで生ポインタを保持している疑い。gdb bt から追うこと
+  ([[project_koruby_precise_stress_gc_fixes]] と同じ手順)。
+
+## 既知バグ (メソッドオブジェクト)
+
+- **`UnboundMethod#bind_call` が Class/Module レシーバで singleton override に
+  再ディスパッチする**。`Module.instance_method(:name).bind_call(Foo)` は Module#name
+  の実装を呼ぶべきだが、`Foo.singleton_class` に `def self.name` があるとそちらが
+  呼ばれる (`to_s` でも同様)。通常の instance method (`A.instance_method(:foo)
+  .bind_call(B.new)`) は正しく A#foo を呼ぶので、レシーバが Class のときだけ
+  経路が違う。rubyspec の Marshal "ignores overridden name method" 3 例が
+  これで落ちる (prelude/marshal.rb の `Marshal._class_name` は修正後に効く)。
+
 ## 既知バグ (GC backend)
 
 - (修正済 2026-06-23) **`mark_compact_gen` backend が bignum で core dump**。

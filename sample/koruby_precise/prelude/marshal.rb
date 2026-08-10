@@ -13,11 +13,12 @@ module Marshal
     if limit.nil? && an_io.is_a?(Integer)
       limit = an_io; an_io = nil
     end
-    st = { syms: {}, objs: {}.compare_by_identity }
+    raise TypeError, "instance of IO needed" if an_io && !an_io.respond_to?(:write)
+    st = { syms: {}, objs: {}.compare_by_identity, limit: limit, depth: 0 }
     out = +"\x04\x08"
     _dump(obj, out, st)
     out.force_encoding("ASCII-8BIT") if out.respond_to?(:force_encoding)
-    if an_io && an_io.respond_to?(:write)
+    if an_io
       an_io.write(out); an_io
     else
       out
@@ -25,6 +26,11 @@ module Marshal
   end
 
   # --- dump ------------------------------------------------------------------
+
+  # CRuby marshals the real class name; a user-defined `self.name` override is
+  # ignored, so go through Module#name directly.
+  MODULE_NAME = Module.instance_method(:name)
+  def self._class_name(k) = MODULE_NAME.bind_call(k)
 
   def self._dump(o, out, st)
     case o
@@ -43,14 +49,26 @@ module Marshal
       out << "@"; _long(id, out); return
     end
     st[:objs][o] = st[:objs].size                      # assign link id (pre-order)
-    _dump_val(o, out, st)
+    # A negative limit means unlimited; otherwise each nesting level costs one.
+    lim = st[:limit]
+    if lim && lim >= 0
+      raise ArgumentError, "exceed depth limit" if st[:depth] > lim
+      st[:depth] += 1
+      begin
+        _dump_val(o, out, st)
+      ensure
+        st[:depth] -= 1
+      end
+    else
+      _dump_val(o, out, st)
+    end
   end
 
   def self._dump_val(o, out, st)
     case o
     when Class  then return _dump_class(o, out, st)    # (before String: Class subjects mis-match `when String`)
     when Module
-      n = o.name
+      n = _class_name(o)
       raise TypeError, "can't dump anonymous module #{o}" if n.nil?
       out << "m"; _long(n.bytesize, out); out << n
       return
@@ -104,7 +122,7 @@ module Marshal
       out << "e"; _symdump(nm.to_sym, out, st)
     end
     if o.class != base
-      nm = o.class.name
+      nm = _class_name(o.class)
       raise TypeError, "can't dump anonymous class #{o.class}" if nm.nil?
       out << "C"; _symdump(nm.to_sym, out, st)
     end
@@ -165,7 +183,7 @@ module Marshal
   end
 
   def self._dump_struct(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     uiv = o.instance_variables
     out << "I" unless uiv.empty?
@@ -178,7 +196,7 @@ module Marshal
   end
 
   def self._dump_data(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('S' carries the name)
     out << "S"; _symdump(name.to_sym, out, st)
@@ -193,31 +211,40 @@ module Marshal
   end
 
   def self._dump_class(o, out, st)
-    n = o.name
+    n = _class_name(o)
     raise TypeError, "can't dump anonymous class #{o}" if n.nil?
     raise TypeError, "singleton can't be dumped" if o.inspect.start_with?("#<Class:")
     out << "c"; _long(n.bytesize, out); out << n
   end
 
   def self._dump_umarshal(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     d = o.marshal_dump
     out << "U"; _symdump(name.to_sym, out, st); _dump(d, out, st)
   end
 
   def self._dump_udump(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     d = o._dump(-1)
     unless String === d
       raise TypeError, "_dump() must return string, not #{d.class}"
     end
     enc = _str_enc_marker(d)
-    if enc
+    ivars = d.instance_variables
+    # Time's zone rides along as the pseudo-ivars :offset / :zone (no '@' — CRuby
+    # writes them straight into the payload's ivar table, so they are invisible
+    # to #instance_variables).
+    extra = (Time === o && !o.utc?) ? [[:offset, o.utc_offset],
+                                       [:zone, o.zone.dup.force_encoding("US-ASCII")]] : []
+    if enc || !ivars.empty? || !extra.empty?
       out << "I"
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
-      _long(1, out); _write_enc(enc, out, st)
+      _long((enc ? 1 : 0) + ivars.length + extra.length, out)
+      _write_enc(enc, out, st) if enc
+      extra.each { |nm, v| _symdump(nm, out, st); _dump(v, out, st) }
+      ivars.each { |iv| _symdump(iv, out, st); _dump(d.instance_variable_get(iv), out, st) }
     else
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
     end
@@ -226,7 +253,7 @@ module Marshal
   # Exception: CRuby stores the message and backtrace as the pseudo-ivars
   # :mesg and :bt (no '@'), ahead of any real instance variables.
   def self._dump_exception(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     _wrap_prefix(o, o.class, out, st)
     out << "o"; _symdump(name.to_sym, out, st)
@@ -238,7 +265,7 @@ module Marshal
   end
 
   def self._dump_generic(o, out, st)
-    name = o.class.name
+    name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
     _wrap_prefix(o, o.class, out, st)                  # 'e' extends only ('o' carries the name)
     ivars = o.instance_variables
@@ -352,7 +379,7 @@ module Marshal
 
   # --- load ------------------------------------------------------------------
 
-  def self.load(data, proc = nil)
+  def self.load(data, proc = nil, freeze: false)
     from_io = false
     if data.respond_to?(:read) && !data.is_a?(String)
       from_io = true; data = data.read
@@ -361,7 +388,7 @@ module Marshal
     if data.nil? || data.bytesize == 0
       raise from_io ? EOFError.new("end of file reached") : ArgumentError.new("marshal data too short")
     end
-    st = { s: data, i: 0, syms: [], objs: [], proc: proc }
+    st = { s: data, i: 0, syms: [], objs: [], proc: proc, freeze: freeze }
     maj = _byte(st); min = _byte(st)
     if maj != MAJOR_VERSION || min > MINOR_VERSION
       raise TypeError,
@@ -419,6 +446,9 @@ module Marshal
 
   def self._read(st)
     v = _read0(st)
+    # `freeze: true` hands out frozen objects — freeze on the way out, once the
+    # container has been filled, and before the caller's proc sees it.
+    v.freeze if st[:freeze]
     (p = st[:proc]) ? p.call(v) : v
   end
 
@@ -441,7 +471,9 @@ module Marshal
       st[:syms] << sym; sym
     when 0x3b then st[:syms][_rlong(st)]                # ';' symbol link
     when 0x22                                            # '"' string
-      _reg(st, _bytes(st, _rlong(st)))
+      # Unwrapped strings are ASCII-8BIT; an enclosing 'I' with :E / :encoding
+      # re-tags them.
+      _reg(st, _bytes(st, _rlong(st)).force_encoding("ASCII-8BIT"))
     when 0x66                                            # 'f' Float
       s = _bytes(st, _rlong(st))
       v = case s
@@ -461,11 +493,39 @@ module Marshal
       h.default = _read(st) if t == 0x7d
       h
     when 0x49                                            # 'I' ivar-wrapped
+      if st[:s].getbyte(st[:i]) == 0x75                  # 'u' user _dump
+        # CRuby attaches these ivars to the _dump payload String and only then
+        # calls ::_load — that is how Time picks up its @offset / @zone.
+        _byte(st)
+        idx = st[:objs].size; st[:objs] << nil
+        cls = _read0(st)
+        data = _bytes(st, _rlong(st))
+        offset = nil
+        _rlong(st).times do
+          name = _read0(st); val = _read(st)
+          next if name == :E || name == :encoding
+          offset = val if name == :offset
+          data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
+        end
+        obj = _const(cls)._load(data)
+        # A non-UTC Time was packed in local wall-clock fields: shift back to the
+        # instant, then re-attach the fixed offset so #utc_offset survives.
+        obj = (obj - offset).getlocal(offset) if Time === obj && offset
+        st[:objs][idx] = obj
+        return obj
+      end
       v = _read0(st)                                     # transparent: caller's proc sees the object
       ni = _rlong(st)
       ni.times do
         name = _read0(st); val = _read(st)              # ivar name is structural; value is data
-        next if name == :E || name == :encoding         # encoding markers, not user ivars
+        if name == :E                                   # encoding marker, not a user ivar
+          v.force_encoding(val ? "UTF-8" : "US-ASCII") if v.respond_to?(:force_encoding)
+          next
+        end
+        if name == :encoding
+          (v.force_encoding(val) rescue nil) if v.respond_to?(:force_encoding)
+          next
+        end
         v.instance_variable_set(name, val) rescue nil
       end
       v

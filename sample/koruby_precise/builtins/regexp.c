@@ -1035,6 +1035,9 @@ static void korb_init_regexp(CTX *c, VALUE *slots) {
     korb_const_define_owned(c, korb_intern(vm, "IGNORECASE", 10), LONG2FIX(1), slots[0]);
     korb_const_define_owned(c, korb_intern(vm, "EXTENDED",   8),  LONG2FIX(2), slots[0]);
     korb_const_define_owned(c, korb_intern(vm, "MULTILINE",  9),  LONG2FIX(4), slots[0]);
+    /* Encoding option bits: reported by #options, never set by koruby's engine. */
+    korb_const_define_owned(c, korb_intern(vm, "FIXEDENCODING", 13), LONG2FIX(16), slots[0]);
+    korb_const_define_owned(c, korb_intern(vm, "NOENCODING",    10), LONG2FIX(32), slots[0]);
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;
     korb_class_def_cfn(c, slots[1], "escape", korb_m_re_escape, 1);
     korb_class_def_cfn(c, slots[1], "quote",  korb_m_re_escape, 1);

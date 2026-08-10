@@ -59,3 +59,34 @@ class Time
     utc? ? t.utc : t
   end
 end
+
+class Time
+  # Marshal format: two little-endian 32-bit words.  The high bit of the first
+  # marks the "broken-down" form — utc flag, year-1900, month-1, mday and hour
+  # in the first word; min, sec and usec in the second.  A zone offset rides on
+  # the payload String as @offset / @zone, which Marshal attaches before _load.
+  def _dump(limit = -1)
+    y = year
+    raise ArgumentError, "year too big to marshal: #{y}" if y - 1900 > 0xffff || y - 1900 < 0
+    p = (1 << 31) | ((utc? ? 1 : 0) << 30) | ((y - 1900) << 14) |
+        ((mon - 1) << 10) | (mday << 5) | hour
+    s = (min << 26) | (sec << 20) | usec
+    str = [p & 0xff, (p >> 8) & 0xff, (p >> 16) & 0xff, (p >> 24) & 0xff,
+           s & 0xff, (s >> 8) & 0xff, (s >> 16) & 0xff, (s >> 24) & 0xff].pack("C*")
+    str
+  end
+
+  def self._load(str)
+    b = str.unpack("C*")
+    raise TypeError, "marshaled time format differ" unless b.length >= 8
+    p = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+    s = b[4] | (b[5] << 8) | (b[6] << 16) | (b[7] << 24)
+    return Time.at(p, s) if (p & (1 << 31)).zero?      # plain epoch seconds + usec
+    utc = !(p & (1 << 30)).zero?
+    t = Time.utc(((p >> 14) & 0xffff) + 1900, ((p >> 10) & 0xf) + 1,
+                 (p >> 5) & 0x1f, p & 0x1f,
+                 (s >> 26) & 0x3f, (s >> 20) & 0x3f, s & 0xfffff)
+    return t if utc
+    t   # Marshal applies the :offset pseudo-ivar; a bare _load sees UTC fields
+  end
+end
