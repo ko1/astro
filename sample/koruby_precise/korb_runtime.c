@@ -9685,13 +9685,9 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
         for (uint32_t i = 0; i < vm->loaded_cnt; i++)
             if (strcmp(vm->loaded_files[i], abspath) == 0) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     }
-    FILE *fp = fopen(abspath, "rb");
-    if (!fp) return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", abspath);
-    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
-    if (sz < 0) sz = 0;
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(fp); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
-    size_t got = fread(buf, 1, (size_t)sz, fp); fclose(fp); buf[got] = '\0';
+    size_t got = 0;
+    char *buf = korb_file_slurp(abspath, &got);
+    if (!buf) return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", abspath);
     /* record before eval so a circular require returns false rather than reloading. */
     if (dedup) korb_mark_loaded(vm, abspath);
     const char *const saved = vm->cur_load_file;
@@ -10741,15 +10737,10 @@ korb_bi_binread(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (UNLIKELY(ps->len >= sizeof(path)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "path too long");
     memcpy(path, korb_strbuf_data(ps->buf), ps->len); path[ps->len] = '\0';
-    FILE *const f = fopen(path, "rb");
-    if (UNLIKELY(!f))
+    size_t rd = 0;
+    char *const buf = korb_file_slurp(path, &rd);
+    if (UNLIKELY(!buf))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "No such file or directory - %s", path);
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    if (UNLIKELY(sz < 0)) { fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "ftell failed - %s", path); }
-    char *const buf = malloc((size_t)sz ? (size_t)sz : 1);
-    if (!buf) { fclose(f); abort(); }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)rd);
     free(buf);
     return r;

@@ -114,9 +114,9 @@ static RESULT korb_m_random_urandom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
     char *buf = (char *)malloc((size_t)(n ? n : 1));
     if (!buf) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
-    FILE *fp = fopen("/dev/urandom", "rb");
-    size_t got = fp ? fread(buf, 1, (size_t)n, fp) : 0;
-    if (fp) fclose(fp);
+    const int fd = open("/dev/urandom", O_RDONLY);
+    const size_t got = fd >= 0 ? korb_fd_read_n(fd, buf, (size_t)n) : 0;
+    if (fd >= 0) close(fd);
     for (size_t i = got; i < (size_t)n; i++) buf[i] = 0;   /* pad if the read fell short */
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)n);
     free(buf);

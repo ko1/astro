@@ -1,3 +1,4 @@
+#include <fcntl.h>
 /* koruby_precise — file.c: a minimal File class (POSIX path-string methods only,
  * no real I/O yet).  #included into korb_runtime.c's TU.  Enough to unblock the
  * mspec `fixture()` helper and the File path specs (expand_path / join / dirname
@@ -343,6 +344,55 @@ static RESULT korb_m_file_umask(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(LONG2FIX((intptr_t)cur));
 }
 
+/* ---- one-shot descriptor I/O ---------------------------------------------
+ * These slurp or spill a whole file in one call and close it again.  They use
+ * read(2)/write(2) directly for the same reason the stream layer does: a FILE*
+ * would reintroduce a buffer the interpreter does not control. */
+
+/* Read `fd` to EOF into a malloc'd, NUL-terminated buffer (caller frees). */
+static char *korb_fd_slurp(int fd, size_t *out_len) {
+    char *buf = NULL; size_t cap = 0, len = 0;
+    for (;;) {
+        if (len + 65536 + 1 > cap) {
+            cap = cap ? cap * 2 : 131072;
+            char *const nb = realloc(buf, cap);
+            if (!nb) { free(buf); *out_len = 0; return NULL; }
+            buf = nb;
+        }
+        const ssize_t got = read(fd, buf + len, cap - len - 1);
+        if (got < 0) { if (errno == EINTR) continue; break; }
+        if (got == 0) break;
+        len += (size_t)got;
+    }
+    if (!buf) { buf = malloc(1); if (!buf) { *out_len = 0; return NULL; } }
+    buf[len] = '\0';
+    *out_len = len;
+    return buf;
+}
+
+/* Read exactly up to `want` bytes into `dst`; returns the count transferred. */
+static size_t korb_fd_read_n(int fd, char *dst, size_t want) {
+    size_t got = 0;
+    while (got < want) {
+        const ssize_t n = read(fd, dst + got, want - got);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        got += (size_t)n;
+    }
+    return got;
+}
+
+/* Write all n bytes, retrying short writes; returns the count written. */
+static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        const ssize_t w = write(fd, p + off, n - off);
+        if (w < 0) { if (errno == EINTR) continue; break; }
+        off += (size_t)w;
+    }
+    return off;
+}
+
 /* File.read(path[, length[, offset]]) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -350,48 +400,36 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!KORB_STRING_P(pv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-    FILE *f = fopen(path, "rb");
-    if (!f) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
     const bool has_len = VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1));
     if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)))   /* offset */
-        fseek(f, (long)FIX2LONG(VALUE_SLICE_GET(a, 2)), SEEK_SET);
+        (void)lseek(fd, (off_t)FIX2LONG(VALUE_SLICE_GET(a, 2)), SEEK_SET);
     if (has_len) {                                                    /* bounded read */
         intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 1)); if (n < 0) n = 0;
         char *b = malloc((size_t)n + 1);
-        if (!b) { fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
-        size_t got = fread(b, 1, (size_t)n, f); fclose(f);
+        if (!b) { close(fd); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
+        const size_t got = korb_fd_read_n(fd, b, (size_t)n); close(fd);
         if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
         RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
         free(b);
         return r;
     }
-    char *buf = NULL; size_t cap = 0, len = 0;
-    for (;;) {
-        if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path); } buf = nb; }
-        size_t got = fread(buf + len, 1, cap - len, f);
-        len += got;
-        if (got == 0) break;
-    }
-    fclose(f);
-    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)len);
+    size_t len = 0;
+    char *const buf = korb_fd_slurp(fd, &len);
+    close(fd);
+    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
     free(buf);
     return r;
 }
 
 /* slurp the whole file into a malloc'd buffer (caller frees); NULL on open fail. */
 static char *korb_file_slurp(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    char *buf = NULL; size_t cap = 0, len = 0;
-    for (;;) {
-        if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); fclose(f); *out_len = 0; return NULL; } buf = nb; }
-        size_t got = fread(buf + len, 1, cap - len, f);
-        len += got;
-        if (got == 0) break;
-    }
-    fclose(f);
-    if (!buf) { buf = malloc(1); buf[0] = 0; }
-    *out_len = len;
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) { *out_len = 0; return NULL; }
+    char *const buf = korb_fd_slurp(fd, out_len);
+    close(fd);
     return buf;
 }
 
@@ -416,10 +454,10 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     uint32_t dlen; const char *data = korb_str_cstr_len(sv, &dlen);
-    FILE *f = fopen(path, mode);
-    if (!f) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-    size_t w = fwrite(data, 1, dlen, f);
-    fclose(f);
+    const int fd = open(path, O_WRONLY | O_CREAT | (mode[0] == 'a' ? O_APPEND : O_TRUNC), 0666);
+    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+    const size_t w = korb_fd_write_all(fd, data, dlen);
+    close(fd);
     return RESULT_OK(LONG2FIX((intptr_t)w));
 }
 

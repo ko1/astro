@@ -589,9 +589,23 @@ static RESULT korb_m_io_eof_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (!korb_io_open_p(rep)) return RESULT_OK(KORB_TRUE);
     return RESULT_OK(korb_io_fill(rep) == 0 ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_io_sync_noop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)c; (void)slots; (void)self;
-    return RESULT_OK(VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_TRUE);
+/* IO#sync → whether every write goes straight to the descriptor. */
+static RESULT korb_m_io_sync(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    return RESULT_OK((rep && rep->sync) ? KORB_TRUE : KORB_FALSE);
+}
+/* IO#sync=(bool) — turning it on drains what is already buffered, so the
+ * setting takes effect for output written before the assignment too. */
+static RESULT korb_m_io_sync_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots;
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    const VALUE v = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_TRUE;
+    if (rep) {
+        rep->sync = KORB_TRUTHY(v) ? 1 : 0;
+        if (rep->sync) (void)korb_io_flush_rep(rep);
+    }
+    return RESULT_OK(v);
 }
 /* IO#getc → the next UTF-8 character, or nil at EOF. */
 static RESULT korb_m_io_getc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1036,7 +1050,9 @@ void korb_init_io(CTX *c, VALUE *slots) {
     /* index 0/1/2 = the std streams (never closed).  stderr is sync so a
        diagnostic is on the descriptor before anything that follows it. */
     korb_io_register(vm, STDIN_FILENO, false);
-    korb_io_register(vm, STDOUT_FILENO, false);
+    /* On a terminal stdout is sync so a prompt written without a newline is
+       visible before the read that follows it; piped output stays buffered. */
+    korb_io_register(vm, STDOUT_FILENO, isatty(STDOUT_FILENO) != 0);
     korb_io_register(vm, STDERR_FILENO, true);
 
     const VALUE obj_cls = korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* IO < Object → inherits class/inspect/... */
@@ -1055,7 +1071,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("tty?", tty_p, 0);       IOM("isatty", tty_p, 0);
     IOM("truncate", truncate, 1);
     IOM("flush", flush, 0);      IOM("eof?", eof_p, 0);     IOM("eof", eof_p, 0);
-    IOM("sync", sync_noop, 0);   IOM("sync=", sync_noop, 1);
+    IOM("sync", sync, 0);        IOM("sync=", sync_set, 1);
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);
     IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
     IOB("each_char", each_char, 0);   IOM("getc", getc, 0);

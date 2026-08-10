@@ -6,6 +6,9 @@
  */
 
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,24 +51,26 @@ usage(FILE *fp)
 static char *
 read_file_all(const char *path, size_t *len_out)
 {
-    FILE *fp = strcmp(path, "-") == 0 ? stdin : fopen(path, "rb");
-    if (!fp) {
+    const int fd = strcmp(path, "-") == 0 ? STDIN_FILENO : open(path, O_RDONLY);
+    if (fd < 0) {
         fprintf(stderr, "koruby_precise: cannot open %s\n", path);
         exit(2);
     }
     size_t capa = 1 << 16, len = 0;
     char *buf = malloc(capa);
     if (!buf) abort();
-    size_t n;
-    while ((n = fread(buf + len, 1, capa - len, fp)) > 0) {
-        len += n;
-        if (len == capa) {
+    for (;;) {
+        if (len + 1 >= capa) {
             capa *= 2;
             buf = realloc(buf, capa);
             if (!buf) abort();
         }
+        const ssize_t n = read(fd, buf + len, capa - len - 1);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        len += (size_t)n;
     }
-    if (fp != stdin) fclose(fp);
+    if (fd != STDIN_FILENO) close(fd);
     buf[len] = '\0';
     *len_out = len;
     return buf;
