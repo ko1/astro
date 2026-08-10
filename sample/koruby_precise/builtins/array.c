@@ -50,7 +50,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (block != NULL) {
             VALUE iv = LONG2FIX(i);
             RESULT y = korb_block_yield(c, slots + 1, block, def_env, &iv, 1, cself);
-            if (y.state == KORB_BREAK) return RESULT_OK(y.value);   /* break v → the value */
+            if (y.state == KORB_BREAK && korb_break_owned(c, block, def_env)) return RESULT_OK(y.value);   /* break v → the value (only ours) */
             if (UNLIKELY(y.state != KORB_NORMAL)) return y;
             el = y.value;
         }

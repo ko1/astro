@@ -1684,7 +1684,7 @@ static RESULT korb_m_loop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, N
     for (;;) {
         RESULT r = korb_block_yield(c, slots, block, def_env, NULL, 0, cself);
         if (r.state == KORB_NORMAL) continue;
-        if (r.state == KORB_BREAK) return RESULT_OK(r.value);   /* break [v] → loop value */
+        if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) return RESULT_OK(r.value);   /* break [v] → loop value (only ours) */
         if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION)
             return RESULT_OK(KORB_NIL);                         /* StopIteration ends the loop */
         return r;

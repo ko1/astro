@@ -2487,6 +2487,7 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
     return RESULT_OK(VALUE_REF_GET(cls));
@@ -2672,6 +2673,7 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
     return RESULT_OK(VALUE_REF_GET(cls));
@@ -5154,12 +5156,15 @@ static RESULT korb_m_set_psuperset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * l.op(rhs) and report handled=true.  Guarded to KORB_CLASS_P/KORB_OBJECT_P so
  * builtin types whose operator routes back through the slow path can't recurse. */
 RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op, bool *handled) {
-    if (KORB_CLASS_P(l) || KORB_OBJECT_P(l)) {
-        uint32_t mid = korb_intern(c->vm, op, (uint32_t)strlen(op));
-        if (korb_responds_to(c, l, mid)) {
-            slots[0] = l; slots[1] = rhs; *handled = true;
-            return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
-        }
+    /* The last rung of the arithmetic ladders: every builtin case for this
+     * operator has already been tried and declined, so a method the receiver's
+     * class actually defines is the right answer whatever the receiver's type
+     * is.  (Gating this on OBJECT/CLASS used to hide Ruby-defined operators on
+     * builtin-typed receivers — Enumerator#+ was unreachable via `a + b`.) */
+    const uint32_t mid = korb_intern(c->vm, op, (uint32_t)strlen(op));
+    if (korb_responds_to(c, l, mid)) {
+        slots[0] = l; slots[1] = rhs; *handled = true;
+        return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
     }
     *handled = false;
     return RESULT_OK(KORB_NIL);
@@ -6045,7 +6050,10 @@ korb_call_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               VALUE self, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     RESULT r = korb_call_impl(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
-    if (r.state == KORB_BREAK) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value */
+    /* `break [v]` in the block = this call's value — but only if the break came
+     * from the block *this* call site handed over (a break from a block merely
+     * forwarded through here belongs to an outer call). */
+    if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
     return r;
 }
 
@@ -6180,6 +6188,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
+    else r = korb_break_claim(c, r, block, is_lambda);   /* a break raised in this body belongs to whoever was handed this block */
     korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");
     if (UNLIKELY(korb_frame_escaped(bf + 1)))
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
@@ -6398,6 +6407,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 
     RESULT r = (*block->head.dispatcher)(c, block, bf + 1 + blocals);
     if (r.state == KORB_NEXT) r.state = KORB_NORMAL;   /* `next [v]` = block value */
+    else r = korb_break_claim(c, r, block, is_lambda);   /* a break here belongs to whoever was handed this block */
     korb_frame_magic_check(bf + 1, KORB_FT_BLOCK, "korb_block_yield");   /* frame integrity (no-op unless KORB_FRAME_MAGIC) */
     if (UNLIKELY(korb_frame_escaped(bf + 1)))          /* block locals base = bf+1; close its own env if escaped */
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
@@ -6926,6 +6936,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
                 RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
+                if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }
             return RESULT_OK(slots[1]);
@@ -7366,7 +7377,8 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
              * is the `Klass.new(...) { block }` path, so a block may be present. */
             RESULT ir = korb_dispatch_method(c, slots, init, init_mid, line, argc, init_def, block, def_env, captured_self);
             if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-            if (UNLIKELY(ir.state == KORB_BREAK)) return RESULT_OK(ir.value);   /* `break v` in the block passed to new (its home is new) → new returns v */
+            if (UNLIKELY(ir.state == KORB_BREAK) && korb_break_owned(c, block, def_env)) return RESULT_OK(ir.value);   /* `break v` in the block passed to new (its home is new) → new returns v */
+            if (UNLIKELY(ir.state == KORB_BREAK)) return ir;
             return RESULT_OK(base[-1]);        /* the (possibly moved) obj */
         }
         if (UNLIKELY(argc != 0))
@@ -7662,7 +7674,7 @@ korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
               uint32_t argc, NODE *block, VALUE *def_env, VALUE *captured_self)
 {
     RESULT r = korb_send_impl(c, slots, mid, line, argc, block, def_env, captured_self);
-    if (r.state == KORB_BREAK) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value */
+    if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;   /* `break [v]` in the block = call's value (only if this site gave the block) */
     return r;
 }
 

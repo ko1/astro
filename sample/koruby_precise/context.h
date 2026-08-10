@@ -978,6 +978,18 @@ struct CTX_struct {
      * It is a transient stack pointer: set the instant a return is raised and
      * cleared when consumed; never read across a GC. */
     VALUE *return_target;
+    /* Break target: a `break` in a block body belongs to the call that was
+     * *given* that block, not to whatever intermediate call happens to be
+     * running it (`m { break }` where m does `arr.each { b.call(x) }` must
+     * return from m, not from each).  The innermost block yield a KORB_BREAK
+     * passes through is the one whose body raised it, so that yield claims the
+     * break by recording which block entry it came from.  A call site swallows
+     * the break only when it handed over that same entry *as a literal block*
+     * (a forwarded `&b` never owns it); NULL means unclaimed, which the
+     * pre-identity C paths still rely on, so it is treated as "mine".
+     * Transient like return_target: set when a break is raised, cleared when
+     * consumed, never read across a GC. */
+    struct Node *break_blk;
     /* `$!` stack (per-CTX): the chain of exceptions currently being handled, one
      * pushed per active rescue body (top == `$!`).  GC-visited as a root by
      * AROH_VISIT_ROOTS, so parked exceptions survive the body's GC; nesting and

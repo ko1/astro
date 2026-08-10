@@ -71,7 +71,7 @@ static RESULT korb_m_yielder_push(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         struct korb_gen_sink *const sink = c->vm->gen_sink;
         slots[2] = v;                                         /* root across the yield */
         RESULT yr = korb_block_yield(c, slots + 3, sink->block, sink->def_env, &slots[2], 1, sink->cself);
-        if (yr.state == KORB_BREAK) { sink->broke = true; *sink->break_slot = yr.value;
+        if (yr.state == KORB_BREAK && korb_break_owned(c, sink->block, sink->def_env)) { sink->broke = true; *sink->break_slot = yr.value;
             return korb_raise(c, slots + 1, KORB_E_STOP_ITERATION, 0, "iteration reached limit"); }
         if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;     /* StopIteration / real error propagates */
         if (sink->kind == 1) {                                /* take_while: collect while truthy */
