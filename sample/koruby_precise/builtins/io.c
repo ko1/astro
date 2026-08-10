@@ -6,14 +6,34 @@
  * ivar; the FILE* is a raw C pointer kept off-heap, so no GC scanning is needed.
  * #included into korb_runtime.c after file.c. */
 
-static uint32_t korb_io_register(struct korb_vm *vm, FILE *fp) {
+/* One open stream.  libc-allocated and never moved (like KorbFiberRep), so a
+ * read-ahead buffer living here stays put across a park — the IO object holds
+ * only the table index.  `fp` is set for stdio-backed streams (files, the std
+ * streams); an fd-backed stream leaves it NULL and drives `fd` directly. */
+typedef struct KorbIORep {
+    FILE    *fp;
+    int      fd;
+    uint8_t  eof;
+    char    *rbuf;                   /* fd-backed read-ahead (malloc; stable) */
+    uint32_t rpos, rlen, rcapa;
+} KorbIORep;
+
+static uint32_t korb_io_register_rep(struct korb_vm *vm, KorbIORep *rep) {
     if (vm->io_cnt == vm->io_capa) {
         vm->io_capa = vm->io_capa ? vm->io_capa * 2 : 8;
-        vm->io_fps = realloc(vm->io_fps, sizeof(FILE *) * vm->io_capa);
-        if (!vm->io_fps) { fprintf(stderr, "koruby_precise: oom (io table)\n"); abort(); }
+        vm->io_reps = realloc(vm->io_reps, sizeof(KorbIORep *) * vm->io_capa);
+        if (!vm->io_reps) { fprintf(stderr, "koruby_precise: oom (io table)\n"); abort(); }
     }
-    vm->io_fps[vm->io_cnt] = fp;
+    vm->io_reps[vm->io_cnt] = rep;
     return vm->io_cnt++;
+}
+
+static uint32_t korb_io_register(struct korb_vm *vm, FILE *fp) {
+    KorbIORep *rep = calloc(1, sizeof(KorbIORep));
+    if (!rep) { fprintf(stderr, "koruby_precise: oom (io rep)\n"); abort(); }
+    rep->fp = fp;
+    rep->fd = fp ? fileno(fp) : -1;
+    return korb_io_register_rep(vm, rep);
 }
 static uint32_t korb_io_fp_mid(CTX *c) { return korb_intern(c->vm, "__io_fp", 7); }
 static uint32_t korb_io_mode_mid(CTX *c) { return korb_intern(c->vm, "__io_mode", 9); }
@@ -32,12 +52,16 @@ static int korb_io_rw(CTX *c, VALUE self) {
     return korb_raise(c, slots, KORB_E_IOERROR, 0, "not opened for reading"); } while (0)
 #define KORB_IO_NEED_WRITE(c, slots, self) do { if (UNLIKELY(!(korb_io_rw(c, VALUE_REF_GET(self)) & 2))) \
     return korb_raise(c, slots, KORB_E_IOERROR, 0, "not opened for writing"); } while (0)
-static FILE *korb_io_fp(CTX *c, VALUE self) {
+static KorbIORep *korb_io_rep(CTX *c, VALUE self) {
     const VALUE idxv = korb_ivar_get(c, self, ID2SYM(korb_io_fp_mid(c)));
     if (!FIXNUM_P(idxv)) return NULL;
     const intptr_t idx = FIX2LONG(idxv);
     if (idx < 0 || (uint32_t)idx >= c->vm->io_cnt) return NULL;
-    return c->vm->io_fps[idx];
+    return c->vm->io_reps[idx];
+}
+static FILE *korb_io_fp(CTX *c, VALUE self) {
+    const KorbIORep *const rep = korb_io_rep(c, self);
+    return rep ? rep->fp : NULL;
 }
 /* new IO/File instance of `klass` bound to `fp`.  slots[0..] scratch; result rooted by caller. */
 static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, FILE *fp, int rw) {
@@ -183,8 +207,8 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (block == NULL) return RESULT_OK(slots[3]);
     /* block form: yield(r, w) して ensure 相当で両方 close */
     RESULT r = korb_block_yield(c, slots + 4, block, def_env, &slots[1], 2, cself);
-    { FILE *f1 = korb_io_fp(c, slots[1]); if (f1) { fclose(f1); c->vm->io_fps[FIX2LONG(korb_ivar_get(c, slots[1], ID2SYM(korb_io_fp_mid(c))))] = NULL; } }
-    { FILE *f2 = korb_io_fp(c, slots[2]); if (f2) { fclose(f2); c->vm->io_fps[FIX2LONG(korb_ivar_get(c, slots[2], ID2SYM(korb_io_fp_mid(c))))] = NULL; } }
+    { KorbIORep *r1 = korb_io_rep(c, slots[1]); if (r1 && r1->fp) { fclose(r1->fp); r1->fp = NULL; r1->fd = -1; } }
+    { KorbIORep *r2 = korb_io_rep(c, slots[2]); if (r2 && r2->fp) { fclose(r2->fp); r2->fp = NULL; r2->fd = -1; } }
     return r;
 }
 
@@ -316,12 +340,14 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE idxv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_io_fp_mid(c)));
     if (FIXNUM_P(idxv)) {
         const intptr_t idx = FIX2LONG(idxv);
-        if (idx >= 3 && (uint32_t)idx < c->vm->io_cnt && c->vm->io_fps[idx]) {   /* 0/1/2 = std streams, never close */
+        KorbIORep *const rep = ((uint32_t)idx < c->vm->io_cnt) ? c->vm->io_reps[idx] : NULL;
+        if (idx >= 3 && rep && rep->fp) {   /* 0/1/2 = std streams, never close */
             /* A popen'd stream needs pclose so the child is reaped; keep its
                exit status for $? the way IO.popen's caller expects. */
             const VALUE pidv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9)));
-            fclose(c->vm->io_fps[idx]);
-            c->vm->io_fps[idx] = NULL;
+            fclose(rep->fp);
+            rep->fp = NULL; rep->fd = -1;
+            free(rep->rbuf); rep->rbuf = NULL; rep->rcapa = rep->rlen = rep->rpos = 0;
             if (FIXNUM_P(pidv)) {          /* popen'd: reap the child and publish $? */
                 int raw = 0;
                 const pid_t got = waitpid((pid_t)FIX2LONG(pidv), &raw, 0);

@@ -750,7 +750,7 @@ struct korb_vm {
 
     /* IO fd table: an IO/File object holds its index in the @__io_fp ivar; the
      * FILE* lives here (raw C pointers, not VALUEs → no GC scan/forward). */
-    FILE **io_fps;
+    struct KorbIORep **io_reps;   /* open streams (libc-stable reps; the IO object holds the index) */
     uint32_t io_cnt, io_capa;
 
     /* global function table (no-receiver calls: puts, p, user `def foo`) */
