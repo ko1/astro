@@ -38,12 +38,17 @@
 
 ## 既知バグ (プロセス / IO)
 
-- **Signal.trap が無いので signal 系 spec が自分を殺す** (2026-08-10 に発生)。
-  `Process.kill` を実装した結果、`Process.kill :INT, Process.pid` を撃つ spec が
-  ハンドラ不在でインタプリタごと落ちるようになった。whole-file-fail:
-  core/exception/{interrupt,signal_exception,signm,signo}_spec.rb と
-  core/signal/trap_spec.rb の 5 本。最小 `Signal.trap` (IGNORE/DEFAULT/Proc) を
-  入れて、C ハンドラで pending flag を立て thread.c の check_ints で走らせるのが筋。
+- **既定の signal 配送が SignalException にならない**。
+  `Signal.trap` / `Signal.list` / `.signame` / `.signo` / `Kernel#trap` は実装済みで、
+  明示的に trap した signal ではもうインタプリタは死なない (IGNORE/DEFAULT は
+  本物の signal(2)、Proc は記録するだけで実行はしない)。
+  残っているのは **trap していない signal の既定動作**: CRuby は
+  `Process.kill(:TERM, Process.pid)` を SignalException として raise するが、
+  koruby は SIG_DFL のまま死ぬ。core/exception/{interrupt,signal_exception,
+  signm,signo}_spec.rb と core/signal/trap_spec.rb の 5 本がこれで
+  whole-file-fail。筋は「起動時に trappable な signal へ C ハンドラを張り、
+  pending flag を立てて thread.c の既存 check_ints で SignalException を raise」。
+  Proc ハンドラの実行も同じ経路に乗る。
 
 - **`File.for_fd` / `File.sysopen` が見えない**。`IO.for_fd` は IO の singleton に
   定義してあるが File の singleton がそれを継承していない

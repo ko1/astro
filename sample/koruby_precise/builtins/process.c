@@ -485,6 +485,80 @@ static RESULT korb_m_process_setpgid(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     return RESULT_OK(LONG2FIX(0));
 }
 
+/* Signal name ("INT" / "SIGINT" / :INT / 2) → signal number, or -1. */
+static int korb_signo_of(CTX *c, VALUE v) {
+    if (FIXNUM_P(v)) return (int)FIX2LONG(v);
+    char nm[32] = "";
+    if (SYMBOL_P(v)) {
+        const char *p = korb_sym_name(c->vm, SYM2ID(v));
+        snprintf(nm, sizeof nm, "%s", p ? p : "");
+    } else if (KORB_STRING_P(v)) {
+        uint32_t n; const char *p = korb_str_cstr_len(v, &n);
+        if (n >= sizeof nm) n = sizeof nm - 1;
+        memcpy(nm, p, n); nm[n] = '\0';
+    } else return -1;
+    const char *b = strncmp(nm, "SIG", 3) == 0 ? nm + 3 : nm;
+    static const struct { const char *n; int s; } tab[] = {
+        {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT}, {"ILL", SIGILL},
+        {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"FPE", SIGFPE}, {"KILL", SIGKILL},
+        {"BUS", SIGBUS}, {"SEGV", SIGSEGV}, {"SYS", SIGSYS}, {"PIPE", SIGPIPE},
+        {"ALRM", SIGALRM}, {"TERM", SIGTERM}, {"URG", SIGURG}, {"STOP", SIGSTOP},
+        {"TSTP", SIGTSTP}, {"CONT", SIGCONT}, {"CHLD", SIGCHLD}, {"TTIN", SIGTTIN},
+        {"TTOU", SIGTTOU}, {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ}, {"VTALRM", SIGVTALRM},
+        {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"USR1", SIGUSR1}, {"USR2", SIGUSR2},
+        {"EXIT", 0},
+    };
+    for (size_t i = 0; i < sizeof tab / sizeof tab[0]; i++)
+        if (!strcmp(b, tab[i].n)) return tab[i].s;
+    return -1;
+}
+
+/* __signal_trap(sig, command) → the previous command String.
+ * "IGNORE"/"SIG_IGN" and "DEFAULT"/"SIG_DFL" are installed for real; a Proc or
+ * "" is accepted and the signal ignored, because koruby has no safe point to run
+ * Ruby from a signal handler yet (see docs/todo.md).  Without this a spec that
+ * signals its own process just kills the interpreter. */
+static RESULT korb_m_signal_trap(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int sig = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    if (sig < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unsupported signal");
+    if (sig == 0 || sig == SIGKILL || sig == SIGSTOP)   /* not trappable */
+        return korb_str_new(c, slots, "DEFAULT", 7);
+    const VALUE cmd = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    bool dflt = false;
+    if (KORB_STRING_P(cmd)) {
+        uint32_t n; const char *p = korb_str_cstr_len(cmd, &n);
+        dflt = (n == 7 && !memcmp(p, "DEFAULT", 7)) || (n == 7 && !memcmp(p, "SIG_DFL", 7));
+    }
+    void (*prev)(int) = signal(sig, dflt ? SIG_DFL : SIG_IGN);
+    const char *pname = prev == SIG_DFL ? "DEFAULT" : prev == SIG_IGN ? "IGNORE" : "DEFAULT";
+    return korb_str_new(c, slots, pname, (uint32_t)strlen(pname));
+}
+
+static RESULT korb_m_signal_signame(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0))) return RESULT_OK(KORB_NIL);
+    const int want = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    static const struct { const char *n; int s; } tab[] = {
+        {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT}, {"ILL", SIGILL},
+        {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"FPE", SIGFPE}, {"KILL", SIGKILL},
+        {"BUS", SIGBUS}, {"SEGV", SIGSEGV}, {"SYS", SIGSYS}, {"PIPE", SIGPIPE},
+        {"ALRM", SIGALRM}, {"TERM", SIGTERM}, {"URG", SIGURG}, {"STOP", SIGSTOP},
+        {"TSTP", SIGTSTP}, {"CONT", SIGCONT}, {"CHLD", SIGCHLD}, {"TTIN", SIGTTIN},
+        {"TTOU", SIGTTOU}, {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ}, {"VTALRM", SIGVTALRM},
+        {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"USR1", SIGUSR1}, {"USR2", SIGUSR2},
+    };
+    for (size_t i = 0; i < sizeof tab / sizeof tab[0]; i++)
+        if (tab[i].s == want) return korb_str_new(c, slots, tab[i].n, (uint32_t)strlen(tab[i].n));
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT korb_m_signal_signo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)self;
+    const int s = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(s < 0 ? KORB_NIL : LONG2FIX(s));
+}
+
 void korb_init_process(CTX *c, VALUE *slots) {
     (void)slots;
     /* The Process module itself comes from the prelude, which loads after this,
@@ -500,6 +574,9 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__kill",     korb_m_process_kill,    -1);
     korb_class_def_cfn(c, obj, "__getpgid",  korb_m_process_getpgid, -1);
     korb_class_def_cfn(c, obj, "__setpgid",  korb_m_process_setpgid,  2);
+    korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
+    korb_class_def_cfn(c, obj, "__signal_signame", korb_m_signal_signame,  1);
+    korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
     const VALUE io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
     if (KORB_CLASS_P(io_cls)) {
         VALUE sl[4]; sl[0] = io_cls;

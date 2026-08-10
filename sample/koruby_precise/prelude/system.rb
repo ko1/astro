@@ -408,3 +408,32 @@ module Process
   def self.last_status = $?
   def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
 end
+
+module Signal
+  # koruby cannot run a Ruby handler from a signal context yet, so a Proc/String
+  # handler is recorded and the signal ignored; "DEFAULT" restores SIG_DFL.
+  # Without this, a spec that signals its own pid takes the interpreter down.
+  @@handlers = {}
+
+  def self.trap(sig, command = nil, &blk)
+    prev = @@handlers[signame(signo(sig)) || sig.to_s]
+    @@handlers[signame(signo(sig)) || sig.to_s] = command || blk
+    __signal_trap(sig, command)
+    prev.nil? ? "DEFAULT" : prev
+  end
+
+  def self.signame(signo) = __signal_signame(signo)
+  def self.signo(sig) = sig.is_a?(Integer) ? sig : __signal_signo(sig)
+
+  def self.list
+    h = {}
+    (1..31).each { |n| (nm = __signal_signame(n)) && h[nm] = n }
+    h["EXIT"] = 0
+    h
+  end
+end
+
+module Kernel
+  def trap(sig, command = nil, &blk) = Signal.trap(sig, command, &blk)
+  module_function :trap
+end
