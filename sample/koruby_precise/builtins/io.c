@@ -1,3 +1,4 @@
+#include <sys/socket.h>
 #include <errno.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@ typedef struct KorbIORep {
     int      fd;                     /* -1 = closed; KORB_IO_FD_MEM = in-memory sink */
     uint8_t  eof;                    /* a read(2) returned 0 */
     uint8_t  sync;                   /* flush after every write */
+    uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
     char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: live bytes are [rpos, rlen) */
     char    *wbuf; uint32_t wlen, wcapa;         /* write-behind: wlen bytes pending */
 } KorbIORep;
@@ -69,6 +71,17 @@ static KorbIORep *korb_io_rep(CTX *c, VALUE self) {
     if (idx < 0 || (uint32_t)idx >= c->vm->io_cnt) return NULL;
     return c->vm->io_reps[idx];
 }
+/* Put a stream into the parking regime: its descriptor goes non-blocking, so a
+ * would-be blocking read/write parks the green thread instead of stalling every
+ * thread in the process.  Only for descriptors koruby owns both ends of the
+ * policy for (pipes, sockets) — a shared std stream keeps kernel blocking, since
+ * O_NONBLOCK there is visible to whatever else holds the same open file. */
+static void korb_io_set_nonblock(KorbIORep *const rep) {
+    if (!rep || rep->fd < 0) return;
+    const int fl = fcntl(rep->fd, F_GETFL);
+    if (fl >= 0 && fcntl(rep->fd, F_SETFL, fl | O_NONBLOCK) == 0) rep->nonblk = 1;
+}
+
 /* The descriptor, straight from the rep — no stdio needed.  -1 when closed. */
 static int korb_io_fd(CTX *c, VALUE self) {
     const KorbIORep *const rep = korb_io_rep(c, self);
@@ -92,9 +105,32 @@ static KorbIORep *korb_io_std_rep(struct korb_vm *const vm, uint32_t which) {
  * only place that touches a descriptor, which is what keeps the eventual
  * "try → EAGAIN → park → retry" change confined to two functions. */
 
+/* Wait for `fd` to become ready, letting every other green thread run.
+ *
+ * Discipline, and the reason it is spelled out here: the order is always
+ * "try the syscall → EAGAIN → park → retry", never "park → syscall".  poll
+ * reporting a descriptor readable does not promise the next read will not
+ * block (a spurious wakeup, or another thread draining the same fd first),
+ * so a blocking call after a park would stall every thread in the process.
+ *
+ * Parking may GC — other threads allocate while we are away — so no caller
+ * may hold a pointer into a movable object across this.  That is why the
+ * transfer buffers live in the rep, which libc allocated and never moves. */
+static RESULT korb_io_park(CTX *c, VALUE *slots, const KorbIORep *const rep, short events) {
+    struct pollfd pf; pf.fd = rep->fd; pf.events = events; pf.revents = 0;
+    ssize_t ready = 0;
+    return korb_blop_poll_wait(c, slots, &pf, 1, -1.0, &ready);
+}
+/* true when the errno from a just-failed syscall means "would block". */
+static bool korb_io_would_block(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+
 /* Push the pending output out.  false (with errno set) on a write error; an
- * in-memory sink never flushes, so its bytes simply accumulate. */
-static bool korb_io_flush_rep(KorbIORep *const rep) {
+ * in-memory sink never flushes, so its bytes simply accumulate.
+ *
+ * `c` NULL means "must not park" (exit and close paths, where suspending is
+ * either impossible or pointless); such a call falls back to blocking.
+ * `perr` collects a raise delivered while parked (Thread#raise / #kill). */
+static bool korb_io_flush_rep_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *perr) {
     if (rep->fd == KORB_IO_FD_MEM) return true;
     if (UNLIKELY(rep->fd < 0)) return false;
     uint32_t off = 0;
@@ -102,6 +138,17 @@ static bool korb_io_flush_rep(KorbIORep *const rep) {
         const ssize_t w = write(rep->fd, rep->wbuf + off, rep->wlen - off);
         if (w < 0) {
             if (errno == EINTR) continue;
+            if (korb_io_would_block(errno) && rep->nonblk && c != NULL) {
+                const RESULT pr = korb_io_park(c, slots, rep, POLLOUT);   /* may GC */
+                if (UNLIKELY(pr.state != KORB_NORMAL)) {
+                    if (perr) *perr = pr;
+                    /* keep the untransferred tail so a retry can still send it */
+                    memmove(rep->wbuf, rep->wbuf + off, rep->wlen - off);
+                    rep->wlen -= off;
+                    return false;
+                }
+                continue;
+            }
             /* Drop what could not be written: retrying it on the next flush
                would emit bytes out of order behind the caller's back. */
             rep->wlen = 0;
@@ -112,6 +159,8 @@ static bool korb_io_flush_rep(KorbIORep *const rep) {
     rep->wlen = 0;
     return true;
 }
+/* non-parking shorthand for the paths that cannot suspend */
+static bool korb_io_flush_rep(KorbIORep *const rep) { return korb_io_flush_rep_p(NULL, NULL, rep, NULL); }
 
 /* Grow the write-behind buffer to hold at least `need` bytes. */
 static bool korb_io_wbuf_grow(KorbIORep *const rep, uint32_t need) {
@@ -123,19 +172,26 @@ static bool korb_io_wbuf_grow(KorbIORep *const rep, uint32_t need) {
     return true;
 }
 
-/* Buffer n bytes for output.  `p` must stay valid only for this call. */
-static bool korb_io_wr(KorbIORep *const rep, const char *p, size_t n) {
+/* Buffer n bytes for output.
+ *
+ * `p` typically points into a String, so it must not be read across a park: a
+ * GC there would move it.  For a stream that can park we therefore take the
+ * whole run into the rep's buffer first and only then drain, so every park
+ * happens with no borrowed pointer live. */
+static bool korb_io_wr_p(CTX *c, VALUE *slots, KorbIORep *const rep, const char *p, size_t n, RESULT *perr) {
     if (UNLIKELY(!korb_io_open_p(rep))) return false;
-    if (rep->fd == KORB_IO_FD_MEM) {                     /* capture: never drains */
+    const bool parks = rep->nonblk && c != NULL;
+    if (rep->fd == KORB_IO_FD_MEM || parks) {            /* capture, or copy-then-drain */
         if (rep->wlen + n > rep->wcapa && !korb_io_wbuf_grow(rep, (uint32_t)(rep->wlen + n))) return false;
         memcpy(rep->wbuf + rep->wlen, p, n);
-        rep->wlen += (uint32_t)n;
-        return true;
+        rep->wlen += (uint32_t)n;                        /* `p` is dead from here on */
+        if (rep->fd == KORB_IO_FD_MEM) return true;
+        return (rep->sync || rep->wlen >= KORB_IO_BUFSZ) ? korb_io_flush_rep_p(c, slots, rep, perr) : true;
     }
     /* A bulk write goes straight to the descriptor: copying it through the
        buffer would cost a memcpy per byte and buy nothing. */
     if (n >= KORB_IO_BUFSZ) {
-        if (!korb_io_flush_rep(rep)) return false;
+        if (!korb_io_flush_rep_p(c, slots, rep, perr)) return false;
         size_t off = 0;
         while (off < n) {
             const ssize_t w = write(rep->fd, p + off, n - off);
@@ -146,17 +202,25 @@ static bool korb_io_wr(KorbIORep *const rep, const char *p, size_t n) {
     }
     if (rep->wcapa == 0 && !korb_io_wbuf_grow(rep, KORB_IO_BUFSZ)) return false;
     while (n > 0) {
-        if (rep->wlen == rep->wcapa && !korb_io_flush_rep(rep)) return false;
+        if (rep->wlen == rep->wcapa && !korb_io_flush_rep_p(c, slots, rep, perr)) return false;
         const uint32_t room = rep->wcapa - rep->wlen;
         const uint32_t take = n < room ? (uint32_t)n : room;
         memcpy(rep->wbuf + rep->wlen, p, take);
         rep->wlen += take; p += take; n -= take;
     }
-    return rep->sync ? korb_io_flush_rep(rep) : true;
+    return rep->sync ? korb_io_flush_rep_p(c, slots, rep, perr) : true;
+}
+/* non-parking shorthand (diagnostics, exit paths, in-memory sinks) */
+static bool korb_io_wr(KorbIORep *const rep, const char *p, size_t n) {
+    return korb_io_wr_p(NULL, NULL, rep, p, n, NULL);
 }
 
-/* Bytes available in the read-ahead buffer, refilling it when empty.  0 = EOF. */
-static uint32_t korb_io_fill(KorbIORep *const rep) {
+/* Bytes available in the read-ahead buffer, refilling it when empty.  0 = EOF.
+ *
+ * MAY GC when it parks (see korb_io_park): a caller must re-derive any pointer
+ * into a movable object afterwards.  The destination buffer here is the rep's
+ * own, which is why the refill itself is safe.  `c` NULL = must not park. */
+static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *perr) {
     if (rep->rpos < rep->rlen) return rep->rlen - rep->rpos;
     rep->rpos = rep->rlen = 0;
     if (UNLIKELY(!korb_io_open_p(rep)) || rep->fd == KORB_IO_FD_MEM || rep->eof) return 0;
@@ -167,18 +231,33 @@ static uint32_t korb_io_fill(KorbIORep *const rep) {
     }
     for (;;) {
         const ssize_t n = read(rep->fd, rep->rbuf, rep->rcapa);
-        if (n < 0) { if (errno == EINTR) continue; return 0; }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (korb_io_would_block(errno) && rep->nonblk && c != NULL) {
+                const RESULT pr = korb_io_park(c, slots, rep, POLLIN);   /* may GC */
+                if (UNLIKELY(pr.state != KORB_NORMAL)) { if (perr) *perr = pr; return 0; }
+                continue;                                /* ready (maybe) → try again, never block */
+            }
+            return 0;
+        }
         if (n == 0) { rep->eof = 1; return 0; }
         rep->rlen = (uint32_t)n;
         return rep->rlen;
     }
 }
 
-/* One byte, or -1 at EOF. */
-static int korb_io_getb(KorbIORep *const rep) {
-    if (rep->rpos >= rep->rlen && korb_io_fill(rep) == 0) return -1;
+/* One byte, or -1 at EOF.  Parks rather than stalling when the stream can. */
+static int korb_io_getb_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESULT *perr) {
+    if (rep->rpos >= rep->rlen && korb_io_fill_p(c, slots, rep, perr) == 0) return -1;
     return (unsigned char)rep->rbuf[rep->rpos++];
 }
+
+/* Write, propagating a raise delivered while parked (Thread#raise / #kill). */
+#define KORB_IO_WR(c_, slots_, rep_, p_, n_) do {                              \
+    RESULT werr__ = RESULT_OK(KORB_NIL);                                       \
+    (void)korb_io_wr_p((c_), (slots_), (rep_), (p_), (n_), &werr__);           \
+    if (UNLIKELY(werr__.state != KORB_NORMAL)) return werr__;                  \
+} while (0)
 
 /* Push bytes back so the next read returns them.  Unlike a FILE*'s one-byte
  * pushback this takes a whole run, because the buffer is ours to shift. */
@@ -202,30 +281,6 @@ static bool korb_io_unget(KorbIORep *const rep, const char *p, uint32_t n) {
     rep->rpos = 0; rep->rlen = live + n;
     rep->eof = 0;                                        /* there is data again */
     return true;
-}
-
-/* Read up to `want` bytes into `dst`; returns the count transferred (short at
- * EOF).  `dst` may be a String's movable buffer: nothing here allocates. */
-static uint32_t korb_io_rd(KorbIORep *const rep, char *const dst, uint32_t want) {
-    uint32_t got = 0;
-    while (got < want) {
-        if (rep->rpos >= rep->rlen) {
-            const uint32_t rest = want - got;
-            if (rest >= KORB_IO_BUFSZ && korb_io_open_p(rep) && rep->fd != KORB_IO_FD_MEM && !rep->eof) {
-                const ssize_t n = read(rep->fd, dst + got, rest);   /* bulk: bypass the buffer */
-                if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) { rep->eof = 1; break; }
-                got += (uint32_t)n;
-                continue;
-            }
-            if (korb_io_fill(rep) == 0) break;
-        }
-        const uint32_t avail = rep->rlen - rep->rpos;
-        const uint32_t take = (want - got) < avail ? (want - got) : avail;
-        memcpy(dst + got, rep->rbuf + rep->rpos, take);
-        rep->rpos += take; got += take;
-    }
-    return got;
 }
 
 /* Discard the read-ahead — the descriptor is about to move under us. */
@@ -284,14 +339,26 @@ static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, int fd, int rw) {
 
 /* Read up to `want` bytes.  *got_out is the byte count actually transferred. */
 static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, KorbIORep *rep, uint32_t want, uint32_t *got_out) {
-    KorbString *s = korb_str_alloc(c, slots, want);
-    slots[0] = (VALUE)s;                                  /* root before any later alloc */
-    const uint32_t got = want ? korb_io_rd(rep, korb_strbuf_data(s->buf), want) : 0;
-    s = VAL2STR(slots[0]);
-    s->len = got;                                         /* shrink in place; capa stays */
-    korb_strbuf_data(s->buf)[got] = '\0';
-    *got_out = got;
-    return RESULT_OK(slots[0]);
+    slots[0] = (VALUE)korb_str_alloc(c, slots, want);     /* root before any later alloc */
+    const VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+    uint32_t len = 0;
+    RESULT err = RESULT_OK(KORB_NIL);
+    while (len < want) {
+        const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);   /* may park → may GC */
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+        if (avail == 0) break;
+        const uint32_t take = (want - len) < avail ? (want - len) : avail;
+        KorbString *const s = VAL2STR(VALUE_REF_GET(sref));   /* re-derive: the fill may have moved it */
+        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
+        rep->rpos += take;
+        len += take;
+        s->len = len;
+    }
+    KorbString *const s = VAL2STR(VALUE_REF_GET(sref));
+    s->len = len;                                         /* shrink in place; capa stays */
+    korb_strbuf_data(s->buf)[len] = '\0';
+    *got_out = len;
+    return RESULT_OK(VALUE_REF_GET(sref));
 }
 
 /* Read to EOF into one String, growing as needed. */
@@ -299,14 +366,17 @@ static RESULT korb_io_read_all_bytes(CTX *c, VALUE *slots, KorbIORep *rep) {
     slots[0] = (VALUE)korb_str_alloc(c, slots, 0);
     VALUE_REF sref = VALUE_REF_AT(&slots[0]);
     uint32_t len = 0;
+    RESULT err = RESULT_OK(KORB_NIL);
     for (;;) {
+        const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);   /* may park → may GC */
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+        if (avail == 0) break;
         /* keep s->len in step: korb_str_ensure's grow copies only s->len bytes,
            so a stale 0 here would drop everything read so far. */
-        KorbString *s = korb_str_ensure(c, slots + 1, sref, len + 65536);
-        const uint32_t got = korb_io_rd(rep, korb_strbuf_data(s->buf) + len, s->capa - len);
-        if (got == 0) break;
-        len += got;
-        s = VAL2STR(VALUE_REF_GET(sref));
+        KorbString *const s = korb_str_ensure(c, slots + 1, sref, len + avail);
+        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, avail);
+        rep->rpos += avail;
+        len += avail;
         s->len = len;
     }
     KorbString *s = VAL2STR(VALUE_REF_GET(sref));
@@ -318,12 +388,15 @@ static RESULT korb_io_read_all_bytes(CTX *c, VALUE *slots, KorbIORep *rep) {
 /* Read one line, up to and including '\n' (nil at EOF).  The scan runs over the
  * rep's buffer, which stays put across the String growth below. */
 static RESULT korb_io_read_line(CTX *c, VALUE *slots, KorbIORep *rep) {
-    if (korb_io_fill(rep) == 0) return RESULT_OK(KORB_NIL);
+    RESULT err = RESULT_OK(KORB_NIL);
+    if (korb_io_fill_p(c, slots, rep, &err) == 0)
+        return UNLIKELY(err.state != KORB_NORMAL) ? err : RESULT_OK(KORB_NIL);
     slots[0] = (VALUE)korb_str_alloc(c, slots, 0);
     VALUE_REF sref = VALUE_REF_AT(&slots[0]);
     uint32_t len = 0;
     for (;;) {
-        const uint32_t avail = korb_io_fill(rep);
+        const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);   /* may park → may GC */
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
         if (avail == 0) break;
         const char *const p = rep->rbuf + rep->rpos;
         const char *const nl = memchr(p, '\n', avail);
@@ -349,7 +422,11 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, KorbIORep *rep, size_t
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         v = r.value;
     }
-    if (KORB_STRING_P(v)) { const KorbString *s = VAL2STR(v); if (korb_io_wr(rep, korb_strbuf_data(s->buf), s->len)) *nbytes += s->len; }
+    if (KORB_STRING_P(v)) {
+        const KorbString *const s = VAL2STR(v);
+        KORB_IO_WR(c, slots, rep, korb_strbuf_data(s->buf), s->len);
+        *nbytes += s->len;
+    }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -397,7 +474,7 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     KorbIORep *const rep2 = korb_io_rep(c, slots[0]);    /* re-fetch after possible GC */
     if (!korb_io_open_p(rep2)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); (void)korb_io_wr(rep2, korb_strbuf_data(s->buf), s->len); }
+    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_strbuf_data(s->buf), s->len); }
     return RESULT_OK(KORB_NIL);
 }
 /* IO.pipe → [r, w]  (block form: yield r, w; ensure both closed).
@@ -413,7 +490,10 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     slots[0] = VALUE_REF_GET(self);                       /* IO class (root) */
     slots[1] = UNWRAP(korb_io_make(c, slots + 2, slots[0], fds[0], 1));   /* r (read) */
     slots[2] = UNWRAP(korb_io_make(c, slots + 3, slots[0], fds[1], 2));   /* w (write) */
-    { KorbIORep *const wr = korb_io_rep(c, slots[2]); if (wr) wr->sync = 1; }
+    { KorbIORep *const rd = korb_io_rep(c, slots[1]);
+      KorbIORep *const wr = korb_io_rep(c, slots[2]);
+      if (wr) wr->sync = 1;                              /* write → the peer can read it now */
+      korb_io_set_nonblock(rd); korb_io_set_nonblock(wr); }
     slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
     { VALUE_REF pr = VALUE_REF_AT(&slots[3]);
       CHECK(korb_ary_push_val(c, slots + 4, pr, slots[1]));
@@ -465,7 +545,7 @@ static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_WRITE(c, slots, self);
-    if (VALUE_SLICE_LEN(a) == 0) { (void)korb_io_wr(rep, "\n", 1); return RESULT_OK(KORB_NIL); }
+    if (VALUE_SLICE_LEN(a) == 0) { KORB_IO_WR(c, slots, rep, "\n", 1); return RESULT_OK(KORB_NIL); }
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++)
         CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), rep));
     return RESULT_OK(KORB_NIL);
@@ -587,7 +667,10 @@ static RESULT korb_m_io_eof_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)slots; (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return RESULT_OK(KORB_TRUE);
-    return RESULT_OK(korb_io_fill(rep) == 0 ? KORB_TRUE : KORB_FALSE);
+    RESULT err = RESULT_OK(KORB_NIL);
+    const uint32_t avail = korb_io_fill_p(c, slots, rep, &err);   /* blocks (by parking) until data or EOF */
+    if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+    return RESULT_OK(avail == 0 ? KORB_TRUE : KORB_FALSE);
 }
 /* IO#sync → whether every write goes straight to the descriptor. */
 static RESULT korb_m_io_sync(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -613,12 +696,14 @@ static RESULT korb_m_io_getc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    const int b0 = korb_io_getb(rep);
+    RESULT gerr = RESULT_OK(KORB_NIL);
+    const int b0 = korb_io_getb_p(c, slots, rep, &gerr);   /* cbuf below is a C local: safe across a park */
+    if (UNLIKELY(gerr.state != KORB_NORMAL)) return gerr;
     if (b0 < 0) return RESULT_OK(KORB_NIL);
     char cbuf[8]; cbuf[0] = (char)b0;
     const unsigned char u = (unsigned char)b0;
     uint32_t cl = u < 0x80 ? 1 : u >= 0xF0 ? 4 : u >= 0xE0 ? 3 : u >= 0xC0 ? 2 : 1;
-    for (uint32_t k = 1; k < cl; k++) { const int b = korb_io_getb(rep); if (b < 0) { cl = k; break; } cbuf[k] = (char)b; }
+    for (uint32_t k = 1; k < cl; k++) { const int b = korb_io_getb_p(c, slots, rep, &gerr); if (b < 0) { cl = k; break; } cbuf[k] = (char)b; }
     return korb_str_new(c, slots, cbuf, cl);
 }
 static RESULT korb_io_raise_eof(CTX *c, VALUE *slots) {
@@ -775,7 +860,12 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const VALUE t = VALUE_SLICE_GET(a, 0);
     if (KORB_STRING_P(t)) {
-        uint32_t pl; const char *path = korb_str_cstr_len(t, &pl);
+        /* Take the path onto the stack: the flush below can park (and so GC),
+           which would move the String's bytes out from under a borrow. */
+        uint32_t pl; const char *const pbytes = korb_str_cstr_len(t, &pl);
+        char path[4096];
+        if (UNLIKELY(pl >= sizeof path)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "path too long");
+        memcpy(path, pbytes, pl); path[pl] = '\0';
         char mode[16] = "r";
         if (VALUE_SLICE_LEN(a) >= 2 && !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
@@ -891,6 +981,12 @@ static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
     if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots, errno, "", "");
     const uint32_t idx = korb_io_register(c->vm, fd, false);
+    /* A socket is the case where blocking really costs: it can stay unreadable
+       for as long as the peer likes.  Detect it from the descriptor rather than
+       from the class, so IO.new(socket_fd) benefits too. */
+    { int sty; socklen_t stl = sizeof sty;
+      if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sty, &stl) == 0)
+          korb_io_set_nonblock(c->vm->io_reps[idx]); }
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)idx)));
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
     if (strchr(mode, 'b'))

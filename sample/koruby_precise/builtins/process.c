@@ -250,6 +250,12 @@ static pid_t korb_spawn_run(const struct korb_spawn_plan *p) {
         /* An explicitly redirected descriptor must survive the exec even though
            koruby opens everything close-on-exec. */
         (void)fcntl(r->from, F_SETFD, 0);
+        /* Hand the child a blocking descriptor.  O_NONBLOCK is a property of the
+           open file description, so a koruby pipe (which parks rather than
+           blocks) would otherwise surface as EAGAIN inside a program that has
+           no idea what to do with it. */
+        { const int fl = fcntl(r->from, F_GETFL);
+          if (fl >= 0 && (fl & O_NONBLOCK)) (void)fcntl(r->from, F_SETFL, fl & ~O_NONBLOCK); }
     }
     if (p->close_others) {              /* close every descriptor above stderr */
         for (int fd = 3; fd < 1024; fd++) {
@@ -458,6 +464,7 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     close(fds[reading ? 1 : 0]);
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fds[reading ? 0 : 1], reading ? 1 : 2));
+    korb_io_set_nonblock(korb_io_rep(c, slots[0]));   /* our end only; the child got the other */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));
     if (strchr(mode, 'b'))

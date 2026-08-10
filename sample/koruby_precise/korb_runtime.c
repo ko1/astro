@@ -7727,6 +7727,9 @@ static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+/* park the current green thread until `fd` is ready (thread.c, included later) */
+static RESULT korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds_t nfds,
+                                  double timeout_sec, ssize_t *out_ready);
 #include "builtins/io.c"
 #include "builtins/process.c"
 #include "builtins/socket.c"
