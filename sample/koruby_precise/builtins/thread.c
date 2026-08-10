@@ -377,6 +377,9 @@ korb_thread_interrupt(CTX *c, VALUE *slots, struct korb_thread *t, VALUE exc)
 static RESULT
 korb_thread_check_ints(CTX *c, VALUE *slots)
 {
+    /* Pending OS signals are delivered here too: they are blocked process-wide
+     * (process.c) and only become visible when reaped at a check point. */
+    CHECK(korb_signal_deliver(c, slots));
     struct korb_thread *const cur = c->vm->cur_thread;
     if (cur == NULL || cur->pending_ints == KORB_NIL) return RESULT_OK(KORB_NIL);
     if (cur->defer_ints) return RESULT_OK(KORB_NIL);   /* handle_interrupt(:never) 区間 */

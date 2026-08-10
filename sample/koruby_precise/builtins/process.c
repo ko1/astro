@@ -14,6 +14,106 @@
 
 #define KORB_SPAWN_MAX_ARGV 256
 
+/* ---- signal delivery -------------------------------------------------------
+ * koruby delivers signals at interpreter check points rather than from a C
+ * handler: a signal it wants to deliver is *blocked*, so it stays pending in
+ * the kernel until korb_signal_deliver reaps it with sigtimedwait(2).  With no
+ * async handler there is no handler-side global state and no reentrancy
+ * hazard; the cost is that delivery waits for the next check point (a blocking
+ * operation, Thread.pass, or the kill(2) that raised it).  Policy — ignore /
+ * run a Proc / raise SignalException — lives in Signal.__deliver in the prelude.
+ *
+ * The signal mask survives execve, so every fork site clears it in the child
+ * (korb_child_reset_signals) or the child would start with signals blocked. */
+/* Nothing is blocked at startup.  A blocked signal waits for the next check
+ * point and a pure-CPU loop has none, so blocking up front would make
+ * `timeout`, Ctrl-C and `kill` unable to stop a runaway script — a worse bug
+ * than the one this delivers.  A signal becomes koruby-delivered only when the
+ * program asks for it: Signal.trap blocks it (see __signal_block), and
+ * Process.kill blocks it around a send to our own pid (korb_kill_self).
+ * Signals arriving from outside an untrapped process keep the OS default. */
+static const int korb_sig_deliverable[] = {
+    SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM,
+    SIGVTALRM, SIGXCPU, SIGXFSZ, SIGPROF, SIGWINCH, SIGCONT,
+};
+
+/* Everything koruby is willing to reap.  Reaping is by wait-set, so listing an
+ * unblocked signal here is harmless — it can never be pending. */
+static void korb_sigset_deliverable(sigset_t *const set) {
+    sigemptyset(set);
+    for (size_t i = 0; i < sizeof korb_sig_deliverable / sizeof korb_sig_deliverable[0]; i++)
+        sigaddset(set, korb_sig_deliverable[i]);
+}
+
+static void korb_child_reset_signals(void) {
+    sigset_t empty;
+    sigemptyset(&empty);
+    (void)pthread_sigmask(SIG_SETMASK, &empty, NULL);
+}
+
+/* Reap one pending deliverable signal without blocking; 0 = none pending. */
+static int korb_signal_reap(void) {
+    sigset_t set;
+    korb_sigset_deliverable(&set);
+    const struct timespec zero = { 0, 0 };
+    siginfo_t info;
+    const int s = sigtimedwait(&set, &info, &zero);
+    return s > 0 ? s : 0;
+}
+
+static int korb_signo_of(CTX *c, VALUE v);   /* fwd (defined with the trap builtins below) */
+RESULT korb_signal_deliver(CTX *c, VALUE *slots);   /* fwd (defined just below korb_kill_self) */
+
+/* __signal_block(signo, flag) — add/remove one signal from the blocked (i.e.
+ * koruby-delivered) set.  Signal.trap uses it to take over INT/QUIT. */
+static RESULT korb_m_signal_block(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int sig = korb_signo_of(c, VALUE_SLICE_GET(a, 0));
+    if (sig <= 0 || sig == SIGKILL || sig == SIGSTOP) return RESULT_OK(KORB_FALSE);
+    const bool on = VALUE_SLICE_LEN(a) < 2 || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));
+    sigset_t one;
+    sigemptyset(&one);
+    sigaddset(&one, sig);
+    (void)pthread_sigmask(on ? SIG_BLOCK : SIG_UNBLOCK, &one, NULL);
+    (void)slots;
+    return RESULT_OK(on ? KORB_TRUE : KORB_FALSE);
+}
+
+/* Process.kill to our own pid.  The signal is blocked across the send so it
+ * lands as *pending* and is reaped here, instead of taking its default action
+ * — that is what makes `Process.kill(:TERM, Process.pid)` raise SignalException
+ * the way CRuby's handler-based delivery does.  The previous mask is restored,
+ * so a signal the program trapped stays blocked and one it did not goes back to
+ * its default disposition for anything arriving from outside. */
+static RESULT korb_kill_self(CTX *c, VALUE *slots, int sig) {
+    if (sig == 0 || sig == SIGKILL || sig == SIGSTOP) {          /* cannot be blocked/deferred */
+        if (kill(getpid(), sig) != 0) return korb_raise_errno(c, slots, errno, "kill", "");
+        return RESULT_OK(KORB_NIL);
+    }
+    sigset_t one, old;
+    sigemptyset(&one);
+    sigaddset(&one, sig);
+    (void)pthread_sigmask(SIG_BLOCK, &one, &old);
+    const int r = kill(getpid(), sig);
+    const int e = errno;
+    RESULT d = (r == 0) ? korb_signal_deliver(c, slots) : RESULT_OK(KORB_NIL);
+    (void)pthread_sigmask(SIG_SETMASK, &old, NULL);               /* restore before propagating a raise */
+    if (r != 0) return korb_raise_errno(c, slots, e, "kill", "");
+    return d;
+}
+
+/* Interpreter check point: hand one pending signal to Signal.__deliver, which
+ * runs the trap handler or raises.  RESULT_OK(nil) when nothing was pending. */
+RESULT korb_signal_deliver(CTX *c, VALUE *slots) {
+    const int sig = korb_signal_reap();
+    if (LIKELY(sig == 0)) return RESULT_OK(KORB_NIL);
+    const VALUE sigmod = korb_const_get(c->vm, korb_intern(c->vm, "Signal", 6));
+    if (UNLIKELY(!KORB_CLASS_P(sigmod))) return RESULT_OK(KORB_NIL);   /* prelude not up yet */
+    slots[0] = sigmod;
+    slots[1] = LONG2FIX(sig);
+    return korb_send(c, slots + 2, korb_intern(c->vm, "__deliver", 9), 0, 1);
+}
+
 /* One parsed redirection: the child's fd `from` becomes `to` (an fd) or is
  * opened from `path`. */
 struct korb_redir {
@@ -236,6 +336,7 @@ static pid_t korb_spawn_run(const struct korb_spawn_plan *p) {
     fflush(NULL);
     const pid_t pid = fork();
     if (pid != 0) return pid;                       /* parent (or error) */
+    korb_child_reset_signals();                     /* the mask survives execve — the child must not start with signals blocked */
     if (p->chdir[0] != '\0' && chdir(p->chdir) != 0) _exit(127);
     for (uint32_t i = 0; i < p->nredir; i++) {
         const struct korb_redir *r = &p->redir[i];
@@ -353,6 +454,7 @@ static RESULT korb_m_kernel_backtick(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const pid_t pid = fork();
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
     if (pid == 0) {
+        korb_child_reset_signals();
         close(fds[0]);
         if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
@@ -416,7 +518,9 @@ static RESULT korb_m_process_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
         const VALUE pv = VALUE_SLICE_GET(a, i);
         if (!FIXNUM_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-        if (kill((pid_t)FIX2LONG(pv), sig) != 0) return korb_raise_errno(c, slots, errno, "kill", "");
+        const pid_t target = (pid_t)FIX2LONG(pv);
+        if (target == getpid()) CHECK(korb_kill_self(c, slots, sig));   /* deliver to ourselves, don't die */
+        else if (kill(target, sig) != 0) return korb_raise_errno(c, slots, errno, "kill", "");
         n++;
     }
     return RESULT_OK(LONG2FIX(n));
@@ -584,6 +688,7 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__getpgid",  korb_m_process_getpgid, -1);
     korb_class_def_cfn(c, obj, "__setpgid",  korb_m_process_setpgid,  2);
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
+    korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
     korb_class_def_cfn(c, obj, "__signal_signame", korb_m_signal_signame,  1);
     korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
     const VALUE io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));

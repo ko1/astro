@@ -312,21 +312,118 @@ end
 ARGF = ARGFClass.new
 
 module ObjectSpace
-  # WeakMap: 弱参照なしの機能 stub (weakref.rb 用)
+  # WeakMap / WeakKeyMap — koruby's GC has no weak edges, so entries are held
+  # strongly.  Everything else (comparison semantics, which keys are accepted,
+  # the API surface) follows CRuby; only "the entry disappears once the key is
+  # collected" is missing.
   class WeakMap
-    def initialize; @h = {}; end
-    def [](k); @h[k]; end
-    def []=(k, v); @h[k] = v; end
-    def key?(k); @h.key?(k); end
-    def delete(k); @h.delete(k); end
-    def size; @h.size; end
-  end
-end
+    include Enumerable
 
-module Signal
-  def self.trap(*); nil; end
-  def self.signame(_n); nil; end
-  def self.list; { "INT" => 2, "TERM" => 15, "KILL" => 9 }; end
+    def initialize; @h = {}.compare_by_identity; end   # WeakMap compares keys by identity
+    def [](k); @h[k]; end
+    def []=(k, v); @h[k] = v; v; end
+    def include?(k); @h.key?(k); end
+    alias_method :key?, :include?
+    alias_method :member?, :include?
+    def delete(k, &blk)
+      return @h.delete(k) if @h.key?(k)
+      blk ? blk.call(k) : nil
+    end
+    def size; @h.size; end
+    alias_method :length, :size
+    def keys; @h.keys; end
+    def values; @h.values; end
+
+    # `each` on an empty map returns self even without a block; with entries and
+    # no block it is a LocalJumpError (CRuby yields eagerly, it is not an
+    # Enumerator-returning method).
+    def each(&blk)
+      return self if @h.empty? && blk.nil?
+      raise LocalJumpError, "no block given (yield)" if blk.nil?
+      @h.each { |k, v| blk.call(k, v) }
+      self
+    end
+    alias_method :each_pair, :each
+
+    def each_key(&blk)
+      return self if @h.empty? && blk.nil?
+      raise LocalJumpError, "no block given (yield)" if blk.nil?
+      @h.each_key { |k| blk.call(k) }
+      self
+    end
+
+    def each_value(&blk)
+      return self if @h.empty? && blk.nil?
+      raise LocalJumpError, "no block given (yield)" if blk.nil?
+      @h.each_value { |v| blk.call(v) }
+      self
+    end
+
+    def inspect
+      body = @h.map { |k, v| "#{ObjectSpace.__any_to_s(k)} => #{ObjectSpace.__any_to_s(v)}" }.join(", ")
+      format("#<ObjectSpace::WeakMap:0x%016x%s>", object_id, body.empty? ? "" : ": #{body}")
+    end
+  end
+
+  # `#<Class:0xaddr>` for any object, including a BasicObject (which has no
+  # #inspect / #class to call).
+  def self.__any_to_s(o)
+    cls = Object.instance_method(:class).bind_call(o) rescue nil
+    id  = Object.instance_method(:object_id).bind_call(o) rescue 0
+    format("#<%s:0x%016x>", cls ? cls.name : "BasicObject", id)
+  end
+
+  class WeakKeyMap
+    def initialize; @h = {}; end
+
+    def [](key)
+      return nil unless __collectable?(key)
+      e = @h[key]
+      e && e[1]
+    end
+
+    # The key object itself is stored (Hash#[]= would dup+freeze a String key,
+    # which #getkey must not observe), so entries are [key, value] pairs.
+    def []=(key, value)
+      raise ArgumentError, "WeakKeyMap keys must be garbage collectable" unless __collectable?(key)
+      @h[key] = [key, value]
+      value
+    end
+
+    def key?(key)
+      return false unless __collectable?(key)
+      @h.key?(key)
+    end
+
+    def getkey(key)
+      return nil unless __collectable?(key)
+      e = @h[key]
+      e && e[0]
+    end
+
+    def delete(key, &blk)
+      if __collectable?(key) && @h.key?(key)
+        @h.delete(key)[1]
+      elsif blk
+        blk.call(key)
+      end
+    end
+
+    def clear; @h.clear; self; end
+    # No #size/#length: CRuby's WeakKeyMap exposes the count only via #inspect.
+    def inspect; format("#<ObjectSpace::WeakKeyMap:0x%016x size=%d>", object_id, @h.size); end
+
+    private
+
+    # Integers / Floats / Symbols / true / false / nil are never collected, so
+    # CRuby refuses them as keys and reports them as absent on reads.  Tested
+    # with Module#=== so nothing is dispatched to the key itself (a BasicObject
+    # key must fail on #hash, not on #nil?).
+    def __collectable?(key)
+      !(Integer === key || Float === key || Symbol === key ||
+        NilClass === key || TrueClass === key || FalseClass === key)
+    end
+  end
 end
 
 module RbConfig
@@ -410,16 +507,40 @@ module Process
 end
 
 module Signal
-  # koruby cannot run a Ruby handler from a signal context yet, so a Proc/String
-  # handler is recorded and the signal ignored; "DEFAULT" restores SIG_DFL.
-  # Without this, a spec that signals its own pid takes the interpreter down.
+  # Signals are blocked process-wide and reaped at interpreter check points
+  # (builtins/process.c); this is where the policy lives.  Trapping a signal
+  # also blocks it, so INT/QUIT — left unblocked at startup so Ctrl-C stays
+  # prompt — become koruby-delivered as soon as a program traps them.
   @@handlers = {}
 
   def self.trap(sig, command = nil, &blk)
-    prev = @@handlers[signame(signo(sig)) || sig.to_s]
-    @@handlers[signame(signo(sig)) || sig.to_s] = command || blk
-    __signal_trap(sig, command)
+    n = signo(sig)
+    raise ArgumentError, "unsupported signal '#{sig}'" if n.nil?
+    key = signame(n) || sig.to_s
+    prev = @@handlers[key]
+    h = command.is_a?(Symbol) ? command.to_s : (command || blk)   # :SIG_DFL / :IGNORE spell the same handlers
+    @@handlers[key] = h
+    if h.is_a?(String) && (h == "IGNORE" || h == "SIG_IGN")
+      __signal_trap(sig, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
+      __signal_block(n, false)
+    else
+      __signal_trap(sig, "DEFAULT")    # undo a previous SIG_IGN; blocked, so it just stays pending
+      __signal_block(n, true)          # deliver it ourselves at the next check point
+    end
     prev.nil? ? "DEFAULT" : prev
+  end
+
+  # Called from the interpreter with a signal number just reaped from the
+  # pending set.  Runs the trap handler, or raises for the default disposition.
+  def self.__deliver(signo)
+    case (h = @@handlers[signame(signo)])
+    when "IGNORE", "SIG_IGN" then nil
+    when "EXIT"              then exit(0)
+    when nil, "DEFAULT", "SIG_DFL"
+      raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
+    else
+      h.respond_to?(:call) ? h.call(signo) : nil
+    end
   end
 
   def self.signame(signo) = __signal_signame(signo)
@@ -430,6 +551,43 @@ module Signal
     (1..31).each { |n| (nm = __signal_signame(n)) && h[nm] = n }
     h["EXIT"] = 0
     h
+  end
+end
+
+# SignalException / Interrupt carry the signal they stand for.  Both classes are
+# created on the C side; this gives them their #signo / #signm behaviour.
+class SignalException < Exception
+  attr_reader :signo, :signm
+
+  def initialize(sig = nil, msg = nil)
+    if sig.nil?
+      @signo = nil
+      @signm = self.class.name
+    elsif sig.is_a?(Integer)
+      nm = Signal.signame(sig)
+      raise ArgumentError, "invalid signal number #{sig}" if nm.nil?
+      @signo = sig
+      @signm = msg || "SIG#{nm}"
+    elsif sig.is_a?(String) || sig.is_a?(Symbol)
+      raise ArgumentError, "wrong number of arguments (given 2, expected 1)" unless msg.nil?
+      nm = sig.to_s.sub(/\ASIG/, "")
+      n = Signal.list[nm]
+      raise ArgumentError, "unsupported name '#{sig}'" if n.nil?
+      @signo = n
+      @signm = "SIG#{nm}"
+    else
+      raise ArgumentError, "bad signal type #{sig.class}"
+    end
+    super(@signm)
+  end
+
+  def message = @signm
+  def to_s = @signm
+end
+
+class Interrupt < SignalException
+  def initialize(msg = nil)
+    super(Signal.list["INT"], msg || "Interrupt")
   end
 end
 
