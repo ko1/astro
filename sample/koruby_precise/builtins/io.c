@@ -48,6 +48,54 @@ static RESULT korb_io_make(CTX *c, VALUE *slots, VALUE klass, FILE *fp, int rw) 
     return RESULT_OK(slots[0]);
 }
 
+/* ---- the two byte-level I/O helpers -------------------------------------
+ * Every read/write path goes through these so the stdio→fd swap (and later the
+ * completion-engine bounce buffer) stays confined to one place.
+ *
+ * Reads fill a freshly allocated String's buffer directly: korb_str_alloc hands
+ * back an uninitialized buffer and the transfer below allocates nothing, so the
+ * (movable) buffer cannot be relocated underneath it — no malloc + copy needed.
+ * A completion-mode engine parks while the kernel writes, and would need a
+ * stable bounce buffer here instead; that choice belongs to this helper. */
+
+/* Read up to `want` bytes.  *got_out is the byte count actually transferred. */
+static RESULT korb_io_read_bytes(CTX *c, VALUE *slots, FILE *fp, uint32_t want, uint32_t *got_out) {
+    KorbString *s = korb_str_alloc(c, slots, want);
+    slots[0] = (VALUE)s;                                  /* root before any later alloc */
+    const size_t got = want ? fread(korb_strbuf_data(s->buf), 1, want, fp) : 0;
+    s = VAL2STR(slots[0]);
+    s->len = (uint32_t)got;                               /* shrink in place; capa stays */
+    korb_strbuf_data(s->buf)[got] = '\0';
+    *got_out = (uint32_t)got;
+    return RESULT_OK(slots[0]);
+}
+
+/* Read to EOF into one String, growing as needed. */
+static RESULT korb_io_read_all_bytes(CTX *c, VALUE *slots, FILE *fp) {
+    slots[0] = (VALUE)korb_str_alloc(c, slots, 0);
+    VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+    uint32_t len = 0;
+    for (;;) {
+        /* keep s->len in step: korb_str_ensure's grow copies only s->len bytes,
+           so a stale 0 here would drop everything read so far. */
+        KorbString *s = korb_str_ensure(c, slots + 1, sref, len + 65536);
+        const size_t got = fread(korb_strbuf_data(s->buf) + len, 1, s->capa - len, fp);
+        if (got == 0) break;
+        len += (uint32_t)got;
+        s = VAL2STR(VALUE_REF_GET(sref));
+        s->len = len;
+    }
+    KorbString *s = VAL2STR(VALUE_REF_GET(sref));
+    s->len = len;
+    korb_strbuf_data(s->buf)[len] = '\0';
+    return RESULT_OK(VALUE_REF_GET(sref));
+}
+
+/* Write `n` bytes from a stable (non-Ruby) buffer. */
+static size_t korb_io_write_bytes(FILE *fp, const char *p, size_t n) {
+    return fwrite(p, 1, n, fp);
+}
+
 /* coerce v to a String (to_s if needed) and fwrite it; accumulate bytes. */
 static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, FILE *fp, size_t *nbytes) {
     if (!KORB_STRING_P(v)) {
@@ -56,7 +104,7 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, FILE *fp, size_t *nbyt
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         v = r.value;
     }
-    if (KORB_STRING_P(v)) { const KorbString *s = VAL2STR(v); *nbytes += fwrite(korb_strbuf_data(s->buf), 1, s->len, fp); }
+    if (KORB_STRING_P(v)) { const KorbString *s = VAL2STR(v); *nbytes += korb_io_write_bytes(fp, korb_strbuf_data(s->buf), s->len); }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -104,7 +152,7 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
     fp = korb_io_fp(c, slots[0]);                        /* re-fetch after possible GC */
     if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); fwrite(korb_strbuf_data(s->buf), 1, s->len, fp); }
+    if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); korb_io_write_bytes(fp, korb_strbuf_data(s->buf), s->len); }
     return RESULT_OK(KORB_NIL);
 }
 /* IO.pipe → [r, w]  (block form: yield r, w; ensure both closed).
@@ -192,26 +240,17 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* bounded read */
         intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
         if (n < 0) n = 0;
-        char *b = malloc((size_t)n + 1);
-        if (!b) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
-        size_t got = fread(b, 1, (size_t)n, fp);
-        if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
-        RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
-        free(b);
-        if (r.state == KORB_NORMAL && korb_io_is_binary(c, VALUE_REF_GET(self)))
+        uint32_t got = 0;
+        RESULT r = korb_io_read_bytes(c, slots, fp, (uint32_t)n, &got);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (got == 0 && n > 0) return RESULT_OK(KORB_NIL);                /* EOF */
+        if (korb_io_is_binary(c, VALUE_REF_GET(self)))
             KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);                   /* 'rb' → ASCII-8BIT (byte-indexed) */
         return r;
     }
-    char *buf = NULL; size_t cap = 0, len = 0;
-    for (;;) {
-        if (len + 65536 > cap) { cap = cap ? cap * 2 : 131072; char *nb = realloc(buf, cap); if (!nb) { free(buf); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); } buf = nb; }
-        size_t got = fread(buf + len, 1, cap - len, fp);
-        len += got;
-        if (got == 0) break;
-    }
-    RESULT r = korb_str_new(c, slots, buf ? buf : "", (uint32_t)len);
-    free(buf);
-    if (r.state == KORB_NORMAL && korb_io_is_binary(c, VALUE_REF_GET(self)))
+    RESULT r = korb_io_read_all_bytes(c, slots, fp);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (korb_io_is_binary(c, VALUE_REF_GET(self)))
         KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
 }
@@ -566,17 +605,16 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t want = 4096;
     if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) want = FIX2LONG(VALUE_SLICE_GET(a, 0));
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
-    char stackbuf[8192];
-    char *buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want);
-    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
-    const ssize_t r = read(fileno(fp), buf, (size_t)want);
-    if (r < 0) { if (buf != stackbuf) free(buf); return korb_raise_errno(c, slots, errno, "sysread", ""); }
-    if (r == 0 && want > 0) { if (buf != stackbuf) free(buf); return korb_raise(c, slots, KORB_E_IOERROR, 0, "end of file reached"); }
-    const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)r);
-    if (buf != stackbuf) free(buf);
-    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
-    return sr;
+    KorbString *s = korb_str_alloc(c, slots, (uint32_t)want);
+    slots[0] = (VALUE)s;                                  /* root: read(2) allocates nothing */
+    const ssize_t r = read(fileno(fp), korb_strbuf_data(s->buf), (size_t)want);
+    if (r < 0) return korb_raise_errno(c, slots + 1, errno, "sysread", "");
+    if (r == 0 && want > 0) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "end of file reached");
+    s = VAL2STR(slots[0]);
+    s->len = (uint32_t)r;
+    korb_strbuf_data(s->buf)[r] = '\0';
+    KORB_STR_ENC_SET(slots[0], KORB_ENC_BINARY);
+    return RESULT_OK(slots[0]);
 }
 
 /* IO#__init_fd(fd, mode) — wire an already-allocated IO (or subclass) to a
