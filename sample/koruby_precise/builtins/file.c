@@ -34,6 +34,38 @@ static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, co
     return r;
 }
 
+/* Coerce a path argument to a String the way CRuby does: a String passes
+ * through, otherwise #to_path is tried (Pathname, and mspec's mock_to_path),
+ * then #to_str.  The result is written back into the argument cell — that cell
+ * is rooted, so callers can keep reading the path through the slice after this
+ * (possibly GC-ing) dispatch.  `a` must be the caller's own argument slice.  */
+static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx) {
+    VALUE v = VALUE_SLICE_GET(a, idx);
+    if (LIKELY(KORB_STRING_P(v))) return RESULT_OK(v);
+    const char *const tname = (v == KORB_NIL) ? "nil" : korb_type_name(v);   /* capture before any dispatch can move `v` */
+    static const struct { const char *name; uint32_t len; } conv[] = { { "to_path", 7 }, { "to_str", 6 } };
+    for (size_t i = 0; i < sizeof conv / sizeof conv[0] && !KORB_STRING_P(v); i++) {
+        const uint32_t mid = korb_intern(c->vm, conv[i].name, conv[i].len);
+        if (!korb_responds_to(c, v, mid)) continue;
+        slots[0] = v;                              /* receiver, rooted across the dispatch */
+        const RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        v = r.value;
+    }
+    if (UNLIKELY(!KORB_STRING_P(v)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", tname);
+    VALUE_REF_SET(VALUE_SLICE_REF(a, idx), v);     /* keep the coerced String where the caller reads it */
+    return RESULT_OK(v);
+}
+
+/* Coerce argument `idx` to a path String, propagating a raise. */
+#define KORB_PATH_ARG(c, slots, a, idx, out)                                   \
+    do {                                                                       \
+        const RESULT _pr = korb_path_coerce((c), (slots), (a), (idx));         \
+        if (UNLIKELY(_pr.state != KORB_NORMAL)) return _pr;                    \
+        (out) = _pr.value;                                                     \
+    } while (0)
+
 /* Normalize an absolute path in `src` (length n) into `dst`: collapse "//", drop
  * "." segments, resolve ".." by popping, keep a single leading "/".  Returns the
  * normalized length.  `dst` must hold at least n+1 bytes. */
@@ -72,9 +104,8 @@ ARO_BORROW static const char *korb_str_cstr_len(VALUE v, uint32_t *len) {
  * every component (incl. the last) must exist, else Errno::ENOENT. */
 static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     char joined[4096]; size_t jl;
     if (plen > 0 && path[0] == '/') {                              /* absolute */
@@ -93,9 +124,8 @@ static RESULT korb_m_file_realpath(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 }
 static RESULT korb_m_file_expand_path(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
 
     char raw[8192]; size_t r = 0;
@@ -180,9 +210,8 @@ static RESULT korb_m_file_join(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* File.dirname(path) → everything before the last '/', or "." if none. */
 static RESULT korb_m_file_dirname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
     while (n > 1 && p[n - 1] == '/') n--;             /* strip trailing slashes */
     size_t last = (size_t)-1;
@@ -215,9 +244,8 @@ static RESULT korb_m_file_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * (".*" strips any extension). */
 static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
     if (n == 0) return korb_str_new(c, slots, "", 0);   /* basename("") → "" */
     while (n > 1 && p[n - 1] == '/') n--;             /* strip trailing slashes */
@@ -241,9 +269,8 @@ static RESULT korb_m_file_basename(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 /* File.extname(path) → ".ext" of the basename, or "" (a leading dot is not one). */
 static RESULT korb_m_file_extname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t n; const char *p = korb_str_cstr_len(pv, &n);
     while (n > 1 && p[n - 1] == '/') n--;
     size_t s = 0;
@@ -282,9 +309,8 @@ static RESULT korb_m_file_fnmatch(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 /* stat-based File predicates.  The path pointer is used before any allocation,
  * so it stays valid (no moving-GC hazard). */
 static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kind) {
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     struct stat st;
     if (stat(path, &st) != 0) return RESULT_OK(kind == 3 ? KORB_NIL : KORB_FALSE);
@@ -297,9 +323,8 @@ static RESULT korb_m_file_stat_pred(CTX *c, VALUE *slots, VALUE_SLICE a, int kin
 }
 static RESULT korb_m_file_symlink_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     struct stat st;
     if (lstat(path, &st) != 0) return RESULT_OK(KORB_FALSE);
@@ -311,8 +336,8 @@ static RESULT korb_m_file_directory_p(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_file_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)        { (void)self; return korb_m_file_stat_pred(c, slots, a, 3); }
 /* File.readable?/writable?/executable?(path) → access(2) with R_OK/W_OK/X_OK. */
 static RESULT korb_m_file_access(CTX *c, VALUE *slots, VALUE_SLICE a, int amode) {
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     return RESULT_OK(access(path, amode) == 0 ? KORB_TRUE : KORB_FALSE);
 }
@@ -396,9 +421,8 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
 /* File.read(path[, length[, offset]]) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     const int fd = open(path, O_RDONLY);
     if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
@@ -487,9 +511,8 @@ static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const ch
 /* File.readlines(path) → array of line Strings. */
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     bool chomp = false;   /* trailing `chomp: true` kwarg strips line terminators */
     const uint32_t na = VALUE_SLICE_LEN(a);
@@ -510,9 +533,8 @@ static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   struct Node *block, VALUE *def_env, VALUE *captured_self) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     if (block == NULL) {                                             /* no block → an Enumerator of the lines */
         size_t len2; char *buf2 = korb_file_slurp(path, &len2);
@@ -724,9 +746,9 @@ static RESULT korb_m_dir_exist_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* the sole String path arg as a NUL-terminated cstr (TypeError otherwise). */
 ARO_BORROW static const char *korb_path_arg(CTX *c, VALUE *slots, VALUE_SLICE a, RESULT *err) {
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv))) { *err = korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv)); return NULL; }
-    err->state = KORB_NORMAL; uint32_t plen; return korb_str_cstr_len(pv, &plen);
+    const RESULT pr = korb_path_coerce(c, slots, a, 0);   /* String / #to_path / #to_str */
+    if (UNLIKELY(pr.state != KORB_NORMAL)) { *err = pr; return NULL; }
+    err->state = KORB_NORMAL; uint32_t plen; return korb_str_cstr_len(pr.value, &plen);
 }
 /* Dir.mkdir(path[, mode]) → 0 (raises on failure). */
 static RESULT korb_m_dir_mkdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
