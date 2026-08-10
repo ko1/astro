@@ -59,6 +59,11 @@ static KorbIORep *korb_io_rep(CTX *c, VALUE self) {
     if (idx < 0 || (uint32_t)idx >= c->vm->io_cnt) return NULL;
     return c->vm->io_reps[idx];
 }
+/* The descriptor, straight from the rep — no stdio needed.  -1 when closed. */
+static int korb_io_fd(CTX *c, VALUE self) {
+    const KorbIORep *const rep = korb_io_rep(c, self);
+    return rep ? rep->fd : -1;
+}
 static FILE *korb_io_fp(CTX *c, VALUE self) {
     const KorbIORep *const rep = korb_io_rep(c, self);
     return rep ? rep->fp : NULL;
@@ -139,7 +144,7 @@ static RESULT korb_m_io_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const VALUE lv = VALUE_SLICE_GET(a, 0);
     if (!FIXNUM_P(lv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     fflush(fp);
-    if (ftruncate(fileno(fp), (off_t)FIX2LONG(lv)) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
+    if (ftruncate(korb_io_fd(c, VALUE_REF_GET(self)), (off_t)FIX2LONG(lv)) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
     return RESULT_OK(LONG2FIX(0));
 }
 /* IO#fileno → the integer file descriptor. */
@@ -147,12 +152,12 @@ static RESULT korb_m_io_fileno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a;
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
     if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    return RESULT_OK(LONG2FIX(fileno(fp)));
+    return RESULT_OK(LONG2FIX(korb_io_fd(c, VALUE_REF_GET(self))));
 }
 static RESULT korb_m_io_tty_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; (void)slots;
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
-    return RESULT_OK((fp && isatty(fileno(fp))) ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK((fp && isatty(korb_io_fd(c, VALUE_REF_GET(self)))) ? KORB_TRUE : KORB_FALSE);
 }
 /* IO#stat → File::Stat of the open descriptor (fstat). */
 static RESULT korb_m_io_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -160,7 +165,7 @@ static RESULT korb_m_io_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
     if (!fp) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     struct stat st;
-    if (fstat(fileno(fp), &st) != 0) return korb_raise_errno(c, slots, errno, "fstat", "");
+    if (fstat(korb_io_fd(c, VALUE_REF_GET(self)), &st) != 0) return korb_raise_errno(c, slots, errno, "fstat", "");
     return korb_stat_make(c, slots, &st);
 }
 static RESULT korb_bi_format(CTX *c, VALUE *slots, VALUE_SLICE args);   /* fwd (korb_runtime.c) */
@@ -574,10 +579,10 @@ static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     fflush(fp);
     /* Take the access mode from the descriptor itself: the std streams are built
        without the rw ivar, and fdopen fails if the mode does not match. */
-    const int fl = fcntl(fileno(fp), F_GETFL);
+    const int fl = fcntl(korb_io_fd(c, VALUE_REF_GET(self)), F_GETFL);
     const int acc = (fl < 0) ? O_RDONLY : (fl & O_ACCMODE);
     const int rw = acc == O_WRONLY ? 2 : acc == O_RDWR ? 3 : 1;
-    const int fd = dup(fileno(fp));
+    const int fd = dup(korb_io_fd(c, VALUE_REF_GET(self)));
     if (fd < 0) return korb_raise_errno(c, slots, errno, "dup", "");
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     FILE *nf = fdopen(fd, rw == 1 ? "r" : rw == 2 ? "w" : "r+");
@@ -621,7 +626,7 @@ static RESULT korb_m_io_syswrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     }
     fflush(fp);
     uint32_t n; const char *p = korb_str_cstr_len(slots[0], &n);
-    const ssize_t w = write(fileno(fp), p, n);
+    const ssize_t w = write(korb_io_fd(c, VALUE_REF_GET(self)), p, n);
     if (w < 0) return korb_raise_errno(c, slots, errno, "syswrite", "");
     return RESULT_OK(LONG2FIX((intptr_t)w));
 }
@@ -633,7 +638,7 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
     KorbString *s = korb_str_alloc(c, slots, (uint32_t)want);
     slots[0] = (VALUE)s;                                  /* root: read(2) allocates nothing */
-    const ssize_t r = read(fileno(fp), korb_strbuf_data(s->buf), (size_t)want);
+    const ssize_t r = read(korb_io_fd(c, VALUE_REF_GET(self)), korb_strbuf_data(s->buf), (size_t)want);
     if (r < 0) return korb_raise_errno(c, slots + 1, errno, "sysread", "");
     if (r == 0 && want > 0) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "end of file reached");
     s = VAL2STR(slots[0]);
@@ -675,7 +680,7 @@ static RESULT korb_m_io_close_on_exec_p(CTX *c, VALUE *slots, VALUE_REF self, VA
     (void)a;
     FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
     if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    const int fl = fcntl(fileno(fp), F_GETFD);
+    const int fl = fcntl(korb_io_fd(c, VALUE_REF_GET(self)), F_GETFD);
     if (fl < 0) return korb_raise_errno(c, slots, errno, "fcntl", "");
     return RESULT_OK((fl & FD_CLOEXEC) ? KORB_TRUE : KORB_FALSE);
 }
