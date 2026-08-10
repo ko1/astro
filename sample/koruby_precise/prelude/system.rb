@@ -313,12 +313,311 @@ class File
   end
 end
 
-# ARGF: class 判別のためだけの最小 stub (CSV 等が ARGF.class を参照する)
+# ARGF — the concatenation of the files named in ARGV, or stdin when ARGV is
+# empty.  `ARGF` is an instance of this class; specs (and mspec's argf helper)
+# also build their own with `ARGF.class.new(*filenames)`.
+#
+# Opening is lazy but eager enough that #file / #filename can name the first
+# file before anything is read, and the *last* file stays reported after the
+# stream is exhausted — both are behaviours the specs pin down.  A file is only
+# left behind on the read *after* it hit EOF, so #filename still names it while
+# its last line is being processed.
 class ARGFClass
-  def argv; ARGV; end
-  def filename; "-"; end
+  include Enumerable
+
+  def initialize(*argv)
+    @argv = argv
+    @current = nil          # IO of the file being read (kept after close)
+    @current_name = nil
+    @opened_any = false
+    @advance = false        # current file is done; open the next one on demand
+    @lineno = 0             # cumulative across files ($.)
+    @file_lineno = 0        # lines read from the current file (for #rewind)
+    @binmode = false
+  end
+
+  attr_reader :argv
+
+  def to_s; "ARGF"; end
+  alias_method :inspect, :to_s
+
+  # --- stream plumbing -----------------------------------------------------
+
+  def __next_file
+    if @argv.empty?
+      return false if @opened_any            # ARGV exhausted (or stdin already used)
+      @current = STDIN
+      @current_name = "-"
+    else
+      @current_name = @argv.shift.to_s
+      @current = @current_name == "-" ? STDIN : File.open(@current_name, @binmode ? "rb" : "r")
+    end
+    @opened_any = true
+    @advance = false
+    @file_lineno = 0
+    $FILENAME = @current_name
+    true
+  end
+  private :__next_file
+
+  def __finish_current
+    @current.close if @current && !@current.equal?(STDIN) && !@current.closed?
+    @advance = true
+  end
+  private :__finish_current
+
+  # The IO to read from, skipping over files already at EOF; nil when the whole
+  # stream is exhausted.
+  def __stream
+    loop do
+      if @current.nil? || @advance
+        return nil unless __next_file
+      end
+      return @current unless @current.closed? || @current.eof?
+      __finish_current
+    end
+  end
+  private :__stream
+
+  # --- current file --------------------------------------------------------
+
+  def file
+    __next_file if @current.nil?
+    @current
+  end
+
+  def filename
+    __next_file if @current.nil?
+    @current_name
+  end
+  alias_method :path, :filename
+
+  def to_io; file; end
+
+  def fileno
+    io = file
+    raise ArgumentError, "closed stream" if io.nil? || io.closed?
+    io.fileno
+  end
+  alias_method :to_i, :fileno
+
+  def closed?; file.closed?; end
+
+  def close
+    io = file
+    io.close if io && !io.equal?(STDIN) && !io.closed?
+    @advance = true
+    self
+  end
+
+  def skip
+    return self if @current.nil?             # nothing processed yet
+    __finish_current
+    self
+  end
+
+  def eof?
+    io = file
+    raise IOError, "stream closed" if io.nil? || io.closed?
+    io.eof?
+  end
+  alias_method :eof, :eof?
+
+  def rewind
+    io = file
+    raise ArgumentError, "no stream to rewind" if io.nil?
+    @lineno -= @file_lineno
+    @file_lineno = 0
+    io.rewind
+    0
+  end
+
+  def pos
+    io = file
+    raise ArgumentError, "closed stream" if io.nil? || io.closed?
+    io.pos
+  end
+  alias_method :tell, :pos
+
+  def pos=(n); file.pos = n; end
+  def seek(*args); file.seek(*args); end
+
+  def binmode; @binmode = true; @current.binmode if @current && !@current.closed?; self; end
+  def binmode?; @binmode; end
+
+  def set_encoding(*args); file.set_encoding(*args); self; end
+  def external_encoding; @current ? file.external_encoding : Encoding.default_external; end
+  def internal_encoding; @current ? file.internal_encoding : Encoding.default_internal; end
+
+  def lineno; @lineno; end
+  def lineno=(n); @lineno = n; $. = n; n; end
+
+  # --- reading -------------------------------------------------------------
+
+  def gets(*args)
+    loop do
+      io = __stream
+      return nil if io.nil?
+      line = io.gets(*args)
+      if line.nil?
+        __finish_current
+        next
+      end
+      @lineno += 1
+      @file_lineno += 1
+      $. = @lineno
+      return line
+    end
+  end
+
+  def readline(*args)
+    line = gets(*args)
+    raise EOFError, "end of file reached" if line.nil?
+    line
+  end
+
+  def each_line(*args, &blk)
+    return to_enum(:each_line, *args) unless blk
+    while (line = gets(*args))
+      blk.call(line)
+    end
+    self
+  end
+  alias_method :each, :each_line
+  alias_method :lines, :each_line
+
+  def readlines(*args)
+    r = []
+    while (line = gets(*args))
+      r << line
+    end
+    r
+  end
+  alias_method :to_a, :readlines
+
+  def read(length = nil, buffer = nil)
+    if length.nil?
+      res = +""
+      while (io = __stream)
+        res << io.read.to_s
+        __finish_current
+      end
+      return buffer.replace(res) if buffer
+      return res
+    end
+    raise ArgumentError, "negative length #{length} given" if length < 0
+    return (buffer ? buffer.replace("") : "") if length == 0
+    res = nil
+    while length > 0
+      io = __stream
+      break if io.nil?
+      chunk = io.read(length)
+      if chunk.nil? || chunk.empty?
+        __finish_current
+        next
+      end
+      res = res.nil? ? chunk.dup : (res + chunk)
+      length -= chunk.bytesize
+    end
+    return buffer.replace(res || "") if buffer
+    res
+  end
+
+  # readpartial / read_nonblock do not silently cross a file boundary: at the
+  # end of one file they move on and read from the next, and only raise
+  # EOFError once every file is exhausted.
+  def __partial(meth, maxlen, buffer, **kw)
+    loop do
+      io = __stream
+      raise EOFError, "end of file reached" if io.nil?
+      begin
+        return buffer ? io.send(meth, maxlen, buffer, **kw) : io.send(meth, maxlen, **kw)
+      rescue EOFError
+        __finish_current
+      end
+    end
+  end
+  private :__partial
+
+  def readpartial(maxlen, buffer = nil); __partial(:readpartial, maxlen, buffer); end
+
+  def read_nonblock(maxlen, buffer = nil, exception: true)
+    __partial(:read_nonblock, maxlen, buffer, exception: exception)
+  end
+
+  def getc
+    loop do
+      io = __stream
+      return nil if io.nil?
+      ch = io.getc
+      return ch unless ch.nil?
+      __finish_current
+    end
+  end
+
+  def readchar
+    ch = getc
+    raise EOFError, "end of file reached" if ch.nil?
+    ch
+  end
+
+  def getbyte
+    loop do
+      io = __stream
+      return nil if io.nil?
+      b = io.getbyte
+      return b unless b.nil?
+      __finish_current
+    end
+  end
+
+  def readbyte
+    b = getbyte
+    raise EOFError, "end of file reached" if b.nil?
+    b
+  end
+
+  def each_char(&blk)
+    return to_enum(:each_char) unless blk
+    while (ch = getc)
+      blk.call(ch)
+    end
+    self
+  end
+  alias_method :chars, :each_char
+
+  def each_byte(&blk)
+    return to_enum(:each_byte) unless blk
+    while (b = getbyte)
+      blk.call(b)
+    end
+    self
+  end
+  alias_method :bytes, :each_byte
+
+  def each_codepoint(&blk)
+    return to_enum(:each_codepoint) unless blk
+    each_char { |ch| blk.call(ch.ord) }
+    self
+  end
+  alias_method :codepoints, :each_codepoint
+
+  def write(*args); STDOUT.write(*args); end
+  def print(*args); STDOUT.print(*args); end
+  def printf(*args); STDOUT.printf(*args); end
+  def putc(c); STDOUT.putc(c); end
+  def puts(*args); STDOUT.puts(*args); end
+
+  def inplace_mode; nil; end
+  def inplace_mode=(_ext); self; end
 end
-ARGF = ARGFClass.new
+# CRuby names this class "ARGF.class" (it is not reachable as a constant there).
+class << ARGFClass
+  def name; "ARGF.class"; end
+  alias_method :to_s, :name
+  alias_method :inspect, :name
+end
+ARGF = ARGFClass.new(*ARGV)
 
 module ObjectSpace
   # WeakMap / WeakKeyMap — koruby's GC has no weak edges, so entries are held
