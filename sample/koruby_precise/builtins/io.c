@@ -20,6 +20,7 @@ typedef struct KorbIORep {
     uint8_t  eof;                    /* a read(2) returned 0 */
     uint8_t  sync;                   /* flush after every write */
     uint8_t  nonblk;                 /* O_NONBLOCK: block by parking, not by stalling */
+    uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
     char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: live bytes are [rpos, rlen) */
     char    *wbuf; uint32_t wlen, wcapa;         /* write-behind: wlen bytes pending */
 } KorbIORep;
@@ -600,7 +601,31 @@ static RESULT korb_m_io_gets(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    return korb_io_read_line(c, slots, rep);
+    const RESULT r = korb_io_read_line(c, slots, rep);
+    /* IO#lineno counts the lines #gets handed out.  Re-fetch the rep: the read
+     * may have GC'd, and the rep lives in a libc allocation the IO points at. */
+    if (r.state == KORB_NORMAL && r.value != KORB_NIL)
+        korb_io_rep(c, VALUE_REF_GET(self))->lineno++;
+    return r;
+}
+/* IO#lineno / IO#lineno= — the #gets counter (not affected by other reads). */
+static RESULT korb_m_io_lineno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    return RESULT_OK(LONG2FIX((intptr_t)rep->lineno));
+}
+static RESULT korb_m_io_lineno_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    intptr_t n;
+    if (FIXNUM_P(v)) n = FIX2LONG(v);
+    else if (KORB_FLOAT_P(v)) n = (intptr_t)korb_float_val(v);
+    else if (!korb_to_index(v, &n))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(v));
+    rep->lineno = (uint32_t)(n < 0 ? 0 : n);
+    return RESULT_OK(v);
 }
 /* IO#readlines / IO#each_line — remaining lines. */
 static RESULT korb_m_io_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1076,6 +1101,60 @@ static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF i
     return korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__int_enc0", 11)), slots[0]);
 }
 
+/* IO#pread(maxlen, offset[, buf]) — read at an absolute offset without moving
+ * the file position.  Buffered writes are drained first so the descriptor holds
+ * everything the program has written; the read buffer is untouched (pread does
+ * not consume the sequential stream). */
+static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const intptr_t off  = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
+    korb_io_flush_rep(rep);
+    const VALUE bufv = VALUE_SLICE_LEN(a) >= 3 ? VALUE_SLICE_GET(a, 2) : KORB_NIL;
+    slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);   /* scratch, rooted */
+    ssize_t r;
+    do {
+        KorbString *const sb = VAL2STR(slots[0]);                 /* re-derive: nothing allocs in between */
+        r = pread(rep->fd, korb_strbuf_data(sb->buf), (size_t)want, (off_t)off);
+    } while (r < 0 && errno == EINTR);
+    if (r < 0) return korb_raise_errno(c, slots + 1, errno, "pread", "");
+    if (r == 0 && want > 0) return korb_io_raise_eof(c, slots + 1);
+    { KorbString *const s = VAL2STR(slots[0]);
+      s->len = (uint32_t)r;
+      korb_strbuf_data(s->buf)[r] = '\0'; }
+    if (bufv == KORB_NIL) return RESULT_OK(slots[0]);
+    if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
+    slots[1] = bufv;                                              /* replace into the caller's buffer, keeping its encoding */
+    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+}
+
+/* IO#pwrite(string, offset) — write at an absolute offset without moving the
+ * file position. */
+static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(VALUE_SLICE_GET(a, 1))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(slots[0])) {                               /* CRuby writes obj.to_s */
+        const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[0] = sr.value;
+        if (UNLIKELY(!KORB_STRING_P(slots[0]))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
+    }
+    const intptr_t off = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    korb_io_flush_rep(rep);
+    uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);   /* no alloc before the write */
+    ssize_t w;
+    do { w = pwrite(rep->fd, p, n, (off_t)off); } while (w < 0 && errno == EINTR);
+    if (w < 0) return korb_raise_errno(c, slots + 1, errno, "pwrite", "");
+    return RESULT_OK(LONG2FIX((intptr_t)w));
+}
+
 /* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
 static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -1229,6 +1308,8 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("binmode", binmode, 0);      IOM("ungetc", ungetc, 1);
     IOM("ungetbyte", ungetc, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
+    IOM("pread", pread, -1);         IOM("pwrite", pwrite, -1);
+    IOM("lineno", lineno, 0);        IOM("lineno=", lineno_set, 1);
     IOM("close_on_exec?", close_on_exec_p, 0);
     IOM("close_on_exec=", close_on_exec_set, 1);
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */

@@ -69,3 +69,25 @@ module FileTest
     module_function m
   end
 end
+
+# Kernel#open — File.open, or IO.popen when the name starts with "|".
+module Kernel
+  def open(name, *rest, **opts, &blk)
+    if name.respond_to?(:to_open)
+      io = name.to_open(*rest, **opts)
+      return io unless blk
+      begin
+        return blk.call(io)
+      ensure
+        io.close if io.respond_to?(:close) && !io.closed?
+      end
+    end
+    path = File.path(name)
+    if path.start_with?("|")
+      IO.popen(path[1..-1], *rest, **opts, &blk)
+    else
+      File.open(path, *rest, **opts, &blk)
+    end
+  end
+  module_function :open
+end
