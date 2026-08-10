@@ -3,6 +3,16 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 既知バグ (プロセス / IO)
+
+- **`File.for_fd` / `File.sysopen` が見えない**。`IO.for_fd` は IO の singleton に
+  定義してあるが File の singleton がそれを継承していない
+  (`File.for_fd` → NoMethodError)。singleton class の継承リンクを確認すること。
+  core/process/spawn_spec の fixture がこれで落ちる。
+- **`Process.spawn` の未対応オプション**: `umask:`、`pgroup:`、`unsetenv_others:`、
+  `rlimit_*`、`:in` に IO 以外の Ruby オブジェクト。`close_others:` と `chdir:` と
+  fd リダイレクトは実装済み。
+
 ## 既知バグ (moving GC, 未修正)
 
 - **`t/hand/struct_data_inherit.rb` / `t/hand/struct_name_arg.rb` が STRESS+PURGE で

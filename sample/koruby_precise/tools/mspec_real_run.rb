@@ -29,8 +29,15 @@ workers = Array.new([jobs, files.size].min) do
       rel = f.sub("#{specdir}/", "")
       td = "#{TMPBASE}/#{rel.gsub(%r{[/.]}, '_')}"
       FileUtils.mkdir_p(td)
-      out, st = Open3.capture2e({ 'MSPEC_RUNNER' => nil, 'SPEC_TEMP_DIR' => td },
-                                "timeout", "20", K, f, chdir: specdir, stdin_data: "")
+      # Capture through a file, not a pipe: a spec that spawns a child (which
+      # inherits the capture descriptor) would otherwise keep the pipe open past
+      # the timeout kill and hang the read forever.
+      log = "#{td}/.out"
+      pid = Process.spawn({ 'MSPEC_RUNNER' => nil, 'SPEC_TEMP_DIR' => td },
+                          "timeout", "-k", "5", "20", K, f,
+                          chdir: specdir, in: "/dev/null", out: log, err: [:child, :out])
+      _, st = Process.waitpid2(pid)
+      out = File.exist?(log) ? File.binread(log) : ""
       FileUtils.rm_rf(td)
       m = RE.match(out.dup.force_encoding("UTF-8").scrub)
       mutex.synchronize do

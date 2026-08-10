@@ -115,6 +115,8 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a;
     int fds[2];
     if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     FILE *rf = fdopen(fds[0], "rb");
     FILE *wf = fdopen(fds[1], "wb");
     if (!rf || !wf) {
@@ -278,15 +280,22 @@ static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (idx >= 3 && (uint32_t)idx < c->vm->io_cnt && c->vm->io_fps[idx]) {   /* 0/1/2 = std streams, never close */
             /* A popen'd stream needs pclose so the child is reaped; keep its
                exit status for $? the way IO.popen's caller expects. */
-            const bool is_pipe = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_popen", 11))) == KORB_TRUE;
-            if (is_pipe) {
-                const int st = pclose(c->vm->io_fps[idx]);
-                c->vm->io_fps[idx] = NULL;
-                CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_intern(c->vm, "@__io_status", 12)),
-                                    LONG2FIX(WIFEXITED(st) ? WEXITSTATUS(st) : st)));
-            } else {
-                fclose(c->vm->io_fps[idx]);
-                c->vm->io_fps[idx] = NULL;
+            const VALUE pidv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9)));
+            fclose(c->vm->io_fps[idx]);
+            c->vm->io_fps[idx] = NULL;
+            if (FIXNUM_P(pidv)) {          /* popen'd: reap the child and publish $? */
+                int raw = 0;
+                const pid_t got = waitpid((pid_t)FIX2LONG(pidv), &raw, 0);
+                if (got > 0) {
+                    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Process", 7));
+                    if (slots[0] != KORB_NIL) {
+                        slots[1] = LONG2FIX(got);
+                        slots[2] = LONG2FIX(raw);
+                        const RESULT sr = korb_send(c, slots + 3, korb_intern(c->vm, "__mkstatus", 10), 0, 2);
+                        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                        korb_const_define(c, korb_intern(c->vm, "$?", 2), sr.value);
+                    }
+                }
             }
         }
     }
@@ -465,6 +474,77 @@ static bool korb_io_mode_arg(VALUE mv, char *mode, size_t cap) {
     return strchr("rwa", mode[0]) != NULL;
 }
 
+/* IO#reopen(path, mode) / IO#reopen(io) — make this stream refer to another
+ * file or descriptor, keeping the same IO object identity. */
+static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    const VALUE t = VALUE_SLICE_GET(a, 0);
+    if (KORB_STRING_P(t)) {
+        uint32_t pl; const char *path = korb_str_cstr_len(t, &pl);
+        char mode[16] = "r";
+        if (VALUE_SLICE_LEN(a) >= 2 && !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
+        if (!freopen(path, mode, fp)) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+        (void)fcntl(fileno(fp), F_SETFD, FD_CLOEXEC);
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    FILE *other = KORB_OBJECT_P(t) ? korb_io_fp(c, t) : NULL;
+    if (UNLIKELY(!other)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(t));
+    fflush(other);
+    fflush(fp);
+    if (dup2(fileno(other), fileno(fp)) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
+    clearerr(fp);
+    return RESULT_OK(VALUE_REF_GET(self));
+}
+
+/* IO#dup / IO#clone — a genuine descriptor dup (dup(2)), not just a copy of the
+ * wrapper object: mspec's output_to_fd saves a stream this way and restores it
+ * with #reopen, which only works if the saved IO owns its own fd. */
+static RESULT korb_m_io_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    fflush(fp);
+    /* Take the access mode from the descriptor itself: the std streams are built
+       without the rw ivar, and fdopen fails if the mode does not match. */
+    const int fl = fcntl(fileno(fp), F_GETFL);
+    const int acc = (fl < 0) ? O_RDONLY : (fl & O_ACCMODE);
+    const int rw = acc == O_WRONLY ? 2 : acc == O_RDWR ? 3 : 1;
+    const int fd = dup(fileno(fp));
+    if (fd < 0) return korb_raise_errno(c, slots, errno, "dup", "");
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    FILE *nf = fdopen(fd, rw == 1 ? "r" : rw == 2 ? "w" : "r+");
+    if (!nf) { close(fd); return korb_raise_errno(c, slots, errno, "fdopen", ""); }
+    return korb_io_make(c, slots, korb_class_obj_of(c, VALUE_REF_GET(self)), nf, rw);
+}
+
+/* IO#pid — the child's pid for a popen'd stream, else nil. */
+static RESULT korb_m_io_pid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    return RESULT_OK(korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_pid", 9))));
+}
+
+static RESULT korb_m_io_close_on_exec_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const int fl = fcntl(fileno(fp), F_GETFD);
+    if (fl < 0) return korb_raise_errno(c, slots, errno, "fcntl", "");
+    return RESULT_OK((fl & FD_CLOEXEC) ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_io_close_on_exec_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    FILE *fp = korb_io_fp(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!fp)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const int fd = fileno(fp);
+    int fl = fcntl(fd, F_GETFD);
+    if (fl < 0) return korb_raise_errno(c, slots, errno, "fcntl", "");
+    if (KORB_TRUTHY(VALUE_SLICE_GET(a, 0))) fl |= FD_CLOEXEC; else fl &= ~FD_CLOEXEC;
+    if (fcntl(fd, F_SETFD, fl) < 0) return korb_raise_errno(c, slots, errno, "fcntl", "");
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+
 /* Encoding.default_internal is captured when the stream is created: changing it
  * afterwards must not affect an already-open IO. */
 static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF io) {
@@ -497,6 +577,7 @@ static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) perm = (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
     const int fd = open(path, flags, perm);
     if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     return RESULT_OK(LONG2FIX(fd));
 }
 
@@ -529,62 +610,6 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     return RESULT_OK(VALUE_REF_GET(nio));
 }
 
-/* IO.popen(cmd, mode = "r") [ { |io| ... } ] — run cmd through the shell and
- * wrap its pipe.  An Array command is joined with single-quote escaping (koruby
- * has no fork/exec path yet, so the shell always runs). */
-static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
-                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    uint32_t n = VALUE_SLICE_LEN(a);
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) n--;      /* drop the options Hash */
-    if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    char cmd[8192]; size_t cl = 0;
-    const VALUE cv = VALUE_SLICE_GET(a, 0);
-    if (KORB_ARRAY_P(cv)) {
-        const uint32_t len = VAL2ARY(cv)->len;
-        for (uint32_t i = 0; i < len; i++) {
-            const VALUE e = korb_items_data(VAL2ARY(cv)->items)[i];
-            if (UNLIKELY(!KORB_STRING_P(e)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(e));
-            uint32_t el; const char *ep = korb_str_cstr_len(e, &el);
-            if (i > 0 && cl + 1 < sizeof cmd) cmd[cl++] = ' ';
-            if (cl + 1 < sizeof cmd) cmd[cl++] = '\'';
-            for (uint32_t k = 0; k < el && cl + 4 < sizeof cmd; k++) {
-                if (ep[k] == '\'') { memcpy(cmd + cl, "'\\''", 4); cl += 4; }
-                else cmd[cl++] = ep[k];
-            }
-            if (cl + 1 < sizeof cmd) cmd[cl++] = '\'';
-        }
-    } else if (KORB_STRING_P(cv)) {
-        uint32_t el; const char *ep = korb_str_cstr_len(cv, &el);
-        if (el >= sizeof cmd) el = sizeof cmd - 1;
-        memcpy(cmd, ep, el); cl = el;
-    } else {
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(cv));
-    }
-    cmd[cl] = '\0';
-    char mode[16] = "r";
-    if (n >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
-        !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
-    char pm[3] = { mode[0] == 'r' ? 'r' : 'w', '\0', '\0' };   /* popen(3) takes only "r"/"w" */
-    FILE *fp = popen(cmd, pm);
-    if (!fp) return korb_raise_errno(c, slots, errno, "popen", cmd);
-    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, pm[0] == 'r' ? 1 : 2));
-    VALUE_REF io = VALUE_REF_AT(&slots[0]);
-    CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_popen", 11)), KORB_TRUE));
-    if (strchr(mode, 'b'))
-        CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
-    if (block == NULL) return RESULT_OK(VALUE_REF_GET(io));
-    slots[1] = VALUE_REF_GET(io);
-    RESULT br = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
-    slots[1] = br.value;                      /* root across close's GC */
-    slots[2] = VALUE_REF_GET(io);
-    RESULT cr = korb_send(c, slots + 3, korb_intern(c->vm, "close", 5), 0, 0);
-    if (br.state != KORB_NORMAL) { br.value = slots[1]; return br; }
-    if (cr.state != KORB_NORMAL) return cr;
-    return RESULT_OK(slots[1]);
-}
-
 /* File.open(path, mode = "r") [ { |io| ... } ] — with a block, yields the IO and
  * closes it after (returning the block value); without, returns the IO. */
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -603,6 +628,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
         fp = fdopen(fd, acc == 1 ? ((fl & O_APPEND) ? "a" : "w") : acc == 2 ? "r+" : "r");   /* wraps the fd; no re-truncate */
         if (!fp) { close(fd); return korb_raise_errno(c, slots, errno, "rb_sysopen", path); }
+        (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     } else {
         char mode[8] = "r";
         if (VALUE_SLICE_LEN(a) >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1))) {
@@ -619,6 +645,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
         fp = fopen(path, mode);
         if (!fp) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+        (void)fcntl(fileno(fp), F_SETFD, FD_CLOEXEC);
     }
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fp, rw));   /* self = the File class */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
@@ -671,6 +698,10 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOB("each_char", each_char, 0);   IOM("getc", getc, 0);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     IOM("binmode?", binmode_p, 0);
+    IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
+    IOM("dup", dup, 0);              IOM("clone", dup, 0);
+    IOM("close_on_exec?", close_on_exec_p, 0);
+    IOM("close_on_exec=", close_on_exec_set, 1);
     IOM("wait_readable", wait_readable, -1);   /* POLL blop (builtins/thread.c) */
     IOM("wait_writable", wait_writable, -1);
     IOM("__io_poll", poll_raw, -1);            /* 汎用 events poll (IO#wait 用) */
@@ -690,7 +721,6 @@ void korb_init_io(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, io_sing, "sysopen",   korb_m_io_s_sysopen,   -1);
     korb_class_def_cfn(c, io_sing, "new",       korb_m_io_s_new_fd,    -1);
     korb_class_def_cfn(c, io_sing, "for_fd",    korb_m_io_s_new_fd,    -1);
-    korb_class_def_cfn_blk(c, io_sing, "popen", korb_m_io_s_popen,     -1);
 #undef IOM
 #undef IOB
     /* reparent File under IO so File.open's instances inherit these methods.

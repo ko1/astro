@@ -365,3 +365,45 @@ module Kernel
   end
   private :pp
 end
+
+module Process
+  # The wait(2) status word behind $?.  `@raw` is the value waitpid filled in.
+  class Status
+    def initialize(pid, raw)
+      @pid = pid
+      @raw = raw
+    end
+
+    def pid = @pid
+    def to_i = @raw
+    def to_s = exitstatus ? "pid #{@pid} exit #{exitstatus}" : "pid #{@pid} SIG#{termsig}"
+    def inspect = "#<Process::Status: #{to_s}>"
+    def exited? = (@raw & 0x7f) == 0
+    def exitstatus = exited? ? ((@raw >> 8) & 0xff) : nil
+    def signaled? = ((@raw & 0x7f) + 1) >> 1 > 0
+    def termsig = signaled? ? (@raw & 0x7f) : nil
+    def stopped? = (@raw & 0xff) == 0x7f
+    def stopsig = stopped? ? ((@raw >> 8) & 0xff) : nil
+    def success? = exited? ? exitstatus == 0 : nil
+    def coredump? = false
+    def ==(other) = other.is_a?(Status) ? to_i == other.to_i : to_i == other
+    def &(mask) = @raw & mask
+    def >>(n) = @raw >> n
+  end
+
+  def self.__mkstatus(pid, raw) = Status.new(pid, raw)
+
+  # The fork/exec primitives live on Object (builtins/process.c registers them
+  # before this file is parsed); Process just names them.
+  WNOHANG = 1
+  WUNTRACED = 2
+  def self.spawn(*a) = __spawn(*a)
+  def self.wait(*a) = __waitpid(*a)
+  def self.waitpid(*a) = __waitpid(*a)
+  def self.wait2(*a) = __waitpid2(*a)
+  def self.waitpid2(*a) = __waitpid2(*a)
+  def self.kill(*a) = __kill(*a)
+  def self.getpgid(*a) = __getpgid(*a)
+  def self.getpgrp = __getpgid(0)
+  def self.setpgid(pid, pgid) = __setpgid(pid, pgid)
+end

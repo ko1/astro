@@ -2604,6 +2604,24 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 
+      case PM_X_STRING_NODE: {          /* `cmd` → self.`("cmd") */
+        const pm_x_string_node_t *xn = (const pm_x_string_node_t *)node;
+        uint32_t len;
+        const char *bytes = kp_strdup_pm(&xn->unescaped, &len);
+        const uint32_t bt = korb_intern(tc->c->vm, "`", 1);
+        NODE *recv, *arg;
+        WITH_CHAIN(tc, KP_SEND1_SC, (recv = bake_self(tc),
+                                     arg = ALLOC_node_str(bytes, len)));
+        return kp_send1(bt, kp_line(tc, node), recv, arg);
+      }
+      case PM_INTERPOLATED_X_STRING_NODE: {   /* `cmd #{x}` → self.`(dstr) */
+        const pm_interpolated_x_string_node_t *xn = (const pm_interpolated_x_string_node_t *)node;
+        const uint32_t bt = korb_intern(tc->c->vm, "`", 1);
+        NODE *recv, *arg;
+        WITH_CHAIN(tc, KP_SEND1_SC, (recv = bake_self(tc),
+                                     arg = build_dstr(tc, xn->parts.nodes, xn->parts.size)));
+        return kp_send1(bt, kp_line(tc, node), recv, arg);
+      }
       case PM_INTERPOLATED_STRING_NODE: {
         const pm_interpolated_string_node_t *in = (const pm_interpolated_string_node_t *)node;
         return build_dstr(tc, in->parts.nodes, in->parts.size);

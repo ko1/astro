@@ -7724,6 +7724,7 @@ static RESULT korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_io_s_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 #include "builtins/io.c"
+#include "builtins/process.c"
 #include "builtins/time.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
@@ -10959,6 +10960,7 @@ korb_ctx_new(void)
     korb_init_env(c, c->slots);
     korb_init_file(c, c->slots);
     korb_init_io(c, c->slots);
+    korb_init_process(c, c->slots);
     korb_init_time(c, c->slots);
     /* RUBY_* version constants (specs/guards reference these).  Values track the
      * CRuby the differential tests run against so version guards behave the same. */
