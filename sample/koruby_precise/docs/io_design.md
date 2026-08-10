@@ -175,52 +175,72 @@ poll は regular file に対し常に ready を返し、read(2) は O_NONBLOCK �
 - `IO.select` は io.c 側で pollfd 配列を組んで POLL blop 1 個
   (真の意味論 =「その時点で ready な全部」が revents で一発で返る)。
 
-### 実装状況と残作業 (2026-08-10)
+### 実装状況 (2026-08-10 完了)
 
-- 済: `korb_io_read_bytes` / `korb_io_read_all_bytes` / `korb_io_write_bytes` に
-  byte 単位 I/O を集約。read は `korb_str_alloc` の未初期化バッファへ直接転送
-  (malloc + copy を廃止)。
-- 済: `vm->io_fps` (FILE* 配列) → `vm->io_reps` (KorbIORep* 配列)。rep は
-  libc alloc で不動。今は `fp` と `fd` を両方持ち、`fp != NULL` が stdio 経路。
-- **残: `fp` の全廃**。以下を rep の自前バッファで書き直す。
+**stdio は撤去済み。descriptor を包む `FILE*` はゼロ。**
 
 ```c
 typedef struct KorbIORep {
-    int      fd;
-    uint8_t  flags;      /* READABLE/WRITABLE/EOF/BINARY/APPEND/TTY */
-    char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead */
-    char    *wbuf; uint32_t wlen, wcapa;         /* write buffer */
-    off_t    pos;                                /* 論理位置 (rbuf 補正込み) */
+    int      fd;              /* -1 = closed; KORB_IO_FD_MEM = in-memory sink */
+    uint8_t  eof;             /* read(2) が 0 を返した */
+    uint8_t  sync;            /* write ごとに flush */
+    uint8_t  nonblk;          /* O_NONBLOCK: block する代わりに park する */
+    char    *rbuf; uint32_t rpos, rlen, rcapa;   /* read-ahead: 生きているのは [rpos, rlen) */
+    char    *wbuf; uint32_t wlen, wcapa;         /* write-behind */
 } KorbIORep;
 ```
 
-置き換え対象と方針:
+byte 層 (descriptor に触るのはここだけ):
+`korb_io_wr_p` / `korb_io_fill_p` / `korb_io_getb_p` / `korb_io_unget` /
+`korb_io_seek_rep` / `korb_io_tell_rep` / `korb_io_flush_rep_p` /
+`korb_io_close_rep` / `korb_io_park`。
+`_p` 版は `CTX *c` を取り、`c == NULL` が「ここでは park してはいけない」の印
+(exit 経路・close・in-memory sink)。park 中に配送された Thread#raise / #kill は
+`RESULT *perr` out-param で伝播する。
 
-| 現行 | 置き換え |
+置き換え結果:
+
+| 旧 | 現在 |
 |---|---|
-| `fread` | `rbuf` から供給。空なら `read(2)`。EAGAIN → `wait_readable` で park → retry |
-| `fwrite` | `wbuf` に積む。閾値超え / flush / close / tty なら `write(2)` (部分書き込みループ)。EAGAIN → `wait_writable` |
-| `fgetc` ×3 | `rbuf[rpos++]`、空なら refill |
-| `ungetc` ×1 | `rpos > 0` なら `rpos--`。先頭なら rbuf を 1 バイト右シフト (`rcapa` 保証済み) |
-| `fseek`/`ftell` | `lseek(2)` + `rlen - rpos` 補正。seek 時に rbuf 破棄、wbuf は flush |
-| `feof` | `rpos == rlen` かつ refill が 0 を返したとき |
-| `fflush` | wbuf を書き切る |
-| `fdopen`/`fclose` | 不要 (fd を直接持つ)。close は flush + `close(2)` |
-| `freopen` (reopen) | `open(2)` + `dup2(2)` + バッファ破棄 |
-| `isatty(fileno(fp))` | `isatty(rep->fd)` |
+| `fread` | `rbuf` から供給、空なら `read(2)`。EAGAIN → park → retry |
+| `fwrite` | `wbuf` に積んで閾値/sync/flush/close で `write(2)` (部分書き込みループ) |
+| `fgetc` | `korb_io_getb_p` |
+| `ungetc` | `korb_io_unget` — **1 バイト制限が無くなった** (バッファが自前なので run ごと押し戻せる) |
+| `fseek`/`ftell` | `lseek(2)` + `rlen - rpos` 補正。seek で rbuf 破棄、wbuf は flush |
+| `feof` | `korb_io_fill_p` が 0 を返したとき |
+| `fflush` | `korb_io_flush_rep_p` |
+| `fdopen`/`fclose`/`freopen` | 不要。reopen は `open(2)` + `dup2(2)` + バッファ破棄 |
+| `getline(3)` | `korb_io_read_line` (rbuf 上の memchr スキャン) |
+| `open_memstream` (出力捕捉) | `fd == KORB_IO_FD_MEM` の rep |
 
-**park 規律**: rbuf/wbuf は rep 内 (不動) なので park を跨いでポインタが stale に
-ならない。String との境界は helper 内の copy 1 回に閉じる。ポインタを String から
-取って park を跨ぐのは禁止 (readiness でも completion でも壊れる)。
+**park 規律 (実装済み)**: 転送バッファは rep 内 (libc alloc、不動) なので park を
+跨いでも動かない。String との境界は copy 1 回。**String のバイト列へのポインタを
+park を跨いで保持するのは禁止** — read は「fill → String を再導出 → memcpy」の形に
+統一し (`read_bytes` / `read_all_bytes` / `read_line` が同じ骨格)、write は park し得る
+stream では run 全体を先に wbuf へ copy してから drain する。
+この規律違反は CodeQL の borrow-after-gc が実際に 1 件検出した (`IO#reopen` の path)。
 
-**順序規律**: 「poll が readable と言っても次の read が block しない保証は無い」ので、
-必ず **nonblock で試す → EAGAIN → park → retry**。逆順 (park してから blocking 呼び出し)
-は spurious wakeup / abort された接続 / 複数 reader の競合で scheduler ごと固まる。
+**順序規律 (実装済み)**: 必ず **nonblock で試す → EAGAIN → park → retry**。
+逆順 (park してから blocking 呼び出し) は spurious wakeup / abort された接続 /
+複数 reader の競合で scheduler ごと固まる。`korb_io_park` のコメントに明記。
 
-**移行時の注意**: stdio と生 fd を同じ fd に混在させるとバッファが二重になって
-データを落とすので、切り替えは IO オブジェクト単位で一括。$stdout の
-`KORB_FL_DEFAULT_IO` 高速パスは wbuf 経路に載せ替える (unbuffered にすると
-`puts` ごとに syscall が飛んで benchmark が落ちる)。
+**nonblk にする範囲**: koruby が方針を握れる descriptor だけ — `IO.pipe` の両端、
+popen の親側、socket (`SO_TYPE` で検出するので `IO.new(sockfd)` も対象)。
+std stream は他プロセスと共有する open file description なので kernel blocking のまま。
+`spawn` の子には blocking な fd を渡す (`O_NONBLOCK` は description の属性なので、
+EAGAIN を理解しない子プログラムに漏れる)。
+
+**exit と fork**: stdio が消えたので自動 flush が無い。`korb_io_flush_std` を
+main の全 return / `exit` / `exit!` / `abort` と **fork の直前**に置く
+(子がバッファを継承すると二重出力になる)。
+
+**stdout のバッファリング**: tty なら sync、piped ならバッファ。`IO#sync=` は
+実際に効く (true にすると溜まっている分を drain するので、代入前の出力にも効く)。
+
+**残っている `FILE*`**: `open_memstream` のみ。`korb_fprint_*` (inspect/to_s の
+プリンタ群) が `FILE*` を取るのはこの文字列ビルダ用で、descriptor には繋がらない。
+`Kernel#p` / `#print` は「memstream に組み立て → rep へ 1 回 write」で、
+`#puts` と同じ sink を通る (混ぜると出力順序が割れるため分離不可)。
 
 ## cancel / 割り込み (Thread#kill / #raise / signal)
 
