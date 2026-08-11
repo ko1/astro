@@ -5139,7 +5139,11 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
      * routes back here (Fixnum/String/Symbol) — that would recurse forever. */
     if (KORB_CLASS_P(l) || KORB_OBJECT_P(l)) {
         uint32_t mid = korb_intern(c->vm, korb_cmp_op_name[op], (uint32_t)strlen(korb_cmp_op_name[op]));
-        if (korb_responds_to(c, l, mid)) {
+        /* A user object with no such method still dispatches: korb_send_impl
+         * runs the method_missing protocol, which `obj >= x` must reach like
+         * any other missing method.  (Classes keep the responds_to gate — a
+         * Class falling through means Module#< below, not method_missing.) */
+        if (KORB_OBJECT_P(l) || korb_responds_to(c, l, mid)) {
             slots[0] = l; slots[1] = r;
             return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
         }
@@ -5177,9 +5181,13 @@ RESULT korb_user_binop(CTX *c, VALUE *slots, VALUE l, VALUE rhs, const char *op,
      * operator has already been tried and declined, so a method the receiver's
      * class actually defines is the right answer whatever the receiver's type
      * is.  (Gating this on OBJECT/CLASS used to hide Ruby-defined operators on
-     * builtin-typed receivers — Enumerator#+ was unreachable via `a + b`.) */
+     * builtin-typed receivers — Enumerator#+ was unreachable via `a + b`.)
+     * A plain user object with NO such method still goes through the dispatch:
+     * korb_send_impl runs the method_missing protocol, which `obj >= x` must
+     * reach like any other missing method (mspec's operator matchers are
+     * method_missing-driven BasicObject shells). */
     const uint32_t mid = korb_intern(c->vm, op, (uint32_t)strlen(op));
-    if (korb_responds_to(c, l, mid)) {
+    if (korb_responds_to(c, l, mid) || KORB_OBJECT_P(l)) {
         slots[0] = l; slots[1] = rhs; *handled = true;
         return korb_send_impl(c, slots + 2, mid, 0, 1, NULL, NULL, KORB_NIL);
     }
