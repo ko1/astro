@@ -584,6 +584,157 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(slots[1]);
 }
 
+/* ---- resource limits ------------------------------------------------------ */
+#include <sys/resource.h>
+
+static const struct { const char *name; int res; } korb_rlimit_tab[] = {
+    { "RLIMIT_CPU", RLIMIT_CPU }, { "RLIMIT_FSIZE", RLIMIT_FSIZE },
+    { "RLIMIT_DATA", RLIMIT_DATA }, { "RLIMIT_STACK", RLIMIT_STACK },
+    { "RLIMIT_CORE", RLIMIT_CORE }, { "RLIMIT_NOFILE", RLIMIT_NOFILE },
+    { "RLIMIT_AS", RLIMIT_AS },
+#ifdef RLIMIT_RSS
+    { "RLIMIT_RSS", RLIMIT_RSS },
+#endif
+#ifdef RLIMIT_NPROC
+    { "RLIMIT_NPROC", RLIMIT_NPROC },
+#endif
+#ifdef RLIMIT_MEMLOCK
+    { "RLIMIT_MEMLOCK", RLIMIT_MEMLOCK },
+#endif
+#ifdef RLIMIT_LOCKS
+    { "RLIMIT_LOCKS", RLIMIT_LOCKS },
+#endif
+#ifdef RLIMIT_SIGPENDING
+    { "RLIMIT_SIGPENDING", RLIMIT_SIGPENDING },
+#endif
+#ifdef RLIMIT_MSGQUEUE
+    { "RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE },
+#endif
+#ifdef RLIMIT_NICE
+    { "RLIMIT_NICE", RLIMIT_NICE },
+#endif
+#ifdef RLIMIT_RTPRIO
+    { "RLIMIT_RTPRIO", RLIMIT_RTPRIO },
+#endif
+#ifdef RLIMIT_RTTIME
+    { "RLIMIT_RTTIME", RLIMIT_RTTIME },
+#endif
+};
+
+/* __rlimit_table → { "RLIMIT_CORE" => 4, ... } plus RLIM_INFINITY under "INFINITY". */
+static RESULT korb_m_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 24));
+    VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (size_t i = 0; i < sizeof korb_rlimit_tab / sizeof korb_rlimit_tab[0]; i++) {
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, korb_rlimit_tab[i].name,
+                                       (uint32_t)strlen(korb_rlimit_tab[i].name)));
+        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_rlimit_tab[i].res)));
+    }
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, "INFINITY", 8));
+    CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX((intptr_t)RLIM_INFINITY)));
+    return RESULT_OK(VALUE_REF_GET(h));
+}
+
+/* __getrlimit(resource) → [soft, hard] */
+static RESULT korb_m_getrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    struct rlimit rl;
+    if (getrlimit((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), &rl) != 0)
+        return korb_raise_errno(c, slots, errno, "getrlimit", "");
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)rl.rlim_cur)));
+    CHECK(korb_ary_push_val(c, slots + 1, ar, LONG2FIX((intptr_t)rl.rlim_max)));
+    return RESULT_OK(VALUE_REF_GET(ar));
+}
+
+/* __setrlimit(resource, soft[, hard]) → nil */
+static RESULT korb_m_setrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    struct rlimit rl;
+    const int res = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (getrlimit(res, &rl) != 0) return korb_raise_errno(c, slots, errno, "getrlimit", "");
+    rl.rlim_cur = (rlim_t)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)))
+        rl.rlim_max = (rlim_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    if (setrlimit(res, &rl) != 0) return korb_raise_errno(c, slots, errno, "setrlimit", "");
+    return RESULT_OK(KORB_NIL);
+}
+
+/* Copy a String argument into a NUL-terminated stack buffer (nil → ""). */
+static bool korb_cstr_arg(VALUE v, char *buf, size_t cap) {
+    if (v == KORB_NIL) { buf[0] = '\0'; return true; }
+    if (!KORB_STRING_P(v)) return false;
+    uint32_t n; const char *const s = korb_str_cstr_len(v, &n);
+    if (n >= cap) n = (uint32_t)cap - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return true;
+}
+
+/* __process_test(cmd_char, path[, path2]) — Kernel#test's file predicates. */
+static RESULT korb_m_process_test(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE cv = VALUE_SLICE_GET(a, 0);
+    int cmd = 0;
+    if (FIXNUM_P(cv)) cmd = (int)FIX2LONG(cv);
+    else if (KORB_STRING_P(cv) && VAL2STR(cv)->len >= 1) cmd = (unsigned char)korb_strbuf_data(VAL2STR(cv)->buf)[0];
+    else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    char path[4096];
+    if (!korb_cstr_arg(VALUE_SLICE_GET(a, 1), path, sizeof path))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct stat st;
+    const bool ok = stat(path, &st) == 0;
+    struct stat lst;
+    const bool lok = lstat(path, &lst) == 0;
+    switch (cmd) {
+      case 'e': return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
+      case 'f': return RESULT_OK((ok && S_ISREG(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'd': return RESULT_OK((ok && S_ISDIR(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'l': return RESULT_OK((lok && S_ISLNK(lst.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'p': return RESULT_OK((ok && S_ISFIFO(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'S': return RESULT_OK((ok && S_ISSOCK(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'b': return RESULT_OK((ok && S_ISBLK(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'c': return RESULT_OK((ok && S_ISCHR(st.st_mode)) ? KORB_TRUE : KORB_FALSE);
+      case 'r': case 'R': return RESULT_OK(access(path, R_OK) == 0 ? KORB_TRUE : KORB_FALSE);
+      case 'w': case 'W': return RESULT_OK(access(path, W_OK) == 0 ? KORB_TRUE : KORB_FALSE);
+      case 'x': case 'X': return RESULT_OK(access(path, X_OK) == 0 ? KORB_TRUE : KORB_FALSE);
+      case 'z': return RESULT_OK((ok && st.st_size == 0) ? KORB_TRUE : KORB_FALSE);
+      case 's': return RESULT_OK((ok && st.st_size > 0) ? LONG2FIX((intptr_t)st.st_size) : KORB_NIL);
+      case 'u': return RESULT_OK((ok && (st.st_mode & S_ISUID)) ? KORB_TRUE : KORB_FALSE);
+      case 'g': return RESULT_OK((ok && (st.st_mode & S_ISGID)) ? KORB_TRUE : KORB_FALSE);
+      case 'k': return RESULT_OK((ok && (st.st_mode & S_ISVTX)) ? KORB_TRUE : KORB_FALSE);
+      case 'o': return RESULT_OK((ok && st.st_uid == geteuid()) ? KORB_TRUE : KORB_FALSE);
+      case 'O': return RESULT_OK((ok && st.st_uid == getuid()) ? KORB_TRUE : KORB_FALSE);
+      case 'G': return RESULT_OK((ok && st.st_gid == getgid()) ? KORB_TRUE : KORB_FALSE);
+      case 'M': case 'A': case 'C': {
+        if (!ok) return korb_raise_errno(c, slots, ENOENT, "stat", path);
+        const time_t t = cmd == 'M' ? st.st_mtime : cmd == 'A' ? st.st_atime : st.st_ctime;
+        slots[0] = LONG2FIX((intptr_t)t);
+        return korb_send(c, slots + 1, korb_intern(c->vm, "__time_at", 9), 0, 0);
+      }
+      default: break;
+    }
+    /* two-path comparisons */
+    if (cmd == '=' || cmd == '<' || cmd == '>' || cmd == '-') {
+        char p2[4096];
+        if (VALUE_SLICE_LEN(a) < 3 || !korb_cstr_arg(VALUE_SLICE_GET(a, 2), p2, sizeof p2))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
+        struct stat s2;
+        if (!ok || stat(p2, &s2) != 0) return korb_raise_errno(c, slots, ENOENT, "stat", path);
+        if (cmd == '=') return RESULT_OK(st.st_mtime == s2.st_mtime ? KORB_TRUE : KORB_FALSE);
+        if (cmd == '<') return RESULT_OK(st.st_mtime <  s2.st_mtime ? KORB_TRUE : KORB_FALSE);
+        if (cmd == '>') return RESULT_OK(st.st_mtime >  s2.st_mtime ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK((st.st_dev == s2.st_dev && st.st_ino == s2.st_ino) ? KORB_TRUE : KORB_FALSE);
+    }
+    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown command '%c'", (char)cmd);
+}
+
 static RESULT korb_m_process_getpgid(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const pid_t pid = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? (pid_t)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
@@ -689,6 +840,10 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__setpgid",  korb_m_process_setpgid,  2);
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
     korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
+    korb_class_def_cfn(c, obj, "__rlimit_table",   korb_m_rlimit_table,    0);
+    korb_class_def_cfn(c, obj, "__getrlimit",      korb_m_getrlimit,       1);
+    korb_class_def_cfn(c, obj, "__setrlimit",      korb_m_setrlimit,      -1);
+    korb_class_def_cfn(c, obj, "__process_test",   korb_m_process_test,   -1);
     korb_class_def_cfn(c, obj, "__signal_signame", korb_m_signal_signame,  1);
     korb_class_def_cfn(c, obj, "__signal_signo",   korb_m_signal_signo,    1);
     const VALUE io_cls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));

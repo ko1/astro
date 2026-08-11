@@ -221,6 +221,62 @@ module Process
     end
   end
   def self.times; Struct.new(:utime, :stime, :cutime, :cstime).new(0.0, 0.0, 0.0, 0.0); end
+
+  def self.getrlimit(resource) = __getrlimit(__as_rlimit_int(resource))
+  def self.setrlimit(resource, soft, hard = nil)
+    r = __as_rlimit_int(resource)
+    s = __as_rlimit_int(soft)
+    __setrlimit(r, s, hard.nil? ? s : __as_rlimit_int(hard))
+  end
+
+  def self.__as_rlimit_int(v)
+    return v if v.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into Integer" unless v.respond_to?(:to_int)
+    i = v.to_int
+    raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
+    i
+  end
+  private_class_method :__as_rlimit_int
+
+  def self.clock_getres(_clk = CLOCK_MONOTONIC, unit = :float_second)
+    ns = 1
+    case unit
+    when :float_second      then ns / 1_000_000_000.0
+    when :float_millisecond then ns / 1_000_000.0
+    when :float_microsecond then ns / 1000.0
+    when :millisecond       then 0
+    when :microsecond       then 0
+    else ns
+    end
+  end
+
+  def self.argv0 = $0
+
+  # Reap the child in the background; the thread's value is its Process::Status.
+  def self.detach(pid)
+    Thread.new(pid) { |p| Process.wait2(p)[1] }
+  end
+
+  module Sys
+    def self.getuid = Process.uid
+    def self.geteuid = Process.euid
+    def self.getgid = Process.gid
+    def self.getegid = Process.egid
+  end
+end
+
+# Resource limits.  The RLIMIT_* numbers are the platform's, so the constant set
+# matches what getrlimit(2) actually accepts here.  Done at top level: a builtin
+# called from a module *body* (self = the module) does not resolve, only from
+# inside a method.
+__rlimit_table.each do |name, num|
+  if name == "INFINITY"
+    Process.const_set(:RLIM_INFINITY, num)
+    Process.const_set(:RLIM_SAVED_MAX, num)
+    Process.const_set(:RLIM_SAVED_CUR, num)
+  else
+    Process.const_set(name, num)
+  end
 end
 
 module GC
@@ -902,4 +958,41 @@ end
 module Kernel
   def trap(sig, command = nil, &blk) = Signal.trap(sig, command, &blk)
   module_function :trap
+
+  # test(cmd, file[, file2]) — the file predicates, spelled as a character.
+  def test(cmd, file1, file2 = nil) = __process_test(cmd, File.path(file1), file2 && File.path(file2))
+  module_function :test
+
+  # $-variable tracing: koruby has no hook on global assignment, so the
+  # registration is recorded (and #untrace_var returns it) but never fires.
+  def trace_var(name, cmd = nil, &blk)
+    (($__traced_vars ||= {})[name.to_sym] ||= []) << (cmd || blk)
+    nil
+  end
+  # Returns the removed commands (CRuby hands back the list it dropped).
+  def untrace_var(name, cmd = nil)
+    h = ($__traced_vars ||= {})
+    k = name.to_sym
+    return nil unless h.key?(k)
+    if cmd
+      h[k].delete(cmd)
+      [cmd]
+    else
+      h.delete(k)
+    end
+  end
+  module_function :trace_var, :untrace_var
+end
+
+class Object
+  # The Method object for a singleton method, or NameError when the method is
+  # not defined on the singleton class itself.
+  def singleton_method(name)
+    sc = singleton_class
+    unless sc.instance_methods(false).include?(name.to_sym) ||
+           sc.private_instance_methods(false).include?(name.to_sym)
+      raise NameError.new("undefined singleton method '#{name}' for #{inspect}", name.to_sym)
+    end
+    method(name)
+  end
 end
