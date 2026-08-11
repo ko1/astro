@@ -76,7 +76,18 @@
   koruby は元文字列基準で見ている。regex engine に「offset から match するが
   その offset を文字列先頭とみなす」モードが要る。library/stringscanner の
   err 63 のかなりの部分。
-- **`Socket.getifaddrs` が無い** (13 例)。`Socket::Ifaddr` ごと未実装。
+- **`Socket.getifaddrs` は常に [] を返す** (13 例)。`Socket::Ifaddr` 未実装。
+
+- **`core/kernel/require_spec.rb` が whole-file hang** (2026-08-11、Kernel#require
+  を super から見えるようにしたことで初めてここまで到達するようになった)。
+  "(concurrently) blocks a second thread from returning while the 1st is still
+  requiring" で無限ループ。fixture が
+  `Thread.pass until t.backtrace.any? { |c| c.include? "require" } && t.stop?`
+  で他スレッドを待つが、koruby には (a) require の per-feature ロックが無く
+  t2 がブロックしない (b) 他 green thread の #backtrace が取れない ので
+  条件が永久に成立しない。20s の harness timeout まで 100% CPU で回る。
+  直すには require に「読み込み中の feature」テーブル + 待ち合わせと、
+  parked な green thread の backtrace が要る。
 
 - **TracePoint (76 例) — 設計検討と実測だけ済み、未着手**。
   部分評価は `EVAL_ARG` で子 dispatcher をインライン展開して融合するので、

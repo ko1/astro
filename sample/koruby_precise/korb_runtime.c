@@ -10998,14 +10998,6 @@ korb_ctx_new(void)
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "require", korb_bi_require, -1);
-    {   /* the same three as Kernel instance methods, for `super` (see above) */
-        const VALUE kmod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
-        if (KORB_CLASS_P(kmod)) {
-            korb_class_def_cfn(c, kmod, "require",          korb_m_kernel_require,          -1);
-            korb_class_def_cfn(c, kmod, "require_relative", korb_m_kernel_require_relative, -1);
-            korb_class_def_cfn(c, kmod, "load",             korb_m_kernel_load,             -1);
-        }
-    }
     korb_builtin_define(c, "require_relative", korb_bi_require_relative, -1);
     korb_builtin_define(c, "load", korb_bi_load, -1);
     korb_builtin_define(c, "eval",  korb_bi_eval,  -1);
@@ -11031,6 +11023,18 @@ korb_ctx_new(void)
     /* Builtin class objects must exist before core methods are registered onto
      * them (korb_def_cmethod attaches CFUNC entries to the class objects). */
     korb_init_builtin_classes(c, c->slots);
+    {   /* require / require_relative / load as real Kernel instance methods, so
+         * `class X; def require(n); super n; end; end` has a superclass method
+         * to reach.  This MUST come after korb_init_builtin_classes — the Kernel
+         * module does not exist before it, and an earlier attempt sat above the
+         * call and silently did nothing (KORB_CLASS_P(nil) is false). */
+        const VALUE kmod = korb_const_get(c->vm, korb_intern(c->vm, "Kernel", 6));
+        if (KORB_CLASS_P(kmod)) {
+            korb_class_def_cfn(c, kmod, "require",          korb_m_kernel_require,          -1);
+            korb_class_def_cfn(c, kmod, "require_relative", korb_m_kernel_require_relative, -1);
+            korb_class_def_cfn(c, kmod, "load",             korb_m_kernel_load,             -1);
+        }
+    }
     korb_init_exception_classes(c, c->slots);
     korb_init_math(c, c->slots);
     korb_init_regexp(c, c->slots);
