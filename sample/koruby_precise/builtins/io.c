@@ -1419,6 +1419,44 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 /* File.open(path, mode = "r") [ { |io| ... } ] — with a block, yields the IO and
  * closes it after (returning the block value); without, returns the IO. */
+/* open(2) that never stalls the scheduler on a FIFO.  Opening a FIFO blocks
+ * until the other end appears — inside one native thread that would freeze
+ * every green thread, including the one that was about to open the other end.
+ * So FIFOs are opened O_NONBLOCK: reads succeed immediately; writes get ENXIO
+ * until a reader exists, which we turn into park-and-retry.  The flag is
+ * cleared again after the open (the rep layer manages its own nonblocking). */
+static int korb_open_no_stall(CTX *c, VALUE *slots, const char *path, int flags, mode_t perm, RESULT *perr) {
+    perr->state = KORB_NORMAL;
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISFIFO(st.st_mode))
+        return open(path, flags, perm);                    /* not a FIFO — plain open */
+    for (;;) {
+        const int fd = open(path, flags | O_NONBLOCK, perm);
+        if (fd >= 0) {
+            if ((flags & O_ACCMODE) == O_RDONLY) {
+                /* A blocking read-open waits for a writer.  POLLHUP without
+                 * POLLIN means "no writer attached (yet)" — park and re-poll
+                 * until a writer opens (POLLHUP clears) or data arrives. */
+                for (;;) {
+                    struct pollfd pf; pf.fd = fd; pf.events = POLLIN; pf.revents = 0;
+                    ssize_t ready = 0;
+                    const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, 0.02, &ready);
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) { *perr = pr; close(fd); return -1; }
+                    if (!(ready > 0 && (pf.revents & POLLHUP) && !(pf.revents & POLLIN))) break;
+                }
+            }
+            const int fl = fcntl(fd, F_GETFL);
+            if (fl >= 0) (void)fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+            return fd;
+        }
+        if (errno != ENXIO) return -1;                     /* writer with no reader yet → wait */
+        struct pollfd pf; pf.fd = -1; pf.events = 0; pf.revents = 0;   /* fd -1 is ignored: pure timed park */
+        ssize_t ready = 0;
+        const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, 0.02, &ready);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) { *perr = pr; return -1; }
+    }
+}
+
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
     const VALUE pv = VALUE_SLICE_GET(a, 0);
@@ -1431,8 +1469,12 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const mode_t perm = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
         const int acc = fl & 3;   /* O_RDONLY=0 / O_WRONLY=1 / O_RDWR=2 */
         rw = acc == 1 ? 2 : acc == 2 ? 3 : 1;
-        fd = open(path, fl, perm);
-        if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+        char pbuf[4096];                                   /* stack copy: the open may park → GC moves the String */
+        snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
+        RESULT operr;
+        fd = korb_open_no_stall(c, slots, pbuf, fl, perm, &operr);
+        if (UNLIKELY(operr.state != KORB_NORMAL)) return operr;
+        if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pbuf);
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     } else {
         char mode[8] = "r";
@@ -1448,8 +1490,12 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (b == 'r') rw = plus ? 3 : 1;
         else if (b == 'w' || b == 'a') rw = plus ? 3 : 2;
         else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode %s", mode);
-        fd = open(path, korb_io_open_flags(mode), 0666);
-        if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
+        char pbuf[4096];
+        snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
+        RESULT operr;
+        fd = korb_open_no_stall(c, slots, pbuf, korb_io_open_flags(mode), 0666, &operr);
+        if (UNLIKELY(operr.state != KORB_NORMAL)) return operr;
+        if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pbuf);
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     }
     slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fd, rw));   /* self = the File class */

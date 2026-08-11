@@ -996,3 +996,82 @@ class Object
     method(name)
   end
 end
+
+# File / FileTest predicates on top of the __process_test character commands
+# (the same primitive Kernel#test uses) and __mode_bits.
+class File
+  class << self
+    def ftype(path)
+      path = File.path(path)
+      m = __mode_bits(path, false)
+      raise Errno::ENOENT.new(nil, nil), "No such file or directory - #{path}" if m.nil?
+      mode = m[0]
+      case mode & 0o170000
+      when 0o140000 then "socket"
+      when 0o120000 then "link"
+      when 0o100000 then "file"
+      when 0o060000 then "blockSpecial"
+      when 0o040000 then "directory"
+      when 0o020000 then "characterSpecial"
+      when 0o010000 then "fifo"
+      else "unknown"
+      end
+    end
+
+    def empty?(path) = __process_test("z".ord, File.path(path), nil)
+    def identical?(a, b)
+      __process_test("-".ord, File.path(a), File.path(b))
+    rescue Errno::ENOENT, SystemCallError
+      false
+    end
+    def pipe?(path)      = __process_test("p".ord, File.path(path), nil)
+    def socket?(path)    = __process_test("S".ord, File.path(path), nil)
+    def blockdev?(path)  = __process_test("b".ord, File.path(path), nil)
+    def chardev?(path)   = __process_test("c".ord, File.path(path), nil)
+    def sticky?(path)    = __process_test("k".ord, File.path(path), nil)
+    def setuid?(path)    = __process_test("u".ord, File.path(path), nil)
+    def setgid?(path)    = __process_test("g".ord, File.path(path), nil)
+    def owned?(path)     = __process_test("o".ord, File.path(path), nil)
+    def grpowned?(path)  = __process_test("G".ord, File.path(path), nil)
+    # The _real? family uses real (not effective) ids; with no setuid in play
+    # access(2) already answers with the real ids' rights on this runtime.
+    def readable_real?(path)   = __process_test("r".ord, File.path(path), nil)
+    def writable_real?(path)   = __process_test("w".ord, File.path(path), nil)
+    def executable_real?(path) = __process_test("x".ord, File.path(path), nil)
+
+    def world_readable?(path)
+      m = __mode_bits(File.path(path), true)
+      (m && (m[0] & 0o004) != 0) ? (m[0] & 0o777) : nil
+    end
+    def world_writable?(path)
+      m = __mode_bits(File.path(path), true)
+      (m && (m[0] & 0o002) != 0) ? (m[0] & 0o777) : nil
+    end
+
+    def utime(atime, mtime, *paths)
+      __utime(atime&.to_f, mtime&.to_f, true, *paths)
+    end
+    def lutime(atime, mtime, *paths)
+      __utime(atime&.to_f, mtime&.to_f, false, *paths)
+    end
+  end
+
+  # Instance-side chown/chmod go through the path (koruby IOs keep their path).
+  def chown(owner, group)
+    File.chown(owner, group, path)
+    0
+  end
+  def chmod(mode)
+    File.chmod(mode, path)
+    0
+  end
+end
+
+module FileTest
+  %i[empty? identical? pipe? socket? blockdev? chardev? sticky? setuid? setgid?
+     owned? grpowned? readable_real? writable_real? executable_real?
+     world_readable? world_writable?].each do |m|
+    define_method(m) { |*a| File.send(m, *a) }
+    module_function m
+  end
+end
