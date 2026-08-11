@@ -1,0 +1,69 @@
+diff --git a/sample/koruby_precise/context.h b/sample/koruby_precise/context.h
+index 9aca5f20..be4d832c 100644
+--- a/sample/koruby_precise/context.h
++++ b/sample/koruby_precise/context.h
+@@ -757,6 +757,12 @@ struct korb_vm {
+     struct korb_method **methods;
+     uint32_t method_cnt, method_capa;
+     uint64_t method_serial;  /* bumped by def — invalidates call caches */
++    /* EXPERIMENT (TracePoint cost probe): non-zero once any TracePoint is
++     * enabled.  Read at statement boundaries so a *running* fused frame can
++     * hand the rest of its statement list to a traced continuation — the one
++     * thing dispatcher-swapping cannot reach.  Measuring what the always-off
++     * check costs; nothing sets it yet. */
++    uint32_t trace_epoch;
+     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
+     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
+      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
+diff --git a/sample/koruby_precise/korb_runtime.c b/sample/koruby_precise/korb_runtime.c
+index f1d77e53..a40d474d 100644
+--- a/sample/koruby_precise/korb_runtime.c
++++ b/sample/koruby_precise/korb_runtime.c
+@@ -6164,7 +6164,15 @@ korb_block_nil_locals(VALUE *restrict dst, uint32_t n) {
+         default: memset(dst, 0, (size_t)n * sizeof(VALUE)); return;
+     }
+ }
+-__attribute__((no_stack_protector)) RESULT
++__attribute__((no_stack_protector)) /* EXPERIMENT (TracePoint): run the tail of a statement list with tracing on.
++ * noinline+cold keeps it out of the fused dispatcher's hot cluster. */
++__attribute__((noinline, cold)) RESULT
++korb_trace_seq_tail(CTX *c, NODE *b, VALUE *slots)
++{
++    return (*b->head.dispatcher)(c, b, slots);
++}
++
++RESULT
+ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                  const VALUE *argv, uint32_t argc, VALUE *captured_self)
+ {
+diff --git a/sample/koruby_precise/node.def b/sample/koruby_precise/node.def
+index 5643bbe6..030c1465 100644
+--- a/sample/koruby_precise/node.def
++++ b/sample/koruby_precise/node.def
+@@ -144,6 +144,10 @@ node_seq(CTX *c, NODE *n, VALUE *slots, NODE *a, NODE *b)
+ {
+     (void)n;
+     CHECK(EVAL_ARG(c, a));
++    /* Statement boundary: nothing is live but (c, b, slots), all of which the
++     * slow path needs anyway, and the slow path returns rather than joining —
++     * so this costs a load and a not-taken branch, not a spill barrier. */
++    if (UNLIKELY(c->vm->trace_epoch)) return korb_trace_seq_tail(c, b, slots);
+     return EVAL_ARG(c, b);
+ }
+ 
+diff --git a/sample/koruby_precise/node.h b/sample/koruby_precise/node.h
+index 04d47b0e..ab60425d 100644
+--- a/sample/koruby_precise/node.h
++++ b/sample/koruby_precise/node.h
+@@ -295,6 +295,11 @@ RESULT korb_send_blk(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
+ RESULT korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
+                         const VALUE *argv, uint32_t argc, VALUE *captured_self);
+ 
++/* EXPERIMENT: the traced continuation of a statement list.  Reached only when
++ * vm->trace_epoch is set; a tail `return` (not a join) so the fast path never
++ * has to keep anything live for it. */
++RESULT korb_trace_seq_tail(CTX *c, struct Node *b, VALUE *slots);
++
+ /* `break` ownership — see CTX::break_blk.  The innermost block yield a break
+  * passes through claims it by recording which block entry raised it; the call
+  * site that was handed that same entry as a *literal* block is the one the

@@ -77,6 +77,28 @@
   その offset を文字列先頭とみなす」モードが要る。library/stringscanner の
   err 63 のかなりの部分。
 - **`Socket.getifaddrs` が無い** (13 例)。`Socket::Ifaddr` ごと未実装。
+
+- **TracePoint (76 例) — 設計検討と実測だけ済み、未着手**。
+  部分評価は `EVAL_ARG` で子 dispatcher をインライン展開して融合するので、
+  ノードの dispatcher を差し替えても**祖先 SD に取り込まれた複製には届かない**。
+  一般の OSR/deopt も不可 (中間値は C コンパイラのレジスタに居て契約が無く、
+  deopt map を吐かせると融合の利益そのものを失う)。
+  ただし `:line` に必要なのは OSR ではない: `node_seq` の文境界では中間値が
+  ゼロで、状態は全部 slot stack に居るので「残りを別の継続に渡す」だけで
+  **実行中フレームにも効かせられる** (祖先も各自の次の文境界で同じ判断をする
+  ので合成が効く)。得られる粒度は文境界とループ back-edge まで。
+  `:call` / `:return` / `:raise` は融合と無関係な C の choke point があるので別。
+  **実測 (2026-08-11、optcarrot AOT 300 frames ×4、tools/tracecost_rep.sh)**:
+  常時 off のチェックを `node_seq` に入れると
+  命令数 43,117.56M → 44,468.66M (**+3.13%**)、cycles **+1.8%**
+  (分布は非重複)。1 文境界あたり +3.6 命令だが IPC が 3.101 → 3.139 に
+  上がっており、予測される独立命令が空き発行スロットに吸収されている。
+  branch-miss は増えない。実験の diff は docs/tracepoint_check_experiment.patch。
+  **次の一手**: 「左部分木に call を含むか」を parse 時に焼いた定数オペランドに
+  すれば `if (0 && ...)` が畳まれてチェックが消える。この情報は部分木の構造から
+  決まるので **hash はすでに区別しており、SD variant は増えない**。
+  optcarrot の node_seq 実行のうち pure が何割かを測るのが先。
+  ゼロコストにする別案はコードパッチ (jump label / USDT の nop 方式) のみ。
 - socket の残り: `recvmsg` / `recvmsg_nonblock` / `sendmsg`、
   `Socket::AncillaryData` の中身、`UDPSocket#local_address` 系。
 
