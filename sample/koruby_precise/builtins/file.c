@@ -10,15 +10,66 @@
 #include <glob.h>
 #include <errno.h>
 
-/* map an errno to its Errno::* constant name (NULL → generic). */
+/* The Errno::* names koruby knows.  One list drives both directions: the
+ * errno → class-name lookup used when raising, and the __errno_table builtin
+ * the prelude uses to define the Errno constants.  Keeping them in step is why
+ * this is a list and not two hand-written tables (they had drifted: the raise
+ * side knew 12 names, the prelude defined 28, and the socket specs wanted
+ * EAFNOSUPPORT and friends that neither had). */
+#define KORB_ERRNO_LIST(X)                                                     \
+    X(EPERM) X(ENOENT) X(ESRCH) X(EINTR) X(EIO) X(ENXIO) X(E2BIG) X(ENOEXEC)   \
+    X(EBADF) X(ECHILD) X(EAGAIN) X(ENOMEM) X(EACCES) X(EFAULT) X(EBUSY)        \
+    X(EEXIST) X(EXDEV) X(ENODEV) X(ENOTDIR) X(EISDIR) X(EINVAL) X(ENFILE)      \
+    X(EMFILE) X(ENOTTY) X(ETXTBSY) X(EFBIG) X(ENOSPC) X(ESPIPE) X(EROFS)       \
+    X(EMLINK) X(EPIPE) X(EDOM) X(ERANGE) X(EDEADLK) X(ENAMETOOLONG) X(ENOLCK)  \
+    X(ENOSYS) X(ENOTEMPTY) X(ELOOP) X(ENOMSG) X(EIDRM) X(ENOLINK) X(EPROTO)    \
+    X(EMULTIHOP) X(EBADMSG) X(EOVERFLOW) X(EILSEQ) X(EUSERS) X(ENOTSOCK)       \
+    X(EDESTADDRREQ) X(EMSGSIZE) X(EPROTOTYPE) X(ENOPROTOOPT)                   \
+    X(EPROTONOSUPPORT) X(ESOCKTNOSUPPORT) X(EOPNOTSUPP) X(EPFNOSUPPORT)        \
+    X(EAFNOSUPPORT) X(EADDRINUSE) X(EADDRNOTAVAIL) X(ENETDOWN) X(ENETUNREACH)  \
+    X(ENETRESET) X(ECONNABORTED) X(ECONNRESET) X(ENOBUFS) X(EISCONN)           \
+    X(ENOTCONN) X(ESHUTDOWN) X(ETOOMANYREFS) X(ETIMEDOUT) X(ECONNREFUSED)      \
+    X(EHOSTDOWN) X(EHOSTUNREACH) X(EALREADY) X(EINPROGRESS) X(ESTALE)          \
+    X(EDQUOT) X(ECANCELED) X(ENOTSUP) X(ENODATA) X(ETIME) X(ENOSTR) X(ENOSR)   \
+    X(EREMOTE) X(ESRMNT) X(EWOULDBLOCK)
+
+static const struct { const char *name; int num; } korb_errno_tab[] = {
+#define KORB_ERRNO_ENTRY(N) { #N, N },
+    KORB_ERRNO_LIST(KORB_ERRNO_ENTRY)
+#undef KORB_ERRNO_ENTRY
+};
+
+/* map an errno to its Errno::* constant name (NULL → generic).  Several names
+ * share a number on Linux (EAGAIN/EWOULDBLOCK, ENOTSUP/EOPNOTSUPP); the first
+ * listed wins, which is the one CRuby reports. */
 static const char *korb_errno_name(int e) {
-    switch (e) {
-      case ENOENT: return "ENOENT"; case EEXIST: return "EEXIST"; case EACCES: return "EACCES";
-      case ENOTDIR: return "ENOTDIR"; case EISDIR: return "EISDIR"; case ENOTEMPTY: return "ENOTEMPTY";
-      case EPERM: return "EPERM"; case EINVAL: return "EINVAL"; case EBADF: return "EBADF";
-      case ENAMETOOLONG: return "ENAMETOOLONG"; case ELOOP: return "ELOOP"; case EROFS: return "EROFS";
-      default: return NULL;
+    for (size_t i = 0; i < sizeof korb_errno_tab / sizeof korb_errno_tab[0]; i++)
+        if (korb_errno_tab[i].num == e) return korb_errno_tab[i].name;
+    return NULL;
+}
+
+/* __strerror(num) → the platform's message for that errno (the default message
+ * of an Errno::* exception raised without one). */
+static RESULT korb_m_strerror(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE v = VALUE_SLICE_GET(a, 0);
+    if (!FIXNUM_P(v)) return RESULT_OK(KORB_NIL);
+    const char *const m = strerror((int)FIX2LONG(v));
+    return korb_str_new(c, slots, m ? m : "", m ? (uint32_t)strlen(m) : 0);
+}
+
+/* __errno_table → { "ENOENT" => 2, ... }; the prelude turns it into the
+ * Errno::* SystemCallError subclasses. */
+static RESULT korb_m_errno_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    slots[0] = UNWRAP(korb_hash_new(c, slots, 96));
+    VALUE_REF h = VALUE_REF_AT(&slots[0]);
+    for (size_t i = 0; i < sizeof korb_errno_tab / sizeof korb_errno_tab[0]; i++) {
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, korb_errno_tab[i].name,
+                                       (uint32_t)strlen(korb_errno_tab[i].name)));
+        CHECK(korb_hash_set(c, slots + 2, h, VALUE_REF_AT(&slots[1]), LONG2FIX(korb_errno_tab[i].num)));
     }
+    return RESULT_OK(VALUE_REF_GET(h));
 }
 /* raise Errno::<errno> with CRuby's "<strerror> @ <func> - <path>" message; falls
  * back to SystemCallError/RuntimeError if the Errno class is absent. */
@@ -998,6 +1049,8 @@ void korb_init_file(CTX *c, VALUE *slots) {
     struct korb_vm *const vm = c->vm;
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "File", 4), KORB_NIL)).value;
     korb_const_define(c, korb_intern(vm, "File", 4), slots[0]);
+    korb_class_def_cfn(c, korb_builtin_class_obj(vm, KORB_C_OBJECT), "__errno_table", korb_m_errno_table, 0);
+    korb_class_def_cfn(c, korb_builtin_class_obj(vm, KORB_C_OBJECT), "__strerror",    korb_m_strerror,     1);
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* class methods on File's singleton */
     korb_class_def_cfn(c, slots[1], "expand_path", korb_m_file_expand_path, -1);
     korb_class_def_cfn(c, slots[1], "realpath", korb_m_file_realpath, -1);

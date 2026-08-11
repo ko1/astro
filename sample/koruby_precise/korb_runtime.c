@@ -4010,7 +4010,18 @@ korb_class_le(VALUE a, VALUE b)
 {
     while (KORB_CLASS_P(a)) {
         if (a == b) return true;
-        a = VAL2CLASS(a)->superclass;
+        /* Modules count: `rescue IO::WaitReadable` must match an exception class
+         * that only *includes* that module, and Class#<= is ancestry, not just
+         * the superclass chain. */
+        const KorbClass *const k = VAL2CLASS(a);
+        for (int which = 0; which < 2; which++) {
+            const VALUE mods = which == 0 ? k->prepended : k->included;
+            if (mods == KORB_NIL) continue;
+            const KorbArray *const ma = VAL2ARY(mods);
+            for (uint32_t j = 0; j < ma->len; j++)
+                if (korb_items_data(ma->items)[j] == b) return true;
+        }
+        a = k->superclass;
     }
     return false;
 }

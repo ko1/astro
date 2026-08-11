@@ -1056,8 +1056,11 @@ static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
        for as long as the peer likes.  Detect it from the descriptor rather than
        from the class, so IO.new(socket_fd) benefits too. */
     { int sty; socklen_t stl = sizeof sty;
-      if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sty, &stl) == 0)
-          korb_io_set_nonblock(c->vm->io_reps[idx]); }
+      if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sty, &stl) == 0) {
+          korb_io_set_nonblock(c->vm->io_reps[idx]);
+          c->vm->io_reps[idx]->sync = 1;   /* BasicSocket is sync in CRuby: a buffered
+                                              write the peer never sees is a deadlock */
+      } }
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_fp_mid(c)), LONG2FIX((intptr_t)idx)));
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
     if (strchr(mode, 'b'))
@@ -1099,6 +1102,151 @@ static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF i
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     slots[0] = r.value;
     return korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__int_enc0", 11)), slots[0]);
+}
+
+/* Hand back up to `want` bytes already sitting in the read buffer as a String,
+ * optionally replacing the caller's buffer.  Assumes the buffer is non-empty. */
+static RESULT korb_io_take_buffered(CTX *c, VALUE *slots, KorbIORep *const rep,
+                                    uint32_t want, VALUE bufv) {
+    const uint32_t avail = rep->rlen - rep->rpos;
+    const uint32_t take = want < avail ? want : avail;
+    const RESULT sr = korb_str_new(c, slots, rep->rbuf + rep->rpos, take);   /* copies before any GC */
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    rep->rpos += take;
+    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
+    if (bufv == KORB_NIL) return sr;
+    if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    slots[0] = sr.value;
+    slots[1] = bufv;
+    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+}
+
+/* IO#readpartial(maxlen[, buf]) — at least one byte, but only what is already
+ * there: buffered bytes win, otherwise one read(2) (parking rather than
+ * stalling on a stream koruby made non-blocking).  EOF raises EOFError. */
+static RESULT korb_m_io_readpartial(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
+    const VALUE bufv = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    if (want == 0) {
+        if (bufv == KORB_NIL) return korb_str_new(c, slots, "", 0);
+        slots[0] = UNWRAP(korb_str_new(c, slots, "", 0));
+        slots[1] = bufv;
+        return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+    }
+    RESULT err = RESULT_OK(KORB_NIL);
+    const uint32_t avail = korb_io_fill_p(c, slots, rep, &err);   /* may park → may GC */
+    if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+    rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* re-fetch after a possible GC */
+    if (avail == 0) return korb_io_raise_eof(c, slots);
+    return korb_io_take_buffered(c, slots, rep, (uint32_t)want, bufv);
+}
+
+/* Raise IO::EAGAINWaitReadable / ::EAGAINWaitWritable (both are Errno::EAGAIN
+ * subclasses that include IO::WaitReadable / IO::WaitWritable). */
+static RESULT korb_io_raise_wait(CTX *c, VALUE *slots, bool readable) {
+    const char *const nm = readable ? "EAGAINWaitReadable" : "EAGAINWaitWritable";
+    const uint32_t sym = korb_intern(c->vm, nm, (uint32_t)strlen(nm));
+    const VALUE iocls = korb_const_get(c->vm, korb_intern(c->vm, "IO", 2));
+    VALUE cls = KORB_NIL;
+    if (KORB_CLASS_P(iocls)) {
+        const uint32_t ci = korb_const_index_owned(c->vm, sym, iocls);
+        if (ci != UINT32_MAX) cls = c->vm->const_vals[ci];
+    }
+    if (!KORB_CLASS_P(cls)) cls = korb_const_get(c->vm, sym);   /* flat namespace fallback */
+    if (!KORB_CLASS_P(cls)) return korb_raise_errno(c, slots, EAGAIN, readable ? "read" : "write", "");
+    slots[0] = cls;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "Resource temporarily unavailable");
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+
+/* IO#read_nonblock(maxlen[, buf][, exception: true]) — never parks: EAGAIN
+ * surfaces as IO::EAGAINWaitReadable (or :wait_readable). */
+static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
+    bool exc = true;
+    VALUE bufv = KORB_NIL;
+    for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
+        const VALUE v = VALUE_SLICE_GET(a, i);
+        if (KORB_HASH_P(v)) {
+            const KorbHash *const h = VAL2HASH(v);
+            const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+            if (hx >= 0) exc = KORB_TRUTHY(korb_items_data(h->items)[2 * hx + 1]);
+        } else bufv = v;
+    }
+    if (want == 0) return bufv == KORB_NIL ? korb_str_new(c, slots, "", 0) : RESULT_OK(bufv);
+    if (rep->rpos < rep->rlen) return korb_io_take_buffered(c, slots, rep, (uint32_t)want, bufv);
+    if (rep->eof) {
+        if (!exc) return RESULT_OK(KORB_NIL);
+        return korb_io_raise_eof(c, slots);
+    }
+    char stackbuf[8192];
+    const size_t cap = (size_t)want < sizeof stackbuf ? (size_t)want : sizeof stackbuf;
+    ssize_t n;
+    do { n = read(rep->fd, stackbuf, cap); } while (n < 0 && errno == EINTR);
+    if (n < 0) {
+        if (korb_io_would_block(errno))
+            return exc ? korb_io_raise_wait(c, slots, true)
+                       : RESULT_OK(ID2SYM(korb_intern(c->vm, "wait_readable", 13)));
+        return korb_raise_errno(c, slots, errno, "read", "");
+    }
+    if (n == 0) {
+        rep->eof = 1;
+        if (!exc) return RESULT_OK(KORB_NIL);
+        return korb_io_raise_eof(c, slots);
+    }
+    const RESULT sr = korb_str_new(c, slots, stackbuf, (uint32_t)n);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
+    if (bufv == KORB_NIL) return sr;
+    if (UNLIKELY(!KORB_STRING_P(bufv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    slots[0] = sr.value;
+    slots[1] = bufv;
+    return korb_m_str_replace(c, slots + 2, VALUE_REF_AT(&slots[1]), VALUE_SLICE_MAKE(&slots[0], 1));
+}
+
+/* IO#write_nonblock(string[, exception: true]) */
+static RESULT korb_m_io_write_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    bool exc = true;
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
+        const VALUE v = VALUE_SLICE_GET(a, i);
+        if (KORB_HASH_P(v)) {
+            const KorbHash *const h = VAL2HASH(v);
+            const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
+            if (hx >= 0) exc = KORB_TRUTHY(korb_items_data(h->items)[2 * hx + 1]);
+        }
+    }
+    if (!KORB_STRING_P(slots[0])) {
+        const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[0] = sr.value;
+        if (UNLIKELY(!KORB_STRING_P(slots[0]))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
+    }
+    korb_io_flush_rep(rep);                         /* keep ordering with buffered writes */
+    uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);
+    ssize_t w;
+    do { w = write(rep->fd, p, n); } while (w < 0 && errno == EINTR);
+    if (w < 0) {
+        if (korb_io_would_block(errno))
+            return exc ? korb_io_raise_wait(c, slots + 1, false)
+                       : RESULT_OK(ID2SYM(korb_intern(c->vm, "wait_writable", 13)));
+        return korb_raise_errno(c, slots + 1, errno, "write", "");
+    }
+    return RESULT_OK(LONG2FIX((intptr_t)w));
 }
 
 /* IO#pread(maxlen, offset[, buf]) — read at an absolute offset without moving
@@ -1309,6 +1457,9 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("ungetbyte", ungetc, 1);
     IOM("syswrite", syswrite, 1);    IOM("sysread", sysread, -1);
     IOM("pread", pread, -1);         IOM("pwrite", pwrite, -1);
+    IOM("readpartial", readpartial, -1);
+    IOM("read_nonblock", read_nonblock, -1);
+    IOM("write_nonblock", write_nonblock, -1);
     IOM("lineno", lineno, 0);        IOM("lineno=", lineno_set, 1);
     IOM("close_on_exec?", close_on_exec_p, 0);
     IOM("close_on_exec=", close_on_exec_set, 1);

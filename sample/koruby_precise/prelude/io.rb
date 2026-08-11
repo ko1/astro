@@ -91,3 +91,16 @@ module Kernel
   end
   module_function :open
 end
+
+# IO::WaitReadable / IO::WaitWritable and the Errno::EAGAIN subclasses the
+# *_nonblock methods raise, so `rescue IO::WaitReadable` works.
+class IO
+  module WaitReadable; end
+  module WaitWritable; end
+  class EAGAINWaitReadable < Errno::EAGAIN; include WaitReadable; end
+  class EAGAINWaitWritable < Errno::EAGAIN; include WaitWritable; end
+  EWOULDBLOCKWaitReadable = EAGAINWaitReadable          # same errno on Linux
+  EWOULDBLOCKWaitWritable = EAGAINWaitWritable
+  class EINPROGRESSWaitReadable < Errno::EINPROGRESS; include WaitReadable; end
+  class EINPROGRESSWaitWritable < Errno::EINPROGRESS; include WaitWritable; end
+end

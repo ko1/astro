@@ -42,9 +42,11 @@ static RESULT korb_sock_addr_ary(CTX *c, VALUE *slots, const struct sockaddr *sa
     return RESULT_OK(VALUE_REF_GET(ar));
 }
 
-/* Fill a sockaddr from (family, host, port).  AF_UNIX uses `host` as the path. */
-static bool korb_sock_fill_addr(int family, const char *host, int port,
-                                struct sockaddr_storage *ss, socklen_t *len) {
+/* Fill a sockaddr from (family, host, service).  `serv` is what getaddrinfo(3)
+ * calls a service: a port number in decimal *or* a name from /etc/services
+ * ("smtp").  AF_UNIX uses `host` as the path. */
+static bool korb_sock_fill_addr_s(int family, const char *host, const char *serv,
+                                  struct sockaddr_storage *ss, socklen_t *len) {
     memset(ss, 0, sizeof *ss);
     if (family == AF_UNIX) {
         struct sockaddr_un *un = (struct sockaddr_un *)ss;
@@ -53,18 +55,38 @@ static bool korb_sock_fill_addr(int family, const char *host, int port,
         *len = (socklen_t)sizeof(struct sockaddr_un);
         return true;
     }
-    char portbuf[16];
-    snprintf(portbuf, sizeof portbuf, "%d", port);
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
     if (host == NULL || host[0] == '\0') hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo((host && host[0]) ? host : NULL, portbuf, &hints, &res) != 0 || res == NULL) return false;
+    if (getaddrinfo((host && host[0]) ? host : NULL, (serv && serv[0]) ? serv : NULL, &hints, &res) != 0 || res == NULL)
+        return false;
     memcpy(ss, res->ai_addr, res->ai_addrlen);
     *len = res->ai_addrlen;
     freeaddrinfo(res);
     return true;
+}
+
+static bool korb_sock_fill_addr(int family, const char *host, int port,
+                                struct sockaddr_storage *ss, socklen_t *len) {
+    char portbuf[16];
+    snprintf(portbuf, sizeof portbuf, "%d", port);
+    return korb_sock_fill_addr_s(family, host, portbuf, ss, len);
+}
+
+/* Render a port argument as a getaddrinfo service string: an Integer becomes
+ * decimal, a String/Symbol passes through as a service name. */
+static void korb_sock_serv_arg(CTX *c, VALUE v, char *buf, size_t cap) {
+    if (FIXNUM_P(v))            snprintf(buf, cap, "%ld", (long)FIX2LONG(v));
+    else if (KORB_STRING_P(v)) {
+        uint32_t n; const char *const p = korb_str_cstr_len(v, &n);
+        if (n >= cap) n = (uint32_t)cap - 1;
+        memcpy(buf, p, n);
+        buf[n] = '\0';
+    }
+    else if (SYMBOL_P(v))       snprintf(buf, cap, "%s", korb_sym_name(c->vm, SYM2ID(v)));
+    else                        buf[0] = '\0';
 }
 
 static int korb_sock_family_of(CTX *c, VALUE v) {
@@ -101,20 +123,38 @@ static RESULT korb_m_sock_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return RESULT_OK(LONG2FIX(fd));
 }
 
-/* __sock_connect(fd, family, host, port) */
+/* connect(2) on a descriptor koruby made non-blocking returns EINPROGRESS and
+ * completes asynchronously.  Park on POLLOUT and then read SO_ERROR — that is
+ * the only way to learn whether it actually connected.  `host` is a stack
+ * buffer, so it survives the park's GC. */
+static RESULT korb_sock_finish_connect(CTX *c, VALUE *slots, int fd, const char *host) {
+    struct pollfd pf; pf.fd = fd; pf.events = POLLOUT; pf.revents = 0;
+    ssize_t ready = 0;
+    const RESULT pr = korb_blop_poll_wait(c, slots, &pf, 1, -1.0, &ready);
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    int err = 0; socklen_t el = sizeof err;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0)
+        return korb_raise_errno(c, slots, errno, "connect", host);
+    if (err != 0) return korb_raise_errno(c, slots, err, "connect", host);
+    return RESULT_OK(LONG2FIX(0));
+}
+
+/* __sock_connect(fd, family, host, port_or_service) */
 static RESULT korb_m_sock_connect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
     const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 1));
-    char host[512];
+    char host[512], serv[64];
     if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const int port = FIXNUM_P(VALUE_SLICE_GET(a, 3)) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 3)) : 0;
+    korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
-    if (!korb_sock_fill_addr(fam, host, port, &ss, &len))
+    if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &len))
         return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
-    if (connect(fd, (struct sockaddr *)&ss, len) != 0) return korb_raise_errno(c, slots, errno, "connect", host);
-    return RESULT_OK(LONG2FIX(0));
+    if (connect(fd, (struct sockaddr *)&ss, len) == 0) return RESULT_OK(LONG2FIX(0));
+    if (errno == EINPROGRESS || errno == EALREADY || errno == EINTR)
+        return korb_sock_finish_connect(c, slots, fd, host);
+    return korb_raise_errno(c, slots, errno, "connect", host);
 }
 
 /* __sock_bind(fd, family, host, port) */
@@ -125,9 +165,10 @@ static RESULT korb_m_sock_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char host[512];
     if (!korb_sock_cstr(VALUE_SLICE_GET(a, 2), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
-    const int port = FIXNUM_P(VALUE_SLICE_GET(a, 3)) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 3)) : 0;
+    char serv[64];
+    korb_sock_serv_arg(c, VALUE_SLICE_GET(a, 3), serv, sizeof serv);
     struct sockaddr_storage ss; socklen_t len = 0;
-    if (!korb_sock_fill_addr(fam, host, port, &ss, &len))
+    if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &len))
         return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
     if (bind(fd, (struct sockaddr *)&ss, len) != 0) return korb_raise_errno(c, slots, errno, "bind", host);
     return RESULT_OK(LONG2FIX(0));
@@ -300,6 +341,30 @@ static RESULT korb_m_sock_hostname(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     return korb_str_new(c, slots, h, (uint32_t)strlen(h));
 }
 
+/* __sock_getnameinfo(packed_sockaddr, flags) → [hostname, service] */
+static RESULT korb_m_sock_getnameinfo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const VALUE sv = VALUE_SLICE_GET(a, 0);
+    if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);
+    struct sockaddr_storage ss;
+    if (n < sizeof(sa_family_t) || n > sizeof ss)
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "not a valid sockaddr (%u bytes)", n);
+    memset(&ss, 0, sizeof ss);
+    memcpy(&ss, p, n);                              /* copy out before anything allocates */
+    const int flags = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : 0;
+    char hbuf[NI_MAXHOST] = "", sbuf[NI_MAXSERV] = "";
+    const int r = getnameinfo((struct sockaddr *)&ss, (socklen_t)n, hbuf, sizeof hbuf, sbuf, sizeof sbuf, flags);
+    if (r != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "getnameinfo: %s", gai_strerror(r));
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 2));
+    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, hbuf, (uint32_t)strlen(hbuf)));
+    CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, sbuf, (uint32_t)strlen(sbuf)));
+    CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(ar));
+}
+
 /* __sock_pack(family_or_nil, port, host) → the packed sockaddr as a binary String.
  * Ruby code passes addresses around as the descriptive 4-element Array, but
  * Socket.sockaddr_in / Addrinfo#to_sockaddr are specified to hand back the raw
@@ -364,6 +429,113 @@ static RESULT korb_m_sock_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         {"AI_PASSIVE", AI_PASSIVE}, {"AI_CANONNAME", AI_CANONNAME}, {"AI_NUMERICHOST", AI_NUMERICHOST},
         {"NI_NUMERICHOST", NI_NUMERICHOST}, {"NI_NUMERICSERV", NI_NUMERICSERV},
         {"INADDR_ANY", (intptr_t)INADDR_ANY}, {"INADDR_LOOPBACK", (intptr_t)INADDR_LOOPBACK},
+        {"PF_UNSPEC", PF_UNSPEC},
+#ifdef SOCK_RDM
+        {"SOCK_RDM", SOCK_RDM},
+#endif
+#ifdef SOCK_PACKET
+        {"SOCK_PACKET", SOCK_PACKET},
+#endif
+#ifdef AF_PACKET
+        {"AF_PACKET", AF_PACKET}, {"PF_PACKET", PF_PACKET},
+#endif
+#ifdef IPPROTO_IPV6
+        {"IPPROTO_IPV6", IPPROTO_IPV6},
+#endif
+#ifdef IPPROTO_ICMP
+        {"IPPROTO_ICMP", IPPROTO_ICMP},
+#endif
+#ifdef IPPROTO_RAW
+        {"IPPROTO_RAW", IPPROTO_RAW},
+#endif
+#ifdef IPPROTO_HOPOPTS
+        {"IPPROTO_HOPOPTS", IPPROTO_HOPOPTS},
+#endif
+#ifdef IP_TTL
+        {"IP_TTL", IP_TTL},
+#endif
+#ifdef IP_RECVTTL
+        {"IP_RECVTTL", IP_RECVTTL},
+#endif
+#ifdef IP_PKTINFO
+        {"IP_PKTINFO", IP_PKTINFO},
+#endif
+#ifdef IP_MTU
+        {"IP_MTU", IP_MTU},
+#endif
+#ifdef IP_MULTICAST_TTL
+        {"IP_MULTICAST_TTL", IP_MULTICAST_TTL}, {"IP_MULTICAST_LOOP", IP_MULTICAST_LOOP},
+#endif
+#ifdef IPV6_PKTINFO
+        {"IPV6_PKTINFO", IPV6_PKTINFO},
+#endif
+#ifdef IPV6_NEXTHOP
+        {"IPV6_NEXTHOP", IPV6_NEXTHOP},
+#endif
+#ifdef IPV6_V6ONLY
+        {"IPV6_V6ONLY", IPV6_V6ONLY},
+#endif
+#ifdef TCP_CORK
+        {"TCP_CORK", TCP_CORK},
+#endif
+#ifdef TCP_INFO
+        {"TCP_INFO", TCP_INFO},
+#endif
+#ifdef TCP_KEEPIDLE
+        {"TCP_KEEPIDLE", TCP_KEEPIDLE}, {"TCP_KEEPINTVL", TCP_KEEPINTVL}, {"TCP_KEEPCNT", TCP_KEEPCNT},
+#endif
+#ifdef UDP_CORK
+        {"UDP_CORK", UDP_CORK},
+#endif
+#ifdef SCM_RIGHTS
+        {"SCM_RIGHTS", SCM_RIGHTS},
+#endif
+#ifdef SCM_CREDENTIALS
+        {"SCM_CREDENTIALS", SCM_CREDENTIALS},
+#endif
+#ifdef SCM_TIMESTAMP
+        {"SCM_TIMESTAMP", SCM_TIMESTAMP},
+#endif
+#ifdef SO_REUSEPORT
+        {"SO_REUSEPORT", SO_REUSEPORT},
+#endif
+#ifdef SO_DONTROUTE
+        {"SO_DONTROUTE", SO_DONTROUTE},
+#endif
+#ifdef SO_OOBINLINE
+        {"SO_OOBINLINE", SO_OOBINLINE},
+#endif
+#ifdef SO_RCVLOWAT
+        {"SO_RCVLOWAT", SO_RCVLOWAT}, {"SO_SNDLOWAT", SO_SNDLOWAT},
+#endif
+#ifdef SO_RCVTIMEO
+        {"SO_RCVTIMEO", SO_RCVTIMEO}, {"SO_SNDTIMEO", SO_SNDTIMEO},
+#endif
+#ifdef SO_ACCEPTCONN
+        {"SO_ACCEPTCONN", SO_ACCEPTCONN},
+#endif
+#ifdef SO_PEERCRED
+        {"SO_PEERCRED", SO_PEERCRED},
+#endif
+#ifdef MSG_TRUNC
+        {"MSG_TRUNC", MSG_TRUNC}, {"MSG_CTRUNC", MSG_CTRUNC},
+#endif
+#ifdef MSG_MORE
+        {"MSG_MORE", MSG_MORE},
+#endif
+#ifdef MSG_NOSIGNAL
+        {"MSG_NOSIGNAL", MSG_NOSIGNAL},
+#endif
+#ifdef AI_ADDRCONFIG
+        {"AI_ADDRCONFIG", AI_ADDRCONFIG}, {"AI_ALL", AI_ALL}, {"AI_V4MAPPED", AI_V4MAPPED},
+#endif
+#ifdef NI_NAMEREQD
+        {"NI_NAMEREQD", NI_NAMEREQD}, {"NI_NOFQDN", NI_NOFQDN}, {"NI_DGRAM", NI_DGRAM},
+#endif
+#ifdef EAI_NONAME
+        {"EAI_NONAME", EAI_NONAME}, {"EAI_AGAIN", EAI_AGAIN}, {"EAI_FAIL", EAI_FAIL},
+        {"EAI_FAMILY", EAI_FAMILY}, {"EAI_SERVICE", EAI_SERVICE}, {"EAI_SOCKTYPE", EAI_SOCKTYPE},
+#endif
     };
     for (size_t i = 0; i < sizeof cs / sizeof cs[0]; i++)
         if (!strcmp(nm, cs[i].n)) return RESULT_OK(LONG2FIX(cs[i].v));
@@ -390,4 +562,5 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_const",       korb_m_sock_const,        1);
     korb_class_def_cfn(c, obj, "__sock_pack",        korb_m_sock_pack,         3);
     korb_class_def_cfn(c, obj, "__sock_unpack",      korb_m_sock_unpack,       1);
+    korb_class_def_cfn(c, obj, "__sock_getnameinfo", korb_m_sock_getnameinfo, -1);
 }

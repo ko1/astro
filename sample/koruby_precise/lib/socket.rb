@@ -87,10 +87,11 @@ end
 
 class TCPSocket < IPSocket
   def initialize(host, port, local_host = nil, local_port = nil)
-    fd = __sock_open(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+    fam = Socket.__family_of_host(host)      # "::1" must open an AF_INET6 socket
+    fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
     begin
-      __sock_bind(fd, Socket::AF_INET, local_host, local_port || 0) if local_host
-      __sock_connect(fd, Socket::AF_INET, host.to_s, Integer(port))
+      __sock_bind(fd, fam, local_host, local_port || 0) if local_host
+      __sock_connect(fd, fam, host.to_s, port)   # Integer or a service name ("smtp")
     rescue Exception
       IO.new(fd).close rescue nil
       raise
@@ -116,9 +117,10 @@ class TCPServer < TCPSocket
     else
       host, port = host_or_port, port
     end
-    fd = __sock_open(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+    fam = Socket.__family_of_host(host)
+    fd = __sock_open(fam, Socket::SOCK_STREAM, 0)
     __sock_setopt(fd, Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
-    __sock_bind(fd, Socket::AF_INET, host, Integer(port))
+    __sock_bind(fd, fam, host, port)
     __sock_listen(fd, 5)
     __init_fd(fd, "r+")     # not TCPSocket#initialize: a server binds, never connects
   end
@@ -219,6 +221,7 @@ class UDPSocket < IPSocket
     @family = Socket.__family(family)
     __init_fd(__sock_open(@family, Socket::SOCK_DGRAM, 0), "r+")
   end
+  def family = @family
 
   def bind(host, port) = (__sock_bind(fileno, @family, host, port); 0)
   def connect(host, port) = (__sock_connect(fileno, @family, host, port); 0)
@@ -252,6 +255,27 @@ class Socket < BasicSocket
   NI_NUMERICHOST = __sock_const("NI_NUMERICHOST"); NI_NUMERICSERV = __sock_const("NI_NUMERICSERV")
   INADDR_ANY = __sock_const("INADDR_ANY"); INADDR_LOOPBACK = __sock_const("INADDR_LOOPBACK")
 
+  # The rest of the platform's table.  __sock_const returns nil for a name this
+  # build does not have, so the list can be generous.
+  %w[
+    PF_UNSPEC AF_PACKET PF_PACKET SOCK_RDM SOCK_PACKET
+    IPPROTO_IPV6 IPPROTO_ICMP IPPROTO_RAW IPPROTO_HOPOPTS
+    IP_TTL IP_RECVTTL IP_PKTINFO IP_MTU IP_MULTICAST_TTL IP_MULTICAST_LOOP
+    IPV6_PKTINFO IPV6_NEXTHOP IPV6_V6ONLY
+    TCP_CORK TCP_INFO TCP_KEEPIDLE TCP_KEEPINTVL TCP_KEEPCNT UDP_CORK
+    SCM_RIGHTS SCM_CREDENTIALS SCM_TIMESTAMP
+    SO_REUSEPORT SO_DONTROUTE SO_OOBINLINE SO_RCVLOWAT SO_SNDLOWAT
+    SO_RCVTIMEO SO_SNDTIMEO SO_ACCEPTCONN SO_PEERCRED
+    MSG_TRUNC MSG_CTRUNC MSG_MORE MSG_NOSIGNAL
+    AI_ADDRCONFIG AI_ALL AI_V4MAPPED
+    NI_NAMEREQD NI_NOFQDN NI_DGRAM
+    EAI_NONAME EAI_AGAIN EAI_FAIL EAI_FAMILY EAI_SERVICE EAI_SOCKTYPE
+  ].each { |nm| (v = __sock_const(nm)) && const_set(nm, v) }
+
+  # Raised by name-resolution failures (Ruby 3.3+); a SocketError so older
+  # rescues keep working.
+  ResolutionError = Class.new(SocketError)
+
   module Constants; end
   constants.each { |cn| Constants.const_set(cn, const_get(cn)) if const_get(cn).is_a?(Integer) }
 
@@ -277,8 +301,8 @@ class Socket < BasicSocket
   end
 
   def initialize(family, type, protocol = 0)
-    @family, @type = Socket.__family(family), type
-    __init_fd(__sock_open(@family, type, protocol), "r+")
+    @family, @type = Socket.__family(family), Socket.__socktype(type)
+    __init_fd(__sock_open(@family, @type, protocol), "r+")
   end
 
   def bind(addr) = (a = Socket.__unpack(addr); __sock_bind(fileno, @family, a[2], a[1]); 0)
@@ -297,12 +321,19 @@ class Socket < BasicSocket
   end
 
   def self.pair(family, type, protocol = 0)
-    a, b = __sock_pair(__family(family), type)
+    a, b = __sock_pair(__family(family), __socktype(type))
     [for_fd(a), for_fd(b)]
   end
   class << self; alias_method :socketpair, :pair; end
 
   def self.gethostname = __sock_hostname
+
+  # getnameinfo(sockaddr, flags = 0) → [hostname, service].  The sockaddr may be
+  # packed bytes, an Addrinfo, or the descriptive [family, port, host, addr].
+  def self.getnameinfo(sa, flags = 0)
+    packed = sa.is_a?(String) ? sa : __pack(__unpack(sa))
+    __sock_getnameinfo(packed, flags)
+  end
 
   def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil, flags = nil)
     __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype)
@@ -335,6 +366,22 @@ class Socket < BasicSocket
     return sa if sa.is_a?(Array)
     return sa.to_a if sa.is_a?(Addrinfo)
     __sock_unpack(sa.to_str)
+  end
+
+  # The address family a host string needs: "::1" is AF_INET6, "127.0.0.1" is
+  # AF_INET, a name is whatever the resolver says.  nil/"" means "any" → AF_INET.
+  def self.__family_of_host(host)
+    h = host.to_s
+    return AF_INET if h.empty?
+    r = (__sock_getaddrinfo(h, nil, nil, SOCK_STREAM) rescue nil)
+    (r && r[0]) ? __family(r[0][0]) : AF_INET
+  end
+
+  def self.__socktype(t)
+    return t if t.is_a?(Integer)
+    n = t.to_s.upcase.sub(/\ASOCK_/, "")
+    { "STREAM" => SOCK_STREAM, "DGRAM" => SOCK_DGRAM,
+      "RAW" => SOCK_RAW, "SEQPACKET" => SOCK_SEQPACKET }.fetch(n, SOCK_STREAM)
   end
 
   def self.__family(f)

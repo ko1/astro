@@ -57,24 +57,28 @@ class Object
     Enumerator.new(sz) { |y| this.send(meth, *args) { |*vs| y << (vs.size <= 1 ? vs[0] : vs) } }
   end
 end
-# Minimal Errno: just enough that Errno::X constant references resolve (as
-# SystemCallError subclasses); per-errno numbers/semantics are out of scope.
-class SystemCallError < StandardError; end
+# Errno::* — one SystemCallError subclass per errno the platform defines, built
+# from the C table so the raise side (korb_errno_name) and the constants can
+# never drift apart.  Each class carries its number as ::Errno, like CRuby.
+class SystemCallError < StandardError
+  def initialize(msg = nil, errno = nil)
+    @errno = errno || (self.class.const_defined?(:Errno) ? self.class::Errno : nil)
+    base = @errno ? __strerror(@errno) : "unknown error"
+    super(msg ? "#{base} - #{msg}" : base)
+  end
+  # The C raise path builds the exception without running #initialize, so fall
+  # back to the class's own number.
+  def errno
+    @errno || (self.class.const_defined?(:Errno) ? self.class::Errno : nil)
+  end
+end
 module Errno
-  EPERM = Class.new(SystemCallError); ENOENT = Class.new(SystemCallError)
-  ESRCH = Class.new(SystemCallError); EINTR = Class.new(SystemCallError)
-  EIO = Class.new(SystemCallError); EBADF = Class.new(SystemCallError)
-  EAGAIN = Class.new(SystemCallError); ENOMEM = Class.new(SystemCallError)
-  EACCES = Class.new(SystemCallError); EEXIST = Class.new(SystemCallError)
-  ENOTDIR = Class.new(SystemCallError); EISDIR = Class.new(SystemCallError)
-  EINVAL = Class.new(SystemCallError); EPIPE = Class.new(SystemCallError)
-  ERANGE = Class.new(SystemCallError); ENOTSUP = Class.new(SystemCallError)
-  ECHILD = Class.new(SystemCallError); ESPIPE = Class.new(SystemCallError)
-  ECONNRESET = Class.new(SystemCallError); ETIMEDOUT = Class.new(SystemCallError)
-  ENOTEMPTY = Class.new(SystemCallError); ENAMETOOLONG = Class.new(SystemCallError)
-  ELOOP = Class.new(SystemCallError); EROFS = Class.new(SystemCallError)
-  EXDEV = Class.new(SystemCallError); EMFILE = Class.new(SystemCallError)
-  ENOSPC = Class.new(SystemCallError); EDOM = Class.new(SystemCallError)
+  __errno_table.each do |name, num|
+    next if const_defined?(name, false)
+    cls = Class.new(SystemCallError)
+    cls.const_set(:Errno, num)
+    const_set(name, cls)
+  end
 end
 
 # Exception-detail constructors: NameError/NoMethodError carry #name/#receiver/#args;
