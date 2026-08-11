@@ -65,6 +65,21 @@
   `rlimit_*`、`:in` に IO 以外の Ruby オブジェクト。`close_others:` と `chdir:` と
   fd リダイレクトは実装済み。
 
+## 既知バグ (2026-08-11 に発覚、未修正)
+
+- **Class / Module の `#inspect` override が `p` で無視される**。
+  `class Foo; def self.inspect; "YY"; end; end; p Foo` が "Foo" になる。
+  文字列補間側 (`#{Foo}` → `#to_s`) は修正済みだが、inspect の C printer は
+  Class をそのまま名前で出す。printer が再入する形になるので慎重に。
+- **StringScanner の `^` / `\A` が scan 位置基準にならない**。
+  `StringScanner#scan(/^ /)` は現在位置を行頭/文字列先頭として扱うべきだが、
+  koruby は元文字列基準で見ている。regex engine に「offset から match するが
+  その offset を文字列先頭とみなす」モードが要る。library/stringscanner の
+  err 63 のかなりの部分。
+- **`Socket.getifaddrs` が無い** (13 例)。`Socket::Ifaddr` ごと未実装。
+- socket の残り: `recvmsg` / `recvmsg_nonblock` / `sendmsg`、
+  `Socket::AncillaryData` の中身、`UDPSocket#local_address` 系。
+
 ## 既知バグ (定数 / Enumerator)
 
 - **定数テーブルが flat**。`module Foo; class Bar; end; end` の `Bar` は
