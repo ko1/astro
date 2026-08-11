@@ -113,6 +113,19 @@
 - socket の残り: `recvmsg` / `recvmsg_nonblock` / `sendmsg`、
   `Socket::AncillaryData` の中身、`UDPSocket#local_address` 系。
 
+## 次の伸びしろ (2026-08-11 実測、エラー文言ベース)
+
+- **IOError: not opened for writing** (io+kernel で 20 例) — mode 検査の食い違い。
+  どの操作が誤って read-only 扱いになるのか切り分けが要る。
+- **ArgumentError: invalid access mode** (7 例) — File.open のモード文字列で
+  受け損ねているものがある ("r+b" 系? bom|utf-8?)。
+- **Module#autoload のスレッド意味論** (~20 例) — autoload 中の他 thread からの
+  const_defined?/constants の見え方。autoload 自体の再設計が要る。
+- **refinements** (`undefined method 'foo' for an instance of Integer` 系) — 未実装。
+- Marshal の残りは encoding 境界 (UTF-16 Symbol 等) が主で、encoding 排除方針の外。
+- core/string fail=570 は個別意味論の集積 (大物なし)。次に触るなら
+  fail の文言を uniq -c してから。
+
 ## 既知バグ (定数 / Enumerator)
 
 - **定数テーブルが flat**。`module Foo; class Bar; end; end` の `Bar` は
