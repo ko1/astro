@@ -304,6 +304,117 @@ static RESULT korb_m_sock_recv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     return sr;
 }
 
+/* __sock_recvfrom(fd, maxlen, flags) → [String, [family, port, host, addr]],
+ * or nil when the call would block (the caller parks and retries).  MSG_DONTWAIT
+ * is always added: koruby drives blocking through the scheduler, never by
+ * stalling the native thread. */
+static RESULT korb_m_sock_recvfrom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    intptr_t want = FIXNUM_P(VALUE_SLICE_GET(a, 1)) ? FIX2LONG(VALUE_SLICE_GET(a, 1)) : 4096;
+    if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length");
+    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    char stackbuf[8192];
+    char *const buf = (size_t)want <= sizeof stackbuf ? stackbuf : malloc((size_t)want ? (size_t)want : 1);
+    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory");
+    struct sockaddr_storage ss;
+    socklen_t slen = sizeof ss;
+    memset(&ss, 0, sizeof ss);
+    const ssize_t r = recvfrom(fd, buf, (size_t)want, fl | MSG_DONTWAIT, (struct sockaddr *)&ss, &slen);
+    if (r < 0) {
+        const int e = errno;
+        if (buf != stackbuf) free(buf);
+        if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return RESULT_OK(KORB_NIL);
+        return korb_raise_errno(c, slots, e, "recvfrom", "");
+    }
+    const RESULT sr = korb_str_new(c, slots, buf, (uint32_t)r);
+    if (buf != stackbuf) free(buf);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    KORB_STR_ENC_SET(sr.value, KORB_ENC_BINARY);
+    slots[0] = sr.value;                                  /* root the payload across the array builds */
+    slots[1] = UNWRAP(korb_sock_addr_ary(c, slots + 1, (struct sockaddr *)&ss, slen ? slen : (socklen_t)sizeof ss));
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 2));
+    VALUE_REF pair = VALUE_REF_AT(&slots[2]);
+    CHECK(korb_ary_push_val(c, slots + 3, pair, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 3, pair, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(pair));
+}
+
+/* __sock_sendto(fd, string, flags, family, host, port) → byte count.
+ * host nil → plain send(2) on a connected socket. */
+static RESULT korb_m_sock_sendto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    const VALUE sv = VALUE_SLICE_GET(a, 1);
+    if (!KORB_STRING_P(sv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    const int fl = (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0;
+    struct sockaddr_storage ss;
+    socklen_t alen = 0;
+    if (VALUE_SLICE_LEN(a) >= 5 && VALUE_SLICE_GET(a, 4) != KORB_NIL) {
+        const int fam = korb_sock_family_of(c, VALUE_SLICE_GET(a, 3));
+        char host[512], serv[64];
+        if (!korb_sock_cstr(VALUE_SLICE_GET(a, 4), host, sizeof host))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+        korb_sock_serv_arg(c, VALUE_SLICE_LEN(a) >= 6 ? VALUE_SLICE_GET(a, 5) : KORB_NIL, serv, sizeof serv);
+        if (!korb_sock_fill_addr_s(fam, host, serv, &ss, &alen))
+            return korb_raise_errno(c, slots, ENOENT, "getaddrinfo", host);
+    }
+    uint32_t n; const char *const p = korb_str_cstr_len(sv, &n);   /* nothing allocates before the send */
+    const ssize_t w = alen ? sendto(fd, p, n, fl, (struct sockaddr *)&ss, alen)
+                           : send(fd, p, n, fl);
+    if (w < 0) return korb_raise_errno(c, slots, errno, "send", "");
+    return RESULT_OK(LONG2FIX((intptr_t)w));
+}
+
+/* __sock_hostent(name) → [canonical_name, [aliases], addrtype,
+ *                          [packed address bytes...], [numeric strings...]].
+ * Socket.gethostbyname wants the packed bytes, TCPSocket.gethostbyname the
+ * dotted strings, so hand back both and let Ruby pick. */
+static RESULT korb_m_sock_hostent(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    char host[512];
+    if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), host, sizeof host))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct addrinfo hints, *res = NULL, *ai;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_CANONNAME;
+    const int gr = getaddrinfo(host, NULL, &hints, &res);
+    if (gr != 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "getaddrinfo: %s", gai_strerror(gr));
+    const char *const canon = (res && res->ai_canonname) ? res->ai_canonname : host;
+    const int fam = res ? res->ai_family : AF_INET;
+    slots[0] = UNWRAP(korb_str_new(c, slots, canon, (uint32_t)strlen(canon)));
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 1));                 /* aliases: getaddrinfo exposes none */
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 4));                 /* packed address bytes */
+    slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 4));                 /* numeric strings */
+    VALUE_REF packed = VALUE_REF_AT(&slots[2]);
+    VALUE_REF numeric = VALUE_REF_AT(&slots[3]);
+    for (ai = res; ai != NULL; ai = ai->ai_next) {
+        char nb[NI_MAXHOST] = "";
+        if (getnameinfo(ai->ai_addr, ai->ai_addrlen, nb, sizeof nb, NULL, 0, NI_NUMERICHOST) != 0) continue;
+        const void *raw = NULL; uint32_t rawlen = 0;
+        if (ai->ai_family == AF_INET)  { raw = &((struct sockaddr_in *)ai->ai_addr)->sin_addr;   rawlen = 4; }
+        if (ai->ai_family == AF_INET6) { raw = &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr; rawlen = 16; }
+        if (raw) {
+            slots[4] = UNWRAP(korb_str_new(c, slots + 4, (const char *)raw, rawlen));
+            KORB_STR_ENC_SET(slots[4], KORB_ENC_BINARY);
+            CHECK(korb_ary_push_val(c, slots + 5, packed, slots[4]));
+        }
+        slots[4] = UNWRAP(korb_str_new(c, slots + 4, nb, (uint32_t)strlen(nb)));
+        CHECK(korb_ary_push_val(c, slots + 5, numeric, slots[4]));
+    }
+    freeaddrinfo(res);
+    slots[4] = UNWRAP(korb_ary_new(c, slots + 4, 5));
+    VALUE_REF out = VALUE_REF_AT(&slots[4]);
+    CHECK(korb_ary_push_val(c, slots + 5, out, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 5, out, slots[1]));
+    CHECK(korb_ary_push_val(c, slots + 5, out, LONG2FIX(fam)));
+    CHECK(korb_ary_push_val(c, slots + 5, out, VALUE_REF_GET(packed)));
+    CHECK(korb_ary_push_val(c, slots + 5, out, VALUE_REF_GET(numeric)));
+    return RESULT_OK(VALUE_REF_GET(out));
+}
+
 /* __sock_send(fd, string, flags) → byte count */
 static RESULT korb_m_sock_send(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -563,4 +674,7 @@ void korb_init_socket(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__sock_pack",        korb_m_sock_pack,         3);
     korb_class_def_cfn(c, obj, "__sock_unpack",      korb_m_sock_unpack,       1);
     korb_class_def_cfn(c, obj, "__sock_getnameinfo", korb_m_sock_getnameinfo, -1);
+    korb_class_def_cfn(c, obj, "__sock_recvfrom",    korb_m_sock_recvfrom,    -1);
+    korb_class_def_cfn(c, obj, "__sock_sendto",      korb_m_sock_sendto,      -1);
+    korb_class_def_cfn(c, obj, "__sock_hostent",     korb_m_sock_hostent,      1);
 }

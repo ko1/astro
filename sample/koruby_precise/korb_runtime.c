@@ -6633,8 +6633,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     VALUE self = *recv_slot;
 
     /* send / __send__ / public_send: redispatch by the symbol/string name in arg0.
-     * Shift recv into arg0's slot so [recv | arg1..] forms an argc-1 call. */
-    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send)) {
+     * Shift recv into arg0's slot so [recv | arg1..] forms an argc-1 call.
+     * A class may define its own #send (UDPSocket#send is a real method, not
+     * the reflective one), and that must win — the universal forms are not
+     * registered in any method table, so any hit here is a real definition. */
+    if (UNLIKELY(mid == vm->mid_send || mid == vm->mid___send__ || mid == vm->mid_public_send) &&
+        korb_class_find_method(korb_class_obj_of(c, self), mid, NULL) == NULL) {
         if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             VALUE name = slots[-(intptr_t)argc];           /* arg0 */

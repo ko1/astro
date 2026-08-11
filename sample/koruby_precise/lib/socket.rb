@@ -73,6 +73,56 @@ class BasicSocket < IO
   end
   def recv_nonblock(maxlen, flags = 0, exception: true) = recv(maxlen, flags | Socket::MSG_DONTWAIT)
   def connect_address = local_address
+
+  # koruby always closes the descriptor with the IO, so autoclose is a recorded
+  # preference rather than a behaviour switch.
+  def autoclose? = @autoclose.nil? ? true : @autoclose
+  def autoclose=(v); @autoclose = v ? true : false; v; end
+
+  # recvfrom → [data, sender_address].  The blocking form parks and retries;
+  # "poll said readable" is not a promise that the next call won't block.
+  def recvfrom(maxlen, flags = 0)
+    loop do
+      r = __sock_recvfrom(fileno, maxlen, flags)
+      return [r[0], r[1]] if r
+      wait_readable
+    end
+  end
+
+  def recvfrom_nonblock(maxlen = 65536, flags = 0, outbuf = nil, exception: true)
+    r = __sock_recvfrom(fileno, maxlen, flags)
+    unless r
+      return :wait_readable unless exception
+      raise IO::EAGAINWaitReadable, "recvfrom(2) would block"
+    end
+    outbuf.replace(r[0]) if outbuf
+    [outbuf || r[0], r[1]]
+  end
+
+  # recvmsg → [data, Addrinfo, flags, *controls].  koruby has no ancillary-data
+  # plumbing, so the control list is always empty; everything else is faithful.
+  def recvmsg(maxlen = nil, flags = 0, opts = nil, scm_rights: false)
+    data, addr = recvfrom(maxlen || 65536, flags)
+    [data, Addrinfo.__from_ary(addr), 0]
+  end
+
+  def recvmsg_nonblock(maxlen = nil, flags = 0, opts = nil, scm_rights: false, exception: true)
+    r = recvfrom_nonblock(maxlen || 65536, flags, nil, exception: exception)
+    return r unless r.is_a?(Array)
+    [r[0], Addrinfo.__from_ary(r[1]), 0]
+  end
+
+  def sendmsg(mesg, flags = 0, dest_sockaddr = nil, *controls)
+    if dest_sockaddr
+      a = Socket.__unpack(dest_sockaddr)
+      __sock_sendto(fileno, mesg.to_s, flags, a[0], a[2], a[1])
+    else
+      __sock_send(fileno, mesg.to_s, flags)
+    end
+  end
+  def sendmsg_nonblock(mesg, flags = 0, dest_sockaddr = nil, *controls, exception: true)
+    sendmsg(mesg, flags | Socket::MSG_DONTWAIT, dest_sockaddr, *controls)
+  end
 end
 
 class IPSocket < BasicSocket
@@ -107,6 +157,12 @@ class TCPSocket < IPSocket
     ensure
       s.close unless s.closed?
     end
+  end
+
+  # Like Socket.gethostbyname but with the addresses as numeric strings.
+  def self.gethostbyname(name)
+    h = __sock_hostent(name.to_s)
+    [h[0], h[1], h[2], *h[4]]
   end
 end
 
@@ -229,7 +285,6 @@ class UDPSocket < IPSocket
     connect(host, port) if host
     __sock_send(fileno, mesg.to_s, flags)
   end
-  def recvfrom(maxlen, flags = 0) = [recv(maxlen, flags), getpeername_ary]
 end
 
 class Socket < BasicSocket
@@ -335,12 +390,34 @@ class Socket < BasicSocket
     __sock_getnameinfo(packed, flags)
   end
 
-  def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil, flags = nil)
-    __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype)
+  def self.getaddrinfo(host, service, family = nil, socktype = nil, protocol = nil,
+                       flags = nil, reverse_lookup = nil, timeout: nil)
+    __sock_getaddrinfo(host&.to_s, service, family && __family(family), socktype && __socktype(socktype))
+  end
+
+  # [canonical_name, aliases, address_family, *packed_addresses]
+  def self.gethostbyname(name)
+    h = __sock_hostent(name.to_s)
+    [h[0], h[1], h[2], *h[3]]
+  end
+
+  def self.getifaddrs
+    []   # Socket::Ifaddr is not modelled; an empty list is honest, not a lie about interfaces
+  end
+
+  # Socket#recvfrom / #accept exist on BasicSocket; the _nonblock forms differ
+  # only in that they surface "would block" instead of parking.
+  def accept_nonblock(exception: true)
+    pair = __sock_accept(fileno)
+    unless pair
+      return :wait_readable unless exception
+      raise IO::EAGAINWaitReadable, "accept(2) would block"
+    end
+    [Socket.for_fd(pair[0]), Addrinfo.__from_ary(pair[1])]
   end
 
   # nil family = infer from the host string, so sockaddr_in accepts IPv6 too.
-  def self.sockaddr_in(port, host) = __sock_pack(nil, Integer(port), host.to_s)
+  def self.sockaddr_in(port, host) = __sock_pack(nil, port, host.to_s)   # Integer or service name
   class << self; alias_method :pack_sockaddr_in, :sockaddr_in; end
   def self.sockaddr_un(path) = __sock_pack(AF_UNIX, 0, path.to_s)
   class << self; alias_method :pack_sockaddr_un, :sockaddr_un; end
@@ -512,6 +589,78 @@ class Addrinfo
     s = bind
     s.listen(backlog)
     s
+  end
+
+  def connect_to(*args, &blk)
+    remote = args.empty? ? self : Addrinfo.__from_ary([@famname, args[1] || 0, args[0].to_s, args[0].to_s, @socktype, @protocol])
+    remote.connect(&blk)
+  end
+
+  # connect_from binds to *self* and connects to the given peer.
+  def connect_from(*args, &blk)
+    peer = args.empty? ? self : Addrinfo.tcp(args[0].to_s, args[1] || 0)
+    s = TCPSocket.new(peer.ip_address, peer.ip_port, ip_address, ip_port)
+    return s unless blk
+    begin
+      blk.call(s)
+    ensure
+      s.close unless s.closed?
+    end
+  end
+
+  # CRuby's shape: [afamily, address, pfamily, socktype, protocol, canonname, nil]
+  # where `address` is [numeric_address, service] for IP and the path for UNIX.
+  def marshal_dump
+    addr = ip? ? [@addr.to_s, @port.to_s] : @host.to_s
+    [afamily_name, addr, pfamily_name, socktype_name, protocol_name, canonname, nil]
+  end
+
+  def marshal_load(ary)
+    fam = ary[0]
+    if fam == "AF_UNIX"
+      __setup(fam, 0, ary[1].to_s, ary[1].to_s, Socket.__socktype(ary[3] || 0), 0)
+    else
+      a = ary[1]
+      __setup(fam, a[1].to_i, a[0].to_s, a[0].to_s,
+              Socket.__socktype(ary[3] || 0), __protocol_of(ary[4]))
+    end
+  end
+
+  def pfamily_name = afamily_name.to_s.sub(/\AAF_/, "PF_")
+
+  def socktype_name
+    case @socktype
+    when Socket::SOCK_STREAM then "SOCK_STREAM"
+    when Socket::SOCK_DGRAM  then "SOCK_DGRAM"
+    when Socket::SOCK_RAW    then "SOCK_RAW"
+    else nil
+    end
+  end
+
+  def protocol_name
+    case @protocol
+    when Socket::IPPROTO_TCP then ip? ? "IPPROTO_TCP" : nil
+    when Socket::IPPROTO_UDP then ip? ? "IPPROTO_UDP" : nil
+    else nil
+    end
+  end
+
+  def __protocol_of(name)
+    case name
+    when "IPPROTO_TCP" then Socket::IPPROTO_TCP
+    when "IPPROTO_UDP" then Socket::IPPROTO_UDP
+    else 0
+    end
+  end
+  private :__protocol_of
+
+  # "::ffff:1.2.3.4" (an IPv4-mapped IPv6 address) → the plain IPv4 Addrinfo.
+  def ipv4_mapped? = ipv6? && @addr.to_s.downcase.start_with?("::ffff:")
+  def ipv4_compat? = ipv6? && @addr.to_s.start_with?("::") && !ipv4_mapped? && @addr.to_s.count(".") == 3
+  def ipv6_to_ipv4
+    return nil unless ipv4_mapped? || ipv4_compat?
+    Addrinfo.__from_ary(["AF_INET", @port, @addr.to_s.split(":").last, @addr.to_s.split(":").last,
+                         @socktype, @protocol])
   end
 
   def family_addrinfo(*args) = self
