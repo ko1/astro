@@ -104,3 +104,55 @@ class IO
   class EINPROGRESSWaitReadable < Errno::EINPROGRESS; include WaitReadable; end
   class EINPROGRESSWaitWritable < Errno::EINPROGRESS; include WaitWritable; end
 end
+
+class IO
+  # Byte/codepoint iteration on top of the C getbyte/getc primitives.
+  def each_byte(&blk)
+    return to_enum(:each_byte) unless blk
+    while (b = getbyte)
+      blk.call(b)
+    end
+    self
+  end
+
+  def each_codepoint(&blk)
+    return to_enum(:each_codepoint) unless blk
+    each_char { |ch| blk.call(ch.ord) }
+    self
+  end
+  alias_method :codepoints, :each_codepoint
+
+  def readbyte
+    b = getbyte
+    raise EOFError, "end of file reached" if b.nil?
+    b
+  end
+
+  # putc writes a character: a String's first character, or an Integer chr.
+  def putc(obj)
+    if obj.is_a?(String)
+      write(obj[0])
+    elsif obj.is_a?(Numeric)
+      write((obj.to_int & 0xff).chr)
+    elsif obj.respond_to?(:to_str)
+      write(obj.to_str[0])
+    else
+      raise TypeError, "no implicit conversion of #{obj.class} into String"
+    end
+    obj
+  end
+
+  def to_io = self
+
+  # koruby always closes the descriptor with the IO; record the preference.
+  def autoclose? = @autoclose.nil? ? true : @autoclose
+  def autoclose=(v); @autoclose = v ? true : false; v; end
+
+  def self.try_convert(obj)
+    return obj if obj.is_a?(IO)
+    return nil unless obj.respond_to?(:to_io)
+    io = obj.to_io
+    raise TypeError, "can't convert #{obj.class} to IO (#{obj.class}#to_io gives #{io.class})" unless io.is_a?(IO)
+    io
+  end
+end

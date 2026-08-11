@@ -761,6 +761,68 @@ static RESULT korb_io_raise_eof(CTX *c, VALUE *slots) {
         ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
     return r;
 }
+/* IO#getbyte — one byte as an Integer, nil at EOF. */
+static RESULT korb_m_io_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    KORB_IO_NEED_READ(c, slots, self);
+    RESULT gerr = RESULT_OK(KORB_NIL);
+    const int b = korb_io_getb_p(c, slots, rep, &gerr);
+    if (UNLIKELY(gerr.state != KORB_NORMAL)) return gerr;
+    return RESULT_OK(b < 0 ? KORB_NIL : LONG2FIX(b));
+}
+
+/* IO#sysseek — lseek(2) without touching the buffers; CRuby raises when there
+ * are unread buffered bytes rather than silently desyncing them. */
+static RESULT korb_m_io_sysseek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+                         ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
+    if (rep->rpos < rep->rlen) return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysseek for buffered IO");
+    korb_io_flush_rep(rep);
+    const off_t r = lseek(rep->fd, (off_t)FIX2LONG(VALUE_SLICE_GET(a, 0)), whence);
+    if (r < 0) return korb_raise_errno(c, slots, errno, "sysseek", "");
+    return RESULT_OK(LONG2FIX((intptr_t)r));
+}
+
+/* IO#fsync / #fdatasync — flush our buffer, then ask the kernel. */
+static RESULT korb_m_io_fsync(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    korb_io_flush_rep(rep);
+    if (rep->fd >= 0 && fsync(rep->fd) != 0 && errno != EINVAL)   /* EINVAL: pipes/ttys can't sync */
+        return korb_raise_errno(c, slots, errno, "fsync", "");
+    return RESULT_OK(LONG2FIX(0));
+}
+
+/* IO#advise(advice, offset = 0, len = 0) — posix_fadvise; the advice symbols
+ * follow CRuby's names.  Advice is advisory: unknown offsets never raise. */
+static RESULT korb_m_io_advise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    const VALUE av = VALUE_SLICE_GET(a, 0);
+    if (!SYMBOL_P(av)) return korb_raise(c, slots, KORB_E_TYPE, 0, "advice must be a Symbol");
+    const char *const nm = korb_sym_name(c->vm, SYM2ID(av));
+    int adv;
+    if      (!strcmp(nm, "normal"))     adv = POSIX_FADV_NORMAL;
+    else if (!strcmp(nm, "sequential")) adv = POSIX_FADV_SEQUENTIAL;
+    else if (!strcmp(nm, "random"))     adv = POSIX_FADV_RANDOM;
+    else if (!strcmp(nm, "willneed"))   adv = POSIX_FADV_WILLNEED;
+    else if (!strcmp(nm, "dontneed"))   adv = POSIX_FADV_DONTNEED;
+    else if (!strcmp(nm, "noreuse"))    adv = POSIX_FADV_NOREUSE;
+    else return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "unsupported advice: %s", nm);
+    off_t off = 0, len = 0;
+    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) off = (off_t)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) len = (off_t)FIX2LONG(VALUE_SLICE_GET(a, 2));
+    if (rep->fd >= 0) (void)posix_fadvise(rep->fd, off, len, adv);
+    return RESULT_OK(KORB_NIL);
+}
+
 /* IO#readline — like gets but raises EOFError at end of file. */
 static RESULT korb_m_io_readline(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     RESULT r = korb_m_io_gets(c, slots, self, a);
@@ -1448,6 +1510,9 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("seek", seek, -1);       IOM("pos", pos, 0);        IOM("tell", pos, 0);
     IOM("pos=", pos_set, 1);     IOM("rewind", rewind, 0);
     IOB("each_char", each_char, 0);   IOM("getc", getc, 0);
+    IOM("getbyte", getbyte, 0);
+    IOM("sysseek", sysseek, -1);      IOM("fsync", fsync, 0);
+    IOM("fdatasync", fsync, 0);       IOM("advise", advise, -1);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     IOM("binmode?", binmode_p, 0);
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
