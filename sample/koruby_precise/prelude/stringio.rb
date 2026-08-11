@@ -5,10 +5,12 @@
 class StringIO
   include Enumerable
 
-  def initialize(string = +"", mode = nil)
+  def initialize(string = +"", mode = nil, **opts)
     @buf = string
+    mode = opts[:mode] if mode.nil? && opts.key?(:mode)   # StringIO.new(str, mode: "r")
     mode ||= string.frozen? ? "r" : "r+"
     mode = mode.to_s
+    mode += "b" if opts[:binmode] && !mode.include?("b")
     @append = mode.start_with?("a")
     plus = mode.include?("+")
     @readable = plus || mode.start_with?("r")
@@ -198,9 +200,24 @@ class StringIO
   def getc
     __check_readable
     return nil if eof?
-    ch = @buf[@pos]
+    # @pos is a BYTE offset; String#[] indexes by character, so slice by bytes
+    # and take the first character of the slice (max 4 bytes covers UTF-8).
+    ch = @buf.byteslice(@pos, 4).to_s[0]
+    return nil if ch.nil?
     @pos += ch.bytesize
     ch
+  end
+
+  def readchar
+    c = getc
+    raise EOFError, "end of file reached" if c.nil?
+    c
+  end
+
+  def readbyte
+    b = getbyte
+    raise EOFError, "end of file reached" if b.nil?
+    b
   end
 
   def getbyte
@@ -232,6 +249,9 @@ class StringIO
     if sep.is_a?(Integer) && limit.nil?
       limit = sep
       sep = $/
+    elsif !sep.nil? && !sep.is_a?(String)
+      raise TypeError, "no implicit conversion of #{sep.class} into String" unless sep.respond_to?(:to_str)
+      sep = sep.to_str
     end
     return nil if eof?
     if sep.nil?
@@ -253,18 +273,19 @@ class StringIO
     gets(sep, limit, chomp: chomp)
   end
 
-  def each_line(sep = $/, chomp: false)
-    return to_enum(:each_line, sep, chomp: chomp) unless block_given?
-    while (l = gets(sep, chomp: chomp))
+  def each_line(sep = $/, limit = nil, chomp: false)
+    return to_enum(:each_line, sep, limit, chomp: chomp) unless block_given?
+    sep, limit = $/, sep if sep.is_a?(Integer) && limit.nil?   # each_line(10) form
+    while (l = gets(sep, limit, chomp: chomp))
       yield l
     end
     self
   end
   alias each each_line
 
-  def readlines(sep = $/, chomp: false)
+  def readlines(sep = $/, limit = nil, chomp: false)
     ls = []
-    each_line(sep, chomp: chomp) { |l| ls << l }
+    each_line(sep, limit, chomp: chomp) { |l| ls << l }
     ls
   end
 
