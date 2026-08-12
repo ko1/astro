@@ -100,6 +100,8 @@ bool astrogre_search(astrogre_pattern *p, const char *str, size_t len, astrogre_
  * single buffer.  The caller is responsible for advancing past
  * zero-width matches. */
 bool astrogre_search_from(astrogre_pattern *p, const char *str, size_t len, size_t start_from, astrogre_match_t *out);
+/* Host-supplied C-stack floor for the \g<> recursion guard (fiber-aware). */
+void astrogre_set_stack_floor(uintptr_t floor);
 
 /* Parse a Ruby-style regex source.  `pat` is the bytes between the
  * slashes; `pat_len` is its length; `flags` is the regex flag bitmask

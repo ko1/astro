@@ -10,31 +10,55 @@
  * dispatching, since node_grep_search reads c.pos as the loop start.
  */
 
+#define _GNU_SOURCE
 #include <sys/resource.h>
+#include <pthread.h>
 #include "node.h"
 #include "context.h"
 #include "parse.h"
 
 /* RLIMIT_STACK at process start, halved + floored — the runtime cap
  * for recursive `\g<>` calls.  See node_re_subroutine_call. */
-static size_t g_stack_limit = 0;
+/* Lowest stack address the current thread may safely reach.  Computed per
+ * thread (cached in a TLS slot) from the pthread stack bounds, so the `\g<>`
+ * recursion guard measures ACTUAL remaining headroom — not `total/2` from a
+ * mid-stack snapshot, which overflowed when the caller (e.g. koruby running
+ * net/http) had already consumed most of the stack. */
+static __thread uintptr_t g_stack_floor = 0;   /* absolute low address + margin; 0 = uncomputed */
+static __thread uintptr_t g_stack_floor_override = 0;   /* set by the host (koruby) to its own C-stack floor */
 
-static size_t
-astrogre_stack_limit(void)
+/* The host runs the matcher on its own (possibly fiber) C-stack, whose real
+ * floor pthread_getattr_np cannot see.  koruby calls this on every fiber /
+ * green-thread switch with its cstack_limit so the `\g<>` guard uses the
+ * stack we are actually on.  Pass 0 to clear. */
+void astrogre_set_stack_floor(uintptr_t floor) { g_stack_floor_override = floor; }
+
+static uintptr_t
+astrogre_stack_floor(void)
 {
-    if (g_stack_limit) return g_stack_limit;
-    struct rlimit rl;
-    size_t total = 8u * 1024u * 1024u;
-    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
-        total = (size_t)rl.rlim_cur;
+    if (g_stack_floor_override) return g_stack_floor_override;
+    if (g_stack_floor) return g_stack_floor;
+    void  *lo = NULL;
+    size_t size = 0;
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        if (pthread_attr_getstack(&attr, &lo, &size) != 0) { lo = NULL; size = 0; }
+        pthread_attr_destroy(&attr);
     }
-    /* Half the reported stack — the host (Ruby, the CLI) already burned
-     * some before we got here, and each recursive call drags more than
-     * just its own frame onto the stack (rep_cont, body chain, ...). */
-    const size_t halved = total / 2;
-    const size_t floor  = 1u * 1024u * 1024u;
-    g_stack_limit = halved > floor ? halved : floor;
-    return g_stack_limit;
+    if (lo == NULL || size == 0) {
+        /* Fallback: derive a floor from RLIMIT_STACK below the current frame. */
+        struct rlimit rl;
+        size_t total = 8u * 1024u * 1024u;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) total = (size_t)rl.rlim_cur;
+        char here;
+        g_stack_floor = (uintptr_t)&here - (total - (total / 8));   /* keep ~1/8 in reserve */
+        return g_stack_floor;
+    }
+    /* Keep a 256 KiB safety margin above the true floor: one astrogre
+     * recursion level plus the backtrace/handler needs some room. */
+    const size_t margin = 256u * 1024u;
+    g_stack_floor = (uintptr_t)lo + margin;
+    return g_stack_floor;
 }
 
 /* The single rep_cont sentinel node used by all repeats.  Allocated
@@ -74,9 +98,8 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.sub_chains_n = p->sub_chains_n;
     c.sub_top      = NULL;
     c.sub_depth    = 0;
-    char stack_marker;
-    c.stack_base  = (uintptr_t)&stack_marker;
-    c.stack_limit = astrogre_stack_limit();
+    c.stack_base  = astrogre_stack_floor();   /* absolute low address the guard must not cross */
+    c.stack_limit = 0;                        /* unused now (guard compares against stack_base directly) */
 
     /* MatchCache state.  Allocated lazily by node_re_alt /
      * node_re_rep_cont once backtrack_count exceeds memo_threshold.

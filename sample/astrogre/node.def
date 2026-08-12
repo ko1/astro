@@ -1245,6 +1245,12 @@ node_re_cap_start(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
 NODE_DEF
 node_re_cap_end(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
 {
+    /* Stack-floor guard: a pathological pattern (e.g. `\g<x>*+` over an
+     * empty-matchable subroutine) can recurse through cap_end unboundedly.
+     * Fail the match before the C stack overflows rather than SEGV.  c->stack_base
+     * is the absolute low address + margin (host-supplied for fibers). */
+    char stack_marker;
+    if ((uintptr_t)&stack_marker <= c->stack_base) return MR_FAIL;
     size_t saved_end   = c->ends[idx];
     bool   saved_valid = c->valid[idx];
     c->ends[idx]  = c->pos;
@@ -1584,12 +1590,11 @@ node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE 
     if ((int)idx >= c->sub_chains_n) return MR_FAIL;
     NODE *const body = c->sub_chains[idx];
     if (!body) return MR_FAIL;
-    /* Dynamic stack guard — distance from snapshot at search start. */
+    /* Dynamic stack guard: fail before the growing C stack crosses the thread's
+     * real floor (c->stack_base = absolute low address + margin; host-supplied
+     * for fibers).  Stacks grow down, so SP at/below the floor = out of room. */
     char stack_marker;
-    const uintptr_t cur = (uintptr_t)&stack_marker;
-    const size_t used = (c->stack_base > cur) ? (size_t)(c->stack_base - cur)
-                                              : (size_t)(cur - c->stack_base);
-    if (used >= c->stack_limit) return MR_FAIL;
+    if ((uintptr_t)&stack_marker <= c->stack_base) return MR_FAIL;
 
     struct sub_call_frame f;
     f.return_to = outer_next;
