@@ -62,8 +62,13 @@ end
 # never drift apart.  Each class carries its number as ::Errno, like CRuby.
 class SystemCallError < StandardError
   def initialize(msg = nil, errno = nil)
+    if msg.is_a?(Integer) && errno.nil?    # SystemCallError.new(errno_number)
+      errno = msg
+      msg = nil
+    end
     @errno = errno || (self.class.const_defined?(:Errno) ? self.class::Errno : nil)
-    base = @errno ? __strerror(@errno) : "unknown error"
+    base = @errno ? __strerror(@errno) : nil
+    base = "unknown error" if base.nil? || base.empty?
     super(msg ? "#{base} - #{msg}" : base)
   end
   # The C raise path builds the exception without running #initialize, so fall
@@ -113,4 +118,9 @@ class FrozenError
     unless receiver.equal?(NameError::UNSET__); @__receiver = receiver; @__has_recv = true; end
   end
   def receiver; @__has_recv ? @__receiver : raise(ArgumentError, "no receiver is available"); end
+end
+
+class Object
+  # Kernel#!~ — the negation of #=~ (an intrinsic in CRuby; a plain method here).
+  def !~(other) = !(self =~ other)
 end
