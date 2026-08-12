@@ -3,6 +3,33 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
+## 2026-08-12 に入れたもの (継続ラウンド)
+
+- socket: recvfrom / recvmsg / sendmsg / gethostbyname / accept_nonblock /
+  autoclose / Addrinfo marshal・connect_to・ipv6_to_ipv4。
+  `Object#send` が実メソッドの #send を横取りするバグ修正。
+- `Kernel#require` の Kernel 登録が init 順序バグで死んでいたのを修正
+  (`super` から見えるように)。
+- Process: RLIMIT_* / getrlimit / setrlimit / detach / clock_getres / Sys、
+  `Kernel#test` / trace_var / singleton_method。
+- IO: getbyte / sysseek / fsync / fdatasync / advise / each_byte /
+  each_codepoint / readbyte / putc / to_io / autoclose / IO.try_convert、
+  io/nonblock・fcntl スタブ。
+- File: chown / utime / lutime / mkfifo / ftype / empty? / identical? /
+  world_readable? ほか述語 15 個。**FIFO open の park 化** (open(2) の
+  ブロックで scheduler ごとデッドロックしていた)。
+- StringIO: getc のバイト/文字インデックス混同 (マルチバイトで nil)、
+  limit 付き each_line、kwargs init。
+- **演算子が user object の method_missing に落ちないバグ修正**
+  (mspec の `should >=` matcher 全滅の真因)。
+- Range サブクラスの `new` (real payload + override table)、
+  beginless の max(n) / reverse_each / size、endless String range の each。
+- Enumerable#to_a / each_with_index / each_entry の #each への引数転送。
+- Dir.home / foreach / each_child / empty? / #chdir / #fileno。
+- Object#!~、SystemCallError.new(errno) 形。
+
+make test 99,873 → **100,057 PASS** (10 万台)。
+
 ## 2026-08-11 に入れたもの
 
 - **rubyspec runner を mspec-run 駆動に** (`tools/mspec_launch.rb`)。
