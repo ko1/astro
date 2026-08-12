@@ -315,8 +315,30 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const VALUE cls = korb_class_obj_of(c, t);
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         intptr_t off;
-        if (!korb_parse_tz_offset(VALUE_SLICE_GET(a, 0), &off))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+        if (!korb_parse_tz_offset(VALUE_SLICE_GET(a, 0), &off)) {
+            /* Rational / #to_int / #to_str offsets — anything that reduces to
+             * seconds or to the "+HH:MM" string form. */
+            VALUE offv = VALUE_SLICE_GET(a, 0);
+            static const struct { const char *nm; uint32_t len; } conv[] = { { "to_int", 6 }, { "to_str", 6 }, { "to_r", 4 } };
+            bool got = false;
+            for (size_t ci = 0; ci < sizeof conv / sizeof conv[0] && !got; ci++) {
+                const uint32_t mid = korb_intern(c->vm, conv[ci].nm, conv[ci].len);
+                if (!korb_responds_to(c, offv, mid)) continue;
+                slots[0] = offv;
+                const RESULT ir = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
+                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                if (KORB_RATIONAL_P(ir.value)) {           /* Rational seconds → truncate */
+                    slots[0] = ir.value;
+                    const RESULT tr = korb_send(c, slots + 1, korb_intern(c->vm, "to_i", 4), 0, 0);
+                    if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+                    got = korb_parse_tz_offset(tr.value, &off);
+                } else {
+                    got = korb_parse_tz_offset(ir.value, &off);
+                }
+            }
+            if (!got)
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+        }
         if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
         slots[0] = UNWRAP(korb_time_make(c, slots, cls, e, false));
         (void)korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off));

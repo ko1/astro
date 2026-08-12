@@ -616,6 +616,25 @@ class Date
       h[:mday] = m[2].to_i
       h[:year] = m[3].to_i if m[3]
       s = m.pre_match + m.post_match
+    elsif (m = /\A\s*(\d+)\s*\z/.match(s))
+      # Bare digit strings, disambiguated by length (CRuby's ddd rules):
+      # DD → day / DDD → year-day / MMDD → month+day / YYMMDD / YYYYMMDD is
+      # handled above / YYDDD → 2-digit year + year-day / YYYYDDD.
+      d = m[1]
+      case d.length
+      when 1, 2 then h[:mday] = d.to_i
+      when 3    then h[:yday] = d.to_i
+      when 4    then h[:mon], h[:mday] = d[0, 2].to_i, d[2, 2].to_i
+      when 5    then h[:year], h[:yday] = __complete_year(d[0, 2].to_i), d[2, 3].to_i
+      when 6    then h[:year], h[:mon], h[:mday] = __complete_year(d[0, 2].to_i), d[2, 2].to_i, d[4, 2].to_i
+      when 7    then h[:year], h[:yday] = d[0, 4].to_i, d[4, 3].to_i
+      end
+      s = m.pre_match + m.post_match
+    end
+
+    if h[:mday].nil? && h[:yday].nil? && (m = /\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/i.match(s))
+      h[:wday] = %w[sun mon tue wed thu fri sat].index(m[1].downcase)
+      s = m.pre_match + m.post_match
     end
 
     if (m = /(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.,](\d+))?)?/.match(s))
@@ -656,10 +675,29 @@ class Date
     ABBR_DAYNAMES.index { |x| x.downcase == n }
   end
 
+  # CRuby's 69-rule: 2-digit years 69..99 are 19xx, 00..68 are 20xx.
+  def self.__complete_year(yy)
+    yy >= 69 ? 1900 + yy : 2000 + yy
+  end
+
   def self.parse(str = "-4712-01-01", comp = true, sg = ITALY)
     h = _parse(str, comp)
-    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday]
-    civil(h[:year] || -4712, h[:mon] || 1, h[:mday] || 1, sg)
+    raise Date::Error, "invalid date" unless h[:year] || h[:mon] || h[:mday] || h[:yday] || h[:wday]
+    # Partial dates complete from today (Date.parse("10") → this month's 10th).
+    if h[:year].nil? || h[:mon].nil? || h[:mday].nil?
+      t = Time.now
+      if h[:yday]
+        return ordinal(h[:year] || t.year, h[:yday], sg)
+      elsif h[:wday] && h[:mday].nil?
+        base = civil(t.year, t.mon, t.day, sg)     # the named day of THIS week (Sun-start)
+        return base - base.wday + h[:wday]
+      end
+      h[:year] ||= t.year
+      if h[:mon].nil? && h[:mday]
+        h[:mon] = t.mon
+      end
+    end
+    civil(h[:year], h[:mon] || 1, h[:mday] || 1, sg)
   end
 
   def self.iso8601(str = "-4712-01-01", sg = ITALY) = parse(str, true, sg)
