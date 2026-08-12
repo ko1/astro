@@ -126,6 +126,26 @@
 - core/string fail=570 は個別意味論の集積 (大物なし)。次に触るなら
   fail の文言を uniq -c してから。
 
+## 既知バグ (block 転送)
+
+- **to_enum 駆動 (CPROC block) 下のメソッドからリテラルブロックを渡すと、
+  callee が `&b` パラメータで受けたとき nil になる** (2026-08-11 発覚)。
+  再現最小形:
+  ```ruby
+  class S
+    def each(&b); [3,1].each(&b); end        # &b で受ける callee
+    def ewi; each { |x| yield x }; self; end # リテラルブロックを渡す
+  end
+  S.new.to_enum(:ewi).to_a   # → each の中で b が nil (LocalJumpError)
+  ```
+  直接 `S.new.ewi { }` なら動く。to_enum の C driver が ewi を CPROC block で
+  呼んだときだけ、ewi 内のリテラルブロックが each の &b に届かない。
+  callee が yield 型 (`def each; yield; end`) なら CPROC 下でも動くので、
+  &b の materialize (korb_make_proc の bp_blk 経路) が CPROC コンテキストの
+  何かを見て落ちている疑い。Enumerable の each_with_index 等は __each_el の
+  間接呼び出し (間に通常ブロックのフレームが挟まる) で回避している —
+  この回避をやめられるのは本修正後。
+
 ## 既知バグ (定数 / Enumerator)
 
 - **定数テーブルが flat**。`module Foo; class Bar; end; end` の `Bar` は

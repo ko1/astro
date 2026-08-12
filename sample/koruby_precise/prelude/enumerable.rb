@@ -29,7 +29,17 @@ module Enumerable
   def flat_map(&blk); return to_a.flat_map unless blk; r = []; each { |*a| v = blk.call(*a); if v.is_a?(Array); v.each { |e| r << e }; elsif v.respond_to?(:to_ary); ary = v.to_ary; if ary.is_a?(Array); ary.each { |e| r << e }; elsif ary.nil?; r << v; else; raise TypeError, "can't convert #{v.class} to Array (#{v.class}#to_ary gives #{ary.class})"; end; else; r << v; end }; r; end
   def find(ifnone = nil, &blk); return to_enum(:find) unless blk; res = nil; found = false; each { |*a| e = a.size <= 1 ? a[0] : a; if blk.call(e); res = e; found = true; break; end }; found ? res : (ifnone ? ifnone.call : nil); end
   alias detect find
-  def to_a; r = []; __each_el { |e| r << e }; r; end
+  def to_a(*args)
+    r = []
+    if args.empty?   # __each_el indirection: a literal block handed straight to a
+                     # callee with an &b param is lost when THIS method runs under a
+                     # to_enum-forwarded (CPROC) block — see todo.md
+      __each_el { |e| r << e }
+    else
+      each(*args) { |*a| r << (a.size <= 1 ? a[0] : a) }   # extra args go to #each (CRuby)
+    end
+    r
+  end
   def lazy; to_a.lazy; end   # finite-source lazy (an infinite custom #each would need a true lazy driver)
   def to_h(*args, &blk); h = {}; each(*args) { |*a| pair = blk ? blk.call(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
   alias entries to_a
@@ -111,7 +121,16 @@ module Enumerable
     to_a.cycle(ni, &blk)
   end
   def each_with_object(o); return to_enum(:each_with_object, o) unless block_given?; __each_el { |x| yield x, o }; o; end
-  def each_with_index; return to_enum(:each_with_index) unless block_given?; i = 0; __each_el { |x| yield x, i; i += 1 }; self; end
+  def each_with_index(*args)
+    return to_enum(:each_with_index, *args) unless block_given?
+    i = 0
+    if args.empty?
+      __each_el { |x| yield x, i; i += 1 }
+    else
+      each(*args) { |*a| yield((a.size <= 1 ? a[0] : a), i); i += 1 }
+    end
+    self
+  end
   def partition(&blk); return to_enum(:partition) unless blk; a = []; b = []; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; if blk.call(e); a << e; else; b << e; end }; [a, b]; end
   def group_by; return to_enum(:group_by) unless block_given?; h = {}; __each_el { |x| k = yield(x); h[k] = [] unless h.key?(k); h[k] << x }; h; end
   def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
@@ -175,7 +194,15 @@ module Enumerable
   alias collect_concat flat_map
   def reverse_each; a = to_a.reverse; return a.each unless block_given?; a.each { |x| yield x }; self; end
   def uniq; seen = {}; r = []; __each_el { |x| k = block_given? ? yield(x) : x; unless seen.key?(k); seen[k] = true; r << x; end }; r; end
-  def each_entry; return to_enum(:each_entry) unless block_given?; __each_el { |x| yield x }; self; end
+  def each_entry(*args)
+    return to_enum(:each_entry, *args) unless block_given?
+    if args.empty?
+      __each_el { |x| yield x }
+    else
+      each(*args) { |*a| yield(a.size <= 1 ? a[0] : a) }
+    end
+    self
+  end
   def compact; r = []; __each_el { |x| r << x unless x.nil? }; r; end
 end
 

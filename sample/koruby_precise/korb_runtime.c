@@ -6621,6 +6621,16 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
 /* Shared receiver dispatch.  `block`/`def_env` are NULL for a plain send;
  * non-NULL for a `{ ... }` form.  A block handed to a non-yielding method is
  * ignored (CRuby); a yielding method called without a block gets NULL. */
+/* True when a Range subclass still uses the stock constructor: no #initialize
+ * of its own anywhere below the builtin default (which lives on Object).  Such
+ * a class gets the real Range payload from `new`; one that redefines
+ * #initialize opts into the generic-object path instead. */
+static bool korb_range_default_init_p(CTX *c, VALUE cls) {
+    VALUE found_def = KORB_NIL;
+    struct korb_method *const m = korb_class_find_method(cls, c->vm->mid_initialize, &found_def);
+    return m == NULL || found_def == korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
+}
+
 static RESULT
 korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                NODE *block, VALUE *def_env, VALUE *captured_self)
@@ -6912,12 +6922,25 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return RESULT_OK(argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new &&
-             VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_RANGE]) {   /* Range.new(begin, end, exclude_end=false) */
+             korb_builtin_base_class(vm, self) == KORB_C_RANGE &&
+             korb_range_default_init_p(c, self)) {
+        /* Range.new(begin, end, exclude_end=false) — also for Range subclasses
+         * with no #initialize of their own (a real Range payload is built and
+         * the subclass identity is recorded in the override table, the same
+         * scheme String/Array subclasses use).  A subclass that defines its own
+         * #initialize falls through to the generic-object path instead. */
         if (UNLIKELY(argc < 2 || argc > 3))
             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 2..3)", argc);
         VALUE *const base = &slots[-(intptr_t)argc];
         const uint32_t excl = (argc >= 3 && KORB_TRUTHY(base[2])) ? 1u : 0u;
-        return korb_range_new(c, slots, VALUE_REF_AT(&base[0]), base[1], excl);
+        if (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_RANGE])
+            return korb_range_new(c, slots, VALUE_REF_AT(&base[0]), base[1], excl);
+        slots[0] = self;                                    /* root the subclass across the alloc */
+        const VALUE rng = UNWRAP(korb_range_new(c, slots + 1, VALUE_REF_AT(&base[0]), base[1], excl));
+        slots[1] = rng;
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
+        korb_klass_override_set(c, slots[1], slots[0]);     /* both rooted; set does not GC */
+        return RESULT_OK(slots[1]);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_new) {
         /* A user-defined `def self.new` (e.g. the Thread stub) overrides the built-in
@@ -7512,7 +7535,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     } else {
         const enum korb_class base = korb_builtin_base_class(vm, cls);
         if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET ||
-            base == KORB_C_PROC || base == KORB_C_FIBER ||
+            base == KORB_C_PROC || base == KORB_C_FIBER || base == KORB_C_RANGE ||
             base == KORB_C_THREAD || base == KORB_C_MUTEX || base == KORB_C_CONDVAR) kind = 2;   /* subclass → real payload */
         else   /* a Struct-derived class with no members of its own (`class X < Struct`)
                 * acts as a factory (X.new(...) → new struct class), not an instance */
