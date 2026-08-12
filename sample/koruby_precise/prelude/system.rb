@@ -1075,3 +1075,47 @@ module FileTest
     module_function m
   end
 end
+
+# Dir conveniences on top of the C primitives (entries/children/chdir/…).
+class Dir
+  def self.home(user = nil)
+    return ENV["HOME"] if user.nil? || user == ""
+    # /etc/passwd lookup, the portable-enough way.
+    File.foreach("/etc/passwd") do |line|
+      f = line.split(":")
+      return f[5] if f[0] == user
+    end rescue nil
+    raise ArgumentError, "user #{user} doesn't exist"
+  end
+
+  def self.foreach(path, &blk)
+    return to_enum(:foreach, path) unless blk
+    entries(path).each(&blk)
+    nil
+  end
+
+  def self.each_child(path, &blk)
+    return to_enum(:each_child, path) unless blk
+    children(path).each(&blk)
+    nil
+  end
+
+  def self.empty?(path)
+    children(File.path(path)).empty?
+  end
+
+  def each_child(&blk)
+    return to_enum(:each_child) unless blk
+    children.each(&blk)
+    self
+  end
+
+  # CRuby 3.3+: Dir#chdir — change into this directory.
+  def chdir(&blk) = Dir.chdir(path, &blk)
+
+  # dirfd(3) equivalent: an fd opened on the directory, created lazily and
+  # owned by this Dir (closed with GC; koruby Dir has no explicit close of it).
+  def fileno
+    @__dir_fd ||= IO.sysopen(path, File::RDONLY)
+  end
+end
