@@ -25,6 +25,8 @@ static RESULT korb_m_range_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
         if ((r->rend == KORB_NIL || (KORB_FLOAT_P(r->rend) && isinf(korb_float_val(r->rend)))) && KORB_INTEGER_P(r->rbegin))   /* endless / +∞-end Integer → Infinity */
             return korb_float_new(c, slots, INFINITY);
+        if (r->rbegin == KORB_NIL && KORB_INTEGER_P(r->rend))   /* beginless Integer → Infinity too */
+            return korb_float_new(c, slots, INFINITY);
         if (KORB_INTEGER_P(r->rbegin))
             return RESULT_OK(KORB_NIL);                  /* Bignum-bounded integer range: exact count not computed (gap) */
         /* other begin: iterable-by-succ (String/Symbol) → nil; else (nil/Array/…) can't iterate → TypeError */
@@ -324,10 +326,19 @@ static RESULT korb_m_ary_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const KorbRange *r = SELF_RANGE;
     if (UNLIKELY(r->rend == KORB_NIL)) return korb_raise(c, slots, KORB_E_RANGE, 0, "cannot get the maximum of endless range");
-    if (UNLIKELY(r->rbegin == KORB_NIL && (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL))) {   /* beginless: max is the end */
-        if (!r->exclude_end) return RESULT_OK(r->rend);
-        if (FIXNUM_P(r->rend)) return RESULT_OK(LONG2FIX(FIX2LONG(r->rend) - 1));
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
+    if (UNLIKELY(r->rbegin == KORB_NIL)) {                /* beginless: count down from the end */
+        if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_GET(a, 0) == KORB_NIL) {   /* max → the end */
+            if (!r->exclude_end) return RESULT_OK(r->rend);
+            if (FIXNUM_P(r->rend)) return RESULT_OK(LONG2FIX(FIX2LONG(r->rend) - 1));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "cannot exclude non Integer end value");
+        }
+        if (FIXNUM_P(r->rend)) {                          /* max(n) → [end, end-1, ...] */
+            intptr_t n;
+            if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &n))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+            if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
+            const intptr_t top = FIX2LONG(r->rend) - (r->exclude_end ? 1 : 0);
+            return korb_range_seq(c, slots, top, (uint32_t)n, -1);
+        }
     }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-fixnum bounds */
@@ -440,9 +451,29 @@ static RESULT korb_enum_desc(CTX *c, VALUE *slots, VALUE recv, const char *meth)
 static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     (void)a;
     if (block == NULL) {                              /* → Enumerator over the range's elements */
+        if (SELF_RANGE->rend == KORB_NIL && !FIXNUM_P(SELF_RANGE->rbegin)) {
+            /* endless non-Integer range: a materializing enumerator can't work —
+             * hand back a #succ-driven generator (prelude __each_endless_enum). */
+            slots[0] = VALUE_REF_GET(self);
+            return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__each_endless_enum", 19), 0, 0, NULL, NULL, KORB_NIL);
+        }
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
         return korb_enum_new(c, slots + 2, slots[0], slots[1]);
+    }
+    if (SELF_RANGE->rend == KORB_NIL && !FIXNUM_P(SELF_RANGE->rbegin)) {
+        /* endless String/etc. range with a block: drive by #succ, re-reading the
+         * current value from a rooted slot each round (succ allocates). */
+        slots[0] = SELF_RANGE->rbegin;
+        for (;;) {
+            slots[1] = slots[0];
+            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            slots[1] = slots[0];                       /* receiver for #succ */
+            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "succ", 4), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            slots[0] = sr.value;
+        }
     }
     /* endless (1..) or +∞-end (1..Float::INFINITY) integer range: iterate from
      * begin upward indefinitely — the block is expected to break. */
@@ -695,6 +726,15 @@ static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VA
     }
     if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))           /* endless range → can't reverse-iterate from infinity */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rend));
+    if (UNLIKELY(SELF_RANGE->rbegin == KORB_NIL && FIXNUM_P(SELF_RANGE->rend))) {
+        /* beginless: count down from the end forever (the block is expected to
+         * break; CRuby iterates the same way). */
+        for (intptr_t i = FIX2LONG(SELF_RANGE->rend) - (SELF_RANGE->exclude_end ? 1 : 0); ; i--) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, cself);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → via to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));

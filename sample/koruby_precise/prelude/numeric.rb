@@ -105,3 +105,15 @@ class Complex
     end
   end
 end
+
+class Range
+  # A #succ-driven generator for an endless non-Integer range ("a".. etc.);
+  # Range#each (C) returns this when it cannot materialize.
+  def __each_endless_enum
+    r = self
+    Enumerator.new do |y|
+      cur = r.begin
+      loop { y << cur; cur = cur.succ }
+    end
+  end
+end
