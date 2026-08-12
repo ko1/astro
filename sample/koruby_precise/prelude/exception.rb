@@ -123,4 +123,12 @@ end
 class Object
   # Kernel#!~ — the negation of #=~ (an intrinsic in CRuby; a plain method here).
   def !~(other) = !(self =~ other)
+
+  # `when *pats` support: the parser desugars the splat to
+  # pats.__korb_when_splat(subject).  Semantics match CRuby's expansion:
+  # each element is tested with #===, left to right.
+  def __korb_when_splat(subj)
+    arr = is_a?(Array) ? self : (respond_to?(:to_a) ? to_a : [self])
+    arr.any? { |pat| pat === subj }
+  end
 end

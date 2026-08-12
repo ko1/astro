@@ -687,6 +687,19 @@ node_not(CTX *c, NODE *n, VALUE *slots, VALUE v@child)
     return RESULT_OK(KORB_TRUTHY(v) ? KORB_FALSE : KORB_TRUE);
 }
 
+// `recv&.m(...) { block }` guard: cond is the (already-evaluated) receiver; if
+// it is nil the whole expression is nil, else the block-call `body` runs.  Used
+// only for safe-navigation calls that carry a block (the block-less form is
+// node_send_safe).  `cond` is a cheap local read (the receiver was evaluated
+// once into a temp just before), so evaluating it twice is side-effect-free.
+NODE_DEF @nogc
+node_nil_guard(CTX *c, NODE *n, VALUE *slots, VALUE cond@child, NODE *body)
+{
+    (void)n;
+    if (cond == KORB_NIL) return RESULT_OK(KORB_NIL);
+    return EVAL_ARG(c, body);
+}
+
 // && / || — rhs is lazy (evaluated only when needed).
 NODE_DEF @nogc
 node_and(CTX *c, NODE *n, VALUE *slots, VALUE lhs@child, NODE *rhs)

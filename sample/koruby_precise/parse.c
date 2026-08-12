@@ -1070,13 +1070,27 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     }
                 }
                 if (ps->rest) {
+                    /* `|s,|` (implicit rest) and `|s,*|` (anonymous rest) discard
+                     * the extra args but still make the block multi-parameter for
+                     * auto-splat purposes.  No local is consumed: rest_slot = -2
+                     * tells the binder "splat like a rest, store nothing".
+                     * (With post params the discarded slot would shift the posts'
+                     * local indexes — keep that combination unsupported.) */
+                    const bool anon_rest =
+                        PM_NODE_TYPE_P(ps->rest, PM_IMPLICIT_REST_NODE) ||
+                        (PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE) &&
+                         !((const pm_rest_parameter_node_t *)ps->rest)->name);
+                    if (anon_rest) {
+                        if (ps->posts.size) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "anonymous block rest with post params"); }
+                        rest_slot = -2;
+                    } else {
                     if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "block splat parameter"); }
                     const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)ps->rest;
-                    if (!rp->name) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "anonymous block rest parameter"); }
                     rest_slot = (int32_t)loc;
                     if (lvar_index(tc, ps->rest, rp->name) != loc)
                         kp_failf(tc, ps->rest, "koruby_precise: block rest not locals[%u]", loc);
                     loc++;
+                    }
                 } else if (ps->posts.size) {
                     pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "block post params without rest");
                 }
@@ -1617,6 +1631,19 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 
     /* receiver method dispatch with a block: recv.mid(args) { ... } or &:sym */
     if (cn->block) {
+        /* `recv&.m(...) { ... }` — safe navigation WITH a block: evaluate the
+         * receiver once into a temp, guard on nil, and let the normal block-call
+         * code read the temp as its receiver (recv_node below).  node_send_safe
+         * only covers the block-less form. */
+        const bool blk_safe = (cn->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
+        int32_t safe_tmp = -1;
+        NODE *safe_set = NULL;
+        if (blk_safe) {
+            safe_tmp = (int32_t)alloc_synth_local(tc);
+            safe_set = bake_lset(tc, (uint32_t)safe_tmp, transduce(tc, cn->receiver));
+        }
+        #define RECV_NODE() (safe_tmp >= 0 ? bake_lget(tc, (uint32_t)safe_tmp) : transduce(tc, cn->receiver))
+        #define SAFE_WRAP(call) (safe_tmp >= 0 ? ALLOC_node_seq(safe_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)safe_tmp), (call))) : (call))
         /* `recv.m(args, &proc)` — forward a runtime Proc.  Evaluate the proc into
          * a rooted synth local, then node_send_blkproc reads it. */
         if (PM_NODE_TYPE_P(cn->block, PM_BLOCK_ARGUMENT_NODE)) {
@@ -1635,24 +1662,24 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                      * coerces the proc and forwards it (2 staged children: recv + array). */
                     int32_t proc_off = (int32_t)pslot - tc->chain - 2;
                     NODE *recv, *arr;
-                    WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                    WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
                                        arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
                     NODE *_cs = ALLOC_node_send_splat_blkproc(mid, line, proc_off, recv, arr);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
-                    return pset ? ALLOC_node_seq(pset, _cs) : _cs;
+                    return SAFE_WRAP(pset ? ALLOC_node_seq(pset, _cs) : _cs);
                 }
                 uint32_t sc = 1u + (uint32_t)argc;
                 NODE **argv = malloc(sizeof(NODE *) * sc);
                 if (!argv) abort();
                 int32_t saved = tc->chain;
                 tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
-                argv[0] = transduce(tc, cn->receiver);
+                argv[0] = RECV_NODE();
                 for (size_t i = 0; i < argc; i++)
                     argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
                 tc->chain = saved;
                 NODE *call = ALLOC_node_send_blkproc(mid, line, (int32_t)pslot - tc->chain - (int32_t)sc - KORB_FRAME_HDR, argv, sc);
                 bake_add(tc, &call->u.node_send_blkproc.proc_off);
-                return pset ? ALLOC_node_seq(pset, call) : call;
+                return SAFE_WRAP(pset ? ALLOC_node_seq(pset, call) : call);
             }
         }
         NODE *entry = kp_block_entry(tc, cn->block);
@@ -1667,12 +1694,12 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 int32_t self_off = -tc->chain - 3;       /* caller self (base[-1]), 2 staged children */
                 int32_t def_env_off = -tc->chain - 2;    /* caller frame base (tagged |1 at eval) */
                 NODE *recv, *arr;
-                WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
+                WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
                                    arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
                 NODE *_cs = ALLOC_node_send_splat_blk(mid, line, self_off, entry, def_env_off, recv, arr);
                 bake_add(tc, &_cs->u.node_send_splat_blk.self_off);
                 bake_add(tc, &_cs->u.node_send_splat_blk.def_env_off);
-                return _cs;
+                return SAFE_WRAP(_cs);
             }
         }
         /* def_env_off: cursor → caller frame base = -(chain + staging); staging
@@ -1684,15 +1711,17 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
         if (!argv) abort();
         int32_t saved = tc->chain;
         tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
-        argv[0] = transduce(tc, cn->receiver);
+        argv[0] = RECV_NODE();
         for (size_t i = 0; i < argc; i++)
             argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
         tc->chain = saved;
         NODE *call = ALLOC_node_send_blk(mid, line, self_off, entry, -(tc->chain + (int32_t)sc + KORB_FRAME_HDR), argv, sc);
         bake_add(tc, &call->u.node_send_blk.def_env_off);
         bake_add(tc, &call->u.node_send_blk.self_off);    /* captured self at base[-1] (bottom header) */
-        return call;
+        return SAFE_WRAP(call);
     }
+    #undef RECV_NODE
+    #undef SAFE_WRAP
     /* `recv.m(...)` — same forwarding as the implicit-self case, with the receiver
      * as the extra staged child. */
     if (argc == 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
@@ -3104,8 +3133,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *cond = NULL;
             for (size_t ci = 0; ci < wn->conditions.size; ci++) {
                 const pm_node_t *cv = wn->conditions.nodes[ci];
-                if (PM_NODE_TYPE_P(cv, PM_SPLAT_NODE))
-                    return kp_unsupported(tc, cv, "when with splat");
+                if (PM_NODE_TYPE_P(cv, PM_SPLAT_NODE)) {
+                    /* `when *pats` — expand at runtime: pats.__korb_when_splat(subj)
+                     * (a prelude helper: any? { |p| p === subj }).  Subject-less
+                     * case has no value to test each element against. */
+                    const pm_splat_node_t *sp = (const pm_splat_node_t *)cv;
+                    if (!has_subj || !sp->expression)
+                        return kp_unsupported(tc, cv, "when with splat (no subject)");
+                    NODE *recv, *subj_arg;
+                    const uint32_t line = kp_line(tc, cv);
+                    WITH_CHAIN(tc, KP_SEND1_SC, (recv = transduce(tc, sp->expression),
+                                                 subj_arg = bake_lget(tc, tmp)));
+                    NODE *test = kp_send1(korb_intern(tc->c->vm, "__korb_when_splat", 17), line, recv, subj_arg);
+                    cond = cond ? ALLOC_node_or(cond, test) : test;
+                    continue;
+                }
                 NODE *test;
                 if (has_subj) {
                     NODE *vn, *targ; (void)kp_line(tc, cv);

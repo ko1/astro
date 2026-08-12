@@ -136,6 +136,7 @@ RESULT korb_cpx_new(CTX *c, VALUE *slots, VALUE re, VALUE im);
 RESULT korb_regexp_new(CTX *c, VALUE *slots, VALUE source, uint32_t flags);
 /* $~ backref accessor: kind 0=$& 1=$` 2=$' 3=$+ 100+n=$n (from the last match). */
 RESULT korb_backref(CTX *c, VALUE *slots, int kind);
+bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val);   /* Regexp#=== that sets $~ */
 RESULT korb_method_new(CTX *c, VALUE *slots, VALUE recv, uint32_t mid);
 bool   korb_num_to_d(VALUE v, double *out);
 /* numeric arithmetic with a Float operand.  op: 0=+ 1=- 2=* 3=/ 4=% */

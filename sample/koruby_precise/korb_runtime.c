@@ -3123,6 +3123,20 @@ RESULT korb_do_alias(CTX *c, VALUE *slots, VALUE klass, uint32_t newm, uint32_t 
         const VALUE objc = korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
         if (KORB_CLASS_P(objc)) src = korb_class_find_method(objc, oldm, NULL);
     }
+    if (src == NULL && oldm == c->vm->mid_new) {
+        /* `alias newobj new` (net/http does this on its metaclass): .new is a
+         * dispatch special-case, not a table entry, so alias a trampoline that
+         * re-sends :new — same body Class#[] uses. */
+        struct korb_method *dst = korb_class_method_slot(VAL2CLASS(klass), newm);
+        memset(dst, 0, sizeof *dst);
+        dst->mid = newm; dst->orig_mid = oldm;
+        dst->kind = KORB_METHOD_CFUNC; dst->params_cnt = -1;
+        dst->rest_slot = -1;
+        dst->owner = KORB_NIL; dst->dm_proc = KORB_NIL;
+        dst->rfn = korb_m_class_new_bracket;
+        c->vm->method_serial++;
+        return RESULT_OK(KORB_NIL);
+    }
     if (UNLIKELY(src == NULL))
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, oldm), korb_type_name(klass));
@@ -3967,6 +3981,24 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
         }
+    }
+    if (m == NULL && mid == c->vm->mid_new && KORB_CLASS_P(self)) {
+        /* super from a user `def Klass.new`: the default allocator is a dispatch
+         * special-case with no table entry, so route the super straight into a
+         * plain `self.__korb_default_new(args)` — a hidden singleton the
+         * dispatcher never intercepts is not needed; korb_send_impl's mid_new
+         * cascade IS the default allocator, and it only runs when the class has
+         * no user `new` in its dispatch chain.  Sidestep by sending :new to a
+         * throwaway subclass?  No — simplest correct: call korb_send_impl with
+         * the caller's own def-singleton temporarily hidden is intrusive.
+         * Instead mark re-entry: stash the defining singleton so the smethod
+         * override check skips it once. */
+        slots[0] = self;
+        for (uint32_t i = 0; i < argc; i++) slots[1 + i] = slots[-(intptr_t)argc + (intptr_t)i];
+        c->vm->super_new_skip = def_class;             /* consumed by korb_send_impl's def self.new check */
+        RESULT r = korb_send_impl(c, slots + 1 + argc, mid, line, argc, NULL, NULL, KORB_NIL);
+        c->vm->super_new_skip = KORB_NIL;
+        return r;
     }
     if (UNLIKELY(m == NULL))
         return korb_raise(c, slots, KORB_E_NOMETHOD, line,
@@ -6178,7 +6210,7 @@ korb_block_yield(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
 {
     if (UNLIKELY(block == NULL || block == KORB_BLK_CPROC || block->head.kind != &kind_node_entry ||
                  korb_entry_kw_info(block) || korb_entry_destructure_spec(block) ||
-                 korb_entry_destructure_n(block) || korb_entry_rest_slot(block) >= 0 ||
+                 korb_entry_destructure_n(block) || korb_entry_rest_slot(block) != -1 ||
                  korb_entry_opt_defaults(block)))   /* NULL (no block) → _full raises; keeps the cold epilogue out of the hot path */
         return korb_block_yield_full(c, slots, block, def_env, argv, argc, captured_self, NULL, NULL, NULL, 0);   /* is_lam via fwd-detection inside */
 
@@ -6271,8 +6303,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const bool is_lambda = is_lam || (fwd && VAL2PROC(*captured_self)->is_lambda);   /* explicit (proc.call) or forwarded &lam */
     if (UNLIKELY(is_lambda)) {
         const uint32_t pc = korb_entry_params_cnt(block);
-        const bool has_rest = korb_entry_rest_slot(block) >= 0;
-        const uint32_t rs = has_rest ? (uint32_t)korb_entry_rest_slot(block) : 0;
+        const bool has_rest = korb_entry_rest_slot(block) != -1;   /* named (>=0) or discard (-2) */
+        const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
         const uint32_t npost = (has_rest && pc > rs + 1) ? (pc - rs - 1) : 0;
         const uint32_t lo = korb_entry_req_cnt(block) + npost;   /* required front + required post */
         if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
@@ -6366,6 +6398,15 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 bf[1 + i] = dr.value;
             } else bf[1 + i] = KORB_NIL;                    /* missing required → nil (block-lenient) */
+        }
+        for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
+    } else if (korb_entry_rest_slot(block) == -2) {     /* |s,| / |s,*| — discard extras, splat like np+1 params */
+        const uint32_t np = korb_entry_params_cnt(block);
+        if (!is_lambda && np + 1 > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {
+            const KorbArray *ar = VAL2ARY(argv[0]);
+            for (uint32_t i = 0; i < np; i++) bf[1 + i] = i < ar->len ? korb_items_data(ar->items)[i] : KORB_NIL;
+        } else {
+            for (uint32_t i = 0; i < np; i++)  bf[1 + i] = (i < argc) ? argv[i] : KORB_NIL;
         }
         for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
     } else {
@@ -6949,8 +6990,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         {
             const VALUE sing = korb_dispatch_class(c, self);
             VALUE sdef = KORB_NIL;
-            struct korb_method *const snew =
+            struct korb_method *snew =
                 KORB_CLASS_P(sing) ? korb_class_find_method(sing, vm->mid_new, &sdef) : NULL;
+            /* super from inside that very `def self.new` (marker set by the
+             * super path): skip the override once so the default allocator runs. */
+            if (snew && vm->super_new_skip != KORB_NIL && sdef == vm->super_new_skip) snew = NULL;
             /* A user `def self.new` (ISEQ) or a builtin singleton `new` (CFUNC —
              * Regexp/Time/File/Dir) overrides the default allocator; the direct
              * path resolves this in node_send_cached, this shared (send/block)

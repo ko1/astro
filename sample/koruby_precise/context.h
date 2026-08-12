@@ -757,6 +757,11 @@ struct korb_vm {
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    VALUE super_new_skip;    /* transient: the singleton whose `def self.new` is
+                              * super-ing right now — korb_send_impl skips that
+                              * override once so the default allocator runs.
+                              * Set/cleared around one send; never live across GC
+                              * user code (GC-visited as a root regardless). */
     uint32_t class_serial;   /* monotonic id handed to each new class (see KorbClass.serial) */
     /* set when a user redefines a node-fastpathed basic op (+,-,*,/,%,<,<=,>,>=)
      * on Integer/Float; the arithmetic/compare nodes then deopt to a real send
@@ -1036,6 +1041,7 @@ struct CTX_struct {
     for (VALUE *_p = (c)->slots - 2; _p < _aro_top; _p++) {                  \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                            \
     }                                                                        \
+    ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->super_new_skip);         \
     /* constants (class values) + their defining-module owners are roots too */ \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \

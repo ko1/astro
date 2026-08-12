@@ -685,7 +685,15 @@ static RESULT korb_ary_grep(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if (i >= ary->len) break;
         slots[0] = korb_items_data(ary->items)[i];                  /* root elem across yield */
-        if (korb_case_eq(c, VALUE_SLICE_GET(a, 0), slots[0]) == keep) {
+        const VALUE _grep_pat = VALUE_SLICE_GET(a, 0);
+        bool _m;
+        if (KORB_REGEXP_P(_grep_pat)) {
+            slots[1] = _grep_pat;                                   /* root the pattern (a Regexp is movable) across the build */
+            _m = korb_re_caseeq_backref(c, slots + 2, VALUE_REF_GET(VALUE_REF_AT(&slots[1])), slots[0]);
+        } else {
+            _m = korb_case_eq(c, _grep_pat, slots[0]);
+        }
+        if (_m == keep) {
             if (block != NULL) {
                 RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;

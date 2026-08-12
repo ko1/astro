@@ -66,6 +66,34 @@ static uint32_t korb_re_tilde_sym(struct korb_vm *vm) { return korb_intern(vm, "
 static void korb_re_set_lastmatch(CTX *c, VALUE md_or_nil) { korb_const_define(c, korb_re_tilde_sym(c->vm), md_or_nil); }
 static VALUE korb_re_get_lastmatch(CTX *c) { return korb_const_get(c->vm, korb_re_tilde_sym(c->vm)); }
 
+/* Regexp#=== that also sets $~ (like CRuby's `when /re/` / grep).  Returns the
+ * bool result; on a match, $~ becomes the MatchData, else nil.  Only called for
+ * Regexp patterns (the caller checks KORB_REGEXP_P first). */
+bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
+    /* MatchData#[]/#pre_match slice their subject as a String, so the subject
+     * stored in $~ must be a String — coerce a Symbol to its name here (a fresh
+     * String), never store the Symbol itself. */
+    if (SYMBOL_P(val)) {
+        const char *const nm = korb_sym_name(c->vm, SYM2ID(val));
+        const RESULT sr = korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return false;
+        val = sr.value;
+    } else if (!KORB_STRING_P(val)) { korb_re_set_lastmatch(c, KORB_NIL); return false; }
+    slots[0] = val; slots[1] = pat;                        /* root subject (may have just been allocated) + regexp */
+    const korb_re_exec_fn_t fn = korb_re_load(c->vm);
+    if (UNLIKELY(fn == NULL)) return false;
+    korb_re_match_t m;
+    { const KorbString *const s = VAL2STR(slots[0]);       /* re-derive: str_new above may have GC'd */
+      const KorbString *const p = VAL2STR(VAL2RE(slots[1])->source);
+      const int r = fn(korb_strbuf_data(p->buf), p->len, VAL2RE(slots[1])->flags,
+                       korb_strbuf_data(s->buf), s->len, 0, &m);   /* fn does not allocate → borrows stable */
+      if (r != 1) { korb_re_set_lastmatch(c, KORB_NIL); return false; } }
+    const RESULT mdr = korb_re_build_md(c, slots + 2, slots[0], slots[1], &m);
+    if (UNLIKELY(mdr.state != KORB_NORMAL)) return false;
+    korb_re_set_lastmatch(c, mdr.value);
+    return true;
+}
+
 /* ---- MatchData helpers --------------------------------------------------- */
 static long korb_md_off(const KorbMatchData *md, int i, int which) {
     const KorbArray *a = VAL2ARY(md->offsets);
