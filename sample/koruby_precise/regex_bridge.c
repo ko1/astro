@@ -57,6 +57,10 @@ static astrogre_pattern *kre_get(const char *pat, size_t patlen, unsigned flags)
  * Returns 1 on match (filling *out with per-group byte spans), 0 no match,
  * -1 compile error.  `out` may be NULL for a boolean match test. */
 __attribute__((visibility("default")))
+/* koruby calls this on fiber / green-thread switches with its own C-stack
+ * floor, so astrogre's \g<> recursion guard uses the stack we run on. */
+void koruby_re_set_stack_floor(const void *floor) { astrogre_set_stack_floor((uintptr_t)floor); }
+
 int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
                    const char *str, size_t slen, size_t start, koruby_re_match *out) {
     astrogre_pattern *p = kre_get(pat, patlen, flags);

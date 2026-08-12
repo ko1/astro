@@ -15,6 +15,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     if (UNLIKELY(!KORB_REGEXP_P(re) || !KORB_STRING_P(subj))) return RESULT_OK(KORB_FALSE);
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Regexp engine (koruby_regex.so) unavailable");
+    korb_re_sync_floor(c);   /* lazy first-load happens above; make sure the floor is set for THIS stack */
     const KorbString *const pat = VAL2STR(VAL2RE(re)->source), *const s = VAL2STR(subj);
     if (startb > s->len) { m->matched = 0; return RESULT_OK(KORB_FALSE); }
     /* Encoding: a /n regex, or a single-byte subject (BINARY / US-ASCII), matches
@@ -82,6 +83,7 @@ bool korb_re_caseeq_backref(CTX *c, VALUE *slots, VALUE pat, VALUE val) {
     slots[0] = val; slots[1] = pat;                        /* root subject (may have just been allocated) + regexp */
     const korb_re_exec_fn_t fn = korb_re_load(c->vm);
     if (UNLIKELY(fn == NULL)) return false;
+    korb_re_sync_floor(c);
     korb_re_match_t m;
     { const KorbString *const s = VAL2STR(slots[0]);       /* re-derive: str_new above may have GC'd */
       const KorbString *const p = VAL2STR(VAL2RE(slots[1])->source);

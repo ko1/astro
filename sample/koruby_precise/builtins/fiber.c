@@ -95,6 +95,7 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     c->slots = rep->vslots; c->slots_top = rep->vslots_top;
     c->slots_limit = rep->vslots_limit; c->slots_high_water = rep->vslots_hw;
     c->cstack_limit = (const char *)rep->cstack + KORB_FIBER_CSTACK_MARGIN;
+    korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
 
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
@@ -103,6 +104,7 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     c->vm->running_fiber = prev;
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;
+    korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
     if (rep->raised) { rep->raised = 0; return RESULT_RAISE_(rep->transfer); }

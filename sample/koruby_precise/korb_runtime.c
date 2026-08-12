@@ -2693,12 +2693,22 @@ typedef struct { int matched; int n_groups; long starts[KORB_RE_MAX_GROUPS]; lon
 typedef int (*korb_re_exec_fn_t)(const char *, size_t, unsigned, const char *, size_t, size_t, korb_re_match_t *);
 typedef const char *(*korb_re_named_fn_t)(const char *, size_t, unsigned, int, int *);
 typedef int (*korb_re_valid_fn_t)(const char *, size_t, unsigned);
+/* Tell astrogre the C-stack floor of the fiber/thread we currently run on, so
+ * its \g<> recursion guard fails gracefully instead of overflowing.  Cheap; no
+ * regex engine load is forced (skips if the bridge was never dlopen'd). */
+void korb_re_sync_floor(CTX *c) {
+    if (c->vm == NULL) return;   /* called from korb_ctx_new before the VM exists */
+    void *const fn = c->vm->re_floor_fn;
+    if (fn && fn != (void *)(intptr_t)-1)
+        ((void (*)(const void *))fn)(c->cstack_limit);
+}
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
         void *h = dlopen(KORUBY_SRC_DIR "/koruby_regex.so", RTLD_NOW | RTLD_LOCAL);
         vm->re_fn       = h ? dlsym(h, "koruby_re_exec")  : NULL;
         vm->re_named_fn = h ? dlsym(h, "koruby_re_named") : NULL;
         vm->re_valid_fn = h ? dlsym(h, "koruby_re_valid") : NULL;
+        vm->re_floor_fn = h ? dlsym(h, "koruby_re_set_stack_floor") : NULL;
         if (vm->re_fn == NULL) vm->re_fn = (void *)(intptr_t)-1;   /* mark load failure */
     }
     return vm->re_fn == (void *)(intptr_t)-1 ? NULL : (korb_re_exec_fn_t)vm->re_fn;
@@ -4834,6 +4844,7 @@ korb_case_eq(CTX *c, VALUE pat, VALUE val)
         else return false;
         const korb_re_exec_fn_t fn = korb_re_load(c->vm);
         if (UNLIKELY(fn == NULL)) return false;
+        korb_re_sync_floor(c);
         const KorbString *const p = VAL2STR(VAL2RE(pat)->source);
         return fn(korb_strbuf_data(p->buf), p->len, VAL2RE(pat)->flags, sdata, slen, 0, NULL) == 1;
     }
@@ -11042,10 +11053,12 @@ korb_ctx_new(void)
             size_t margin = stack_size / 8;
             if (margin < (size_t)512 << 10) margin = (size_t)512 << 10;
             c->cstack_limit = (const char *)stack_addr + margin;
+            korb_re_sync_floor(c);
         }
         else {
             char here;
             c->cstack_limit = &here - ((size_t)6 << 20);   /* fallback: ~6 MiB below */
+    korb_re_sync_floor(c);
         }
     }
 

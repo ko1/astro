@@ -813,6 +813,7 @@ struct korb_vm {
     void     *re_fn;         /* koruby_re_exec */
     void     *re_named_fn;   /* koruby_re_named */
     void     *re_valid_fn;   /* koruby_re_valid */
+    void     *re_floor_fn;   /* koruby_re_set_stack_floor */
 
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */
