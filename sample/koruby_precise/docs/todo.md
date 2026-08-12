@@ -126,6 +126,18 @@
 - core/string fail=570 は個別意味論の集積 (大物なし)。次に触るなら
   fail の文言を uniq -c してから。
 
+## ライブラリ vendor (2026-08-12)
+
+CRuby の純 Ruby ライブラリをそのまま lib/ に取り込む戦線を開始。
+matrix / ipaddr / resolv / getoptlong / open3 / random/formatter を vendor
+(smoke で CRuby と一致)。**net/http と optparse は SEGV / 未解決で保留**:
+- **net/http**: load と object 生成は動くが、`Net::HTTP.get_response` の実
+  リクエストが SEGV (要 mock server で再現)。grep の $~ / safe-nav+block /
+  super→new を直しても残る深い所。crash は whole-file-fail を増やすので
+  vendor から外した。次に入れるならこの SEGV の切り分けから。
+- **optparse**: `on("-nNAME")` が make_switch 内で `[] for nil`
+  (guess/search 周り)。when-splot は直ったがまだ別の穴がある。
+
 ## 既知バグ (block 転送)
 
 - **to_enum 駆動 (CPROC block) 下のメソッドからリテラルブロックを渡すと、
