@@ -5703,7 +5703,15 @@ korb_report_uncaught(CTX *c, VALUE exc)
         return;
     }
     KorbException *e = VAL2EXC(exc);
+    /* A const-only class (LoadError, ThreadError, a user subclass, …) carries a
+     * generic etype and records its real class in exc_class — report that name,
+     * not the etype's ("cannot load such file" is a LoadError, not RuntimeError). */
+    char clsbuf[192];
     const char *cls = korb_etype_name(e->etype);
+    if (KORB_CLASS_P(e->exc_class) && VAL2CLASS(e->exc_class)->name_sym) {
+        korb_class_qname_into(c, e->exc_class, clsbuf, sizeof clsbuf);
+        cls = clsbuf;
+    }
     const char *msg = (e->msg != KORB_NIL) ? korb_strbuf_data(VAL2STR(e->msg)->buf) : cls;
 
     if (vm->bt_cnt > 0) {

@@ -33,9 +33,12 @@ class Module
     # file (once) and retry the constant.  Ancestors are searched too, matching
     # CRuby (an autoload on a superclass answers a subclass's lookup).
     if (path = __autoload_path_for(name))
-      __autoload_table.delete(name)                 # one shot: a failed require must not loop
-      ancestors.each { |m| m.__autoload_table.delete(name) if m.respond_to?(:__autoload_table, true) }
+      # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
+      # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
+      # になる)。成功したときだけ一度きりの登録を外す。
       require path
+      __autoload_table.delete(name)
+      ancestors.each { |m| m.__autoload_table.delete(name) if m.respond_to?(:__autoload_table, true) }
       # koruby の const 表は top-level 定数を Object 所有として持たないので、
       # const_defined? ではなく実際に引いてみる (テーブルからは既に外して
       # あるので、まだ無ければ通常の NameError に落ちる)。
