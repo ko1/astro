@@ -26,6 +26,14 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out) {
         const KorbString *const s = VAL2STR(v);
         const char *const p = korb_strbuf_data(s->buf); const uint32_t n = s->len;
         if ((n == 1 && p[0] == 'Z') || (n == 3 && !memcmp(p, "UTC", 3))) { *out = 0; return true; }
+        if (n == 1) {   /* military zone letters: A..I = +1..+9, K..M = +10..+12,
+                         * N..Y = -1..-12 (J is deliberately unassigned) */
+            const char z = p[0];
+            if (z >= 'A' && z <= 'I') { *out = (intptr_t)(z - 'A' + 1) * 3600; return true; }
+            if (z >= 'K' && z <= 'M') { *out = (intptr_t)(z - 'K' + 10) * 3600; return true; }
+            if (z >= 'N' && z <= 'Y') { *out = -(intptr_t)(z - 'N' + 1) * 3600; return true; }
+            return false;
+        }
         if (n >= 3 && (p[0] == '+' || p[0] == '-')) {
             const int sign = (p[0] == '-') ? -1 : 1;
             int hh = 0, mm = 0, ss = 0; uint32_t i = 1;
@@ -40,6 +48,18 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out) {
         }
     }
     return false;
+}
+
+/* CRuby's utc_offset ArgumentError, which quotes the offending value. */
+static RESULT korb_raise_bad_utc_offset(CTX *c, VALUE *slots, VALUE v) {
+    char *ib = NULL; size_t il = 0;
+    FILE *ms = open_memstream(&ib, &il);
+    if (ms) { korb_fprint_to_s(c, ms, v); fclose(ms); }
+    RESULT r = korb_raise(c, slots, KORB_E_ARGUMENT, 0,
+                          "\"+HH:MM\", \"-HH:MM\", \"UTC\" or \"A\"..\"I\",\"K\"..\"Z\" expected for utc_offset: %s",
+                          ib ? ib : "");
+    free(ib);
+    return r;
 }
 
 static double korb_time_epoch(CTX *c, VALUE t) {
@@ -92,8 +112,40 @@ static void korb_time_tm(CTX *c, VALUE t, struct tm *out) {
 }
 
 /* ---- Time.<class methods> ------------------------------------------------- */
+/* The wall clock with its real resolution.  time(2) truncates to whole seconds,
+ * which makes Time#usec/#nsec always 0 and breaks every "has at least
+ * microsecond precision" / elapsed-time check. */
+static void korb_time_now_parts(double *sec_int, long *nsec) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    *sec_int = (double)ts.tv_sec;
+    *nsec = (long)ts.tv_nsec;
+}
+/* Time.now(in: zone) — same `in:` keyword as Time.new (a fixed UTC offset). */
 static RESULT korb_m_time_now(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    bool has_in = false; intptr_t in_off = 0;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
+        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
+        if (ix >= 0) {
+            const VALUE inv = korb_items_data(h->items)[2 * ix + 1];
+            if (inv != KORB_NIL) {
+                if (!korb_parse_tz_offset(inv, &in_off))
+                    return korb_raise_bad_utc_offset(c, slots, inv);
+                if (in_off <= -86400 || in_off >= 86400)
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
+                has_in = true;
+            }
+        }
+    } else if (UNLIKELY(n >= 1)) {
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", n);
+    }
+    double sec; long ns; korb_time_now_parts(&sec, &ns);
+    if (!has_in) return korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false);
+    slots[0] = UNWRAP(korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false));
+    CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(in_off)));
+    return RESULT_OK(slots[0]);
 }
 static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     double e = 0;
@@ -295,16 +347,20 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             const VALUE inv = korb_items_data(h->items)[2 * ix + 1];
             if (inv != KORB_NIL) {
                 if (!korb_parse_tz_offset(inv, &in_off))
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                    return korb_raise_bad_utc_offset(c, slots, inv);
                 if (in_off <= -86400 || in_off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
                 has_in = true;
             }
         }
         n--;
     }
-    if (n == 0 && !has_in) return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    if (n == 0 && !has_in) {
+        double sec; long ns; korb_time_now_parts(&sec, &ns);
+        return korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false);
+    }
     if (n == 0) {                                            /* Time.new(in: off) → now in that zone */
-        slots[0] = UNWRAP(korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false));
+        double sec; long ns; korb_time_now_parts(&sec, &ns);
+        slots[0] = UNWRAP(korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false));
         CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(in_off)));
         return RESULT_OK(slots[0]);
     }
@@ -343,9 +399,9 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                     slots[0] = offv;
                     RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
                     if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
-                    if (!FIXNUM_P(ir.value)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                    if (!FIXNUM_P(ir.value)) return korb_raise_bad_utc_offset(c, slots, ir.value);
                     off = FIX2LONG(ir.value);
-                } else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                } else return korb_raise_bad_utc_offset(c, slots, VALUE_SLICE_GET(a, 6));
             }
             if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
         }
@@ -448,8 +504,7 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
                     got = korb_parse_tz_offset(ir.value, &off);
                 }
             }
-            if (!got)
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+            if (!got) return korb_raise_bad_utc_offset(c, slots, VALUE_SLICE_GET(a, 1));
         }
         if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
         slots[0] = UNWRAP(korb_time_make(c, slots, cls, e, false));
@@ -599,7 +654,7 @@ void korb_init_time(CTX *c, VALUE *slots) {
     slots[0] = (korb_class_new(c, slots, korb_intern(vm, "Time", 4), korb_builtin_class_obj(vm, KORB_C_OBJECT))).value;
     korb_const_define(c, korb_intern(vm, "Time", 4), slots[0]);
     slots[1] = korb_obj_singleton(c, slots + 1, slots[0]).value;   /* class methods on Time's singleton */
-    korb_class_def_cfn(c, slots[1], "now",     korb_m_time_now,   0);
+    korb_class_def_cfn(c, slots[1], "now",     korb_m_time_now,   -1);
     korb_class_def_cfn(c, slots[1], "at",      korb_m_time_at,    -1);
     korb_class_def_cfn(c, slots[1], "utc",     korb_m_time_utc,   -1);
     korb_class_def_cfn(c, slots[1], "gm",      korb_m_time_utc,   -1);

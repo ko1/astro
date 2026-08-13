@@ -5748,6 +5748,8 @@ static RESULT korb_thread_alloc_handle(CTX *c, VALUE *slots);   /* thread.c: 未
 static RESULT korb_raise_thread_error(CTX *c, VALUE *slots, const char *msg);   /* thread.c */
 static RESULT korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_condvar_s_new(CTX *c, VALUE *slots);    /* thread.c */
+static RESULT korb_cproc_yield(CTX *c, VALUE *restrict slots, VALUE procv,
+                               const VALUE *restrict argv, uint32_t argc);   /* fwd: Method/Symbol#to_proc body */
 
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
@@ -5813,6 +5815,17 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
                 else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected %s)", argc, exp);
             }
+        }
+        /* A Method#to_proc / Symbol#to_proc body (KORB_BLK_CPROC) has no node_entry:
+         * it dispatches a send instead, and needs the PROC (not the receiver) as
+         * its "captured self".  korb_block_yield's CPROC branch reads that from
+         * captured_self, so route this case directly — passing recv_slot there
+         * would dereference the receiver as a Proc.
+         * (`define_method(:m, &SomeClass.method(:c))`, as ruby/spec's
+         * TimeSpecs::MethodHolder does.) */
+        if (UNLIKELY(p->iseq == NULL || p->iseq == KORB_BLK_CPROC)) {   /* iseq==NULL: Symbol/Method#to_proc */
+            slots[0] = m->dm_proc;                       /* root the proc; args live below at slots[-argc] */
+            return korb_cproc_yield(c, slots + 1, slots[0], &slots[-(intptr_t)argc], argc);
         }
         RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                     &slots[-(intptr_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
