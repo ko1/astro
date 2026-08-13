@@ -1092,15 +1092,26 @@ korb_m_thread_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     const char *st = t->state == KORB_TH_DEAD ? "dead"
                    : t->state == KORB_TH_PENDED ? "sleep" : "run";
-    char buf[128]; char nb[64]; nb[0] = 0;
+    char buf[640]; char nb[64]; nb[0] = 0;
     if (t->name != KORB_NIL && KORB_STRING_P(t->name)) {
         const uint32_t nl = VAL2STR(t->name)->len < 48 ? VAL2STR(t->name)->len : 48;
         memcpy(nb, korb_strbuf_data(VAL2STR(t->name)->buf), nl);
         nb[nl] = 0;
     }
-    const int len = snprintf(buf, sizeof buf, "#<Thread:%p%s%s %s>",
-                             (void *)t, nb[0] ? "@" : "", nb, st);
-    return korb_str_new(c, slots, buf, (uint32_t)len);
+    /* CRuby names the source location of the block the thread runs, when it has
+     * one: "#<Thread:0x… file:line run>". */
+    char loc[512]; loc[0] = 0;   /* file paths can be long */
+    if (KORB_PROC_P(t->blk)) {
+        const NODE *const body = VAL2PROC(t->blk)->iseq;
+        uint32_t fsym, line;
+        if (body != NULL && body != KORB_BLK_CPROC && korb_get_srcloc(c->vm, body, &fsym, &line))
+            snprintf(loc, sizeof loc, " %s:%u", korb_sym_name(c->vm, fsym), line);
+    }
+    const int len = snprintf(buf, sizeof buf, "#<Thread:%p%s%s%s %s>",
+                             (void *)t, nb[0] ? "@" : "", nb, loc, st);
+    RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* CRuby: ASCII-8BIT */
+    return r;
 }
 
 /* ==== Mutex / ConditionVariable — 純 green-thread プリミティブ ==============
