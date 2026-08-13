@@ -231,6 +231,16 @@ module Process
 
   def self.__as_rlimit_int(v)
     return v if v.is_a?(Integer)
+    # A Symbol/String names a resource (:CORE / "CORE") or a special limit value
+    # (:INFINITY).  __rlimit_table keys are "RLIMIT_CORE", "INFINITY", …
+    if v.is_a?(Symbol) || v.is_a?(String)
+      key = v.to_s
+      tbl = __rlimit_table
+      return tbl[key] if tbl.key?(key)
+      rk = "RLIMIT_#{key}"
+      return tbl[rk] if tbl.key?(rk)
+      raise ArgumentError, "unknown resource name - #{key}"
+    end
     raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into Integer" unless v.respond_to?(:to_int)
     i = v.to_int
     raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
