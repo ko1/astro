@@ -328,6 +328,11 @@ class IO
   def path; @__io_path; end
   def to_path; @__io_path; end
   def size; stat.size; end
+  # File#lstat — stat の symlink 版。開いているのはファイル本体なので、
+  # 開いたときのパスを lstat し直す (パスがなければ #stat と同じ)。
+  def lstat
+    @__io_path ? File.lstat(@__io_path) : stat
+  end
   # io/wait: IO#wait(events_int|symbols…, timeout) — POLL blop 1 発
   def wait(*args)
     events = 0

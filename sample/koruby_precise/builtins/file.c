@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fnmatch.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>   /* major() / minor() for File::Stat#dev_major etc. */
 #include <dirent.h>
 #include <glob.h>
 #include <errno.h>
@@ -739,7 +740,8 @@ static RESULT korb_m_file_readlink(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
  * construction (numeric fields as Fixnums, the three times as epoch seconds);
  * methods read them back.  No live handle, so nothing to GC-scan. */
 static VALUE korb_stat_iv(CTX *c, const char *n) { return ID2SYM(korb_intern(c->vm, n, (uint32_t)strlen(n))); }
-static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
+/* `path` (may be NULL) is remembered so #birthtime can re-query it via statx. */
+static RESULT korb_stat_make_path(CTX *c, VALUE *slots, const struct stat *st, const char *path) {
     const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "Stat", 4));
     if (!KORB_CLASS_P(cls)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "File::Stat is not defined");
     slots[0] = UNWRAP(korb_obj_new(c, slots, cls));
@@ -751,7 +753,14 @@ static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
     SETI("@__rdev", st->st_rdev);   SETI("@__mtime", st->st_mtime); SETI("@__atime", st->st_atime);
     SETI("@__ctime", st->st_ctime);
     #undef SETI
+    if (path != NULL) {
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, path, (uint32_t)strlen(path)));
+        CHECK(korb_ivar_set(c, slots + 2, o, korb_stat_iv(c, "@__path"), slots[1]));
+    }
     return RESULT_OK(VALUE_REF_GET(o));
+}
+static RESULT korb_stat_make(CTX *c, VALUE *slots, const struct stat *st) {
+    return korb_stat_make_path(c, slots, st, NULL);
 }
 static intptr_t korb_stat_field(CTX *c, VALUE self, const char *nm) {
     const VALUE v = korb_ivar_get(c, self, korb_stat_iv(c, nm));
@@ -802,6 +811,77 @@ static RESULT korb_m_stat_owned_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static RESULT korb_m_stat_grouped_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a; return RESULT_OK(korb_stat_field(c, VALUE_REF_GET(self), "@__gid") == (intptr_t)getegid() ? KORB_TRUE : KORB_FALSE);
 }
+/* Permission predicates.  CRuby answers them from the cached stat fields, not
+ * from access(2): pick the owner / group / other triad by comparing the file's
+ * uid+gid against the process's effective (or real, for the *_real? variants)
+ * ids, then test the requested bits.  root reads and writes anything, and can
+ * execute a file with any x bit set. */
+static bool korb_stat_permits(CTX *c, VALUE self, mode_t owner_bit, mode_t group_bit, mode_t other_bit, bool real_ids) {
+    const uid_t uid = real_ids ? getuid() : geteuid();
+    const gid_t gid = real_ids ? getgid() : getegid();
+    const mode_t m = (mode_t)korb_stat_field(c, self, "@__mode");
+    if (uid == 0) {                                   /* root */
+        if (owner_bit == S_IXUSR) return (m & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+        return true;
+    }
+    if ((uid_t)korb_stat_field(c, self, "@__uid") == uid) return (m & owner_bit) != 0;
+    if ((gid_t)korb_stat_field(c, self, "@__gid") == gid) return (m & group_bit) != 0;
+    {   /* supplementary groups count too */
+        gid_t gs[64];
+        const int n = getgroups((int)(sizeof gs / sizeof gs[0]), gs);
+        const gid_t fgid = (gid_t)korb_stat_field(c, self, "@__gid");
+        for (int i = 0; i < n; i++) if (gs[i] == fgid) return (m & group_bit) != 0;
+    }
+    return (m & other_bit) != 0;
+}
+#define STAT_PERM_M(fn, ob, gb, xb, real) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    (void)slots; (void)a; \
+    return RESULT_OK(korb_stat_permits(c, VALUE_REF_GET(self), ob, gb, xb, real) ? KORB_TRUE : KORB_FALSE); }
+STAT_PERM_M(korb_m_stat_readable_p,        S_IRUSR, S_IRGRP, S_IROTH, false)
+STAT_PERM_M(korb_m_stat_readable_real_p,   S_IRUSR, S_IRGRP, S_IROTH, true)
+STAT_PERM_M(korb_m_stat_writable_p,        S_IWUSR, S_IWGRP, S_IWOTH, false)
+STAT_PERM_M(korb_m_stat_writable_real_p,   S_IWUSR, S_IWGRP, S_IWOTH, true)
+STAT_PERM_M(korb_m_stat_executable_p,      S_IXUSR, S_IXGRP, S_IXOTH, false)
+STAT_PERM_M(korb_m_stat_executable_real_p, S_IXUSR, S_IXGRP, S_IXOTH, true)
+#undef STAT_PERM_M
+/* #size? — the size, or nil for an empty file (so `if stat.size?` works). */
+static RESULT korb_m_stat_size_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    const intptr_t sz = korb_stat_field(c, VALUE_REF_GET(self), "@__size");
+    return RESULT_OK(sz == 0 ? KORB_NIL : LONG2FIX(sz));
+}
+#define STAT_DEVPART_M(fn, field, part) static RESULT fn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { \
+    (void)slots; (void)a; const dev_t d = (dev_t)korb_stat_field(c, VALUE_REF_GET(self), field); \
+    return RESULT_OK(LONG2FIX((intptr_t)part(d))); }
+STAT_DEVPART_M(korb_m_stat_dev_major,  "@__dev",  major)
+STAT_DEVPART_M(korb_m_stat_dev_minor,  "@__dev",  minor)
+STAT_DEVPART_M(korb_m_stat_rdev_major, "@__rdev", major)
+STAT_DEVPART_M(korb_m_stat_rdev_minor, "@__rdev", minor)
+#undef STAT_DEVPART_M
+/* Birth ("creation") time.  stat(2) has no such field on Linux; statx(2) does,
+ * but only some filesystems fill it in.  Kernel/filesystem without it →
+ * NotImplementedError, exactly as CRuby reports. */
+static RESULT korb_birthtime_of(CTX *c, VALUE *slots, const char *path) {
+#if defined(__linux__) && defined(STATX_BTIME)
+    struct statx stx;
+    if (statx(AT_FDCWD, path, 0, STATX_BTIME, &stx) == 0 && (stx.stx_mask & STATX_BTIME))
+        return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)),
+                              (double)stx.stx_btime.tv_sec + (double)stx.stx_btime.tv_nsec / 1e9, false);
+#else
+    (void)path;
+#endif
+    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "birthtime() function is unimplemented on this machine");
+}
+/* File::Stat#birthtime — the stat was taken from a path we no longer hold, so
+ * re-query it by the path recorded at construction (absent → unimplemented). */
+static RESULT korb_m_stat_birthtime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    const VALUE pv = korb_ivar_get(c, VALUE_REF_GET(self), korb_stat_iv(c, "@__path"));
+    char pb[4096];
+    if (!KORB_STRING_P(pv) || !korb_file_pathbuf(pv, pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "birthtime() function is unimplemented on this machine");
+    return korb_birthtime_of(c, slots, pb);
+}
 static RESULT korb_m_stat_ftype(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const mode_t m = (mode_t)korb_stat_field(c, VALUE_REF_GET(self), "@__mode");
     const char *t = S_ISDIR(m) ? "directory" : S_ISCHR(m) ? "characterSpecial" : S_ISBLK(m) ? "blockSpecial"
@@ -814,14 +894,36 @@ static RESULT korb_m_stat_spaceship(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const intptr_t m1 = korb_stat_field(c, VALUE_REF_GET(self), "@__mtime"), m2 = korb_stat_field(c, o, "@__mtime");
     return RESULT_OK(LONG2FIX(m1 < m2 ? -1 : m1 > m2 ? 1 : 0));
 }
+/* A path argument: a String as is, otherwise #to_path then #to_str (CRuby's
+ * FilePathValue).  Dispatches → may GC, so the caller must re-read its VALUEs. */
+static RESULT korb_file_path_arg(CTX *c, VALUE *slots, VALUE *v) {
+    if (LIKELY(KORB_STRING_P(*v))) return RESULT_OK(KORB_TRUE);
+    const char *const cls = korb_type_name(*v);            /* capture before dispatch */
+    static const char *const conv[2] = { "to_path", "to_str" };
+    static const uint32_t convlen[2] = { 7, 6 };
+    for (int i = 0; i < 2; i++) {
+        VALUE recv = *v;
+        const uint32_t mid = korb_intern(c->vm, conv[i], convlen[i]);
+        if (!(KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots, &recv, mid))) continue;
+        slots[0] = recv;
+        const RESULT pr = korb_send(c, slots + 1, mid, 0, 0);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+        *v = pr.value;
+        if (KORB_STRING_P(*v)) return RESULT_OK(KORB_TRUE);
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+}
+
 /* File.stat(path) / File.lstat(path) → a File::Stat. */
 static RESULT korb_file_stat_impl(CTX *c, VALUE *slots, VALUE_SLICE a, bool is_l) {
     char pb[4096];
-    if (!korb_file_pathbuf(VALUE_SLICE_GET(a, 0), pb, sizeof pb))
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     struct stat st;
     if ((is_l ? lstat(pb, &st) : stat(pb, &st)) != 0) return korb_raise_errno(c, slots, errno, is_l ? "lstat" : "stat", pb);
-    return korb_stat_make(c, slots, &st);
+    return korb_stat_make_path(c, slots, &st, pb);
 }
 static RESULT korb_m_file_stat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)self; return korb_file_stat_impl(c, slots, a, false); }
 static RESULT korb_m_file_lstat(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_stat_impl(c, slots, a, true); }
@@ -852,6 +954,17 @@ static RESULT korb_m_file_abs_path_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     if (!KORB_STRING_P(pv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const KorbString *const s = VAL2STR(pv);
     return RESULT_OK((s->len > 0 && korb_strbuf_data(s->buf)[0] == '/') ? KORB_TRUE : KORB_FALSE);
+}
+/* File.birthtime(path) — statx's birth time (NotImplementedError without it). */
+static RESULT korb_m_file_birthtime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; char pb[4096];
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) { CHECK(korb_file_path_arg(c, slots, &pv)); slots[0] = pv; }
+    if (!korb_file_pathbuf(pv, pb, sizeof pb))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+    struct stat st;                                    /* ENOENT etc. surface as CRuby's errno */
+    if (stat(pb, &st) != 0) return korb_raise_errno(c, slots, errno, "rb_file_s_birthtime", pb);
+    return korb_birthtime_of(c, slots + 1, pb);
 }
 static RESULT korb_m_file_atime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 0); }
 static RESULT korb_m_file_ctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)self; return korb_file_time_impl(c, slots, a, 1); }
@@ -1166,6 +1279,7 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[1], "atime",       korb_m_file_atime,        1);
     korb_class_def_cfn(c, slots[1], "ctime",       korb_m_file_ctime,        1);
     korb_class_def_cfn(c, slots[1], "mtime",       korb_m_file_mtime,        1);
+    korb_class_def_cfn(c, slots[1], "birthtime",   korb_m_file_birthtime,    1);
     korb_class_def_cfn(c, slots[1], "truncate",    korb_m_file_truncate,     2);
     korb_class_def_cfn(c, slots[1], "absolute_path?", korb_m_file_abs_path_p, 1);
     korb_class_def_cfn(c, slots[1], "absolute_path", korb_m_file_expand_path, -1);
@@ -1204,6 +1318,18 @@ void korb_init_file(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, slots[2], "owned?",    korb_m_stat_owned_p,  0);
     korb_class_def_cfn(c, slots[2], "grouped?",  korb_m_stat_grouped_p, 0);
     korb_class_def_cfn(c, slots[2], "<=>",       korb_m_stat_spaceship, 1);
+    korb_class_def_cfn(c, slots[2], "readable?",        korb_m_stat_readable_p,        0);
+    korb_class_def_cfn(c, slots[2], "readable_real?",   korb_m_stat_readable_real_p,   0);
+    korb_class_def_cfn(c, slots[2], "writable?",        korb_m_stat_writable_p,        0);
+    korb_class_def_cfn(c, slots[2], "writable_real?",   korb_m_stat_writable_real_p,   0);
+    korb_class_def_cfn(c, slots[2], "executable?",      korb_m_stat_executable_p,      0);
+    korb_class_def_cfn(c, slots[2], "executable_real?", korb_m_stat_executable_real_p, 0);
+    korb_class_def_cfn(c, slots[2], "size?",      korb_m_stat_size_p,    0);
+    korb_class_def_cfn(c, slots[2], "dev_major",  korb_m_stat_dev_major, 0);
+    korb_class_def_cfn(c, slots[2], "dev_minor",  korb_m_stat_dev_minor, 0);
+    korb_class_def_cfn(c, slots[2], "rdev_major", korb_m_stat_rdev_major, 0);
+    korb_class_def_cfn(c, slots[2], "rdev_minor", korb_m_stat_rdev_minor, 0);
+    korb_class_def_cfn(c, slots[2], "birthtime",  korb_m_stat_birthtime, 0);
     /* Dir — pwd / exist? + instance objects (Dir.open/new).  Superclass = Object
      * so Dir instances inherit the universal methods (class, is_a?, …). */
     slots[2] = (korb_class_new(c, slots + 2, korb_intern(vm, "Dir", 3),
