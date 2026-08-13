@@ -22,8 +22,8 @@ class IO
     spec = @__io_modestr
     if spec && (i = spec.index(":"))
       ext, int = spec[(i + 1)..-1].split(":", 2)
-      @__ext_enc ||= Encoding.find(ext) if ext && !ext.empty?
-      @__int_enc ||= Encoding.find(int) if int && !int.empty?
+      @__ext_enc ||= Encoding.find(ext) if ext && !ext.empty? && ext != "-"
+      @__int_enc ||= Encoding.find(int) if int && !int.empty? && int != "-"
     end
     @__int_enc ||= @__int_enc0
     @__int_enc = nil if @__int_enc && @__int_enc == (@__ext_enc || Encoding.default_external)
@@ -42,6 +42,38 @@ class IO
 
   def set_encoding_by_bom
     nil
+  end
+
+  # IO.new / IO.open / File.open の options Hash のうち、ストリーム生成後に
+  # 効くもの (encoding 系・autoclose) を適用する。C 側は :mode / :binmode
+  # だけを先に見て、残りをここに渡す。
+  # encoding option の値: Encoding / nil はそのまま、他は #to_str で String に。
+  private def __enc_opt(v)
+    v = v.to_str if !v.nil? && !v.is_a?(Encoding) && !v.is_a?(String) && v.respond_to?(:to_str)
+    v == "-" ? nil : v      # "-" は「指定なし」を意味する (CRuby)
+  end
+
+  def __apply_open_opts(opts)
+    return self unless opts.is_a?(Hash) && !opts.empty?
+    @autoclose = opts[:autoclose] ? true : false if opts.key?(:autoclose)
+    ext = __enc_opt(opts[:external_encoding])
+    int = __enc_opt(opts[:internal_encoding])
+    enc = __enc_opt(opts[:encoding])
+    if enc && (ext || int)
+      # CRuby: 明示的な external/internal が :encoding に勝ち、警告を出す
+      warn("Ignoring encoding parameter '#{enc}': #{ext ? 'external' : 'internal'}_encoding is used",
+           uplevel: 0)
+      enc = nil
+    end
+    if enc
+      if enc.is_a?(String) && enc.include?(":")
+        ext, int = enc.split(":", 2)
+      else
+        ext = enc
+      end
+    end
+    set_encoding(ext, int) if ext || int
+    self
   end
 end
 

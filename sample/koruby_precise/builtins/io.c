@@ -987,6 +987,44 @@ static bool korb_io_mode_arg(VALUE mv, char *mode, size_t cap) {
     return strchr("rwa", mode[0]) != NULL;
 }
 
+/* korb_io_mode_arg for an arbitrary object: a String / Integer is used as is,
+ * anything else goes through #to_str then #to_int (CRuby's rb_io_extract_modeenc).
+ * *mv is updated to the coerced value (the caller may want to record it). */
+static RESULT korb_io_mode_coerce(CTX *c, VALUE *slots, VALUE *mv, char *mode, size_t cap) {
+#define KORB_IO_BAD_MODE(sl)                                                              \
+    (KORB_STRING_P(*mv)                                                                   \
+       ? korb_raise(c, (sl), KORB_E_ARGUMENT, 0, "invalid access mode %.*s",               \
+                    (int)VAL2STR(*mv)->len, korb_strbuf_data(VAL2STR(*mv)->buf))          \
+       : korb_raise(c, (sl), KORB_E_ARGUMENT, 0, "invalid access mode"))
+    if (LIKELY(korb_io_mode_arg(*mv, mode, cap))) return RESULT_OK(KORB_TRUE);
+    if (KORB_STRING_P(*mv) || FIXNUM_P(*mv)) return KORB_IO_BAD_MODE(slots);
+    if (KORB_OBJECT_P(*mv)) {
+        VALUE recv = *mv;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (korb_responds_to_coerce_p(c, slots, &recv, to_str)) {
+            slots[0] = recv;
+            const RESULT r = korb_send(c, slots + 1, to_str, 0, 0);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            *mv = r.value;
+            if (KORB_STRING_P(*mv) && korb_io_mode_arg(*mv, mode, cap)) return RESULT_OK(KORB_TRUE);
+            return KORB_IO_BAD_MODE(slots + 1);
+        }
+        recv = *mv;
+        const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
+        if (korb_responds_to_coerce_p(c, slots, &recv, to_int)) {
+            slots[0] = recv;
+            const RESULT r = korb_send(c, slots + 1, to_int, 0, 0);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            *mv = r.value;
+            if (FIXNUM_P(*mv) && korb_io_mode_arg(*mv, mode, cap)) return RESULT_OK(KORB_TRUE);
+            return KORB_IO_BAD_MODE(slots + 1);
+        }
+    }
+    /* neither a mode string/Integer nor convertible to one */
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(*mv));
+#undef KORB_IO_BAD_MODE
+}
+
 /* IO#reopen(path, mode) / IO#reopen(io) — make this stream refer to another
  * file or descriptor, keeping the same IO object identity. */
 static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1449,25 +1487,48 @@ static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
  * trailing options Hash (autoclose:, encoding:, …) is accepted and ignored. */
 static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
-    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) n--;          /* drop the options Hash */
+    VALUE opts = KORB_NIL;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) { opts = VALUE_SLICE_GET(a, n - 1); n--; }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(n > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", n);
     intptr_t fdv;
     CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
     const int fd = (int)fdv;   /* a negative or stale fd falls out of the fcntl check below as EBADF */
+    /* The mode may come from the positional argument or from `mode:`; a
+     * positional nil defers to the option (CRuby accepts both spellings). */
+    VALUE modev = (n >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    if (modev == KORB_NIL && KORB_HASH_P(opts)) {
+        const int32_t mi = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "mode", 4)));
+        if (mi >= 0) modev = korb_items_data(VAL2HASH(opts)->items)[2 * mi + 1];
+    }
+    /* slots[0] = opts, slots[1] = the (possibly coerced) mode value — both
+     * rooted from here on, since the coercion and korb_io_make below allocate. */
+    slots[0] = opts;
+    slots[1] = modev;
     char mode[16] = "r";
-    if (n >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
-        !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
-    if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots, errno, "", "");
+    if (slots[1] != KORB_NIL)
+        CHECK(korb_io_mode_coerce(c, slots + 2, &slots[1], mode, sizeof mode));
+    if (KORB_HASH_P(slots[0])) {                                   /* binmode: true → 'b' */
+        const int32_t bi = korb_hash_find(VAL2HASH(slots[0]), ID2SYM(korb_intern(c->vm, "binmode", 7)));
+        if (bi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(slots[0])->items)[2 * bi + 1]) &&
+            strchr(mode, 'b') == NULL && strlen(mode) + 1 < sizeof mode)
+            strcat(mode, "b");
+    }
+    if (fcntl(fd, F_GETFD) < 0) return korb_raise_errno(c, slots + 2, errno, "", "");
     /* the IO wraps the caller's descriptor; nothing is duplicated */
     const bool binary = strchr(mode, 'b') != NULL;
-    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fd, korb_io_mode_rw(mode)));
-    VALUE_REF nio = VALUE_REF_AT(&slots[0]);
+    slots[2] = UNWRAP(korb_io_make(c, slots + 2, VALUE_REF_GET(self), fd, korb_io_mode_rw(mode)));
+    VALUE_REF nio = VALUE_REF_AT(&slots[2]);
     if (binary)
-        CHECK(korb_ivar_set(c, slots + 1, nio, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
-    if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(a, 1)))
-        CHECK(korb_ivar_set(c, slots + 1, nio, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), VALUE_SLICE_GET(a, 1)));
-    CHECK(korb_io_capture_default_internal(c, slots + 1, nio));
+        CHECK(korb_ivar_set(c, slots + 3, nio, ID2SYM(korb_io_bin_mid(c)), KORB_TRUE));
+    if (KORB_STRING_P(slots[1]))
+        CHECK(korb_ivar_set(c, slots + 3, nio, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
+    CHECK(korb_io_capture_default_internal(c, slots + 3, nio));
+    if (KORB_HASH_P(slots[0])) {                                   /* encoding: / autoclose: → prelude */
+        slots[3] = VALUE_REF_GET(nio);
+        slots[4] = slots[0];
+        CHECK(korb_send(c, slots + 5, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1));
+    }
     return RESULT_OK(VALUE_REF_GET(nio));
 }
 
