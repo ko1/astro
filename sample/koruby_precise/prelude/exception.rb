@@ -132,3 +132,11 @@ class Object
     arr.any? { |pat| pat === subj }
   end
 end
+
+# LoadError#path — the feature/path that could not be loaded (the C raise sites
+# stash it in @__path, like NameError#name).
+class LoadError
+  def path
+    defined?(@__path) ? @__path : nil
+  end
+end

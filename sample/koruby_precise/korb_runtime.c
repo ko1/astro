@@ -9802,6 +9802,8 @@ static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {
     vm->loaded_files[vm->loaded_cnt++] = strdup(abspath);
     return true;
 }
+static RESULT korb_raise_load_error(CTX *c, VALUE *slots, const char *path);   /* fwd (defined with require) */
+
 /* Load `abspath` (read + eval at top level), tracking it as a required feature.
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
@@ -9814,7 +9816,7 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
     }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
-    if (!buf) return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", abspath);
+    if (!buf) return korb_raise_load_error(c, slots, abspath);
     /* record before eval so a circular require returns false rather than reloading. */
     if (dedup) korb_mark_loaded(vm, abspath);
     const char *const saved = vm->cur_load_file;
@@ -9852,19 +9854,56 @@ korb_bi_dir(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (slash) *slash = '\0'; else snprintf(real, sizeof real, ".");
     return korb_str_new(c, slots, real, (uint32_t)strlen(real));
 }
+/* Raise LoadError("cannot load such file -- <path>") carrying #path, as CRuby's
+ * require / require_relative / load do. */
+static RESULT
+korb_raise_load_error(CTX *c, VALUE *slots, const char *path)
+{
+    RESULT r = korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", path);
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        slots[0] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[0]);
+        const RESULT pr = korb_str_new(c, slots + 1, path, (uint32_t)strlen(path));
+        if (LIKELY(pr.state == KORB_NORMAL)) {
+            slots[1] = pr.value;
+            korb_exc_ivar_set(c, slots + 2, eref, ID2SYM(korb_intern(c->vm, "@__path", 7)), slots[1]);
+        }
+        r.value = VALUE_REF_GET(eref);
+    }
+    return r;
+}
+
+/* The path argument of require / require_relative / load: a String as is,
+ * otherwise #to_path then #to_str (CRuby's FilePathValue). */
+static RESULT
+korb_load_path_arg(CTX *c, VALUE *slots, VALUE *v)
+{
+    if (LIKELY(KORB_STRING_P(*v))) return RESULT_OK(KORB_TRUE);
+    const char *const cls = korb_type_name(*v);              /* capture before dispatch */
+    static const char *const conv[2] = { "to_path", "to_str" };
+    static const uint32_t convlen[2] = { 7, 6 };
+    for (int i = 0; i < 2; i++) {
+        VALUE recv = *v;
+        const uint32_t mid = korb_intern(c->vm, conv[i], convlen[i]);
+        if (!(KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots, &recv, mid))) continue;
+        slots[0] = recv;
+        const RESULT pr = korb_send(c, slots + 1, mid, 0, 0);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+        if (KORB_STRING_P(pr.value)) { *v = pr.value; return RESULT_OK(KORB_TRUE); }
+        *v = pr.value;                                       /* #to_path may hand on a #to_str-able */
+    }
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+}
+
 /* require(name): search CWD / $LOAD_PATH; load once (false if already loaded). */
 static RESULT
 korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     VALUE nv = VALUE_SLICE_GET(args, 0);
     if (UNLIKELY(!KORB_STRING_P(nv))) {
-        if (KORB_OBJECT_P(nv) && korb_responds_to_coerce_p(c, slots, &nv, korb_intern(c->vm, "to_path", 7))) {
-            slots[0] = nv;
-            RESULT pr = korb_send(c, slots + 1, korb_intern(c->vm, "to_path", 7), 0, 0);
-            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
-            if (KORB_STRING_P(pr.value)) { slots[0] = pr.value; return korb_bi_require(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1)); }
-        }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+        CHECK(korb_load_path_arg(c, slots, &nv));
+        slots[0] = nv;
+        return korb_bi_require(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1));
     }
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
@@ -9896,7 +9935,7 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     for (uint32_t i = 0; builtin_features[i]; i++)
         if (strcmp(stem, builtin_features[i]) == 0)                   /* built-in: load-once contract by feature name */
             return RESULT_OK(korb_mark_loaded(c->vm, stem) ? KORB_TRUE : KORB_FALSE);
-    return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", namebuf);
+    return korb_raise_load_error(c, slots, namebuf);
 }
 /* Method-shaped wrappers for require / require_relative / load.  They go on the
  * Kernel module (which Object includes), so a Ruby-level `def require` on Object
@@ -9919,9 +9958,8 @@ static RESULT korb_m_kernel_load(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT
 korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    const VALUE nv = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(nv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+    VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv))) { CHECK(korb_load_path_arg(c, slots, &nv)); slots[0] = nv; }
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
@@ -9933,15 +9971,18 @@ korb_bi_require_relative(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (korb_resolve_load(basedir, namebuf, abspath, sizeof abspath)) {
         VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
     }
-    return korb_raise(c, slots, KORB_E_LOADERR, 0, "cannot load such file -- %s", namebuf);
+    {   /* CRuby names the resolved absolute path (minus any ".rb" it appended) */
+        char full[4096];
+        snprintf(full, sizeof full, "%s/%s", basedir, namebuf);
+        return korb_raise_load_error(c, slots, full);
+    }
 }
 /* load(name): always (re)load; returns true. */
 static RESULT
 korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    const VALUE nv = VALUE_SLICE_GET(args, 0);
-    if (UNLIKELY(!KORB_STRING_P(nv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(nv));
+    VALUE nv = VALUE_SLICE_GET(args, 0);
+    if (UNLIKELY(!KORB_STRING_P(nv))) { CHECK(korb_load_path_arg(c, slots, &nv)); slots[0] = nv; }
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
