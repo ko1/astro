@@ -10169,6 +10169,12 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
 
 #ifdef KORB_HAVE_GMP
 /* Integer/Bignum/Rational/Float/String → canonical mpq.  false = unconvertible. */
+/* Can this value be a Rational() operand at all?  (Used to name the offending
+ * argument in the TypeError.) */
+static bool korb_arg_rational_ok(VALUE v) {
+    return FIXNUM_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_FLOAT_P(v) ||
+           KORB_STRING_P(v) || KORB_COMPLEX_P(v);
+}
 static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
     if (FIXNUM_P(v)) { mpq_set_si(out, (long)FIX2LONG(v), 1); return true; }
     if (KORB_BIGNUM_P(v)) { mpz_t z; korb_to_mpz(v, z); mpq_set_z(out, z); mpz_clear(z); return true; }
@@ -10247,14 +10253,46 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     }
 bad:
 #endif
-    if (n == 1 && (KORB_OBJECT_P(nv) || KORB_COMPLEX_P(nv)) && korb_responds_to(c, nv, korb_intern(c->vm, "to_r", 4))) {
-        slots[0] = nv;                                       /* Complex#to_r: real part if imaginary 0, else RangeError */
-        RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, KORB_NIL);
-        if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
-        if (KORB_RATIONAL_P(rr.value) || KORB_INTEGER_P(rr.value)) return RESULT_OK(rr.value);
+    /* A Complex operand (either position) is handled by Complex arithmetic:
+     * Rational(3, Complex(2,0)) is 3/2, and a non-real denominator yields a
+     * Complex quotient — exactly `numerator / denominator` in Ruby. */
+    if (KORB_COMPLEX_P(nv) || (n >= 2 && KORB_COMPLEX_P(VALUE_SLICE_GET(args, 1)))) {
+        slots[0] = nv;
+        slots[1] = (n >= 2) ? VALUE_SLICE_GET(args, 1) : LONG2FIX(1);
+        RESULT dr = korb_cpx_arith(c, slots + 2, slots[0], slots[1], 3);   /* division */
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        slots[2] = dr.value;
+        if (KORB_COMPLEX_P(slots[2])) {          /* a real-valued quotient collapses to its real part */
+            double imd;
+            if (!korb_num_to_d(VAL2CPX(slots[2])->im, &imd) || imd != 0.0) return RESULT_OK(slots[2]);
+            slots[2] = VAL2CPX(slots[2])->re;
+        }
+        if (KORB_INTEGER_P(slots[2])) return korb_rat_new_v(c, slots + 3, slots[2], LONG2FIX(1));
+        return RESULT_OK(slots[2]);
+    }
+    /* #to_r, else #to_int (CRuby tries both before giving up) */
+    if (n == 1 && KORB_OBJECT_P(nv)) {
+        static const char *const conv[2] = { "to_r", "to_int" };
+        static const uint32_t convlen[2] = { 4, 6 };
+        for (int i = 0; i < 2; i++) {
+            const uint32_t mid = korb_intern(c->vm, conv[i], convlen[i]);
+            if (!korb_responds_to(c, nv, mid)) continue;
+            slots[0] = nv;
+            RESULT rr = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            if (KORB_RATIONAL_P(rr.value)) return RESULT_OK(rr.value);
+            if (KORB_INTEGER_P(rr.value)) return korb_rat_new_v(c, slots + 1, rr.value, LONG2FIX(1));
+            nv = slots[0];
+        }
     }
     if (!exc) return RESULT_OK(KORB_NIL);
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational", korb_type_name(VALUE_SLICE_GET(args, 0)));
+    {   /* CRuby names the offending operand: nil/true/false read as literals */
+        const VALUE bad = (n >= 2 && !korb_arg_rational_ok(VALUE_SLICE_GET(args, 1)))
+                            ? VALUE_SLICE_GET(args, 1) : VALUE_SLICE_GET(args, 0);
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational",
+                          bad == KORB_NIL ? "nil" : bad == KORB_TRUE ? "true" : bad == KORB_FALSE ? "false"
+                                                  : korb_type_name(bad));
+    }
 }
 
 bool korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VALUE *out);   /* defined below */
