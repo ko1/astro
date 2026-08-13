@@ -155,4 +155,47 @@ class IO
     raise TypeError, "can't convert #{obj.class} to IO (#{obj.class}#to_io gives #{io.class})" unless io.is_a?(IO)
     io
   end
+
+  # IO.copy_stream(src, dst[, copy_length[, src_offset]]) — src/dst は path
+  # (String/#to_path) でも IO 風オブジェクト (#read / #write) でもよい。path を
+  # 渡した側だけこちらで open/close する。src_offset 指定時は src の現在位置を
+  # 動かさない (CRuby は pread 相当)。戻り値はコピーしたバイト数。
+  def self.copy_stream(src, dst, copy_length = nil, src_offset = nil)
+    src_io, src_opened = __cs_io(src, "rb")
+    begin
+      dst_io, dst_opened = __cs_io(dst, "wb")
+      begin
+        saved = nil
+        if src_offset
+          saved = src_io.pos
+          src_io.seek(src_offset)
+        end
+        copied = 0
+        chunk = 65536
+        loop do
+          want = copy_length ? copy_length - copied : chunk
+          want = chunk if want > chunk
+          break if want <= 0
+          data = src_io.read(want)
+          break if data.nil? || data.empty?
+          dst_io.write(data)
+          copied += data.bytesize
+        end
+        src_io.seek(saved) if saved
+        copied
+      ensure
+        dst_io.close if dst_opened
+      end
+    ensure
+      src_io.close if src_opened
+    end
+  end
+
+  # → [io, opened_here?].  path (String / #to_path) のときだけ open する。
+  def self.__cs_io(obj, mode)
+    return [obj, false] if obj.respond_to?(mode == "rb" ? :read : :write) && !obj.is_a?(String)
+    path = obj.is_a?(String) ? obj : obj.to_path
+    [File.open(path, mode), true]
+  end
+  private_class_method :__cs_io
 end
