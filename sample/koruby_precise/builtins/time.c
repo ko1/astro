@@ -223,8 +223,86 @@ static RESULT korb_m_time_utc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_time_local(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);
 }
+/* Parse a Ruby 3.2+ Time.new(String) ISO-8601-like value.  Accepts
+ *   YYYY[-MM[-DD[ T](hh:mm[:ss[.frac]])]] [offset]
+ * where offset is Z, UTC, or +/-HH[:]MM[[:]SS].  Returns 0 on success,
+ * 1 when a date is present but the time part is missing ("no time
+ * information"), 2 on any malformed input.  comp[6] = Y,Mon,D,H,Min,S;
+ * *nsec = fractional seconds truncated to nanoseconds; *off / *has_off
+ * carry an explicit zone offset when the string supplies one. */
+static int korb_time_iso_parse(const char *s, uint32_t len,
+                               intptr_t comp[6], long *nsec, intptr_t *off, bool *has_off) {
+    comp[0] = 1970; comp[1] = 1; comp[2] = 1; comp[3] = 0; comp[4] = 0; comp[5] = 0;
+    *nsec = 0; *off = 0; *has_off = false;
+    uint32_t i = 0;
+    #define KISO_SP() do { while (i < len && (s[i] == ' ' || s[i] == '\t')) i++; } while (0)
+    #define KISO_NUM(dst) do { uint32_t z0 = i; long zv = 0; \
+        while (i < len && isdigit((unsigned char)s[i])) { zv = zv * 10 + (s[i] - '0'); i++; } \
+        if (i == z0) { return 2; } (dst) = zv; } while (0)
+    KISO_NUM(comp[0]);                                   /* year (required) */
+    bool date_more = false;
+    if (i < len && s[i] == '-') { date_more = true; i++; KISO_NUM(comp[1]);
+        if (i < len && s[i] == '-') { i++; KISO_NUM(comp[2]); } }
+    bool have_time = false;
+    if (i < len && (s[i] == 'T' || s[i] == 't')) { i++; have_time = true; }
+    else if (i < len && s[i] == ' ') {                   /* space may precede time OR offset */
+        uint32_t j = i; while (j < len && s[j] == ' ') j++;
+        uint32_t k = j; while (k < len && isdigit((unsigned char)s[k])) k++;
+        if (k > j && k < len && s[k] == ':') { i = j; have_time = true; }
+    }
+    if (have_time) {
+        KISO_NUM(comp[3]); if (i >= len || s[i] != ':') return 2; i++;
+        KISO_NUM(comp[4]);
+        if (i < len && s[i] == ':') { i++; KISO_NUM(comp[5]);
+            if (i < len && s[i] == '.') { i++; uint32_t f0 = i; long ns = 0; int cnt = 0;
+                while (i < len && isdigit((unsigned char)s[i])) { if (cnt < 9) { ns = ns * 10 + (s[i] - '0'); cnt++; } i++; }
+                if (i == f0) { return 2; } while (cnt < 9) { ns *= 10; cnt++; } *nsec = ns; } }
+    } else if (date_more) {
+        return 1;                                        /* date given but no time */
+    }
+    KISO_SP();
+    if (i < len) {
+        if (s[i] == 'Z' || s[i] == 'z') { *has_off = true; *off = 0; i++; }
+        else if (i + 3 <= len && !memcmp(s + i, "UTC", 3)) { *has_off = true; *off = 0; i += 3; }
+        else if (s[i] == '+' || s[i] == '-') {
+            const int sign = (s[i] == '-') ? -1 : 1; i++;
+            if (i + 2 > len || !isdigit((unsigned char)s[i]) || !isdigit((unsigned char)s[i+1])) return 2;
+            int hh = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; int mm = 0, ss = 0;
+            if (i < len && s[i] == ':') i++;
+            if (i + 2 <= len && isdigit((unsigned char)s[i]) && isdigit((unsigned char)s[i+1])) { mm = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; }
+            if (i < len && s[i] == ':') i++;
+            if (i + 2 <= len && isdigit((unsigned char)s[i]) && isdigit((unsigned char)s[i+1])) { ss = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; }
+            *has_off = true; *off = sign * (hh * 3600 + mm * 60 + ss);
+        } else return 2;
+    }
+    KISO_SP();
+    if (i != len) return 2;                              /* trailing garbage */
+    return 0;
+    #undef KISO_SP
+    #undef KISO_NUM
+}
+
 static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (VALUE_SLICE_LEN(a) == 0) return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    /* Time.new(String): a single String argument is an ISO-8601-like timestamp. */
+    if (VALUE_SLICE_LEN(a) == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
+        const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 0));
+        intptr_t comp[6]; long nsec; intptr_t off; bool has_off;
+        const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec, &off, &has_off);
+        if (pr == 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no time information in %.*s", (int)str->len, korb_strbuf_data(str->buf));
+        if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
+            comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60 ||
+            (has_off && (off <= -86400 || off >= 86400)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        struct tm tm; memset(&tm, 0, sizeof tm);
+        tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
+        tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5]; tm.tm_isdst = -1;
+        const double e = has_off ? (double)timegm(&tm) - (double)off : (double)mktime(&tm);
+        slots[0] = UNWRAP(korb_time_make_ns(c, slots, VALUE_REF_GET(self), e, nsec, false));
+        if (has_off) CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off)));
+        return RESULT_OK(slots[0]);
+    }
     /* Time.new(y,m,d,h,min,s, utc_offset): the 7th arg fixes the zone offset; the
      * components are wall-clock in that offset, so epoch = timegm(components) - off. */
     if (VALUE_SLICE_LEN(a) >= 7 && VALUE_SLICE_GET(a, 6) != KORB_NIL) {
