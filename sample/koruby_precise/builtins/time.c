@@ -283,14 +283,41 @@ static int korb_time_iso_parse(const char *s, uint32_t len,
 }
 
 static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (VALUE_SLICE_LEN(a) == 0) return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    uint32_t n = VALUE_SLICE_LEN(a);
+    /* A trailing Hash is keyword arguments (in:, precision:); Time.new never
+     * takes a positional Hash.  Extract `in:` (a fixed zone offset) and drop the
+     * hash from the positional count. */
+    bool has_in = false; intptr_t in_off = 0;
+    if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
+        const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
+        if (ix >= 0) {
+            const VALUE inv = korb_items_data(h->items)[2 * ix + 1];
+            if (inv != KORB_NIL) {
+                if (!korb_parse_tz_offset(inv, &in_off))
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                if (in_off <= -86400 || in_off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
+                has_in = true;
+            }
+        }
+        n--;
+    }
+    if (n == 0 && !has_in) return korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false);
+    if (n == 0) {                                            /* Time.new(in: off) → now in that zone */
+        slots[0] = UNWRAP(korb_time_make(c, slots, VALUE_REF_GET(self), (double)time(NULL), false));
+        CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(in_off)));
+        return RESULT_OK(slots[0]);
+    }
     /* Time.new(String): a single String argument is an ISO-8601-like timestamp. */
-    if (VALUE_SLICE_LEN(a) == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
+    if (n == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
         const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 0));
         intptr_t comp[6]; long nsec; intptr_t off; bool has_off;
         const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec, &off, &has_off);
         if (pr == 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no time information in %.*s", (int)str->len, korb_strbuf_data(str->buf));
         if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        /* An offset in the string wins over `in:` (CRuby); otherwise `in:` applies. */
+        const bool eff_has = has_off || has_in;
+        const intptr_t eff_off = has_off ? off : in_off;
         if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
             comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60 ||
             (has_off && (off <= -86400 || off >= 86400)))
@@ -298,29 +325,33 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         struct tm tm; memset(&tm, 0, sizeof tm);
         tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
         tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5]; tm.tm_isdst = -1;
-        const double e = has_off ? (double)timegm(&tm) - (double)off : (double)mktime(&tm);
+        const double e = eff_has ? (double)timegm(&tm) - (double)eff_off : (double)mktime(&tm);
         slots[0] = UNWRAP(korb_time_make_ns(c, slots, VALUE_REF_GET(self), e, nsec, false));
-        if (has_off) CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off)));
+        if (eff_has) CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(eff_off)));
         return RESULT_OK(slots[0]);
     }
-    /* Time.new(y,m,d,h,min,s, utc_offset): the 7th arg fixes the zone offset; the
-     * components are wall-clock in that offset, so epoch = timegm(components) - off. */
-    if (VALUE_SLICE_LEN(a) >= 7 && VALUE_SLICE_GET(a, 6) != KORB_NIL) {
-        VALUE offv = VALUE_SLICE_GET(a, 6);
-        intptr_t off;
-        if (!korb_parse_tz_offset(offv, &off)) {                 /* try #to_int */
-            if (KORB_OBJECT_P(offv) && korb_responds_to_coerce_p(c, slots, &offv, korb_intern(c->vm, "to_int", 6))) {
-                slots[0] = offv;
-                RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
-                if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
-                if (!FIXNUM_P(ir.value)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
-                off = FIX2LONG(ir.value);
-            } else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+    /* Time.new(y,m,d,h,min,s, utc_offset): the 7th arg (or `in:`) fixes the zone
+     * offset; the components are wall-clock in that offset, epoch = timegm - off. */
+    const bool pos_off = (n >= 7 && VALUE_SLICE_GET(a, 6) != KORB_NIL);
+    if (pos_off && has_in) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 2 offset arguments)");
+    if (pos_off || has_in) {
+        intptr_t off = in_off;
+        if (pos_off) {
+            VALUE offv = VALUE_SLICE_GET(a, 6);
+            if (!korb_parse_tz_offset(offv, &off)) {             /* try #to_int */
+                if (KORB_OBJECT_P(offv) && korb_responds_to_coerce_p(c, slots, &offv, korb_intern(c->vm, "to_int", 6))) {
+                    slots[0] = offv;
+                    RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+                    if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+                    if (!FIXNUM_P(ir.value)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+                    off = FIX2LONG(ir.value);
+                } else return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "\"+HH:MM\", \"-HH:MM\", UTC or utc_offset expected");
+            }
+            if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
         }
-        if (off <= -86400 || off >= 86400) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "utc_offset out of range");
         struct tm tm; memset(&tm, 0, sizeof tm);
         intptr_t comp[6] = { 1970, 1, 1, 0, 0, 0 };
-        for (uint32_t i = 0; i < 6 && i < VALUE_SLICE_LEN(a); i++) {
+        for (uint32_t i = 0; i < 6 && i < n; i++) {
             const VALUE cv = VALUE_SLICE_GET(a, i);
             if (FIXNUM_P(cv)) comp[i] = FIX2LONG(cv);
             else if (KORB_FLOAT_P(cv)) comp[i] = (intptr_t)korb_float_val(cv);
@@ -335,7 +366,10 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         (void)korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(off));
         return RESULT_OK(slots[0]);
     }
-    return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);   /* Time.new(y,m,...) → local */
+    /* Plain local Time.new(y,m,...).  Reached only when no trailing kwargs Hash is
+     * present (a Hash carrying `in:` took the offset path above), so `a` holds
+     * exactly the positional components. */
+    return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);
 }
 
 /* ---- Time#<instance methods> ---------------------------------------------- */
