@@ -185,3 +185,19 @@ class Binding
   end
   alias_method :to_s, :inspect
 end
+
+class SystemExit
+  # Kernel#exit が積んだ終了ステータス (既定 0)。
+  def status; defined?(@__status) ? @__status : 0; end
+  def success?; status == 0; end
+  def initialize(*args)
+    st = args.first
+    if st.is_a?(Integer) || st == true || st == false
+      @__status = (st == true ? 0 : st == false ? 1 : st)
+      super(*args[1..])
+    else
+      @__status = 0
+      super(*args)
+    end
+  end
+end

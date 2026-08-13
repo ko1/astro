@@ -381,6 +381,7 @@ NODE    *korb_entry_body(NODE *entry);
 RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);
+int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its status, else -1 */
 void   korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c) */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */
 

@@ -10095,30 +10095,74 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
  * Integer → that code).  Runs the registered at_exit blocks first (reverse order),
  * matching CRuby's exit (exit! skips them). */
 void korb_drain_at_exit(CTX *c, VALUE *slots);   /* fwd (defined below; called from main.c) */
+/* If `exc` is a SystemExit, its status (>= 0); otherwise -1.  main.c uses this
+ * to end the program quietly with the requested code. */
+int
+korb_system_exit_status(CTX *c, VALUE exc)
+{
+    if (!KORB_EXC_P(exc)) return -1;
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "SystemExit", 10));
+    const VALUE ec = VAL2EXC(exc)->exc_class;
+    if (!KORB_CLASS_P(cls) || !KORB_CLASS_P(ec) || !korb_class_le(ec, cls)) return -1;
+    const VALUE st = korb_ivar_get(c, exc, ID2SYM(korb_intern(c->vm, "@__status", 9)));
+    return FIXNUM_P(st) ? (int)FIX2LONG(st) : 0;
+}
+
+/* Kernel#exit — raises SystemExit (rescuable, runs ensure blocks); the process
+ * only ends when it reaches the top level uncaught (main.c) .  Returning an
+ * exception rather than calling exit(3) is what lets a test framework — or any
+ * `begin; exit; rescue SystemExit; end` — intercept it, as CRuby allows. */
+RESULT
+korb_make_system_exit(CTX *c, VALUE *slots, int code)
+{
+    RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "exit");
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        slots[0] = r.value;
+        VALUE_REF eref = VALUE_REF_AT(&slots[0]);
+        const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "SystemExit", 10));
+        if (KORB_CLASS_P(cls)) {
+            KorbException *const e = VAL2EXC(VALUE_REF_GET(eref));
+            ARO_STORE(c, e, (VALUE *)(uintptr_t)&e->exc_class, cls);
+        }
+        korb_exc_ivar_set(c, slots + 1, eref, ID2SYM(korb_intern(c->vm, "@__status", 9)), LONG2FIX(code));
+        r.value = VALUE_REF_GET(eref);
+    }
+    return r;
+}
+/* The status argument of exit / exit!: true → 0, false → 1, a Float truncates,
+ * anything else goes through #to_int (nil / String / Array are TypeErrors). */
+static RESULT korb_exit_status_arg(CTX *c, VALUE *slots, VALUE_SLICE args, int *out) {
+    *out = 0;
+    if (VALUE_SLICE_LEN(args) < 1) return RESULT_OK(KORB_TRUE);
+    VALUE s = VALUE_SLICE_GET(args, 0);
+    if (s == KORB_TRUE)  { *out = 0; return RESULT_OK(KORB_TRUE); }
+    if (s == KORB_FALSE) { *out = 1; return RESULT_OK(KORB_TRUE); }
+    if (FIXNUM_P(s))     { *out = (int)FIX2LONG(s); return RESULT_OK(KORB_TRUE); }
+    if (KORB_FLOAT_P(s)) { *out = (int)korb_float_val(s); return RESULT_OK(KORB_TRUE); }
+    {
+        const char *const cls = korb_type_name(s);
+        VALUE t = s;
+        if (KORB_OBJECT_P(t)) {
+            const RESULT cr = korb_coerce_to_int(c, slots, &t);
+            if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+            if (cr.value == KORB_TRUE && FIXNUM_P(t)) { *out = (int)FIX2LONG(t); return RESULT_OK(KORB_TRUE); }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                          s == KORB_NIL ? "nil" : cls);
+    }
+}
 static RESULT
 korb_bi_exit(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     int code = 0;
-    if (VALUE_SLICE_LEN(args) >= 1) {
-        const VALUE s = VALUE_SLICE_GET(args, 0);
-        if (s == KORB_FALSE) code = 1;
-        else if (s == KORB_TRUE || s == KORB_NIL) code = 0;
-        else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
-    }
-    korb_drain_at_exit(c, slots);
-    korb_io_flush_std(c->vm);
-    exit(code);
+    CHECK(korb_exit_status_arg(c, slots, args, &code));
+    return korb_make_system_exit(c, slots, code);
 }
 static RESULT
 korb_bi_exit_bang(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    (void)slots;
     int code = 0;
-    if (VALUE_SLICE_LEN(args) >= 1) {
-        const VALUE s = VALUE_SLICE_GET(args, 0);
-        if (s == KORB_FALSE) code = 1;
-        else if (FIXNUM_P(s)) code = (int)FIX2LONG(s);
-    }
+    CHECK(korb_exit_status_arg(c, slots, args, &code));
     korb_io_flush_std(c->vm);   /* _exit skips at_exit, but buffered output is still ours to deliver */
     _exit(code);
 }
@@ -10132,9 +10176,7 @@ korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
         (void)korb_io_wr(er, korb_strbuf_data(s->buf), s->len);
         (void)korb_io_wr(er, "\n", 1);
     }
-    korb_drain_at_exit(c, slots);
-    korb_io_flush_std(c->vm);
-    exit(1);
+    return korb_make_system_exit(c, slots, 1);
 }
 /* Run at_exit blocks (reverse order); guarded so an at_exit block calling exit
  * doesn't re-enter.  Shared by main.c's post-run drain and Kernel#exit. */

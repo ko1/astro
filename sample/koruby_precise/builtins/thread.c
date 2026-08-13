@@ -466,7 +466,10 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
             t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
         } else {
             t->raised = 1; t->exc = r.value;
-            if (t->aoe || c->vm->thread_aoe_global) {       /* abort_on_exception: main へ転送 */
+            /* SystemExit ends the whole program, so it is delivered to the main
+             * thread even without abort_on_exception (CRuby). */
+            const bool sysexit = korb_system_exit_status(c, r.value) >= 0;
+            if (t->aoe || c->vm->thread_aoe_global || sysexit) {   /* abort_on_exception: main へ転送 */
                 if (c->vm->main_thread != t)
                     (void)korb_thread_interrupt(c, c->slots, c->vm->main_thread, r.value);
             } else if (t->roe) {
