@@ -245,7 +245,13 @@ module Process
     n
   end
   private_class_method :__int_arg
-  def self.times; Struct.new(:utime, :stime, :cutime, :cstime).new(0.0, 0.0, 0.0, 0.0); end
+  # Process::Tms — CRuby と同じ Struct 型。値は getrusage(2) から取る
+  # (0 固定だと "1 until Process.times.utime > user" が終わらない)。
+  Tms = Struct.new(:utime, :stime, :cutime, :cstime)
+  def self.times
+    u, s, cu, cs = __process_times
+    Tms.new(u, s, cu, cs)
+  end
 
   def self.getrlimit(resource) = __getrlimit(__as_rlimit_int(resource))
   def self.setrlimit(resource, soft, hard = nil)

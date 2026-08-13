@@ -661,6 +661,27 @@ static RESULT korb_m_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(h));
 }
 
+/* __process_times() → [utime, stime, cutime, cstime] in seconds (getrusage(2)). */
+static RESULT korb_m_process_times(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)a;
+    struct rusage ru, rc;
+    const bool ok_self = getrusage(RUSAGE_SELF, &ru) == 0;
+    const bool ok_kids = getrusage(RUSAGE_CHILDREN, &rc) == 0;
+    const double t[4] = {
+        ok_self ? (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6 : 0.0,
+        ok_self ? (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6 : 0.0,
+        ok_kids ? (double)rc.ru_utime.tv_sec + (double)rc.ru_utime.tv_usec / 1e6 : 0.0,
+        ok_kids ? (double)rc.ru_stime.tv_sec + (double)rc.ru_stime.tv_usec / 1e6 : 0.0,
+    };
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 4));
+    VALUE_REF ar = VALUE_REF_AT(&slots[0]);
+    for (int i = 0; i < 4; i++) {
+        slots[1] = UNWRAP(korb_float_new(c, slots + 1, t[i]));
+        CHECK(korb_ary_push_val(c, slots + 2, ar, slots[1]));
+    }
+    return RESULT_OK(VALUE_REF_GET(ar));
+}
+
 /* __getpriority(which, who) → the nice value (getpriority(2); errno 0-reset so a
  * legitimate -1 is not mistaken for failure). */
 static RESULT korb_m_getpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -888,6 +909,7 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
     korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
     korb_class_def_cfn(c, obj, "__rlimit_table",   korb_m_rlimit_table,    0);
+    korb_class_def_cfn(c, obj, "__process_times",  korb_m_process_times,   0);
     korb_class_def_cfn(c, obj, "__getpriority",    korb_m_getpriority,     2);
     korb_class_def_cfn(c, obj, "__setpriority",    korb_m_setpriority,     3);
     korb_class_def_cfn(c, obj, "__getrlimit",      korb_m_getrlimit,       1);
