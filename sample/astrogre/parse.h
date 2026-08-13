@@ -91,6 +91,11 @@ typedef struct astrogre_match {
     size_t ends[ASTROGRE_MAX_GROUPS];
     bool   valid[ASTROGRE_MAX_GROUPS];
     int    n_groups;
+    /* True when the match ended without success AND a stack-floor guard
+     * aborted at least one branch.  The result is then not a trustworthy
+     * "no match": the host should raise (RegexpError) rather than return
+     * false.  Always false on a successful match. */
+    bool   overflow;
 } astrogre_match_t;
 
 bool astrogre_search(astrogre_pattern *p, const char *str, size_t len, astrogre_match_t *out);

@@ -1250,7 +1250,7 @@ node_re_cap_end(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
      * Fail the match before the C stack overflows rather than SEGV.  c->stack_base
      * is the absolute low address + margin (host-supplied for fibers). */
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) return MR_FAIL;
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
     size_t saved_end   = c->ends[idx];
     bool   saved_valid = c->valid[idx];
     c->ends[idx]  = c->pos;
@@ -1594,7 +1594,7 @@ node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE 
      * real floor (c->stack_base = absolute low address + margin; host-supplied
      * for fibers).  Stacks grow down, so SP at/below the floor = out of room. */
     char stack_marker;
-    if ((uintptr_t)&stack_marker <= c->stack_base) return MR_FAIL;
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
 
     struct sub_call_frame f;
     f.return_to = outer_next;

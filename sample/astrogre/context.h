@@ -166,6 +166,13 @@ typedef struct CTX_struct {
     FILE *out;
     long lineno;
     size_t lineno_pos;
+
+    /* Set true by the \g<> / cap_end stack-floor guard when it aborts a
+     * branch because the C stack is about to overflow.  search_from turns
+     * this into astrogre_match_t.overflow so the host can raise instead of
+     * silently reporting "no match" (a false negative).  Appended at the
+     * struct tail to keep field offsets stable for any baked AOT SDs. */
+    bool stack_overflow;
 } CTX;
 
 struct astrogre_option {

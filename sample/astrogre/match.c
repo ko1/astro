@@ -100,6 +100,7 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.sub_depth    = 0;
     c.stack_base  = astrogre_stack_floor();   /* absolute low address the guard must not cross */
     c.stack_limit = 0;                        /* unused now (guard compares against stack_base directly) */
+    c.stack_overflow = false;                 /* set by the floor guard; surfaced via out->overflow */
 
     /* MatchCache state.  Allocated lazily by node_re_alt /
      * node_re_rep_cont once backtrack_count exceeds memo_threshold.
@@ -134,6 +135,9 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
 
     if (out) {
         out->matched = r;
+        /* A floor-guard abort only counts as an "overflow" outcome when no
+         * other branch found a match — a successful match is the truth. */
+        out->overflow = (!r && c.stack_overflow);
         if (r) {
             out->n_groups = p->n_groups;
             /* Only copy slots that node_grep_search actually marked
