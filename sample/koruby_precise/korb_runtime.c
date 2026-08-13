@@ -8780,13 +8780,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_private_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_public_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_lit_nil, -1);   /* source location not tracked */
-    /* autoload(:Const, "path") — koruby can't lazily load files, so it's a no-op
-     * (the const stays undefined); autoload?(:Const) → nil.  Registered on both
-     * Object (top-level / instance) and Class (class body / Module.autoload). */
-    korb_def_cmethod(c, KORB_C_CLASS,  "autoload",  korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_CLASS,  "autoload?", korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "autoload",  korb_m_lit_nil, -1);
-    korb_def_cmethod(c, KORB_C_OBJECT, "autoload?", korb_m_lit_nil, -1);
+    /* Module#autoload / #autoload? live in the prelude (they record a per-module
+     * table honoured from #const_missing); only the top-level forms are wired
+     * here, delegating to Object. */
     /* caller / caller_locations: no walkable call stack → empty Array (stub). */
     korb_def_cmethod(c, KORB_C_OBJECT, "caller",           korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "caller_locations", korb_m_empty_ary, -1);
@@ -9818,6 +9814,19 @@ static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {
 }
 static RESULT korb_raise_load_error(CTX *c, VALUE *slots, const char *path);   /* fwd (defined with require) */
 
+/* Append `path` to $LOADED_FEATURES (Ruby code — autoload?, `require`-guards —
+ * reads it; the C-side loaded list is not visible from Ruby). */
+static void korb_loaded_features_push(CTX *c, VALUE *slots, const char *path)
+{
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return;
+    slots[0] = lf;
+    const RESULT sr = korb_str_new(c, slots + 1, path, (uint32_t)strlen(path));
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return;
+    slots[1] = sr.value;
+    (void)korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]);
+}
+
 /* Load `abspath` (read + eval at top level), tracking it as a required feature.
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
@@ -9832,7 +9841,10 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
     char *buf = korb_file_slurp(abspath, &got);
     if (!buf) return korb_raise_load_error(c, slots, abspath);
     /* record before eval so a circular require returns false rather than reloading. */
-    if (dedup) korb_mark_loaded(vm, abspath);
+    if (dedup) {
+        korb_mark_loaded(vm, abspath);
+        korb_loaded_features_push(c, slots, abspath);   /* keep $LOADED_FEATURES in step */
+    }
     const char *const saved = vm->cur_load_file;
     char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
     vm->cur_load_file = abscopy;
@@ -9947,8 +9959,11 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", "pp", "prettyprint", "date", "delegate", NULL };
     const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
     for (uint32_t i = 0; builtin_features[i]; i++)
-        if (strcmp(stem, builtin_features[i]) == 0)                   /* built-in: load-once contract by feature name */
-            return RESULT_OK(korb_mark_loaded(c->vm, stem) ? KORB_TRUE : KORB_FALSE);
+        if (strcmp(stem, builtin_features[i]) == 0) {                 /* built-in: load-once contract by feature name */
+            const bool fresh = korb_mark_loaded(c->vm, stem);
+            if (fresh) korb_loaded_features_push(c, slots, stem);
+            return RESULT_OK(fresh ? KORB_TRUE : KORB_FALSE);
+        }
     return korb_raise_load_error(c, slots, namebuf);
 }
 /* Method-shaped wrappers for require / require_relative / load.  They go on the

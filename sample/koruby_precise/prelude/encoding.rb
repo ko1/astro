@@ -323,7 +323,25 @@ class Encoding
   end
 end
 class Encoding
-  class Converter; end
+  # 実際の transcoding は未実装だが、フラグ定数は CRuby と同じ値を持たせて
+  # おく (ライブラリが Encoding::Converter::UNDEF_REPLACE 等を参照するだけの
+  # ケースが通る)。
+  class Converter
+    INVALID_MASK                = 0x0f
+    INVALID_REPLACE             = 0x02
+    UNDEF_MASK                  = 0xf0
+    UNDEF_REPLACE               = 0x20
+    UNDEF_HEX_CHARREF           = 0x30
+    PARTIAL_INPUT               = 0x20000
+    AFTER_OUTPUT                = 0x40000
+    UNIVERSAL_NEWLINE_DECORATOR = 0x100
+    CRLF_NEWLINE_DECORATOR      = 0x1000
+    CR_NEWLINE_DECORATOR        = 0x2000
+    LF_NEWLINE_DECORATOR        = 0x4000
+    XML_TEXT_DECORATOR          = 0x8000
+    XML_ATTR_CONTENT_DECORATOR  = 0x10000
+    XML_ATTR_QUOTE_DECORATOR    = 0x100000
+  end
   class CompatibilityError < StandardError; end
   class UndefinedConversionError < StandardError; end
   class InvalidByteSequenceError < StandardError; end

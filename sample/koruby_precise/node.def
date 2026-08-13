@@ -1227,6 +1227,16 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
             }
             return nr;
         }
+        {   /* Top-level miss: CRuby fires Object.const_missing(:Name) here too —
+             * that is how a top-level `autoload` gets its chance to require the
+             * file.  The prelude default re-raises the same NameError. */
+            const VALUE objc = korb_const_get(vm, korb_intern(vm, "Object", 6));
+            if (KORB_CLASS_P(objc)) {
+                slots[0] = objc;
+                slots[1] = ID2SYM(name_sym);
+                return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
+            }
+        }
         RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %s", korb_sym_name(vm, name_sym));
         if (LIKELY(KORB_EXC_P(nr.value))) {              /* NameError#name = the missing constant symbol */
             slots[0] = nr.value;
