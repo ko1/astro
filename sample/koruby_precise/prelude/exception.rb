@@ -140,3 +140,48 @@ class LoadError
     defined?(@__path) ? @__path : nil
   end
 end
+
+# Binding の implicit (numbered / it) parameter API — Ruby 4.0。
+# koruby は _1.._9 / it を普通のローカルとして持つので、Binding からは
+# ここで振り分ける: 暗黙パラメータは #local_variables には出さず、
+# #implicit_parameter_get / #implicit_parameters から見せる。
+class Binding
+  IMPLICIT_PARAM_NAMES__ = [:it, :_1, :_2, :_3, :_4, :_5, :_6, :_7, :_8, :_9].freeze
+
+  alias_method :__lvars_all, :local_variables
+  def local_variables
+    __lvars_all.reject { |n| IMPLICIT_PARAM_NAMES__.include?(n) }
+  end
+
+  def implicit_parameters
+    __lvars_all.select { |n| IMPLICIT_PARAM_NAMES__.include?(n) }.sort
+  end
+
+  def implicit_parameter_defined?(name)
+    __lvars_all.include?(__implicit_param_name(name))
+  end
+
+  def implicit_parameter_get(name)
+    n = __implicit_param_name(name)
+    unless __lvars_all.include?(n)
+      raise NameError, "implicit parameter '#{n}' is not defined for #{inspect}"
+    end
+    local_variable_get(n)
+  end
+
+  private def __implicit_param_name(name)
+    n = name.is_a?(String) ? name.to_sym : name
+    raise TypeError, "#{name.inspect} is not a symbol nor a string" unless n.is_a?(Symbol)
+    raise NameError, "'#{n}' is not an implicit parameter" unless IMPLICIT_PARAM_NAMES__.include?(n)
+    n
+  end
+end
+
+class Binding
+  # CRuby: "#<Binding:0x0000...>" (既定の Object#inspect は ivar を持たない
+  # Binding では "#<Object>" になってしまう)。
+  def inspect
+    format("#<Binding:0x%016x>", object_id << 1)
+  end
+  alias_method :to_s, :inspect
+end

@@ -34,6 +34,7 @@ struct kp_frame {
     int32_t saved_chain;
     uint32_t synth_cnt;       /* synthetic temporaries appended after prism locals (e.g. case subject) */
     bool uses_block;          /* yield / block_given? seen → reserve 2 frame-top cells */
+    bool it_param;            /* `{ it * 2 }` — slot 0 is the implicit `it` (prism lists no name for it) */
     bool module_function_mode; /* no-arg `module_function` seen in this class/module body */
     uint32_t method_mid;      /* enclosing def's name (0 = not a method body) — for super */
     uint32_t class_name_sym;  /* enclosing class/module body's const name (0 = not a class body) — for Module.nesting */
@@ -257,6 +258,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->saved_chain = tc->chain;
     f->synth_cnt = 0;
     f->uses_block = false;
+    f->it_param = false;
     f->module_function_mode = false;
     f->method_mid = 0;
     f->method_params = 0;
@@ -993,6 +995,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
         /* `{ it * 2 }` — one implicit param `it`; the body reads it via a
          * PM_IT_LOCAL_VARIABLE_READ_NODE, mapped to local slot 0 in transduce. */
         bparams = 1;
+        tc->frame->it_param = true;   /* name slot 0 "it" for Binding (prism lists no local) */
     } else if (blk_params) {
         const pm_parameters_node_t *ps;
         if (PM_NODE_TYPE_P(blk_params, PM_BLOCK_PARAMETERS_NODE)) {
@@ -1339,10 +1342,12 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "binding") == 0) {
         const pm_constant_id_list_t *locals = tc->frame->locals;
-        const uint32_t cnt = (uint32_t)locals->size;
+        const bool it_slot = tc->frame->it_param && locals->size == 0;   /* `{ it }`: slot 0 is `it` */
+        const uint32_t cnt = (uint32_t)locals->size + (it_slot ? 1u : 0u);
         uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));   /* immortal (baked into the node) */
         if (!syms) abort();
-        for (uint32_t i = 0; i < cnt; i++) syms[i] = kp_intern_cid(tc, locals->ids[i]);
+        if (it_slot) syms[0] = korb_intern(tc->c->vm, "it", 2);
+        for (uint32_t i = 0; i < (uint32_t)locals->size; i++) syms[i + (it_slot ? 1u : 0u)] = kp_intern_cid(tc, locals->ids[i]);
         const int32_t self_off = -1 - tc->chain;
         NODE *nb = ALLOC_node_binding(-tc->chain, self_off, (const char *)(const void *)syms, cnt);
         bake_add(tc, &nb->u.node_binding.def_env_off);    /* frame base shifts with frame_size */
@@ -1356,10 +1361,12 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     if (cn->receiver == NULL && argc == 0 && cn->block == NULL &&
         strcmp(kp_cid_cstr(tc, cn->name), "local_variables") == 0) {
         const pm_constant_id_list_t *locals = tc->frame->locals;
-        const uint32_t cnt = (uint32_t)locals->size;
+        const bool it_slot = tc->frame->it_param && locals->size == 0;
+        const uint32_t cnt = (uint32_t)locals->size + (it_slot ? 1u : 0u);
         uint32_t *syms = malloc(sizeof(uint32_t) * (cnt ? cnt : 1));
         if (!syms) abort();
-        for (uint32_t i = 0; i < cnt; i++) syms[i] = kp_intern_cid(tc, locals->ids[i]);
+        if (it_slot) syms[0] = korb_intern(tc->c->vm, "it", 2);
+        for (uint32_t i = 0; i < (uint32_t)locals->size; i++) syms[i + (it_slot ? 1u : 0u)] = kp_intern_cid(tc, locals->ids[i]);
         NODE *nb;
         WITH_CHAIN(tc, KP_SEND0_SC, (nb = ALLOC_node_binding(-tc->chain, -1 - tc->chain,
                                           (const char *)(const void *)syms, cnt)));
