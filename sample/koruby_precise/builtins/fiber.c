@@ -6,7 +6,7 @@
  * included at the top of korb_runtime.c (before koruby macros). */
 
 #define KORB_FIBER_VSLOTS_BYTES ((size_t)2 << 20)   /* per-fiber value stack */
-#define KORB_FIBER_CSTACK_BYTES ((size_t)512 << 10) /* per-fiber native stack */
+#define KORB_FIBER_CSTACK_BYTES ((size_t)1 << 20)   /* per-fiber native stack (1 MiB) */
 #define KORB_FIBER_VSLOTS_MARGIN 1024               /* slots reserved below limit */
 #define KORB_FIBER_CSTACK_MARGIN ((size_t)64 << 10) /* native-stack floor margin */
 
