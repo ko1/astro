@@ -381,3 +381,20 @@ class Symbol
     to_s.ascii_only? ? Encoding::US_ASCII : Encoding::UTF_8
   end
 end
+class Regexp
+  # Encoding of the pattern.  koruby distinguishes only the ASCII-compatible
+  # encodings (US-ASCII / UTF-8 / ASCII-8BIT); the /e (EUC-JP) and /s (Windows-31J)
+  # source options need real transcoding and are out of scope.  A 7-bit-ASCII
+  # pattern is US-ASCII; otherwise it carries its source String's encoding.
+  def encoding
+    src = source
+    # A \u / \u{…} escape whose codepoint is outside 7-bit ASCII forces UTF-8,
+    # even when the escape text itself is ASCII (CRuby).  \u escapes that stay in
+    # 7-bit ASCII (e.g. A) do not.
+    utf8 = src.scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|
+      (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
+    end
+    return Encoding::UTF_8 if utf8
+    src.ascii_only? ? Encoding::US_ASCII : src.encoding
+  end
+end
