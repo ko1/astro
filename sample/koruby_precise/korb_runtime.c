@@ -7056,8 +7056,22 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL] ||
             cname == vm->class_name[KORB_C_RATIONAL] || cname == vm->class_name[KORB_C_COMPLEX])   /* #new is undefined (built via Rational()/Complex()) */
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
-        if (cname == vm->name_fiber)
-            return korb_fiber_new(c, slots, block, def_env, captured_self);
+        if (cname == vm->name_fiber) {
+            const RESULT fr = korb_fiber_new(c, slots, block, def_env, captured_self);
+            if (LIKELY(fr.state == KORB_NORMAL) && argc >= 1) {   /* Fiber.new(storage: h) { … } */
+                const VALUE opts = slots[-(intptr_t)argc];
+                if (KORB_HASH_P(opts)) {
+                    const int32_t si = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(vm, "storage", 7)));
+                    if (si >= 0) {
+                        const VALUE sv = korb_items_data(VAL2HASH(opts)->items)[2 * si + 1];
+                        if (UNLIKELY(sv != KORB_NIL && !KORB_HASH_P(sv)))
+                            return korb_raise(c, slots, KORB_E_TYPE, line, "storage must be a hash");
+                        VAL2FIBER(fr.value)->rep->storage = sv;
+                    }
+                }
+            }
+            return fr;
+        }
         if (cname == vm->name_thread)
             return korb_thread_s_new(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
         if (cname == vm->class_name[KORB_C_MUTEX])   return korb_mutex_s_new(c, slots);
@@ -7418,6 +7432,18 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     : UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
                 slots[1] = inst;                               /* root instance across the override set */
                 korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
+                if (base == KORB_C_FIBER && argc >= 1) {       /* Fiber.new(storage: h) { … } */
+                    const VALUE opts = slots[-(intptr_t)argc];
+                    if (KORB_HASH_P(opts)) {
+                        const int32_t si = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(vm, "storage", 7)));
+                        if (si >= 0) {
+                            const VALUE sv = korb_items_data(VAL2HASH(opts)->items)[2 * si + 1];
+                            if (UNLIKELY(sv != KORB_NIL && !KORB_HASH_P(sv)))
+                                return korb_raise(c, slots + 2, KORB_E_TYPE, line, "storage must be a hash");
+                            VAL2FIBER(slots[1])->rep->storage = sv;
+                        }
+                    }
+                }
                 return RESULT_OK(slots[1]);
             }
             if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {

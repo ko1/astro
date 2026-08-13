@@ -1231,3 +1231,18 @@ class Regexp
     r
   end
 end
+
+class Fiber
+  # Fiber scheduler は未実装 (koruby の fiber は協調 coroutine で、blocking
+  # 操作の肩代わりをする scheduler を持たない)。参照だけで NoMethodError に
+  # ならないよう nil を返す。
+  def self.scheduler; nil; end
+  def self.current_scheduler; nil; end
+  def self.set_scheduler(sched)
+    raise ArgumentError, "scheduler is not supported" unless sched.nil?
+    nil
+  end
+  def self.schedule(*args, &blk)
+    raise RuntimeError, "No scheduler is available!"
+  end
+end
