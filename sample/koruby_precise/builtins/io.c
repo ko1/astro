@@ -695,6 +695,36 @@ static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* IO#close — fclose (never on the std streams); marks the slot closed. */
+/* IO#close_read / IO#close_write — drop one direction of a duplex stream.  koruby
+ * has a single descriptor per IO, so the direction bits in @__io_mode are cleared
+ * and the descriptor is closed once neither direction is left (which is what a
+ * pipe end or a one-way File does on the first call). */
+static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_io_close_half(CTX *c, VALUE *slots, VALUE_REF self, int keep_bit, const char *what) {
+    const int rw = korb_io_rw(c, VALUE_REF_GET(self));
+    const int drop_bit = (keep_bit == 1) ? 2 : 1;
+    if (!(rw & drop_bit)) {
+        /* Already dropped (or never had it): a repeat call is a no-op, but a
+         * stream that never had this direction at all is "non-duplex". */
+        const KorbIORep *const rep0 = korb_io_rep(c, VALUE_REF_GET(self));
+        if (rw == 0 || !korb_io_open_p(rep0)) return RESULT_OK(KORB_NIL);
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "closing non-duplex IO for %s", what);
+    }
+    if (drop_bit == 2) {                                   /* flush pending output first */
+        KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+        if (korb_io_open_p(rep)) (void)korb_io_flush_rep(rep);
+    }
+    const int left = rw & ~drop_bit;
+    CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(left)));
+    if (left == 0) return korb_m_io_close(c, slots, self, VALUE_SLICE_MAKE(NULL, 0));
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_m_io_close_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_io_close_half(c, slots, self, 2, "reading");
+}
+static RESULT korb_m_io_close_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; return korb_io_close_half(c, slots, self, 1, "writing");
+}
 static RESULT korb_m_io_close(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const VALUE idxv = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_io_fp_mid(c)));
@@ -1663,6 +1693,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("readlines", readlines, -1);                        IOB("each_line", each_line, -1);
     IOB("each", each_line, -1);
     IOM("close", close, 0);      IOM("closed?", closed_p, 0);
+    IOM("close_read", close_read, 0);   IOM("close_write", close_write, 0);
     IOM("stat", stat, 0);        IOM("fileno", fileno, 0);
     IOM("tty?", tty_p, 0);       IOM("isatty", tty_p, 0);
     IOM("truncate", truncate, 1);
