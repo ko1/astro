@@ -1710,6 +1710,23 @@ node_ary_push(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@chi
     return korb_ary_push_val(c, slots, ary, elem);
 }
 
+// node_ary_push for a call-site trailing keyword bundle (`m(*a, **h)` staging):
+// an EMPTY kwargs Hash is elided (CRuby 3.0 empty-kwsplat rule) so the splat
+// dispatch sees only the positionals — `m(*a, **{})` must not grow a `{}` arg.
+NODE_DEF
+node_ary_push_kw(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@child)
+{
+    (void)n;
+    if (KORB_HASH_P(elem) && VAL2HASH(elem)->len == 0) return RESULT_OK(VALUE_REF_GET(ary));
+    KorbArray *const a = VAL2ARY(VALUE_REF_GET(ary));
+    if (LIKELY(a->len < a->capa)) {
+        korb_ary_store_at(c, VALUE_REF_GET(ary), a->len, elem);
+        a->len++;
+        return RESULT_OK(VALUE_REF_GET(ary));
+    }
+    return korb_ary_push_val(c, slots, ary, elem);
+}
+
 NODE_DEF
 node_ary_concat(CTX *c, NODE *n, VALUE *slots, VALUE_REF ary@child, VALUE elem@child)
 {

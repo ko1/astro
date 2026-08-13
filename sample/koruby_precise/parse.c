@@ -2267,7 +2267,11 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     uint32_t sc = kind_node_ary_push.slot_count;        /* concat shares the push layout */
     WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
                         elem = transduce(tc, expr)));
-    return splat ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
+    if (splat) return ALLOC_node_ary_concat(acc, elem);
+    /* call-site trailing `**h` bundle (only ever the last arg): an empty kwargs
+     * Hash is elided at run time (CRuby 3.0 empty-kwsplat rule) */
+    if (PM_NODE_TYPE_P(last, PM_KEYWORD_HASH_NODE)) return ALLOC_node_ary_push_kw(acc, elem);
+    return ALLOC_node_ary_push(acc, elem);
 }
 
 /* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
