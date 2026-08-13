@@ -7019,11 +7019,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             /* super from inside that very `def self.new` (marker set by the
              * super path): skip the override once so the default allocator runs. */
             if (snew && vm->super_new_skip != KORB_NIL && sdef == vm->super_new_skip) snew = NULL;
-            /* A user `def self.new` (ISEQ) or a builtin singleton `new` (CFUNC —
-             * Regexp/Time/File/Dir) overrides the default allocator; the direct
-             * path resolves this in node_send_cached, this shared (send/block)
-             * path must too. */
-            if (snew && (snew->kind == KORB_METHOD_ISEQ || snew->kind == KORB_METHOD_CFUNC))
+            /* A user `def self.new` (ISEQ), a builtin singleton `new` (CFUNC —
+             * Regexp/Time/File/Dir) or a `define_method(:new, ...)` singleton (DM)
+             * all override the default allocator; the direct path resolves this in
+             * node_send_cached, this shared (send/block) path must too. */
+            if (snew && (snew->kind == KORB_METHOD_ISEQ || snew->kind == KORB_METHOD_CFUNC ||
+                         snew->kind == KORB_METHOD_DM))
                 return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self);
         }
         uint32_t cname = VAL2CLASS(self)->name_sym;

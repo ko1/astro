@@ -43,6 +43,8 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out) {
             if (i + 2 <= n && isdigit((unsigned char)p[i]) && isdigit((unsigned char)p[i+1])) { mm = (p[i]-'0')*10 + (p[i+1]-'0'); i += 2; }
             if (i < n && p[i] == ':') i++;
             if (i + 2 <= n && isdigit((unsigned char)p[i]) && isdigit((unsigned char)p[i+1])) { ss = (p[i]-'0')*10 + (p[i+1]-'0'); i += 2; }
+            if (i != n) return false;                  /* trailing junk */
+            if (mm > 59 || ss > 59) return false;      /* "+02:60" is not an offset */
             *out = sign * (hh * 3600 + mm * 60 + ss);
             return true;
         }
