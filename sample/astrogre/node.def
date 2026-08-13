@@ -1211,6 +1211,12 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
     const size_t bit = (size_t)f->id * (c->str_len + 1) + c->pos;
     if (c->memo && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
 
+    /* Stack-floor guard: repetition recurses one C frame per iteration, so a
+       long greedy match over a huge string overflows here, not in g-subroutine
+       calls. Fail at the floor so the host raises instead of the process SEGV. */
+    char stack_marker;
+    if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; return MR_FAIL; }
+
     const VALUE r = rep_cont_inner(c, f);
 
     if (!r && c->memo_eligible) {
