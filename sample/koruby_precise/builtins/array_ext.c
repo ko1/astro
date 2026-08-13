@@ -90,7 +90,9 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     #define PK_PUTS(p,n)  do { PK_RESERVE(n); memcpy(ob + olen, (p), (n)); olen += (size_t)(n); } while (0)
     static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     uint32_t ti = 0, ai = 0;                             /* template / array cursors */
+    unsigned enc_state = 1;                              /* 1 = US-ASCII, 2 = UTF-8, 0 = ASCII-8BIT */
     unsigned errtype = 0; const char *errmsg = NULL; char bad = 0; bool has_bad = false;
+    char errbuf[128];                                    /* for messages naming the offending type */
     while (ti < t->len) {
         const char d = korb_strbuf_data(t->buf)[ti++];
         if (d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '\v' || d == '\f') continue;
@@ -112,6 +114,13 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (ti < t->len && korb_strbuf_data(t->buf)[ti] == '*') { star = true; ti++; }
         else if (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') {
             has_cnt = true; cnt = 0; while (ti < t->len && korb_strbuf_data(t->buf)[ti] >= '0' && korb_strbuf_data(t->buf)[ti] <= '9') cnt = cnt * 10 + (korb_strbuf_data(t->buf)[ti++] - '0');
+        }
+        /* Result encoding, CRuby's enc_info state machine: US-ASCII while every
+         * directive is 7-bit-clean (U / M / m / u), UTF-8 if a U appeared, and
+         * ASCII-8BIT as soon as any other directive is used. */
+        if (enc_state != 0) {
+            if (d == 'U') { if (enc_state == 1) enc_state = 2; }
+            else if (d != 'M' && d != 'm' && d != 'u') enc_state = 0;
         }
         if (d == 'C' || d == 'c') {
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
@@ -190,6 +199,10 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             size_t back = star ? 0 : (size_t)cnt;
             if (back > olen) { errtype = KORB_E_ARGUMENT; errmsg = "X outside of string"; break; }
             olen -= back;
+        } else if (d == '@') {                            /* absolute output position: NUL-fill or truncate (@* → 0) */
+            const size_t pos = star ? 0 : (size_t)cnt;
+            if (pos > olen) { PK_RESERVE(pos - olen); memset(ob + olen, 0, pos - olen); }
+            olen = pos;
         } else if (d == 'w') {                            /* BER-compressed integer (star/count → all/n) */
             uint32_t emit = star ? (ary->len - ai) : (uint32_t)cnt;
             for (uint32_t rr = 0; rr < emit; rr++) {
@@ -215,7 +228,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         } else if (d == 'a' || d == 'A' || d == 'Z' || d == 'B' || d == 'b' || d == 'H' || d == 'h' || d == 'M' || d == 'm' || d == 'u') {
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
             VALUE e = korb_items_data(ary->items)[ai++];
-            const bool coerce = (d == 'M' || d == 'm' || d == 'u');   /* these to_s their operand */
+            const bool coerce = (d == 'M');   /* only M to_s's its operand; m/u demand a String (#to_str) */
             char cobuf[64]; const char *ed; uint32_t elen;
             if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); ed = korb_strbuf_data(es->buf); elen = es->len; }
             else if (e == KORB_NIL) { ed = ""; elen = 0; }
@@ -226,7 +239,10 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
             else if (coerce && e == KORB_FALSE) { ed = "false"; elen = 5; }
             else if (!coerce && KORB_OBJECT_P(e)) {       /* a/A/Z/B/b/H/h: coerce the element via #to_str */
                 slots[1] = e;
-                if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+                if (!korb_responds_to_coerce(c, slots + 2, slots[1], korb_intern(c->vm, "to_str", 6))) {
+                    snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_type_name(slots[1]));
+                    errtype = KORB_E_TYPE; errmsg = errbuf; break;
+                }
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { free(ob); return sr; }
                 if (!KORB_STRING_P(sr.value)) { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
@@ -247,14 +263,17 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 }
                 ary = SELF_ARY; t = VAL2STR(slots[0]);
             }
-            else { errtype = KORB_E_TYPE; errmsg = "no implicit conversion into String"; break; }
+            else {
+                snprintf(errbuf, sizeof errbuf, "no implicit conversion of %s into String", korb_type_name(e));
+                errtype = KORB_E_TYPE; errmsg = errbuf; break;
+            }
             if (d == 'a' || d == 'A') {
                 uint32_t want = star ? elen : (uint32_t)cnt;
                 const char pad = (d == 'A') ? ' ' : '\0';
                 for (uint32_t k = 0; k < want; k++) PK_PUT(k < elen ? ed[k] : pad);
-            } else if (d == 'Z') {                        /* null-terminated string */
+            } else if (d == 'Z') {                        /* 'Z*' appends a NUL; 'Z<n>' is 'a<n>' (take n, NUL-pad) */
                 if (star) { PK_PUTS(ed, elen); PK_PUT(0); }
-                else { uint32_t want = (uint32_t)cnt; for (uint32_t k = 0; k < want; k++) PK_PUT((k < elen && k + 1 < want) ? ed[k] : 0); }
+                else { const uint32_t want = (uint32_t)cnt; for (uint32_t k = 0; k < want; k++) PK_PUT(k < elen ? ed[k] : 0); }
             } else if (d == 'B' || d == 'b') {           /* bit string: bit = byte&1 */
                 uint32_t nbits = star ? elen : (uint32_t)cnt;
                 unsigned byte = 0, used = 0;
@@ -277,7 +296,7 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 }
                 if (used) PK_PUT(byte);                   /* flush partial nibble */
             } else if (d == 'M') {                        /* quoted-printable */
-                const long wrap = (has_cnt && cnt > 1) ? cnt + 1 : 72;   /* CRuby: M<n> → n+1 chars/line; 0/1/none → 72 */
+                const long wrap = (has_cnt && cnt > 1) ? cnt : 72;   /* CRuby: M<n> (n>=2) → n; 0/1/none → 72 */
                 long col = 0; char last = 0;
                 static const char HX[] = "0123456789ABCDEF";
                 for (uint32_t k = 0; k < elen; k++) {
@@ -286,10 +305,12 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                     char enc[3]; int en;
                     if (ch == '=' || ch > 126 || (ch < 32 && ch != '\t')) { en = 3; enc[0] = '='; enc[1] = HX[ch >> 4]; enc[2] = HX[ch & 15]; }
                     else { en = 1; enc[0] = (char)ch; }
-                    if (col + en > wrap) { PK_PUTS("=\n", 2); col = 0; }
                     PK_PUTS(enc, en); col += en; last = enc[en - 1];
+                    /* the break comes after the column overflows, so a line can
+                     * run to wrap+2 characters (CRuby's qpencode) */
+                    if (col > wrap) { PK_PUTS("=\n", 2); col = 0; last = '\n'; }
                 }
-                if (elen > 0 && last != '\n') PK_PUTS("=\n", 2);
+                if (col > 0) PK_PUTS("=\n", 2);
             } else {                                      /* m (base64) / u (uuencode) */
                 /* `m0` = base64 with no line breaks (and no trailing newline);
                  * `m` / `m*` / `m1` / `m2` = 45 bytes per line; `mN` (N>=3) = N. */
@@ -341,7 +362,11 @@ static RESULT korb_m_ary_pack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     RESULT r = korb_str_new(c, slots, ob ? (const char *)ob : "", (uint32_t)olen);
     free(ob);
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* pack yields ASCII-8BIT */
+    /* Result encoding follows the directives used: U alone yields UTF-8, the
+     * 7-bit encoders (M/m/u) US-ASCII, everything else ASCII-8BIT (CRuby). */
+    if (LIKELY(r.state == KORB_NORMAL))
+        KORB_STR_ENC_SET(r.value, enc_state == 2 ? KORB_ENC_UTF8
+                                : enc_state == 1 ? KORB_ENC_USASCII : KORB_ENC_BINARY);
     return r;
     #undef PK_RESERVE
     #undef PK_PUT
