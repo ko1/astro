@@ -2446,3 +2446,14 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       入れると `def run; eval(s); end` も同じ形になり optcarrot AOT が落ちる。
       node.def に `@noinline` を付けても exempt されなかった (head.flags.no_inline
       に伝播していない可能性)。desugar 解禁の前提。
+
+## io/copy_stream_spec が whole-file timeout (2026-08-13 の退行)
+- [ ] core/io/copy_stream_spec.rb が sweep で timeout する (それ以前の sweep
+      では 109 例完走 / 3err だった)。同日の IO.popen "r+" (socketpair) 追加・
+      read 前 flush・copy_stream の readpartial 化・File.open の options 対応の
+      いずれかが原因。**単体で切り出したケースは全部 CRuby 一致で通る**
+      (pipe→file / file→IO / object 送受信 / Tempfile(RDONLY) / 17KB / popen r+ /
+      offset の ESPIPE)。spec を走らせると fixture の内容が stdout に繰り返し
+      出続けるので、どこかで無限ループして子プロセスの出力が端末に漏れている。
+      mspec 環境固有 (new_io / IOSpecs::CopyStream の class 変数越しの受け渡し)
+      の可能性。次に触るときは spec を分割実行して例を特定するところから。
