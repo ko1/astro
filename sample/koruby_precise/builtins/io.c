@@ -225,6 +225,10 @@ static uint32_t korb_io_fill_p(CTX *c, VALUE *slots, KorbIORep *const rep, RESUL
     if (rep->rpos < rep->rlen) return rep->rlen - rep->rpos;
     rep->rpos = rep->rlen = 0;
     if (UNLIKELY(!korb_io_open_p(rep)) || rep->fd == KORB_IO_FD_MEM || rep->eof) return 0;
+    /* A duplex stream (socketpair, "r+" popen, a socket) may hold buffered
+     * output that the peer is waiting for; blocking in read(2) without sending
+     * it first deadlocks both sides. */
+    if (rep->wlen > 0) (void)korb_io_flush_rep(rep);
     if (rep->rcapa == 0) {
         rep->rbuf = malloc(KORB_IO_BUFSZ);
         if (!rep->rbuf) return 0;

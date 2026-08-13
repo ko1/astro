@@ -210,13 +210,26 @@ class IO
         end
         copied = 0
         chunk = 65536
+        # 読めた分だけ即座に書く (#read(n) は n バイト揃うまで待つので、pipe
+        # 越しの対話 — 相手が返事を待っている — でデッドロックする)。
+        partial = src_io.respond_to?(:readpartial)
         loop do
           want = copy_length ? copy_length - copied : chunk
           want = chunk if want > chunk
           break if want <= 0
-          data = src_io.read(want)
+          data = nil
+          if partial
+            begin
+              data = src_io.readpartial(want)
+            rescue EOFError
+              break
+            end
+          else
+            data = src_io.read(want)
+          end
           break if data.nil? || data.empty?
           dst_io.write(data)
+          dst_io.flush if dst_io.respond_to?(:flush)   # 相手が待っている可能性
           copied += data.bytesize
         end
         src_io.seek(saved) if saved
