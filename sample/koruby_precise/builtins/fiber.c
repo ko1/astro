@@ -51,6 +51,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->def_env = def_env;
     rep->captured_self = KORB_CSELF_VAL(captured_self);
     rep->transfer = KORB_NIL;
+    rep->storage = KORB_NIL;                           /* Fiber#storage (lazily inherited on first read) */
     rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
     rep->fstate = 0;
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
@@ -176,6 +177,7 @@ korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     fb->rep = rp;
     rp->fibobj = (VALUE)fb;
     rp->transfer = KORB_NIL;
+    rp->storage = KORB_NIL;
     rp->captured_self = KORB_NIL;
     rp->fstate = 1;                                    /* running: never resumable */
     rp->link = c->vm->fiber_list;                      /* rooted via the fibobj edge */
@@ -183,6 +185,87 @@ korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     c->vm->root_fiber = rp;
     (void)self;
     return RESULT_OK(rp->fibobj);
+}
+
+/* ---- Fiber storage (fiber-local variables) --------------------------------
+ * Each fiber owns a Hash, created on first write.  A new fiber inherits a COPY
+ * of its creator's storage the first time it is touched (CRuby semantics), so
+ * writes never leak back to the parent. */
+static KorbFiberRep *korb_fiber_cur_rep(CTX *c, VALUE *slots) {
+    KorbFiberRep *rep = c->vm->running_fiber;
+    if (rep == NULL) {                                  /* main stack: materialize the root fiber */
+        (void)korb_m_fiber_s_current(c, slots, VALUE_REF_AT(&slots[0]), VALUE_SLICE_MAKE(NULL, 0));
+        rep = c->vm->root_fiber;
+    }
+    return rep;
+}
+/* The storage Hash of `rep`, or nil when it has none and none is requested. */
+static RESULT korb_fiber_storage_of(CTX *c, VALUE *slots, KorbFiberRep *rep, bool create) {
+    if (rep == NULL) return RESULT_OK(KORB_NIL);
+    if (rep->storage == KORB_NIL && create) {
+        const RESULT hr = korb_hash_new(c, slots, 4);
+        if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        rep->storage = hr.value;                        /* rep is libc-stable; the field is a GC root */
+    }
+    return RESULT_OK(rep->storage);
+}
+/* Fiber#storage / #storage= */
+static RESULT korb_m_fiber_storage(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    return korb_fiber_storage_of(c, slots, VAL2FIBER(VALUE_REF_GET(self))->rep, false);
+}
+static RESULT korb_m_fiber_storage_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const VALUE h = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(h != KORB_NIL && !KORB_HASH_P(h)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "storage must be a hash");
+    VAL2FIBER(VALUE_REF_GET(self))->rep->storage = h;
+    return RESULT_OK(h);
+}
+/* Fiber[key] / Fiber[key] = value — the RUNNING fiber's storage. */
+static RESULT korb_fiber_storage_key(CTX *c, VALUE *slots, VALUE k, VALUE *out) {
+    if (SYMBOL_P(k)) { *out = k; return RESULT_OK(KORB_TRUE); }
+    if (KORB_STRING_P(k)) {
+        *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len));
+        return RESULT_OK(KORB_TRUE);
+    }
+    char ib[128]; char *b = NULL; size_t bl = 0;
+    FILE *ms = open_memstream(&b, &bl);
+    if (ms) { korb_fprint_inspect(c, ms, k); fclose(ms); }
+    snprintf(ib, sizeof ib, "%s", b ? b : "?"); free(b);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", ib);
+}
+static RESULT korb_m_fiber_s_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    VALUE key;
+    CHECK(korb_fiber_storage_key(c, slots, VALUE_SLICE_GET(a, 0), &key));
+    slots[0] = key;
+    KorbFiberRep *const rep = korb_fiber_cur_rep(c, slots + 1);
+    if (rep == NULL || rep->storage == KORB_NIL) return RESULT_OK(KORB_NIL);
+    const int32_t i = korb_hash_find(VAL2HASH(rep->storage), slots[0]);
+    return RESULT_OK(i >= 0 ? korb_items_data(VAL2HASH(rep->storage)->items)[2 * i + 1] : KORB_NIL);
+}
+static RESULT korb_m_fiber_s_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    VALUE key;
+    CHECK(korb_fiber_storage_key(c, slots, VALUE_SLICE_GET(a, 0), &key));
+    slots[0] = key; slots[1] = VALUE_SLICE_GET(a, 1);
+    KorbFiberRep *const rep = korb_fiber_cur_rep(c, slots + 2);
+    const RESULT sr = korb_fiber_storage_of(c, slots + 2, rep, true);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[2] = sr.value;
+    CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[0]), slots[1]));
+    rep->storage = slots[2];                            /* re-read: the set may have moved it */
+    return RESULT_OK(slots[1]);
+}
+/* Fiber.blocking? — koruby's fibers never park the scheduler, so the main
+ * (blocking) fiber reports 1 and any other fiber false, as CRuby does. */
+static RESULT korb_m_fiber_s_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)self; (void)a;
+    return RESULT_OK(c->vm->running_fiber == NULL ? LONG2FIX(1) : KORB_FALSE);
+}
+static RESULT korb_m_fiber_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)self; (void)a;
+    return RESULT_OK(KORB_FALSE);                       /* per-fiber flag; koruby has no scheduler */
 }
 
 static RESULT

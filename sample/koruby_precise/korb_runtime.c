@@ -5857,6 +5857,9 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
 }
 static RESULT korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_fiber_s_current(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_fiber_s_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_fiber_s_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
+static RESULT korb_m_fiber_s_blocking_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT
 korb_call_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -6781,10 +6784,19 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
     }
     /* class receiver → Klass.new (allocate + initialize). */
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->name_fiber &&
-             (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7))) {
+             (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7) ||
+              mid == korb_intern(vm, "[]", 2) || mid == korb_intern(vm, "[]=", 3) ||
+              mid == korb_intern(vm, "blocking?", 9))) {
+        const VALUE_SLICE fa = VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc);
         if (mid == vm->mid_yield)
-            return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
-        return korb_m_fiber_s_current(c, slots, VALUE_REF_AT(recv_slot), VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc));
+            return korb_m_fiber_yield(c, slots, VALUE_REF_AT(recv_slot), fa);
+        if (mid == korb_intern(vm, "[]", 2))
+            return korb_m_fiber_s_aref(c, slots, VALUE_REF_AT(recv_slot), fa);
+        if (mid == korb_intern(vm, "[]=", 3))
+            return korb_m_fiber_s_aset(c, slots, VALUE_REF_AT(recv_slot), fa);
+        if (mid == korb_intern(vm, "blocking?", 9))
+            return korb_m_fiber_s_blocking_p(c, slots, VALUE_REF_AT(recv_slot), fa);
+        return korb_m_fiber_s_current(c, slots, VALUE_REF_AT(recv_slot), fa);
     }
     else if (KORB_CLASS_P(self) && VAL2CLASS(self)->is_module &&
              VAL2CLASS(self)->name_sym == korb_intern(vm, "Kernel", 6)) {     /* Kernel.Integer / .Float / .puts ... → the global function */
@@ -8597,6 +8609,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "raise", korb_m_fiber_raise, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
+    korb_def_cmethod(c, KORB_C_FIBER, "storage", korb_m_fiber_storage, 0);
+    korb_def_cmethod(c, KORB_C_FIBER, "storage=", korb_m_fiber_storage_set, 1);
+    korb_def_cmethod(c, KORB_C_FIBER, "blocking?", korb_m_fiber_blocking_p, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "join", korb_m_thread_join, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "value", korb_m_thread_value, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "alive?", korb_m_thread_alive, 0);

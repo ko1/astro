@@ -399,6 +399,7 @@ typedef struct KorbFiberRep {
     VALUE transfer;                  /* value passed across resume/yield (root) */
     VALUE captured_self;             /* the block's lexical self (root) */
     VALUE fibobj;                    /* the Fiber object owning this rep (root) — Fiber.current */
+    VALUE storage;                   /* Fiber#storage: fiber-local Hash (root; nil until used) */
     VALUE *vslots;                   /* fiber value-stack base (fixed mmap) */
     VALUE *vslots_top;               /* saved scan top while suspended */
     VALUE *vslots_limit;
@@ -1110,6 +1111,7 @@ struct CTX_struct {
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->transfer);                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->captured_self);           \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->fibobj);                  \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_fr->storage);                 \
         if (_fr != (c)->vm->running_fiber && _fr->fstate == 2) {              \
             for (VALUE *_p = _fr->vslots - 2; _p < _fr->vslots_top; _p++)         \
                 ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                     \
