@@ -147,24 +147,71 @@ static RESULT korb_m_time_now(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     CHECK(korb_ivar_set(c, slots + 1, VALUE_REF_AT(&slots[0]), korb_time_off_sym(c->vm), LONG2FIX(in_off)));
     return RESULT_OK(slots[0]);
 }
+/* Is `v` a Numeric (by class ancestry — used to gate the #to_r coercion)? */
+static bool korb_obj_is_numeric(CTX *c, VALUE v) {
+    if (!KORB_OBJECT_P(v)) return false;
+    const VALUE num = korb_const_get(c->vm, korb_intern(c->vm, "Numeric", 7));
+    return KORB_CLASS_P(num) && korb_class_has_ancestor(korb_dispatch_class(c, v), num);
+}
+
+/* Split a numeric epoch into whole seconds + nanoseconds.  A Rational is split
+ * with integer math (num/den), because a double cannot hold "seconds since 1970"
+ * to nanosecond precision — Time.at(t.to_r) must round-trip. */
+static bool korb_epoch_parts(VALUE v, int64_t *sec, long *nsec) {
+    if (FIXNUM_P(v)) { *sec = (int64_t)FIX2LONG(v); *nsec = 0; return true; }
+    if (KORB_RATIONAL_P(v)) {
+        const VALUE nv = VAL2RAT(v)->num, dv = VAL2RAT(v)->den;
+        if (FIXNUM_P(nv) && FIXNUM_P(dv) && FIX2LONG(dv) != 0) {
+            const __int128 num = (__int128)FIX2LONG(nv), den = (__int128)FIX2LONG(dv);
+            __int128 q = num / den, r = num % den;
+            if (r < 0) { q -= 1; r += den; }                  /* floor division */
+            *sec = (int64_t)q;
+            *nsec = (long)((r * 1000000000 + den / 2) / den); /* round to nearest ns */
+            if (*nsec >= 1000000000) { *sec += 1; *nsec -= 1000000000; }
+            return true;
+        }
+    }
+    double d;
+    if (!korb_num_to_d(v, &d)) return false;
+    *sec = (int64_t)floor(d);
+    *nsec = (long)((d - floor(d)) * 1e9 + 0.5);
+    if (*nsec >= 1000000000) { *sec += 1; *nsec -= 1000000000; }
+    return true;
+}
 static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    double e = 0;
+    int64_t sec = 0; long nsec = 0;
+    bool src_utc = false;
     VALUE v = VALUE_SLICE_GET(a, 0);
-    if (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_f", 4)) &&
-        korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL)
-        e = korb_time_epoch(c, v);                                /* Time.at(time) */
-    else if (!korb_num_to_d(v, &e)) {                             /* try #to_int, else TypeError */
-        if (korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_int", 6))) {
+    if (KORB_OBJECT_P(v) && korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL) {
+        sec = (int64_t)floor(korb_time_epoch(c, v));              /* Time.at(time) — keep its zone */
+        nsec = korb_time_nsec_of(c, v);
+        src_utc = korb_time_is_utc(c, v);
+    } else if (!korb_epoch_parts(v, &sec, &nsec)) {               /* try #to_r, then #to_int, else TypeError */
+        bool got = false;
+        /* CRuby only takes #to_r from a Numeric (a bare object with #to_r is a
+         * TypeError), so check the class before asking. */
+        if (korb_obj_is_numeric(c, v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_r", 4))) {
+            slots[0] = v;
+            RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            got = korb_epoch_parts(rr.value, &sec, &nsec);
+        }
+        if (!got && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_int", 6))) {
             slots[0] = v;
             RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
-            if (!korb_num_to_d(ir.value, &e))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(VALUE_SLICE_GET(a, 0)));
-        } else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(v));
+            got = korb_epoch_parts(ir.value, &sec, &nsec);
+        }
+        if (!got) {   /* name the real class (korb_type_name says "Object" for any instance) */
+            char cls[192];
+            const VALUE bad = VALUE_SLICE_GET(a, 0);
+            const VALUE k = KORB_OBJECT_P(bad) ? VAL2OBJ(bad)->klass : KORB_NIL;
+            if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym) korb_class_qname_into(c, k, cls, sizeof cls);
+            else snprintf(cls, sizeof cls, "%s", korb_type_name(bad));
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", cls);
+        }
     }
     const bool first_is_time = KORB_OBJECT_P(v) && korb_ivar_get(c, v, korb_time_t_sym(c->vm)) != KORB_NIL;
-    int64_t sec = (int64_t)floor(e);
-    long nsec = (long)((e - floor(e)) * 1e9 + 0.5);              /* sub-second from a fractional sec arg */
     if (VALUE_SLICE_LEN(a) >= 2 && !(VALUE_SLICE_LEN(a) == 2 && KORB_HASH_P(VALUE_SLICE_GET(a, 1)))) {   /* Time.at(sec, subsec[, unit]); a lone trailing Hash is kwargs */
         if (first_is_time)                                       /* Time.at(time, subsec) is a TypeError */
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert Time into an exact number");
@@ -184,7 +231,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         nsec += (long)(subv * per_ns + 0.5);
     }
     sec += nsec / 1000000000; nsec %= 1000000000;                /* carry overflow into seconds */
-    return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, false);
+    return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, src_utc);
 }
 /* shared: build from (year, mon=1, day=1, hour=0, min=0, sec=0) components. */
 /* Parse a Time.new component String to an integer.  For the month a 3-letter
@@ -430,7 +477,10 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* ---- Time#<instance methods> ---------------------------------------------- */
 static RESULT korb_m_time_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)slots; (void)a; return RESULT_OK(LONG2FIX((intptr_t)korb_time_epoch(c, VALUE_REF_GET(self))));
+    (void)slots; (void)a;
+    /* seconds since the epoch, FLOORED (a pre-1970 stamp truncates the wrong way
+     * with a plain cast: Time.at(-1.5).to_i is -2, not -1) */
+    return RESULT_OK(LONG2FIX((intptr_t)floor(korb_time_epoch(c, VALUE_REF_GET(self)))));
 }
 static RESULT korb_m_time_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; return korb_float_new(c, slots, korb_time_epoch(c, VALUE_REF_GET(self)));
@@ -537,12 +587,17 @@ static RESULT korb_m_time_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || korb_ivar_get(c, o, korb_time_t_sym(c->vm)) == KORB_NIL) return RESULT_OK(KORB_NIL);
     const double x = korb_time_epoch(c, VALUE_REF_GET(self)), y = korb_time_epoch(c, o);
-    return RESULT_OK(LONG2FIX(x < y ? -1 : x > y ? 1 : 0));
+    if (x != y) return RESULT_OK(LONG2FIX(x < y ? -1 : 1));
+    const long xn = korb_time_nsec_of(c, VALUE_REF_GET(self)), yn = korb_time_nsec_of(c, o);
+    return RESULT_OK(LONG2FIX(xn < yn ? -1 : xn > yn ? 1 : 0));
 }
 static RESULT korb_m_time_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
     if (!KORB_OBJECT_P(o) || korb_ivar_get(c, o, korb_time_t_sym(c->vm)) == KORB_NIL) return RESULT_OK(KORB_FALSE);
-    return RESULT_OK(korb_time_epoch(c, VALUE_REF_GET(self)) == korb_time_epoch(c, o) ? KORB_TRUE : KORB_FALSE);
+    /* the epoch double loses sub-second bits for present-day stamps, so the
+     * exact @__ns decides ties */
+    if (korb_time_epoch(c, VALUE_REF_GET(self)) != korb_time_epoch(c, o)) return RESULT_OK(KORB_FALSE);
+    return RESULT_OK(korb_time_nsec_of(c, VALUE_REF_GET(self)) == korb_time_nsec_of(c, o) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     if (UNLIKELY(!KORB_STRING_P(VALUE_SLICE_GET(a, 0))))
