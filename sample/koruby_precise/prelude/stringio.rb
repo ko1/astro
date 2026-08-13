@@ -136,9 +136,19 @@ class StringIO
     nil
   end
 
+  # IO#putc と同じ規則: String は先頭 1 文字、他は #to_int したバイト値。
   def putc(ch)
     __check_writable
-    write(ch.is_a?(Integer) ? (ch & 0xff).chr : ch.to_s[0])
+    if ch.is_a?(String)
+      c = ch[0]
+      write(c) if c
+    elsif ch.nil?
+      raise TypeError, "no implicit conversion from nil to integer"
+    elsif ch.is_a?(Numeric) || ch.respond_to?(:to_int)
+      write((ch.to_int & 0xff).chr)
+    else
+      raise TypeError, "no implicit conversion of #{ch.class} into Integer"
+    end
     ch
   end
 

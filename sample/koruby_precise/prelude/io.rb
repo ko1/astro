@@ -161,15 +161,18 @@ class IO
   end
 
   # putc writes a character: a String's first character, or an Integer chr.
+  # String なら先頭 1 文字、それ以外は #to_int したバイト値を書く。
+  # 空文字列は何も書かない。戻り値は常に引数そのもの。
   def putc(obj)
     if obj.is_a?(String)
-      write(obj[0])
-    elsif obj.is_a?(Numeric)
+      c = obj[0]
+      write(c) if c
+    elsif obj.nil?
+      raise TypeError, "no implicit conversion from nil to integer"
+    elsif obj.is_a?(Numeric) || obj.respond_to?(:to_int)
       write((obj.to_int & 0xff).chr)
-    elsif obj.respond_to?(:to_str)
-      write(obj.to_str[0])
     else
-      raise TypeError, "no implicit conversion of #{obj.class} into String"
+      raise TypeError, "no implicit conversion of #{obj.class} into Integer"
     end
     obj
   end
@@ -250,4 +253,12 @@ class IO
     [File.open(path, mode), true]
   end
   private_class_method :__cs_io
+end
+
+module Kernel
+  # Kernel#putc — $stdout.putc の private ショートカット (CRuby と同じく
+  # Kernel の private instance method)。
+  private def putc(obj)
+    $stdout.putc(obj)
+  end
 end
