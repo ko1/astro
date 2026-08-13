@@ -10210,7 +10210,18 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
-        if (kx >= 0) { exc = KORB_TRUTHY(korb_items_data(h->items)[2 * kx + 1]); n--; }
+        if (kx >= 0) {
+            const VALUE ev = korb_items_data(h->items)[2 * kx + 1];   /* only true / false (CRuby) */
+            if (UNLIKELY(ev != KORB_TRUE && ev != KORB_FALSE)) {
+                char *ib = NULL; size_t il = 0;
+                FILE *ims = open_memstream(&ib, &il);
+                if (ims) { korb_fprint_inspect(c, ims, ev); fclose(ims); }
+                RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as exception: %s", ib ? ib : "");
+                free(ib);
+                return er;
+            }
+            exc = (ev == KORB_TRUE); n--;
+        }
     }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     VALUE nv = VALUE_SLICE_GET(args, 0);
@@ -10283,14 +10294,32 @@ static bool korb_cpx_component(CTX *c, VALUE *scratch, const char *s, uint32_t l
 }
 
 /* Parse a Complex literal string into slots[0] (real) and slots[1] (imag).
- * Supports "a", "bi", "a+bi", "a-bi", "+bi", "-bi", "i", "-i" with Integer /
- * Float / Rational components.  Returns false on any malformation. */
+ * Supports "a", "bi", "a+bi", "a-bi", "+bi", "-bi", "i", "-i" (with 'j'/'J' as
+ * the engineers' spelling of the imaginary unit) and the polar form "m@a", with
+ * Integer / Float / Rational components.  Returns false on any malformation. */
 static bool korb_parse_cpx(CTX *c, VALUE *slots, const char *s, uint32_t len) {
     uint32_t lo = 0, hi = len;
     while (lo < hi && isspace((unsigned char)s[lo])) lo++;
     while (hi > lo && isspace((unsigned char)s[hi - 1])) hi--;
     if (lo >= hi) return false;
-    const bool last_i = (s[hi - 1] == 'i' || s[hi - 1] == 'I');
+    /* polar "modulus@argument" → modulus * (cos a + i sin a) */
+    for (uint32_t k = lo + 1; k + 1 < hi; k++) {
+        if (s[k] != '@') continue;
+        VALUE mv, av;
+        if (!korb_cpx_component(c, slots + 2, s, lo, k, &mv)) return false;
+        slots[0] = mv;                                        /* root across the next parse's allocs */
+        if (!korb_cpx_component(c, slots + 2, s, k + 1, hi, &av)) return false;
+        double m, arg;
+        if (!korb_num_to_d(slots[0], &m) || !korb_num_to_d(av, &arg)) return false;
+        const RESULT rr = korb_float_new(c, slots + 2, m * cos(arg));
+        if (rr.state != KORB_NORMAL) return false;
+        slots[0] = rr.value;
+        const RESULT ir = korb_float_new(c, slots + 2, m * sin(arg));
+        if (ir.state != KORB_NORMAL) return false;
+        slots[1] = ir.value;
+        return true;
+    }
+    const bool last_i = (s[hi - 1] == 'i' || s[hi - 1] == 'I' || s[hi - 1] == 'j' || s[hi - 1] == 'J');
     const uint32_t end = last_i ? hi - 1 : hi;
     int32_t split = -1;                                       /* last +/- that is not an exponent sign and not the leading sign */
     for (uint32_t k = lo + 1; k < end; k++)
@@ -10320,7 +10349,18 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
-        if (kx >= 0) { exc = KORB_TRUTHY(korb_items_data(h->items)[2 * kx + 1]); n--; }
+        if (kx >= 0) {
+            const VALUE ev = korb_items_data(h->items)[2 * kx + 1];   /* only true / false (CRuby) */
+            if (UNLIKELY(ev != KORB_TRUE && ev != KORB_FALSE)) {
+                char *ib = NULL; size_t il = 0;
+                FILE *ims = open_memstream(&ib, &il);
+                if (ims) { korb_fprint_inspect(c, ims, ev); fclose(ims); }
+                RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as exception: %s", ib ? ib : "");
+                free(ib);
+                return er;
+            }
+            exc = (ev == KORB_TRUE); n--;
+        }
     }
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const VALUE re = VALUE_SLICE_GET(args, 0);
@@ -10596,7 +10636,18 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
-        if (kx >= 0) { exc = KORB_TRUTHY(korb_items_data(h->items)[2 * kx + 1]); n--; }
+        if (kx >= 0) {
+            const VALUE ev = korb_items_data(h->items)[2 * kx + 1];   /* only true / false (CRuby) */
+            if (UNLIKELY(ev != KORB_TRUE && ev != KORB_FALSE)) {
+                char *ib = NULL; size_t il = 0;
+                FILE *ims = open_memstream(&ib, &il);
+                if (ims) { korb_fprint_inspect(c, ims, ev); fclose(ims); }
+                RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as exception: %s", ib ? ib : "");
+                free(ib);
+                return er;
+            }
+            exc = (ev == KORB_TRUE); n--;
+        }
     }
 #define INT_FAIL(...) do { return exc ? korb_raise(c, slots, __VA_ARGS__) : RESULT_OK(KORB_NIL); } while (0)
     if (UNLIKELY(n < 1))
@@ -10826,7 +10877,18 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(args, n - 1))) {
         const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(args, n - 1));
         const int32_t kx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "exception", 9)));
-        if (kx >= 0) { exc = KORB_TRUTHY(korb_items_data(h->items)[2 * kx + 1]); n--; }
+        if (kx >= 0) {
+            const VALUE ev = korb_items_data(h->items)[2 * kx + 1];   /* only true / false (CRuby) */
+            if (UNLIKELY(ev != KORB_TRUE && ev != KORB_FALSE)) {
+                char *ib = NULL; size_t il = 0;
+                FILE *ims = open_memstream(&ib, &il);
+                if (ims) { korb_fprint_inspect(c, ims, ev); fclose(ims); }
+                RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as exception: %s", ib ? ib : "");
+                free(ib);
+                return er;
+            }
+            exc = (ev == KORB_TRUE); n--;
+        }
     }
 #define FLT_FAIL(...) do { return exc ? korb_raise(c, slots, __VA_ARGS__) : RESULT_OK(KORB_NIL); } while (0)
     if (UNLIKELY(n < 1))
