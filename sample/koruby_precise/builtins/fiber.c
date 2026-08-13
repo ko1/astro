@@ -10,6 +10,19 @@
 #define KORB_FIBER_VSLOTS_MARGIN 1024               /* slots reserved below limit */
 #define KORB_FIBER_CSTACK_MARGIN ((size_t)64 << 10) /* native-stack floor margin */
 
+/* ---- FiberError (const-only class; etype stays RUNTIME, exc_class drives
+ * rescue/#class — same pattern as ThreadError) ------------------------------ */
+static RESULT
+korb_raise_fiber_error(CTX *c, VALUE *slots, const char *msg)
+{
+    const VALUE cls = korb_const_get(c->vm, korb_intern(c->vm, "FiberError", 10));
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+
 /* runs on the fiber's native stack; CTX passed split across two int args. */
 static void
 korb_fiber_trampoline(unsigned hi, unsigned lo)
@@ -58,16 +71,15 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     return RESULT_OK((VALUE)fb);
 }
 
-/* Fiber#resume([v]) — switch into the fiber; returns the value it yields (or its
- * block's result when it finishes). */
+/* Switch into `rep` (fstate 0 or 2) carrying `xfer` — the shared engine behind
+ * Fiber#resume and Fiber#raise.  With deliver_raise, the fiber's Fiber.yield
+ * raises xfer instead of returning it.  Returns the value the fiber next
+ * yields (or its block's result when it finishes; RAISE if it died raising). */
 static RESULT
-korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, int deliver_raise)
 {
-    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
-    if (UNLIKELY(rep->fstate == 3)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "dead fiber called");
-    if (UNLIKELY(rep->fstate == 1)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "double resume");
-
-    rep->transfer = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
+    rep->transfer = xfer;
+    rep->pending_raise = deliver_raise ? 1u : 0u;
 
     KorbFiberRep *const prev = c->vm->running_fiber;
     VALUE *const s_slots = c->slots; VALUE *const s_top = c->slots_top;
@@ -109,6 +121,39 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 
     if (rep->raised) { rep->raised = 0; return RESULT_RAISE_(rep->transfer); }
     return RESULT_OK(rep->transfer);
+}
+
+/* Fiber#resume([v]) — switch into the fiber; returns the value it yields (or its
+ * block's result when it finishes). */
+static RESULT
+korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
+    if (UNLIKELY(rep->fstate == 1)) return korb_raise_fiber_error(c, slots, "attempt to resume a resumed fiber (double resume)");
+    return korb_fiber_switch_in(c, slots, rep,
+                                (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL, 0);
+}
+
+/* Fiber#raise(...) — build the exception in the calling context (CRuby 4.0
+ * semantics: the automatic cause comes from the caller, not the fiber), then
+ * deliver it at the fiber's suspension point.  Kernel#raise-style args. */
+static RESULT
+korb_m_fiber_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(rep->fstate == 0))
+        return korb_raise_fiber_error(c, slots, "cannot raise exception on unborn fiber");
+    if (UNLIKELY(rep->fstate == 3))
+        return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
+    const RESULT r = korb_exc_build_with_cause(c, slots, a);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;            /* argument error → caller */
+    if (rep == c->vm->running_fiber ||
+        (c->vm->running_fiber == NULL && rep == c->vm->root_fiber))
+        return RESULT_RAISE_(r.value);                         /* raise on the current fiber */
+    if (UNLIKELY(rep->fstate == 1))                            /* running deeper in the resume chain */
+        return korb_raise_fiber_error(c, slots, "attempt to resume a resumed fiber (double resume)");
+    return korb_fiber_switch_in(c, slots, rep, r.value, 1);
 }
 
 /* Fiber.current — the running fiber, or the implicit root fiber on the main
@@ -154,7 +199,7 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     (void)self;
     KorbFiberRep *const rep = c->vm->running_fiber;
     if (UNLIKELY(rep == NULL))
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "can't yield from root fiber");
+        return korb_raise_fiber_error(c, slots, "can't yield from root fiber");
     rep->transfer = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     rep->fstate = 2;                                   /* suspended */
     /* Capture the TRUE live stack top, not c->slots_top: the latter is only
@@ -168,5 +213,9 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;
+    if (UNLIKELY(rep->pending_raise)) {                /* Fiber#raise delivery point */
+        rep->pending_raise = 0;
+        return RESULT_RAISE_(rep->transfer);
+    }
     return RESULT_OK(rep->transfer);                   /* value from the next resume */
 }

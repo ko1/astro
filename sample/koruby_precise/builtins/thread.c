@@ -806,73 +806,15 @@ korb_m_thread_raise(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
     korb_thread_boot(c);
-    /* 末尾の kwargs Hash から cause: を抜く (CRuby Thread#raise(..., cause: exc)) */
-    uint32_t alen = VALUE_SLICE_LEN(a);
-    int cause_given = 0;
-    slots[4] = KORB_NIL;                                  /* cause (rooted) */
-    if (alen >= 1) {
-        const VALUE last = VALUE_SLICE_GET(a, alen - 1);
-        if (KORB_HASH_P(last)) {
-            const VALUE ck = ID2SYM(korb_intern(c->vm, "cause", 5));
-            const int32_t ci = korb_hash_find(VAL2HASH(last), ck);
-            if (ci >= 0) {
-                cause_given = 1;
-                slots[4] = korb_items_data(VAL2HASH(last)->items)[2 * ci + 1];
-                alen--;
-            }
-        }
-    }
-    if (UNLIKELY(cause_given && alen == 0))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "only cause is given with no arguments");
-    if (UNLIKELY(cause_given && slots[4] != KORB_NIL && !KORB_EXC_P(slots[4])))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
-    a = VALUE_SLICE_MAKE(a.p, alen);                      /* kwargs を除いた view */
-    /* 例外オブジェクトを組み立てて slots[0] に root */
+    /* 例外オブジェクトの組み立ては Kernel#raise と共通の builder (cause: kwarg
+     * 込み)。bare `Thread#raise` は $! 再送出でなく RuntimeError("") (CRuby)。 */
     if (VALUE_SLICE_LEN(a) == 0) {
-        RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* CRuby: message は "" */
+        RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", "");   /* CRuby: message は "" */
         slots[0] = r.value;
     } else {
-        const VALUE arg0 = VALUE_SLICE_GET(a, 0);
-        if (KORB_STRING_P(arg0)) {                    /* String → RuntimeError (追加引数は TypeError) */
-            if (UNLIKELY(VALUE_SLICE_LEN(a) >= 2))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
-            RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%.*s",
-                                  (int)VAL2STR(arg0)->len, korb_strbuf_data(VAL2STR(arg0)->buf));
-            slots[0] = r.value;
-        } else if (KORB_CLASS_P(arg0)) {              /* Class[.new(msg)] */
-            slots[1] = arg0;
-            uint32_t argc = 0;
-            if (VALUE_SLICE_LEN(a) >= 2) { slots[2] = VALUE_SLICE_GET(a, 1); argc = 1; }
-            RESULT nr = korb_send(c, slots + 2 + argc, korb_intern(c->vm, "new", 3), 0, argc);
-            if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
-            slots[0] = nr.value;
-            if (UNLIKELY(!KORB_EXC_P(slots[0])))
-                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "exception class/object expected");
-        } else if (KORB_EXC_P(arg0) && VALUE_SLICE_LEN(a) < 2) {
-            slots[0] = arg0;
-        } else {                                       /* #exception protocol (instance+msg / custom) */
-            const uint32_t exc_mid = korb_intern(c->vm, "exception", 9);
-            VALUE recv = arg0;
-            if (UNLIKELY(!(KORB_EXC_P(recv) || (KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots, &recv, exc_mid)))))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
-            slots[1] = recv;
-            uint32_t argc = 0;
-            if (VALUE_SLICE_LEN(a) >= 2) { slots[2] = VALUE_SLICE_GET(a, 1); argc = 1; }
-            RESULT er = korb_send(c, slots + 2 + argc, exc_mid, 0, argc);
-            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
-            if (UNLIKELY(!KORB_EXC_P(er.value)))
-                return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
-            slots[0] = er.value;
-        }
-    }
-    if (cause_given && KORB_EXC_P(slots[0])) {
-        /* cause は kwargs Hash (caller frame に rooted、a.p[alen]) から再読出 —
-         * slots に置くと exc 構築の korb_send が潰す */
-        const VALUE h = a.p[alen];
-        const int32_t ci = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, "cause", 5)));
-        const VALUE cv = (ci >= 0) ? korb_items_data(VAL2HASH(h)->items)[2 * ci + 1] : KORB_NIL;
-        if (slots[0] != cv)
-            ARO_STORE(c, VAL2EXC(slots[0]), (VALUE *)(uintptr_t)&VAL2EXC(slots[0])->cause, cv);
+        RESULT r = korb_exc_build_with_cause(c, slots, a);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        slots[0] = r.value;
     }
     if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);   /* CRuby: dead へは無視 */
     if (t == c->vm->cur_thread) return RESULT_RAISE_(slots[0]); /* 自分: 即 raise */

@@ -7828,6 +7828,9 @@ RESULT korb_re_str_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, VALUE gr
 RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long startc, bool bytes);
 RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long stop, bool bytes, bool have_stop);
 RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out);   /* String → escaped literal Regexp */
+/* Kernel#raise-style args → fully-built exception, OK(exc) = deliverable /
+ * RAISE = argument error (defined below; shared by Thread#raise / Fiber#raise). */
+static RESULT korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args);
 #include "builtins/bignum.c"
 #include "builtins/integer.c"
 #include "builtins/float.c"
@@ -8567,6 +8570,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "method_added", korb_m_lit_nil, 1);   /* default no-op (so user method_added can call super) */
     korb_def_cmethod(c, KORB_C_CLASS, "instance_method", korb_m_class_instance_method, 1);
     korb_def_cmethod(c, KORB_C_FIBER, "resume", korb_m_fiber_resume, -1);
+    korb_def_cmethod(c, KORB_C_FIBER, "raise", korb_m_fiber_raise, -1);
     korb_def_cmethod(c, KORB_C_FIBER, "alive?", korb_m_fiber_alive, 0);
     korb_def_cmethod(c, KORB_C_THREAD, "join", korb_m_thread_join, -1);
     korb_def_cmethod(c, KORB_C_THREAD, "value", korb_m_thread_value, 0);
@@ -10902,72 +10906,102 @@ korb_bi_print(CTX *c, VALUE *slots, VALUE_SLICE args)
     return er;
 }
 
-/* raise — `raise "msg"` / `raise` → RuntimeError.  (Class-form raise needs the
- * Exception hierarchy, not yet present.) */
+/* Build (do not deliver) the exception described by Kernel#raise-style
+ * positional args — the shared engine behind Kernel#raise / Thread#raise /
+ * Fiber#raise.  OK(exc) is the fully-formed exception (message / #exception
+ * protocol / user #initialize / backtrace arg applied); RAISE is a genuine
+ * argument error (TypeError etc.) that belongs to the calling context. */
 static RESULT
-korb_bi_raise_core(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_exc_build(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    uint32_t n = VALUE_SLICE_LEN(args);
-    if (n >= 1) {
-        VALUE a0 = VALUE_SLICE_GET(args, 0);
-        if (KORB_STRING_P(a0) && n == 1) {               /* raise "msg" → RuntimeError; `raise "m", extra` is a TypeError (String is not a class) */
-            const KorbString *s = VAL2STR(a0);
-            return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
-        }
-        if (KORB_EXC_P(a0)) return RESULT_RAISE_(a0);   /* re-raise an exception object */
-        if (KORB_CLASS_P(a0)) {                          /* raise SomeError[, msg] */
-            /* nearest builtin-exception ancestor supplies the etype; a user
-             * subclass is remembered in exc_class (for #class and rescue). */
-            int et = -1;
-            for (VALUE cc = a0; KORB_CLASS_P(cc); cc = VAL2CLASS(cc)->superclass)
-                if (VAL2CLASS(cc)->exc_etype >= 0) { et = VAL2CLASS(cc)->exc_etype; break; }
-            if (et < 0) {
-                /* abstract base (Exception/StandardError, et -1) or a user subclass
-                 * of one: carry a generic etype — exc_class drives rescue/#class. */
-                const VALUE exc_base = korb_builtin_class_obj(c->vm, KORB_C_EXCEPTION);
-                if (KORB_CLASS_P(exc_base) && korb_class_le(a0, exc_base)) et = KORB_E_RUNTIME;
-                else return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
-            }
-            slots[0] = a0;                               /* root the class across korb_raise's allocs */
-            RESULT r;
-            if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(args, 1))) {
-                const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 1));
-                r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
-            } else {
-                r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
-                if (n >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL && KORB_EXC_P(r.value))   /* non-String message → store the object; #message #to_s's it */
-                    ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, VALUE_SLICE_GET(args, 1));
-            }
-            slots[1] = r.value;                          /* root the exception */
-            if (VAL2CLASS(slots[0])->exc_etype < 0)      /* user subclass → tag the instance with it */
-                ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
-            /* A user-defined #initialize runs so its `super` can set a custom
-             * message (the default msg above is the fallback / class name). */
-            const uint32_t init_mid = korb_intern(c->vm, "initialize", 10);
-            VALUE idef = KORB_NIL;
-            struct korb_method *const uinit = korb_class_find_method(slots[0], init_mid, &idef);
-            if (uinit != NULL && uinit->kind != KORB_METHOD_CFUNC) {
-                const uint32_t iargc = (n >= 2) ? (n - 1) : 0;   /* msg args (skip the class) */
-                for (uint32_t i = 0; i < iargc; i++) slots[2 + i] = VALUE_SLICE_GET(args, 1 + i);
-                VALUE *const icur = slots + 2 + iargc;
-                RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
-                if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
-                return RESULT_RAISE_((icur - iargc)[-1]);   /* the (moved) exception */
-            }
-            return RESULT_RAISE_(slots[1]);
-        }
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
-    }
-    {   /* bare `raise` → re-raise the current exception ($!), else fresh RuntimeError */
+    const uint32_t n = VALUE_SLICE_LEN(args);
+    if (n == 0) {   /* bare `raise` → re-raise $!, else fresh RuntimeError("") */
         const VALUE cur = korb_errinfo_top(c);
-        if (KORB_EXC_P(cur)) return RESULT_RAISE_(cur);
+        if (KORB_EXC_P(cur)) return RESULT_OK(cur);
+        const RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");
+        return RESULT_OK(r.value);
     }
-    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "%s", "");   /* bare raise, no $! → RuntimeError "" */
+    const VALUE a0 = VALUE_SLICE_GET(args, 0);
+    if (KORB_STRING_P(a0) && n == 1) {               /* raise "msg" → RuntimeError; `raise "m", extra` is a TypeError (String is not a class) */
+        const KorbString *const s = VAL2STR(a0);
+        const RESULT r = korb_raise(c, slots, KORB_E_RUNTIME, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
+        return RESULT_OK(r.value);
+    }
+    if (KORB_EXC_P(a0) && n == 1) return RESULT_OK(a0);   /* re-raise an exception object (backtrace preserved) */
+    if (KORB_CLASS_P(a0)) {                          /* raise SomeError[, msg[, backtrace]] */
+        /* nearest builtin-exception ancestor supplies the etype; a user
+         * subclass is remembered in exc_class (for #class and rescue). */
+        int et = -1;
+        for (VALUE cc = a0; KORB_CLASS_P(cc); cc = VAL2CLASS(cc)->superclass)
+            if (VAL2CLASS(cc)->exc_etype >= 0) { et = VAL2CLASS(cc)->exc_etype; break; }
+        if (et < 0) {
+            /* abstract base (Exception/StandardError, et -1) or a user subclass
+             * of one: carry a generic etype — exc_class drives rescue/#class. */
+            const VALUE exc_base = korb_builtin_class_obj(c->vm, KORB_C_EXCEPTION);
+            if (KORB_CLASS_P(exc_base) && korb_class_le(a0, exc_base)) et = KORB_E_RUNTIME;
+            else return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+        }
+        slots[0] = a0;                               /* root the class across korb_raise's allocs */
+        RESULT r;
+        if (n >= 2 && KORB_STRING_P(VALUE_SLICE_GET(args, 1))) {
+            const KorbString *const s = VAL2STR(VALUE_SLICE_GET(args, 1));
+            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%.*s", (int)s->len, korb_strbuf_data(s->buf));
+        } else {
+            r = korb_raise(c, slots + 1, (unsigned)et, 0, "%s", korb_sym_name(c->vm, VAL2CLASS(slots[0])->name_sym));
+            if (n >= 2 && VALUE_SLICE_GET(args, 1) != KORB_NIL && KORB_EXC_P(r.value))   /* non-String message → store the object; #message #to_s's it */
+                ARO_STORE(c, VAL2EXC(r.value), &VAL2EXC(r.value)->msg, VALUE_SLICE_GET(args, 1));
+        }
+        slots[1] = r.value;                          /* root the exception */
+        if (VAL2CLASS(slots[0])->exc_etype < 0)      /* user subclass → tag the instance with it */
+            ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->exc_class, slots[0]);
+        /* A user-defined #initialize runs so its `super` can set a custom
+         * message (the default msg above is the fallback / class name). */
+        const uint32_t init_mid = korb_intern(c->vm, "initialize", 10);
+        VALUE idef = KORB_NIL;
+        struct korb_method *const uinit = korb_class_find_method(slots[0], init_mid, &idef);
+        if (uinit != NULL && uinit->kind != KORB_METHOD_CFUNC) {
+            /* CRuby passes only the message to the constructor — a third arg is
+             * the backtrace, applied below, never an #initialize argument. */
+            const uint32_t iargc = (n >= 2) ? 1 : 0;
+            if (iargc) slots[2] = VALUE_SLICE_GET(args, 1);
+            VALUE *const icur = slots + 2 + iargc;
+            RESULT ir = korb_invoke_method(c, icur, uinit, iargc, 0, init_mid, slots[1], idef, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ir.state == KORB_RAISE)) return ir;
+            slots[1] = (icur - iargc)[-1];           /* the (moved) exception */
+        }
+        if (n >= 3) {                                /* raise Class, msg, backtrace */
+            slots[2] = VALUE_SLICE_GET(args, 2);
+            RESULT br = korb_send(c, slots + 3, korb_intern(c->vm, "set_backtrace", 13), 0, 1);
+            if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+        }
+        return RESULT_OK(slots[1]);
+    }
+    {   /* raise obj[, msg[, backtrace]] — the #exception protocol; also covers
+         * `raise exc_instance, msg` (a fresh exception carrying msg). */
+        const uint32_t exc_mid = korb_intern(c->vm, "exception", 9);
+        VALUE recv = a0;
+        if (UNLIKELY(!(KORB_EXC_P(recv) || (KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots, &recv, exc_mid)))))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "exception class/object expected");
+        slots[1] = recv;
+        uint32_t argc = 0;
+        if (n >= 2) { slots[2] = VALUE_SLICE_GET(args, 1); argc = 1; }
+        RESULT er = korb_send(c, slots + 2 + argc, exc_mid, 0, argc);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        if (UNLIKELY(!KORB_EXC_P(er.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "exception object expected");
+        slots[1] = er.value;
+        if (n >= 3) {
+            slots[2] = VALUE_SLICE_GET(args, 2);
+            RESULT br = korb_send(c, slots + 3, korb_intern(c->vm, "set_backtrace", 13), 0, 1);
+            if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+        }
+        return RESULT_OK(slots[1]);
+    }
 }
-/* Kernel#raise: handle a trailing `cause:` keyword (override the automatic
- * $!-chaining), then delegate the exception construction to _core. */
+/* korb_exc_build plus the trailing `cause:` keyword (the full Kernel#raise
+ * argument list).  OK(exc) = ready to deliver; RAISE = argument error. */
 static RESULT
-korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
+korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     uint32_t n = VALUE_SLICE_LEN(args);
     bool has_cause_kw = false; VALUE cause_val = KORB_NIL;
@@ -10986,16 +11020,24 @@ korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (n == 0)                                             /* raise(cause: …) with no exception */
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "only cause is given with no arguments");
     }
-    slots[0] = cause_val;                                       /* root across _core's allocs */
-    RESULT rr = korb_bi_raise_core(c, slots + 1, VALUE_SLICE_MAKE(args.p, n));
-    if (has_cause_kw && rr.state == KORB_RAISE && KORB_EXC_P(rr.value)) {
-        slots[1] = rr.value;                                   /* the raised exception (rooted) */
+    slots[0] = cause_val;                                       /* root across the build's allocs */
+    RESULT rr = korb_exc_build(c, slots + 1, VALUE_SLICE_MAKE(args.p, n));
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    if (has_cause_kw && rr.value != slots[0]) {                 /* cause == exc → silently not set (CRuby) */
+        slots[1] = rr.value;                                    /* the built exception (rooted) */
         for (VALUE cc = slots[0]; KORB_EXC_P(cc); cc = VAL2EXC(cc)->cause)   /* reject a circular cause chain */
             if (cc == slots[1]) return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "circular causes");
         ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->cause, slots[0]);   /* override (incl. explicit nil) */
-        return RESULT_RAISE_(slots[1]);
+        return RESULT_OK(slots[1]);
     }
     return rr;
+}
+/* Kernel#raise — build, then deliver in the calling context. */
+static RESULT
+korb_bi_raise(CTX *c, VALUE *slots, VALUE_SLICE args)
+{
+    const RESULT r = korb_exc_build_with_cause(c, slots, args);
+    return (r.state == KORB_NORMAL) ? RESULT_RAISE_(r.value) : r;
 }
 
 /* ---------------------------------------------------------------------------

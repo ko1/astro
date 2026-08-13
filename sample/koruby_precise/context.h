@@ -410,6 +410,7 @@ typedef struct KorbFiberRep {
     void  *cstack;                   /* malloc'd native stack for the fiber */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
     uint8_t raised;                  /* block raised → resume re-raises transfer */
+    uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
     struct KorbFiberRep *link;       /* vm fiber list (stable ptrs) */
 } KorbFiberRep;
 
