@@ -4262,8 +4262,11 @@ korb_responds_to_coerce(CTX *c, VALUE *slots, VALUE self, uint32_t mid)
     const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
     const bool has_rtm = korb_class_find_method(dcls, korb_intern(c->vm, "respond_to_missing?", 19), &rtm_def) != NULL;
     if (custom_rt || has_rtm) {
-        slots[0] = self; slots[1] = ID2SYM(mid);
-        const RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
+        /* include_private = true: a conversion protocol (#to_int / #to_str / …)
+         * is looked up with private methods visible, as rb_check_funcall does —
+         * mocks assert on the two-argument form. */
+        slots[0] = self; slots[1] = ID2SYM(mid); slots[2] = KORB_TRUE;
+        const RESULT r = korb_send_impl(c, slots + 3, korb_intern(c->vm, "respond_to?", 11), 0, 2, NULL, NULL, NULL);
         return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
     }
     return false;
