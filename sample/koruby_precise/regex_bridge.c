@@ -69,7 +69,12 @@ int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
     m.matched = false; m.n_groups = 0;
     int ng_all = ASTROGRE_MAX_GROUPS;
     for (int i = 0; i < ng_all; i++) m.valid[i] = false;
+    m.overflow = false;
     bool ok = astrogre_search_from(p, str, slen, start, &m);
+    /* Honest failure: the engine bailed on a branch at the C-stack floor and
+     * never found a match elsewhere.  Report -2 so the host raises RegexpError
+     * rather than passing off a stack-overflow as a real "no match". */
+    if (!ok && m.overflow) return -2;
     if (!ok) { if (out) { out->matched = 0; out->n_groups = 0; } return 0; }
     if (out) {
         out->matched = 1;

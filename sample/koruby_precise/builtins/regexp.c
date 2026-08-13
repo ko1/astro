@@ -24,6 +24,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     unsigned eff_flags = VAL2RE(re)->flags;
     if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(subj))) eff_flags |= 128u;
     const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
+    if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
     if (UNLIKELY(rc < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid regular expression");
     return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
