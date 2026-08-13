@@ -2426,3 +2426,23 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
 - [ ] Fiber.current / Fiber.storage (logger は Thread.current で回避済み)
 - [ ] proc 内 outer-yield を FWD 実行すると "no block given" (timeout.rb は明示 capture で回避済み)
 - [ ] 中間の重複 `_` block param が位置 staging と衝突 (tmpdir は改名で回避済み)
+
+## eval / Binding のスコープ (2026-08-13 発見)
+- [ ] `eval(str)` が **呼び出し元のローカルを見ない** (`a = 1; eval("a")` → NoMethodError)。
+      CRuby は `eval(str)` == `eval(str, binding)`。C の builtin には caller の
+      local 名表が無い (parse 時情報) ので、**parse.c で `eval(str)` を
+      `eval(str, binding)` に desugar** すれば同一フレームのケースは直る
+      (実装して確認済み: kernel/eval 17fail+16err → 14+12、make test 退行なし)。
+      ただし下の AOT bake バグに当たるため **revert して保留**。
+- [ ] Binding が **外側スコープのローカルを持たない**。block の binding は自分の
+      フレームのスロットしか名前を持たず、`[1].each { binding.local_variables }`
+      が `[]`、`eval("outer_var")` も見えない。KorbBinding は env 1 本 + フラットな
+      name 表なので、closure chain (node_eget の depth walk と同じ規則) を辿る
+      per-level name 表が要る。core/binding の local_variables/local_variable_get
+      と kernel/eval の "enclosing scope" 系がこれ待ち。
+- [ ] **AOT bake バグ**: メソッド本体が `binding` *だけ* の場合 (body root が
+      node_binding)、その body が bake されず `--compiled-only` で poison になる
+      (`def run; binding; end` で再現。`x = 1; binding` は OK)。上の desugar を
+      入れると `def run; eval(s); end` も同じ形になり optcarrot AOT が落ちる。
+      node.def に `@noinline` を付けても exempt されなかった (head.flags.no_inline
+      に伝播していない可能性)。desugar 解禁の前提。
