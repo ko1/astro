@@ -636,6 +636,28 @@ static RESULT korb_m_rlimit_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(h));
 }
 
+/* __getpriority(which, who) → the nice value (getpriority(2); errno 0-reset so a
+ * legitimate -1 is not mistaken for failure). */
+static RESULT korb_m_getpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    errno = 0;
+    const int pr = getpriority((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), (id_t)FIX2LONG(VALUE_SLICE_GET(a, 1)));
+    if (pr == -1 && errno != 0) return korb_raise_errno(c, slots, errno, "getpriority", "");
+    return RESULT_OK(LONG2FIX((intptr_t)pr));
+}
+/* __setpriority(which, who, prio) → 0 */
+static RESULT korb_m_setpriority(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    if (!FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1)) || !FIXNUM_P(VALUE_SLICE_GET(a, 2)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (setpriority((int)FIX2LONG(VALUE_SLICE_GET(a, 0)), (id_t)FIX2LONG(VALUE_SLICE_GET(a, 1)),
+                    (int)FIX2LONG(VALUE_SLICE_GET(a, 2))) != 0)
+        return korb_raise_errno(c, slots, errno, "setpriority", "");
+    return RESULT_OK(LONG2FIX(0));
+}
+
 /* __getrlimit(resource) → [soft, hard] */
 static RESULT korb_m_getrlimit(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -841,6 +863,8 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__signal_trap",    korb_m_signal_trap,    -1);
     korb_class_def_cfn(c, obj, "__signal_block",   korb_m_signal_block,   -1);
     korb_class_def_cfn(c, obj, "__rlimit_table",   korb_m_rlimit_table,    0);
+    korb_class_def_cfn(c, obj, "__getpriority",    korb_m_getpriority,     2);
+    korb_class_def_cfn(c, obj, "__setpriority",    korb_m_setpriority,     3);
     korb_class_def_cfn(c, obj, "__getrlimit",      korb_m_getrlimit,       1);
     korb_class_def_cfn(c, obj, "__setrlimit",      korb_m_setrlimit,      -1);
     korb_class_def_cfn(c, obj, "__process_test",   korb_m_process_test,   -1);

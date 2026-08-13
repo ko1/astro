@@ -1375,8 +1375,14 @@ static RESULT korb_ary_filter(CTX *c, VALUE *slots, VALUE_REF self, NODE *block,
 static RESULT korb_m_ary_select(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, true); }
 static RESULT korb_m_ary_reject(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) { (void)a; return korb_ary_filter(c, slots, self, block, def_env, captured_self, false); }
 
+/* Enumerable#find / #detect take an optional `ifnone` callable, invoked when no
+ * element matched (nil → nil). */
+static RESULT korb_find_ifnone(CTX *c, VALUE *slots, VALUE_SLICE a) {
+    if (VALUE_SLICE_LEN(a) < 1 || VALUE_SLICE_GET(a, 0) == KORB_NIL) return RESULT_OK(KORB_NIL);
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    return korb_send(c, slots + 1, korb_intern(c->vm, "call", 4), 0, 0);
+}
 static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a;
     if (UNLIKELY(block == NULL)) {   /* no block → op-4 (find: early-stop) Enumerator; .each/.with_index drives it */
         slots[0] = UNWRAP(korb_enum_desc(c, slots, VALUE_REF_GET(self), "find"));
         RESULT er = korb_enum_new(c, slots + 1, VALUE_REF_GET(self), slots[0]);
@@ -1391,11 +1397,11 @@ static RESULT korb_m_ary_find(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]);
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_find_ifnone(c, slots, a);   /* find(ifnone): nothing matched → ifnone.call */
 }
 
 static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a; ARY_REQUIRE_BLOCK("Array#rfind");
+    ARY_REQUIRE_BLOCK("Array#rfind");
     for (int64_t i = (int64_t)VAL2ARY(VALUE_REF_GET(self))->len - 1; i >= 0; i--) {
         const KorbArray *ary = VAL2ARY(VALUE_REF_GET(self));
         if ((uint64_t)i >= ary->len) continue;
@@ -1404,7 +1410,7 @@ static RESULT korb_m_ary_rfind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]);
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_find_ifnone(c, slots, a);   /* rfind(ifnone) — same contract as #find */
 }
 static RESULT korb_m_ary_find_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self) {
     if (VALUE_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */

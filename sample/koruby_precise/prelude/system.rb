@@ -209,17 +209,32 @@ module Process
   def self.euid; 0; end
   def self.egid; 0; end
   def self.clock_gettime(_clk = CLOCK_MONOTONIC, unit = :float_second)
-    t = Time.now.to_f
+    t = __clock_gettime
     case unit
-    when :float_second then t
+    when :float_second, nil then t          # nil は既定 (:float_second)
     when :float_millisecond then t * 1000.0
     when :float_microsecond then t * 1_000_000.0
-    when :nanosecond then (t * 1_000_000_000).to_i
+    when :second then t.to_i
     when :millisecond then (t * 1000).to_i
     when :microsecond then (t * 1_000_000).to_i
-    else (t * 1_000_000_000).to_i
+    when :nanosecond then (t * 1_000_000_000).to_i
+    else raise ArgumentError, "unexpected unit: #{unit}"
     end
   end
+
+  PRIO_PROCESS = 0
+  PRIO_PGRP    = 1
+  PRIO_USER    = 2
+  def self.getpriority(which, who) = __getpriority(__int_arg(which), __int_arg(who))
+  def self.setpriority(which, who, prio) = __setpriority(__int_arg(which), __int_arg(who), __int_arg(prio))
+  def self.__int_arg(v)
+    return v if v.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
+    n = v.to_int
+    raise TypeError, "can't convert #{v.class} to Integer" unless n.is_a?(Integer)
+    n
+  end
+  private_class_method :__int_arg
   def self.times; Struct.new(:utime, :stime, :cutime, :cstime).new(0.0, 0.0, 0.0, 0.0); end
 
   def self.getrlimit(resource) = __getrlimit(__as_rlimit_int(resource))

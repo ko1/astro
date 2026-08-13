@@ -8314,9 +8314,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter", korb_m_ary_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_all", korb_m_ary_select, 0);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "reject", korb_m_ary_reject, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "find", korb_m_ary_find, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "rfind", korb_m_ary_rfind, 0);
-    korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, 0);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "find", korb_m_ary_find, -1);     /* find([ifnone]) */
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "rfind", korb_m_ary_rfind, -1);
+    korb_def_cmethod_blk(c, KORB_C_ARRAY, "detect", korb_m_ary_find, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "find_index", korb_m_ary_find_index, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "any?", korb_m_ary_any, -1);
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "all?", korb_m_ary_all, -1);
