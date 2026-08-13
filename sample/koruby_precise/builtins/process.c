@@ -282,10 +282,14 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         const uint32_t close_others_id = korb_intern(c->vm, "close_others", 12);
         for (uint32_t i = 0; i < h->len; i++) {
             const VALUE k = korb_items_data(h->items)[2 * i];
-            const VALUE v = korb_items_data(h->items)[2 * i + 1];
+            VALUE v = korb_items_data(h->items)[2 * i + 1];
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == close_others_id) {
                 p->close_others = KORB_TRUTHY(v);
                 continue;
+            }
+            if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id && !KORB_STRING_P(v) && KORB_OBJECT_P(v)) {
+                VALUE pv = v;                            /* chdir: accepts a #to_path / #to_str object */
+                if (korb_file_path_arg(c, slots, &pv).state == KORB_NORMAL && KORB_STRING_P(pv)) v = pv;
             }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id && KORB_STRING_P(v)) {
                 uint32_t dn; const char *ds = korb_str_cstr_len(v, &dn);
@@ -536,8 +540,10 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     if (hi > lo && KORB_HASH_P(VALUE_SLICE_GET(a, hi - 1))) hi--;
     if (UNLIKELY(hi <= lo)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     char mode[16] = "r";
-    if (hi - lo >= 2 && !korb_io_mode_arg(VALUE_SLICE_GET(a, lo + 1), mode, sizeof mode))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
+    if (hi - lo >= 2) {
+        VALUE mv = VALUE_SLICE_GET(a, lo + 1);
+        if (mv != KORB_NIL) CHECK(korb_io_mode_coerce(c, slots, &mv, mode, sizeof mode));   /* #to_str / #to_int */
+    }
     /* Re-slice to (env?, cmd…, opts?) so the plan builder sees no mode word.  For
      * IO.popen an Array command IS the argv list (unlike spawn's [cmd, argv0]),
      * so expand it. */
@@ -555,19 +561,38 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     CHECK(korb_spawn_plan_build(c, slots, VALUE_SLICE_MAKE(av, an), &plan));
 
     const bool reading = (mode[0] == 'r');
+    const bool duplex = strchr(mode, '+') != NULL;       /* "r+" — the parent both reads and writes */
     int fds[2];
-    if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
+    /* A duplex popen needs traffic in both directions over ONE parent fd, which a
+     * pipe(2) cannot give; a socketpair can (the child gets the peer as both its
+     * stdin and stdout). */
+    if (duplex) {
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0)
+            return korb_raise_errno(c, slots, errno, "socketpair", "");
+    } else if (pipe(fds) != 0) {
+        return korb_raise_errno(c, slots, errno, "pipe", "");
+    }
     /* The child gets the raw end it needs; ours stays close-on-exec. */
-    (void)fcntl(fds[reading ? 0 : 1], F_SETFD, FD_CLOEXEC);
-    struct korb_redir *r = &plan.redir[plan.nredir++];
-    r->from = reading ? 1 : 0;
-    r->to = fds[reading ? 1 : 0];
-    r->path[0] = '\0'; r->oflags = 0;
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    if (duplex) {
+        struct korb_redir *r0 = &plan.redir[plan.nredir++];
+        r0->from = 0; r0->to = fds[1]; r0->path[0] = '\0'; r0->oflags = 0;
+        struct korb_redir *r1 = &plan.redir[plan.nredir++];
+        r1->from = 1; r1->to = fds[1]; r1->path[0] = '\0'; r1->oflags = 0;
+    } else {
+        (void)fcntl(fds[reading ? 0 : 1], F_SETFD, FD_CLOEXEC);
+        struct korb_redir *r = &plan.redir[plan.nredir++];
+        r->from = reading ? 1 : 0;
+        r->to = fds[reading ? 1 : 0];
+        r->path[0] = '\0'; r->oflags = 0;
+    }
     korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) { close(fds[0]); close(fds[1]); return korb_raise_errno(c, slots, errno, "fork", ""); }
-    close(fds[reading ? 1 : 0]);
-    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self), fds[reading ? 0 : 1], reading ? 1 : 2));
+    close(duplex ? fds[1] : fds[reading ? 1 : 0]);
+    slots[0] = UNWRAP(korb_io_make(c, slots, VALUE_REF_GET(self),
+                                   duplex ? fds[0] : fds[reading ? 0 : 1],
+                                   duplex ? 3 : (reading ? 1 : 2)));
     korb_io_set_nonblock(korb_io_rep(c, slots[0]));   /* our end only; the child got the other */
     VALUE_REF io = VALUE_REF_AT(&slots[0]);
     CHECK(korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__io_pid", 9)), LONG2FIX(pid)));

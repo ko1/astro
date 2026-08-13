@@ -710,9 +710,16 @@ static RESULT korb_io_close_half(CTX *c, VALUE *slots, VALUE_REF self, int keep_
         if (rw == 0 || !korb_io_open_p(rep0)) return RESULT_OK(KORB_NIL);
         return korb_raise(c, slots, KORB_E_IOERROR, 0, "closing non-duplex IO for %s", what);
     }
-    if (drop_bit == 2) {                                   /* flush pending output first */
+    {
         KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-        if (korb_io_open_p(rep)) (void)korb_io_flush_rep(rep);
+        if (korb_io_open_p(rep)) {
+            if (drop_bit == 2) (void)korb_io_flush_rep(rep);   /* flush pending output first */
+            /* On a socket (a duplex IO.popen, a socketpair, …) closing one
+             * direction must reach the peer, or the other end never sees EOF. */
+            int sty; socklen_t stl = sizeof sty;
+            if (getsockopt(rep->fd, SOL_SOCKET, SO_TYPE, &sty, &stl) == 0)
+                (void)shutdown(rep->fd, drop_bit == 2 ? SHUT_WR : SHUT_RD);
+        }
     }
     const int left = rw & ~drop_bit;
     CHECK(korb_ivar_set(c, slots, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(left)));
