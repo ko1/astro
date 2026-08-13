@@ -5840,7 +5840,10 @@ korb_dispatch_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t mid,
         }
         RESULT r = korb_block_yield(c, slots, p->iseq, (VALUE *)(uintptr_t)p->env,
                                     &slots[-(intptr_t)argc], argc, recv_slot);   /* captured_self = receiver slot */
-        if (r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; }   /* return-from-method */
+        /* A define_method body behaves like a lambda: `return`, `break` and
+         * `next` all just leave the method with that value (a bare `break` in a
+         * plain block would unwind past it and end the program). */
+        if (r.state == KORB_RETURN || r.state == KORB_BREAK) { r.state = KORB_NORMAL; c->return_target = NULL; }
         else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) {   /* a non-exception RAISE payload (e.g. thread kill) carries no line */
             KorbException *e = VAL2EXC(r.value);
             korb_bt_append(c->vm, e->line, korb_sym_name(c->vm, mid));
