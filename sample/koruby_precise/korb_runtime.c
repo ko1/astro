@@ -9632,6 +9632,23 @@ korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
       case KORB_OBJ_RANGE:
         korb_fprint_range(c, fp, v, true);   /* inspect endpoints */
         return;
+      case KORB_OBJ_REGEXP: {                            /* inspect: /source/opts */
+        const KorbRegexp *const re = VAL2RE(v);
+        const KorbString *const src = KORB_STRING_P(re->source) ? VAL2STR(re->source) : NULL;
+        fputc('/', fp);
+        if (src) {   /* an unescaped '/' in the source is escaped in the literal form */
+            const char *const d = korb_strbuf_data(src->buf);
+            for (uint32_t i = 0; i < src->len; i++) {
+                if (d[i] == '/' && (i == 0 || d[i - 1] != '\\')) fputc('\\', fp);
+                fputc(d[i], fp);
+            }
+        }
+        fputc('/', fp);
+        if (re->flags & 16u) fputc('m', fp);             /* prism: MULTI_LINE */
+        if (re->flags & 4u)  fputc('i', fp);             /* IGNORE_CASE */
+        if (re->flags & 8u)  fputc('x', fp);             /* EXTENDED */
+        return;
+      }
       case KORB_OBJ_RATIONAL:                            /* inspect: (n/d) */
         fputc('(', fp); korb_fprint_to_s(c, fp, VAL2RAT(v)->num); fputc('/', fp); korb_fprint_to_s(c, fp, VAL2RAT(v)->den); fputc(')', fp);
         return;

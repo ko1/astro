@@ -322,6 +322,23 @@ module GC
   def self.count; 0; end
   def self.stress; false; end
   def self.stress=(v); v; end
+  # 計測系は koruby GC (precise copying) では未提供。CRuby と同じ「形」だけ
+  # 返して、参照するだけのコードが NoMethodError にならないようにする。
+  def self.config(hash = nil)
+    @__gc_config ||= { implementation: "koruby-precise" }
+    if hash
+      raise TypeError, "expecting keyword arguments" unless hash.is_a?(Hash)
+      hash.each { |k, v| @__gc_config[k.to_sym] = v }
+    end
+    @__gc_config.dup
+  end
+  def self.total_time; 0; end
+  def self.measure_total_time; @__gc_measure.nil? ? true : @__gc_measure; end
+  def self.measure_total_time=(v); @__gc_measure = v ? true : false; v; end
+  def self.auto_compact; false; end
+  def self.auto_compact=(v); v; end
+  def self.compact; nil; end
+  def self.latest_gc_info(arg = nil); arg.is_a?(Symbol) ? nil : {}; end
 end
 
 module ObjectSpace
@@ -1157,5 +1174,60 @@ class Dir
   # owned by this Dir (closed with GC; koruby Dir has no explicit close of it).
   def fileno
     @__dir_fd ||= IO.sysopen(path, File::RDONLY)
+  end
+end
+
+module Process
+  # groups/waitall などの薄い実装 (koruby は setgroups 系を持たないので
+  # 取得のみ、変更は空実装)。
+  def self.groups; []; end
+  def self.groups=(v); v; end
+  def self.maxgroups; 65536; end
+  def self.maxgroups=(v); v; end
+  def self.initgroups(user, group); []; end
+  def self.setproctitle(title); title.to_s; end
+  def self.getsid(pid = 0); __getpgid(pid); end
+  def self.warmup; true; end
+  # waitall — 全子プロセスを回収して [[pid, status], ...] を返す
+  def self.waitall
+    res = []
+    loop do
+      begin
+        pid, st = Process.wait2
+      rescue Errno::ECHILD
+        break
+      end
+      break if pid.nil?
+      res << [pid, st]
+    end
+    res
+  end
+end
+
+class Regexp
+  # Regexp.linear_time? — バックリファレンスや先読みを含まないパターンなら
+  # 線形時間で実行できる、という CRuby の判定。astrogre のエンジンはバック
+  # トラック式なので、CRuby と同じ「構文に後方参照/先読みが無いか」で答える。
+  def self.linear_time?(re, opts = nil)
+    src = re.is_a?(Regexp) ? re.source : (re.is_a?(String) ? re : (return false))
+    !src.match?(/\\\d|\(\?[=!<]/)
+  end
+  def self.timeout; @__timeout; end
+  def self.timeout=(sec)
+    if sec.nil?
+      @__timeout = nil
+    else
+      f = Float(sec)
+      raise ArgumentError, "invalid timeout: #{sec}" if f <= 0
+      @__timeout = f
+    end
+    sec
+  end
+  def self.try_convert(obj)
+    return obj if obj.is_a?(Regexp)
+    return nil unless obj.respond_to?(:to_regexp)
+    r = obj.to_regexp
+    raise TypeError, "can't convert #{obj.class} to Regexp (#{obj.class}#to_regexp gives #{r.class})" unless r.is_a?(Regexp) || r.nil?
+    r
   end
 end
