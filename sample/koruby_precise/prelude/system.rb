@@ -199,9 +199,19 @@ Thread.const_set(:SizedQueue, SizedQueue)
 Thread.const_set(:ConditionVariable, ConditionVariable)
 
 module Process
-  CLOCK_MONOTONIC = 1
-  CLOCK_REALTIME = 0
+  # clock_gettime(2) の clockid_t (Linux)。koruby は実際には _clk を無視して
+  # monotonic を返すが、定数は本物の値で揃えておく。
+  CLOCK_REALTIME           = 0
+  CLOCK_MONOTONIC          = 1
   CLOCK_PROCESS_CPUTIME_ID = 2
+  CLOCK_THREAD_CPUTIME_ID  = 3
+  CLOCK_MONOTONIC_RAW      = 4
+  CLOCK_REALTIME_COARSE    = 5
+  CLOCK_MONOTONIC_COARSE   = 6
+  CLOCK_BOOTTIME           = 7
+  CLOCK_REALTIME_ALARM     = 8
+  CLOCK_BOOTTIME_ALARM     = 9
+  CLOCK_TAI                = 11
   def self.pid; $$; end
   def self.ppid; 0; end
   def self.uid; 0; end
