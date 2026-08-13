@@ -1614,6 +1614,28 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         CHECK(korb_file_path_arg(c, slots, &pv));
         slots[0] = pv;                                     /* root the coerced path */
     }
+    /* A trailing Hash is keyword options (mode:, flags:, encoding: …), not a
+     * positional argument; only 3 positionals are allowed. */
+    uint32_t npos = VALUE_SLICE_LEN(a);
+    VALUE fopts = KORB_NIL;
+    if (npos >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, npos - 1))) { fopts = VALUE_SLICE_GET(a, npos - 1); npos--; }
+    if (UNLIKELY(npos > 3))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)", npos);
+    int extra_flags = 0;
+    if (KORB_HASH_P(fopts)) {                              /* flags: OR'd into the open(2) flags */
+        const int32_t fi = korb_hash_find(VAL2HASH(fopts), ID2SYM(korb_intern(c->vm, "flags", 5)));
+        if (fi >= 0) {
+            const VALUE fv = korb_items_data(VAL2HASH(fopts)->items)[2 * fi + 1];
+            if (FIXNUM_P(fv)) extra_flags = (int)FIX2LONG(fv);
+        }
+        if (npos < 2) {                                    /* mode: when no positional mode */
+            const int32_t mi = korb_hash_find(VAL2HASH(fopts), ID2SYM(korb_intern(c->vm, "mode", 4)));
+            if (mi >= 0) {
+                const VALUE mv = korb_items_data(VAL2HASH(fopts)->items)[2 * mi + 1];
+                if (mv != KORB_NIL) { slots[1] = mv; a = VALUE_SLICE_MAKE(a.p, 2); ((VALUE *)a.p)[1] = mv; npos = 2; }
+            }
+        }
+    }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
     if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {   /* integer O_* flags → open(2) */
@@ -1624,7 +1646,7 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         char pbuf[4096];                                   /* stack copy: the open may park → GC moves the String */
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
-        fd = korb_open_no_stall(c, slots, pbuf, fl, perm, &operr);
+        fd = korb_open_no_stall(c, slots, pbuf, fl | extra_flags, perm, &operr);
         if (UNLIKELY(operr.state != KORB_NORMAL)) return operr;
         if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pbuf);
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -1645,7 +1667,8 @@ static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         char pbuf[4096];
         snprintf(pbuf, sizeof pbuf, "%.*s", (int)plen, path);
         RESULT operr;
-        fd = korb_open_no_stall(c, slots, pbuf, korb_io_open_flags(mode), 0666, &operr);
+        const mode_t perm2 = (npos >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2))) ? (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 2)) : 0666;
+        fd = korb_open_no_stall(c, slots, pbuf, korb_io_open_flags(mode) | extra_flags, perm2, &operr);
         if (UNLIKELY(operr.state != KORB_NORMAL)) return operr;
         if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", pbuf);
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
