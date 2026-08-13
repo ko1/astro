@@ -453,14 +453,38 @@ static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, KorbIORep *rep, size_t
     return RESULT_OK(KORB_NIL);
 }
 
+/* The receiver's class name for a message ("Wrap", not the generic "Object"
+ * korb_type_name gives a user instance). */
+static void korb_io_class_name(CTX *c, VALUE v, char *const buf, size_t sz) {
+    if (KORB_OBJECT_P(v)) {
+        const VALUE cls = VAL2OBJ(v)->klass;
+        if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->name_sym) { korb_class_qname_into(c, cls, buf, sz); return; }
+    }
+    snprintf(buf, sz, "%s", korb_type_name(v));
+}
+
+/* Integer argument of an IO method: Integer / Float (truncated) as-is, anything
+ * else through #to_int (CRuby's rb_to_int).  May dispatch → may GC, so callers
+ * must re-read any VALUE they still need afterwards. */
+static RESULT korb_io_arg_int(CTX *c, VALUE *slots, VALUE v, intptr_t *out) {
+    if (LIKELY(korb_to_index(v, out))) return RESULT_OK(KORB_TRUE);
+    const char *const cls = korb_type_name(v);         /* capture before dispatch (v may move) */
+    VALUE t = v;
+    const RESULT r = korb_coerce_to_int(c, slots, &t);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(r.value != KORB_TRUE) || !korb_to_index(t, out))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", cls);
+    return RESULT_OK(KORB_TRUE);
+}
+
 /* IO#truncate(len) → 0 (ftruncate the descriptor). */
 static RESULT korb_m_io_truncate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    const VALUE lv = VALUE_SLICE_GET(a, 0);
-    if (!FIXNUM_P(lv)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    intptr_t len;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &len));
     (void)korb_io_flush_rep(rep);
-    if (ftruncate(korb_io_fd(c, VALUE_REF_GET(self)), (off_t)FIX2LONG(lv)) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
+    if (ftruncate(korb_io_fd(c, VALUE_REF_GET(self)), (off_t)len) != 0) return korb_raise_errno(c, slots, errno, "ftruncate", "");
     return RESULT_OK(LONG2FIX(0));
 }
 /* IO#fileno → the integer file descriptor. */
@@ -778,13 +802,15 @@ static RESULT korb_m_io_getbyte(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_io_sysseek(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    intptr_t off;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &off));
     const int whence = (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1)))
                          ? (int)FIX2LONG(VALUE_SLICE_GET(a, 1)) : SEEK_SET;
     if (rep->rpos < rep->rlen) return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysseek for buffered IO");
     korb_io_flush_rep(rep);
-    const off_t r = lseek(rep->fd, (off_t)FIX2LONG(VALUE_SLICE_GET(a, 0)), whence);
+    const off_t r = lseek(rep->fd, (off_t)off, whence);
     if (r < 0) return korb_raise_errno(c, slots, errno, "sysseek", "");
     return RESULT_OK(LONG2FIX((intptr_t)r));
 }
@@ -989,8 +1015,25 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);
         return RESULT_OK(VALUE_REF_GET(self));
     }
-    KorbIORep *const other = KORB_OBJECT_P(t) ? korb_io_rep(c, t) : NULL;
-    if (UNLIKELY(!korb_io_open_p(other))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(t));
+    /* Not a path: an IO, or anything that converts to one via #to_io. */
+    slots[0] = t;
+    if (!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL) {
+        const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
+        char cls[192];                                            /* the class name, captured before dispatch */
+        korb_io_class_name(c, slots[0], cls, sizeof cls);
+        VALUE recv = slots[0];
+        if (UNLIKELY(!(KORB_OBJECT_P(recv) && korb_responds_to_coerce_p(c, slots + 1, &recv, to_io))))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
+        slots[0] = recv;
+        const RESULT cr = korb_send(c, slots + 1, to_io, 0, 0);   /* receiver at slots[0] */
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        slots[0] = cr.value;
+        if (UNLIKELY(!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL))
+            return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s to IO (%s#to_io gives %s)",
+                              cls, cls, korb_type_name(slots[0]));
+    }
+    KorbIORep *const other = korb_io_rep(c, slots[0]);
+    if (UNLIKELY(!korb_io_open_p(other))) return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "closed stream");
     (void)korb_io_flush_rep(other);
     (void)korb_io_flush_rep(rep);
     if (dup2(other->fd, rep->fd) < 0) return korb_raise_errno(c, slots, errno, "dup2", "");
@@ -1105,9 +1148,11 @@ static RESULT korb_m_io_sysread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
  * descriptor.  IO.new is a C singleton, so a subclass that needs a real
  * #initialize (the socket classes) allocates and calls this instead. */
 static RESULT korb_m_io_init_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    const int fd = (int)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    intptr_t fdv;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
+    const int fd = (int)fdv;
     char mode[16] = "r";
     if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
         !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
@@ -1189,9 +1234,11 @@ static RESULT korb_io_take_buffered(CTX *c, VALUE *slots, KorbIORep *const rep,
 static RESULT korb_m_io_readpartial(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    intptr_t want;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
+    rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
     if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
     const VALUE bufv = VALUE_SLICE_LEN(a) >= 2 ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
     if (want == 0) {
@@ -1233,9 +1280,11 @@ static RESULT korb_io_raise_wait(CTX *c, VALUE *slots, bool readable) {
 static RESULT korb_m_io_read_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+    intptr_t want;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
+    rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
     if (UNLIKELY(want < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
     bool exc = true;
     VALUE bufv = KORB_NIL;
@@ -1316,15 +1365,19 @@ static RESULT korb_m_io_write_nonblock(CTX *c, VALUE *slots, VALUE_REF self, VAL
  * everything the program has written; the read buffer is untouched (pread does
  * not consume the sequential stream). */
 static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(VALUE_SLICE_GET(a, 0)) || !FIXNUM_P(VALUE_SLICE_GET(a, 1))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    const intptr_t want = FIX2LONG(VALUE_SLICE_GET(a, 0));
-    const intptr_t off  = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2..3)", VALUE_SLICE_LEN(a));
+    intptr_t want, off;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &want));
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 1), &off));
+    rep = korb_io_rep(c, VALUE_REF_GET(self));                    /* #to_int may have GC'd */
     if (want < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
     korb_io_flush_rep(rep);
     const VALUE bufv = VALUE_SLICE_LEN(a) >= 3 ? VALUE_SLICE_GET(a, 2) : KORB_NIL;
+    if (want == 0)          /* CRuby reads nothing and leaves the buffer alone */
+        return bufv == KORB_NIL ? korb_str_new(c, slots, "", 0) : RESULT_OK(bufv);
     slots[0] = (VALUE)korb_str_alloc(c, slots, (uint32_t)want);   /* scratch, rooted */
     ssize_t r;
     do {
@@ -1345,10 +1398,10 @@ static RESULT korb_m_io_pread(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 /* IO#pwrite(string, offset) — write at an absolute offset without moving the
  * file position. */
 static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2 || !FIXNUM_P(VALUE_SLICE_GET(a, 1))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 2)", VALUE_SLICE_LEN(a));
     slots[0] = VALUE_SLICE_GET(a, 0);
     if (!KORB_STRING_P(slots[0])) {                               /* CRuby writes obj.to_s */
         const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
@@ -1356,7 +1409,9 @@ static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[0] = sr.value;
         if (UNLIKELY(!KORB_STRING_P(slots[0]))) return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
     }
-    const intptr_t off = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    intptr_t off;
+    CHECK(korb_io_arg_int(c, slots + 1, VALUE_SLICE_GET(a, 1), &off));   /* slots[0] holds the String */
+    rep = korb_io_rep(c, VALUE_REF_GET(self));                           /* #to_int / #to_s may have GC'd */
     korb_io_flush_rep(rep);
     uint32_t n; const char *const p = korb_str_cstr_len(slots[0], &n);   /* no alloc before the write */
     ssize_t w;
@@ -1396,10 +1451,9 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     uint32_t n = VALUE_SLICE_LEN(a);
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) n--;          /* drop the options Hash */
     if (UNLIKELY(n < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    const VALUE fv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!FIXNUM_P(fv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(fv));
-    const int fd = (int)FIX2LONG(fv);   /* a negative or stale fd falls out of the fcntl check below as EBADF */
+    intptr_t fdv;
+    CHECK(korb_io_arg_int(c, slots, VALUE_SLICE_GET(a, 0), &fdv));
+    const int fd = (int)fdv;   /* a negative or stale fd falls out of the fcntl check below as EBADF */
     char mode[16] = "r";
     if (n >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL &&
         !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
