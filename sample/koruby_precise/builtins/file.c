@@ -469,11 +469,31 @@ static RESULT korb_m_file_mode_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 }
 
 /* File.chmod(mode, *paths) → chmod each; returns the number of files. */
+/* A mode argument: Integer as is, else #to_int; a Bignum cannot be a mode. */
+static RESULT korb_file_mode_arg(CTX *c, VALUE *slots, VALUE v, mode_t *out) {
+    if (UNLIKELY(KORB_BIGNUM_P(v)))
+        return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'unsigned long'");
+    if (!FIXNUM_P(v)) {
+        const char *const cls = korb_type_name(v);
+        VALUE t = v;
+        const RESULT cr = korb_coerce_to_int(c, slots, &t);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (cr.value != KORB_TRUE || !FIXNUM_P(t)) {
+            if (KORB_BIGNUM_P(t))
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'unsigned long'");
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", cls);
+        }
+        v = t;
+    }
+    *out = (mode_t)FIX2LONG(v);
+    return RESULT_OK(KORB_TRUE);
+}
 static RESULT korb_m_file_chmod(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1 || !FIXNUM_P(VALUE_SLICE_GET(a, 0))))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
-    const mode_t m = (mode_t)FIX2LONG(VALUE_SLICE_GET(a, 0));
+    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
+    mode_t m = 0;
+    CHECK(korb_file_mode_arg(c, slots, VALUE_SLICE_GET(a, 0), &m));
     uint32_t n = 0;
     for (uint32_t i = 1; i < VALUE_SLICE_LEN(a); i++) {
         const VALUE pv = VALUE_SLICE_GET(a, i);

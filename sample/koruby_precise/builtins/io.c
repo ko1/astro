@@ -1491,9 +1491,11 @@ static RESULT korb_m_io_pwrite(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* IO.sysopen(path, mode = "r", perm = 0666) → the raw fd, unwrapped. */
 static RESULT korb_m_io_s_sysopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    if (UNLIKELY(!KORB_STRING_P(pv))) {                    /* #to_path then #to_str */
+        CHECK(korb_file_path_arg(c, slots, &pv));
+        slots[0] = pv;                                     /* root the coerced path */
+    }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int flags = O_RDONLY;
     if (VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL) {
@@ -1602,11 +1604,16 @@ static int korb_open_no_stall(CTX *c, VALUE *slots, const char *path, int flags,
     }
 }
 
+static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* fwd (below) */
 static RESULT korb_m_file_open(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    const VALUE pv = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
+    VALUE pv = VALUE_SLICE_GET(a, 0);
+    /* File.new(fd[, mode]) wraps an existing descriptor, exactly like IO.new. */
+    if (FIXNUM_P(pv)) return korb_m_io_s_new_fd(c, slots, self, a);
+    if (UNLIKELY(!KORB_STRING_P(pv))) {                    /* #to_path then #to_str */
+        CHECK(korb_file_path_arg(c, slots, &pv));
+        slots[0] = pv;                                     /* root the coerced path */
+    }
     uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
     int rw = 0; bool binary = false; int fd;
     if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {   /* integer O_* flags → open(2) */
