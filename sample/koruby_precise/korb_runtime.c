@@ -10167,16 +10167,50 @@ korb_bi_exit_bang(CTX *c, VALUE *slots, VALUE_SLICE args)
     _exit(code);
 }
 /* Kernel#abort([msg]) — write msg to stderr (if given) and exit(1). */
+static VALUE korb_out_target(CTX *c, const char *gv, uint32_t gvlen, bool *is_default);   /* fwd */
+static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, const char *data, size_t len);   /* fwd */
 static RESULT
 korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
-    if (VALUE_SLICE_LEN(args) >= 1 && KORB_STRING_P(VALUE_SLICE_GET(args, 0))) {
-        const KorbString *s = VAL2STR(VALUE_SLICE_GET(args, 0));
-        KorbIORep *const er = korb_io_std_rep(c->vm, 2);
-        (void)korb_io_wr(er, korb_strbuf_data(s->buf), s->len);
-        (void)korb_io_wr(er, "\n", 1);
+    bool has_msg = VALUE_SLICE_LEN(args) >= 1;
+    if (has_msg && !KORB_STRING_P(VALUE_SLICE_GET(args, 0))) {   /* #to_str, else TypeError */
+        VALUE mv = VALUE_SLICE_GET(args, 0);
+        const char *const cls = (mv == KORB_NIL) ? "nil" : korb_type_name(mv);
+        bool ok = false;
+        if (KORB_OBJECT_P(mv) && korb_responds_to_coerce_p(c, slots, &mv, korb_intern(c->vm, "to_str", 6))) {
+            slots[0] = mv;
+            const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) { ((VALUE *)args.p)[0] = sr.value; ok = true; }
+        }
+        if (!ok)
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", cls);
     }
-    return korb_make_system_exit(c, slots, 1);
+    if (has_msg) {
+        /* The message goes through $stderr (which a test harness may replace),
+         * not straight to fd 2. */
+        slots[0] = VALUE_SLICE_GET(args, 0);
+        bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+        const KorbString *const s = VAL2STR(slots[0]);
+        if (def) {
+            KorbIORep *const er = korb_io_std_rep(c->vm, 2);
+            (void)korb_io_wr(er, korb_strbuf_data(s->buf), s->len);
+            (void)korb_io_wr(er, "\n", 1);
+        } else {
+            char *buf = NULL; size_t sz = 0; FILE *const ms = open_memstream(&buf, &sz);
+            if (ms) { fwrite(korb_strbuf_data(s->buf), 1, s->len, ms); fputc('\n', ms); fclose(ms); }
+            const RESULT er = korb_out_emit(c, slots + 1, out, 2, buf ? buf : "", sz);
+            free(buf);
+            if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        }
+    }
+    RESULT r = korb_make_system_exit(c, slots + 1, 1);
+    if (has_msg && KORB_EXC_P(r.value)) {   /* CRuby: the SystemExit carries the message */
+        slots[1] = r.value;
+        ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->msg, VALUE_SLICE_GET(args, 0));
+        r.value = slots[1];
+    }
+    return r;
 }
 /* Run at_exit blocks (reverse order); guarded so an at_exit block calling exit
  * doesn't re-enter.  Shared by main.c's post-run drain and Kernel#exit. */
