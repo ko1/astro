@@ -147,8 +147,9 @@ class IO
       raise ArgumentError, "Offset can't be negative!" if offset < 0
       total = file.size
       raise ArgumentError, "Invalid negative or zero file size!" if total <= 0
-      raise ArgumentError, "Offset too large!" if offset + (size || 0) > total
+      # CRuby はサイズ超過を先に見て、その後 offset+size のはみ出しを見る
       raise ArgumentError, "Size can't be larger than file size!" if size && size > total
+      raise ArgumentError, "Offset too large!" if offset + (size || 0) > total
       # PRIVATE (= copy-on-write) は読み取り専用ファイルでも許される。共有
       # マップだけが書き込み権限を要求する。
       if (flags & (READONLY | PRIVATE)) == 0 && !__writable_io?(file)

@@ -193,6 +193,9 @@ class IO
   # 渡した側だけこちらで open/close する。src_offset 指定時は src の現在位置を
   # 動かさない (CRuby は pread 相当)。戻り値はコピーしたバイト数。
   def self.copy_stream(src, dst, copy_length = nil, src_offset = nil)
+    copy_length = __cs_int(copy_length)
+    src_offset = __cs_int(src_offset)
+    copy_length = nil if copy_length && copy_length < 0    # 負の length は「全部」
     src_io, src_opened = __cs_io(src, "rb")
     begin
       dst_io, dst_opened = __cs_io(dst, "wb")
@@ -214,6 +217,9 @@ class IO
           copied += data.bytesize
         end
         src_io.seek(saved) if saved
+        # CRuby は dst のディスクリプタへ直接書くので、コピー直後に他から
+        # 読めば内容が見える。koruby の write は buffered なので flush する。
+        dst_io.flush if dst_io.respond_to?(:flush)
         copied
       ensure
         dst_io.close if dst_opened
@@ -222,6 +228,20 @@ class IO
       src_io.close if src_opened
     end
   end
+
+  # copy_stream の length / offset: nil はそのまま、他は #to_int (CRuby)。
+  def self.__cs_int(v)
+    return v if v.nil? || v.is_a?(Integer)
+    unless v.respond_to?(:to_int)
+      raise TypeError, "no implicit conversion of #{v.class} into Integer"
+    end
+    n = v.to_int
+    unless n.is_a?(Integer)
+      raise TypeError, "can't convert #{v.class} to Integer (#{v.class}#to_int gives #{n.class})"
+    end
+    n
+  end
+  private_class_method :__cs_int
 
   # → [io, opened_here?].  path (String / #to_path) のときだけ open する。
   def self.__cs_io(obj, mode)
