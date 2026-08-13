@@ -566,6 +566,20 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         return korb_str_slice_new(c, slots, self, (uint32_t)b, (uint32_t)len);
     }
     intptr_t i;
+    /* A Bignum offset/length that still fits a C long is just a (far) out-of-range
+     * position → nil; one that does not fit is the conversion failure CRuby
+     * reports as RangeError. */
+    if (UNLIKELY(KORB_BIGNUM_P(iv))) {
+        if (!mpz_fits_slong_p(VAL2BIG(iv)->z))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        return RESULT_OK(KORB_NIL);                      /* |index| > bytesize */
+    }
+    if (VALUE_SLICE_LEN(a) >= 2 && KORB_BIGNUM_P(VALUE_SLICE_GET(a, 1))) {
+        const VALUE lv = VALUE_SLICE_GET(a, 1);
+        if (!mpz_fits_slong_p(VAL2BIG(lv)->z))
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
+        if (mpz_sgn(VAL2BIG(lv)->z) < 0) return RESULT_OK(KORB_NIL);
+    }
     if (UNLIKELY(!korb_to_index(iv, &i))) {              /* coerce index via #to_int (self via VALUE_REF; bn is a value) */
         RESULT cr = korb_coerce_to_int(c, slots, &iv);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
@@ -575,8 +589,16 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (i < 0) i += bn;
     const bool two_arg = VALUE_SLICE_LEN(a) >= 2;
     if (i < 0 || i > (intptr_t)bn || (!two_arg && i == (intptr_t)bn)) return RESULT_OK(KORB_NIL);   /* byteslice(i): nil at end */
-    intptr_t lentmp;
-    intptr_t len = (two_arg && korb_to_index(VALUE_SLICE_GET(a, 1), &lentmp)) ? lentmp : 1;
+    intptr_t lentmp = 1;
+    if (two_arg && !korb_to_index(VALUE_SLICE_GET(a, 1), &lentmp)) {   /* #to_int on the length */
+        VALUE lv = VALUE_SLICE_GET(a, 1);
+        RESULT cr = korb_coerce_to_int(c, slots, &lv);
+        if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+        if (!korb_to_index(lv, &lentmp))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(lv));
+    }
+    const intptr_t len0 = two_arg ? lentmp : 1;
+    intptr_t len = len0;
     if (len < 0) return RESULT_OK(KORB_NIL);
     if (i + len > (intptr_t)bn) len = (intptr_t)bn - i;
     return korb_str_slice_new(c, slots, self, (uint32_t)i, (uint32_t)len);
@@ -644,6 +666,7 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     uint32_t bn = s->len;
     intptr_t start = 0, dellen = 0; VALUE repl; uint32_t repl_pos;
+    intptr_t start_arg = 0;                    /* index as written (for the error text) */
     if (VALUE_SLICE_LEN(a) >= 2 && KORB_RANGE_P(VALUE_SLICE_GET(a, 0))) {
         const KorbRange *r = VAL2RANGE(VALUE_SLICE_GET(a, 0));
         if (r->rbegin != KORB_NIL && UNLIKELY(!korb_to_index(r->rbegin, &start))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
@@ -652,11 +675,18 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         dellen = e - start;
         repl = VALUE_SLICE_GET(a, 1); repl_pos = 1;
     } else {
+        /* 2-arg form requires a Range first argument (an Integer there means the
+         * caller forgot the length) */
+        if (UNLIKELY(VALUE_SLICE_LEN(a) == 2))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Range)",
+                              korb_type_name(VALUE_SLICE_GET(a, 0)));
         if (UNLIKELY(VALUE_SLICE_LEN(a) < 3 || !korb_to_index(VALUE_SLICE_GET(a, 0), &start) || !korb_to_index(VALUE_SLICE_GET(a, 1), &dellen)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        start_arg = start;
         if (start < 0) start += bn;
         repl = VALUE_SLICE_GET(a, 2); repl_pos = 2;
     }
+
     /* Trailing args after the replacement select a sub-span of it:
      *   0 extra          → the whole replacement
      *   1 extra (Range)  → str_range
@@ -668,7 +698,8 @@ static RESULT korb_m_str_bytesplice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     /* index form uses IndexError; range form uses RangeError (with the range's text). */
     if (UNLIKELY(start < 0 || start > (intptr_t)bn)) {
         if (repl_pos == 1) { char rb[96]; korb_range_desc(c, VALUE_SLICE_GET(a, 0), rb, sizeof rb); return korb_raise(c, slots, KORB_E_RANGE, 0, "%s out of range", rb); }
-        return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)start);
+        /* CRuby names the index as written, not the one adjusted by bytesize */
+        return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)start_arg);
     }
     if (UNLIKELY(dellen < 0)) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)dellen);
     if (start + dellen > (intptr_t)bn) dellen = (intptr_t)bn - start;
