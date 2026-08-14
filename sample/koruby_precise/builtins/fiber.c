@@ -33,6 +33,7 @@ korb_fiber_trampoline(unsigned hi, unsigned lo)
     VALUE arg = rep->transfer;                        /* value from the first resume */
     RESULT r = korb_block_yield(c, c->slots, rep->body, rep->def_env, &arg, 1, &rep->captured_self);
     rep->fstate = 3;                                  /* done */
+    if (r.state == KORB_RAISE && r.value == KORB_UNDEF) r = RESULT_OK(KORB_NIL);   /* #kill sentinel */
     rep->raised = (r.state == KORB_RAISE) ? 1u : 0u;
     rep->transfer = (r.state == KORB_NORMAL || r.state == KORB_RAISE) ? r.value : KORB_NIL;
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* never returns */
@@ -51,6 +52,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->def_env = def_env;
     rep->captured_self = KORB_CSELF_VAL(captured_self);
     rep->transfer = KORB_NIL;
+    rep->transferred = 0; rep->killing = 0;
     rep->storage = KORB_NIL;                           /* Fiber#storage (lazily inherited on first read) */
     rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
     rep->fstate = 0;
@@ -71,6 +73,8 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     c->vm->fiber_list = rep;
     return RESULT_OK((VALUE)fb);
 }
+
+static VALUE korb_fiber_kill_sentinel(CTX *c);   /* fwd (Fiber#kill unwind payload) */
 
 /* Switch into `rep` (fstate 0 or 2) carrying `xfer` — the shared engine behind
  * Fiber#resume and Fiber#raise.  With deliver_raise, the fiber's Fiber.yield
@@ -120,6 +124,9 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
+    /* While we were away, someone may have killed US (a child fiber calling
+     * parent.kill).  We are the one at a switch point, so unwind here. */
+    if (prev != NULL && prev->killing) { prev->killing = 0; return RESULT_RAISE_(korb_fiber_kill_sentinel(c)); }
     if (rep->raised) { rep->raised = 0; return RESULT_RAISE_(rep->transfer); }
     return RESULT_OK(rep->transfer);
 }
@@ -132,8 +139,63 @@ korb_m_fiber_resume(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
     if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
     if (UNLIKELY(rep->fstate == 1)) return korb_raise_fiber_error(c, slots, "attempt to resume a resumed fiber (double resume)");
+    if (UNLIKELY(rep->transferred))   /* CRuby: a transferred fiber is not resumable */
+        return korb_raise_fiber_error(c, slots, "attempt to yield on a not resumed fiber");
     return korb_fiber_switch_in(c, slots, rep,
                                 (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL, 0);
+}
+
+/* The value a killed fiber unwinds with.  A plain (non-Exception) payload so no
+ * `rescue => e` can intercept it; only `ensure` runs, as CRuby's kill does. */
+static VALUE korb_fiber_kill_sentinel(CTX *c) {
+    (void)c;
+    return KORB_UNDEF;
+}
+
+/* Fiber#transfer([v]) — hand control over without becoming the target's resumer.
+ * koruby keeps the C-stack discipline of resume (control comes back here when
+ * the target yields or finishes); what transfer adds is the bookkeeping that
+ * makes #resume on a transferred fiber (and #transfer to a yielding one) the
+ * FiberErrors CRuby raises. */
+static RESULT
+korb_m_fiber_transfer(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
+    if (UNLIKELY(rep == c->vm->running_fiber)) return korb_raise_fiber_error(c, slots, "attempt to transfer to self");
+    if (UNLIKELY(rep->fstate == 2 && !rep->transferred))
+        return korb_raise_fiber_error(c, slots, "attempt to transfer to a yielding fiber");
+    rep->transferred = 1;
+    return korb_fiber_switch_in(c, slots, rep,
+                                (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL, 0);
+}
+
+/* Fiber#kill — terminate the fiber at its suspension point (ensure blocks run).
+ * An unborn or dead fiber is simply marked dead. */
+static RESULT
+korb_m_fiber_kill(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
+{
+    (void)a;
+    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (rep->fstate == 0 || rep->fstate == 3) { rep->fstate = 3; return RESULT_OK(VALUE_REF_GET(self)); }
+    if (UNLIKELY(rep == c->vm->running_fiber))
+        return RESULT_RAISE_(korb_fiber_kill_sentinel(c));   /* killing myself: unwind here */
+    if (rep->fstate == 1) {
+        /* Running, but not us: it is an ancestor in the resume chain (a child
+         * killing its parent).  Flag it — it unwinds when control returns to it,
+         * which is the point where it is safe to touch its stack. */
+        rep->killing = 1;
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    rep->killing = 1;
+    const RESULT r = korb_fiber_switch_in(c, slots, rep, KORB_NIL, 0);
+    rep->killing = 0;
+    if (r.state == KORB_RAISE && r.value == KORB_UNDEF) { /* the sentinel came back out: swallow it */
+        rep->fstate = 3;
+        return RESULT_OK(VALUE_REF_GET(self));
+    }
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(VALUE_REF_GET(self));
 }
 
 /* Fiber#raise(...) — build the exception in the calling context (CRuby 4.0
@@ -296,6 +358,10 @@ korb_m_fiber_yield(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     swapcontext((ucontext_t *)rep->uctx, (ucontext_t *)rep->resume_uctx);  /* === out === */
     /* === resumed: resume() restored c->slots to ours === */
     rep->fstate = 1;
+    if (UNLIKELY(rep->killing)) {                      /* Fiber#kill: unwind (ensure blocks run) */
+        rep->pending_raise = 0;
+        return RESULT_RAISE_(korb_fiber_kill_sentinel(c));
+    }
     if (UNLIKELY(rep->pending_raise)) {                /* Fiber#raise delivery point */
         rep->pending_raise = 0;
         return RESULT_RAISE_(rep->transfer);
