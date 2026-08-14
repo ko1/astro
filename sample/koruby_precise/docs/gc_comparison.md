@@ -1,6 +1,11 @@
 # koruby_precise — GC backend 比較レポート (全 51 bench × 8 backend)
 
-2026-06-23。`make GC=<backend>` で切り替わる 8 種の precise GC を全ベンチで計測。
+2026-06-23。`make GC=<backend>` で切り替わる precise GC を全ベンチで計測。
+
+> ⚠ **当時の 8 backend を測ったレポート**。その後 backend は増えており、現在
+> Makefile が持つのは 15 種 (none / mark / mark_gen / mark_gen_inc / copy /
+> copy_gen / mark_compact / mark_compact_gen / bump / mark_bump_gen / immix /
+> immix_gen / mark_bitmap_gen / mark_card_gen / mark_freelist)。default は `copy`。
 
 ---
 

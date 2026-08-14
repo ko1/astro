@@ -1,5 +1,10 @@
 # v2 M0 実装状況 (2026-06-13)
 
+> ⚠ **M0 時点のスナップショット**。以降の実装で変わった値がある — 例えば下の
+> 「値表現」は当時 nil=0 / false=2 / true=4 / Symbol `(id<<3)|6` だったが、現行は
+> nil=0 / **false=4 / true=20 / undef=36**、Symbol は **`(id<<4)|0xC`** (`context.h` が正)。
+> 現状の機能一覧は [done.md](./done.md) を見ること。
+
 [v2_design.md](./v2_design.md) / [v2_spec.md](./v2_spec.md) だけを実装根拠に
 ゼロから書いた M0 の記録。v1 系譜のコード持ち込みなし (設計どおり)。
 

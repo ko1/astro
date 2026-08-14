@@ -1,7 +1,22 @@
 # runtime.md — koruby のランタイム解説
 
+> ⚠ **これは v1 (2026-05 時点) の文書**。koruby は 2026-06 に slots ABI で全面再構築
+> (v2) されており、**具体的な値・ファイル名はもう現行と一致しない**。ホットパスの
+> 考え方や用語の説明として読む分には有効なので残してある。
+>
+> 現行と違う代表例:
+> - ファイル: v1 の `object.c` は無い。現行は `korb_runtime.c` + `builtins/*.c`。
+> - VALUE 表現: §1 の CRuby 互換タグ (Qnil=0x08 / Qtrue=0x14 / SYMBOL low 8bit=0x0c、
+>   flonum 未使用) は **v2 で変わった** — 現行は `context.h` のとおり
+>   nil=0 / false=4 / true=20 / undef=36、Symbol は `(id<<4)|0xC`、**flonum は実装済み**
+>   (`FLONUM_P(v) = (v & 3) == 2`)。
+> - sp / staging: v2 は slots ABI (`docs/v2_design.md`)。v1 の sp 二本問題は
+>   [closure_sp_model.md](./closure_sp_model.md) の総括どまり。
+>
+> 現行の設計は [v2_design.md](./v2_design.md) / [v2_spec.md](./v2_spec.md)、
+> rooting 規約は [rooting_guide.md](./rooting_guide.md) を見ること。
+
 koruby の **どこで何が起きているか** を、ホットパス (メソッド呼出 / クロージャ / 例外) を中心に説明する。
-詳細実装は `object.c`, `node.def` を参照。
 
 ## 1. VALUE 表現 — CRuby 互換
 

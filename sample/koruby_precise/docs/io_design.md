@@ -5,12 +5,17 @@ select/epoll/io_uring の差し替え可能な backend で多重化する。**Ph
 (GVL 相当は自明)。io_uring は Fiber scheduler のためではなく **Thread の M:N 化**の
 ための基盤である。
 
-> **実装状況**: Phase 1 の core は `builtins/thread.c` に実装済み — green thread
-> scheduler (Thread.new/join/value/pass/current/list/stop/wakeup)、blop 層
+> **実装状況** (2026-08-14 現在): Phase 1 の core は `builtins/thread.c` に実装済み —
+> green thread scheduler (Thread.new/join/value/pass/current/list/stop/wakeup)、blop 層
 > (korb_blop_wait / post / cancel / pump)、TIMER (sleep / join timeout)、POLL
 > (IO#wait_readable / wait_writable / IO.select)、割り込み (Thread#raise / #kill、
-> pending_ints + check_ints)。未実装分 (fd ベース IO 層 / epoll / uring engine /
-> eventfd / close cancel / reap) は `docs/todo.md` の Thread/IO 節。
+> pending_ints + check_ints)。**fd ベースの IO 層も完了** (下の「IO 層の作り直し」節、
+> stdio 撤去済み)。
+>
+> 未実装: **engine は poll(2) の 1 本だけ** (vtable 化も epoll / uring engine もまだ。
+> probe 順序 uring→epoll→poll は設計のみ)、**blop kind も POLL と TIMER しか使っていない**
+> (READ / WRITE / CFUNC は enum と union のフィールドだけ)、eventfd wake、close cancel、
+> dead thread の stack reap。詳細は `docs/todo.md` の Thread/IO 節。
 
 ## フェーズ
 
