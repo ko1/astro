@@ -2457,3 +2457,12 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       出続けるので、どこかで無限ループして子プロセスの出力が端末に漏れている。
       mspec 環境固有 (new_io / IOSpecs::CopyStream の class 変数越しの受け渡し)
       の可能性。次に触るときは spec を分割実行して例を特定するところから。
+
+## 正規表現の名前付きキャプチャ → ローカル変数束縛 (2026-08-14 発見)
+- [ ] `/(?<n>\d+)/ =~ str` が **パースできない** (prism `PM_MATCH_WRITE_NODE` = 102 が
+      node_unsupported)。CRuby はこの形だけ特別扱いで、名前付きキャプチャと同名の
+      ローカル変数を作る (正規表現がリテラルで左辺のときのみ)。
+      `MatchData#[:name]` / `#named_captures` / `Regexp#names` は動くので、
+      足りないのは「リテラル正規表現 =~ で local を作る」構文だけ。
+      transduce_call の `=~` 経路で、左辺が PM_REGULAR_EXPRESSION_NODE かつ
+      names が空でない場合に「match して各 name を local に代入」へ desugar すればよい。

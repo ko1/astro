@@ -12,27 +12,34 @@ Ruby サブセットの言語実装。**ASTro フレームワーク**（AST を�
 
 同じ AST から2通りに実行できる（ASTro の核心）:
 
-- **インタプリタ**（tree-walk, `--plain`）— コード生成なしの共通エンジン。tree-walk dispatcher は **~68 KB** と極小。
+- **インタプリタ**（tree-walk, `--plain`）— コード生成なしの共通エンジン。全 125 個の
+  `DISPATCH_node_*` を合計しても **~34 KB**（平均 275 B/ノード）と極小。
 - **AOT**（`--aot-compile` → `--compiled-only`）— 各ノードを部分評価して特殊化ディスパッチャ（SD）を C に吐き、
   `code_store/all.so` として dlopen。プログラムごとに特殊化コードを生成する。
 
 GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy path を
 `BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1`（毎 alloc で GC + retired plane を mprotect）で検証している。
 
-## 性能（optcarrot, 180 フレーム, checksum 59662 全一致）
+## 性能（optcarrot, 180 フレーム, checksum 59662 全モード一致）
+
+`make optcarrot-report FRAMES=180 BENCHRUNS=3`、2026-08-14 / idle な 16-core Linux /
+比較対象は **CRuby 4.0.2**（比は相手の CRuby バージョンで動くので、数字を引用するときは
+一緒に測り直すこと）:
 
 | 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
 |---|---:|---:|---:|
-| **koruby AOT** | **73.4** | **2.40×（速い）** | 0.63× |
-| koruby interp (tree-walk) | 34.7 | 1.14×（速い） | 0.30× |
-| CRuby (no yjit) | 30.5 | 1.00× | — |
-| CRuby + YJIT | 115.8 | 3.79× | 1.00× |
+| **koruby AOT**（aot+cached） | **77.0** | **1.80×（速い）** | 0.44× |
+| koruby interp (tree-walk) | 42.0 | 0.98× | 0.24× |
+| CRuby (no yjit) | 42.7 | 1.00× | 0.24× |
+| CRuby + YJIT | 176.8 | 4.14× | 1.00× |
 
-- **AOT は素の CRuby を 2.4× 上回る**。tree-walk インタプリタ単体でも素の CRuby を上回る。
+- **AOT は素の CRuby を 1.8× 上回る**。tree-walk インタプリタ単体でも素の CRuby と同水準。
 - YJIT には optcarrot（method-call / object アクセス支配のワークロード）で負ける。マイクロベンチでは
-  多くで AOT が YJIT を上回り、再帰（ackermann/fib）と object 系で負ける、という分布。
-- バイナリ: 本体は strip 後 **1.77 MB**（`-ggdb3` 込みだと 9.15 MB、うち 7.2 MB がデバッグ情報）。
-  optcarrot 全体を AOT 特殊化すると `code_store/all.so` が **~2.9 MB**（~943 SD / 523 TU）。
+  多くで AOT が YJIT を上回り、再帰（ackermann/fib）と object 系で負ける、という分布
+  （[docs/perf.md](./docs/perf.md)）。
+- AOT の bake 込み（aot+compile）は 21.0 秒。2 回目以降は `code_store` を dlopen するだけ。
+- バイナリ: 本体は strip 後 **1.98 MB**（`-ggdb3` 込みだと 9.94 MB）。
+  optcarrot 全体を AOT 特殊化すると `code_store/all.so` が **2.88 MB**（**494 SD / 494 TU**）。
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
@@ -60,7 +67,9 @@ corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件
   `define_method`、`Binding`/`eval(str, binding)`/`TOPLEVEL_BINDING`、`super`（prepend MRO 線形化含む）、
   例外 + `backtrace`/`caller`、`defined?`、`freeze`/`FrozenError`。
 - **正規表現**: `libastrogre` ベースの本物の Regexp/MatchData。`=~`/`$1..$9`/`$~`/`$&`/`` $` ``/`$'`、
-  scan/match/split/sub/gsub（`\1` backref + block）、名前付きキャプチャ、lookahead/lookbehind、
+  scan/match/split/sub/gsub（`\1` backref + block）、名前付きキャプチャ（`MatchData#[:name]` /
+  `#named_captures` / `Regexp#names`。ただし **`/(?<n>…)/ =~ str` がローカル変数 `n` を
+  作る形は未対応** — prism の MATCH_WRITE ノードが未実装）、lookahead/lookbehind、
   in-pattern backref、POSIX class、`/i`・`/m` フラグ、`Regexp.union`、補間 `/#{}/`。
 - **数値**: fixnum tagged 算術、bignum（GMP）、Rational、Complex、CRuby 互換 MT19937（seeded 完全一致）。
 - **core クラス**: Array/Hash/String/Symbol/Range/Struct/Data/Set/Comparable/Enumerable
@@ -73,18 +82,24 @@ corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件
 
 ## 意図的な除外（現時点でスコープ外）
 
-- **encoding / transcoding**: 3-bit tag で UTF-8 / US-ASCII / BINARY のみ。任意 encoding・変換・
-  Unicode case mapping は非対応（[docs 参照](./docs/) と `project_koruby_precise_encoding`）。
-  ※正規表現そのものは対応済み。encoding 依存の regex テストのみがこの境界。
-- **真の並行性**: Thread は同期実行モデル。Ractor / Fiber scheduler なし。
-- **gem エコシステム**: 外部 gem / native 拡張のロード、`require` のパス解決、autoload は非対応。
+- **encoding / transcoding**: String header の 3-bit フィールドで encoding を持つ。
+  **直接扱えるのは UTF-8 / US-ASCII / ASCII-8BIT の 3 つ**で、それ以外は「名前だけ覚える」
+  （`force_encoding("ISO-8859-1")` は通り `#encoding` も返すが、文字単位の操作は
+  NotImplementedError）。`String#encode` の実 transcoding と Unicode case mapping は非対応
+  （`project_koruby_precise_encoding`）。※正規表現そのものは対応済みで、encoding 依存の
+  regex テストだけがこの境界。
+- **真の並行性**: Thread は **green thread M:1**（native 1 本の上で協調スケジューリング。
+  blocking 操作でのみ切り替わり、preemption なし）。**真の並列実行はしない**。
+  Ractor と Fiber scheduler は無し（`Fiber.scheduler` は nil を返すスタブ）。
+- **gem エコシステム**: 外部 gem / native 拡張のロードは非対応。
+  （`require` の `$LOAD_PATH` 解決と `autoload` は実装済み — [done.md](./docs/done.md)）
 
 ## ビルド・テスト・ベンチ
 
 ```sh
 make                       # koruby_precise を直接ビルド（GC=copy moving default）
                            # prism は ../naruby/prism を symlink（vendored, untracked）
-make test                  # rubyharness 差分テスト（CRuby オラクル, 93,399 件）
+make test                  # rubyharness 差分テスト（CRuby オラクル, 100,354 件）
                            #   CAT=<category> / STRESS=1 で絞り込み・GC stress
 make bench                 # 多モード bench（interp / aot+compile / aot+cached / cruby+yjit）
 make optcarrot             # optcarrot をインタプリタで（--plain, FRAMES= 指定可）
