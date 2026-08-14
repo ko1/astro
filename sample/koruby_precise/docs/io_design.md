@@ -242,6 +242,25 @@ main の全 return / `exit` / `exit!` / `abort` と **fork の直前**に置く
 `Kernel#p` / `#print` は「memstream に組み立て → rep へ 1 回 write」で、
 `#puts` と同じ sink を通る (混ぜると出力順序が割れるため分離不可)。
 
+## 双方向ストリームの約束事 (2026-08 に踏んだ罠)
+
+koruby の IO は **1 オブジェクト = 1 ディスクリプタ**。双方向 (`IO.popen(cmd, "r+")`、
+socketpair、socket) を扱うときにここから来る制約が 3 つある。
+
+1. **duplex popen は pipe(2) では作れない。** pipe は片方向なので、親が 1 本の fd で
+   読み書きするには `socketpair(AF_UNIX, SOCK_STREAM)` を使い、子には peer を stdin と
+   stdout の両方に配る。親側は rw=3 の IO 1 つ。
+2. **`#close_read` / `#close_write` は相手が socket なら `shutdown(2)` する。**
+   koruby は方向ビット (`@__io_mode`) を落として両方向無くなった時点で close する実装
+   だが、socket ではそれだけだと peer に EOF が伝わらない。duplex popen で
+   `close_write` しても子が読み続け、親の read と相互待ちになる。
+3. **read(2) でブロックする前に自分の書き込みバッファを flush する** (`korb_io_fill_p`)。
+   相手が返事を待っている間こちらの出力が溜まったままだと両者が止まる。CRuby は
+   duplex IO のバッファ状態を共有しているので同じ効果になる。
+
+関連して `IO.copy_stream` は `#read(n)` ではなく **`#readpartial` を使う** (n バイト
+揃うまで待つ read だと、対話的な pipe 越しのコピーが進まない)。
+
 ## cancel / 割り込み (Thread#kill / #raise / signal)
 
 Phase 1 の単純化: **kill を発行する側も green thread なので、発行時点で対象は

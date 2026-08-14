@@ -3,6 +3,70 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
+## 2026-08-13〜14 に入れたもの (rubyspec 実 mspec sweep ラウンド)
+
+計測と全体像は [rubyspec.md](./rubyspec.md) の「2026-08-13〜14」節を参照
+(core pass-rate 75.9% → 80.2%、make test 100,098 → 100,354)。
+
+### 新規実装
+- **IO::Buffer** (`prelude/io_buffer.rb`) — binary String + offset で表現。
+  new/for/string/map/slice/transfer/free/resize、get_value 系 (18 型を
+  pack/unpack)、get_string/set_string/clear/copy、`& | ^ ~` と破壊版、
+  `<=>`/`==`、hexdump/inspect (256 バイトで打ち切り)。valid? は親の
+  generation と bounds で判定し、無効な slice へのアクセスは InvalidatedError。
+- **IO.copy_stream** — path / IO 風オブジェクトの両対応、length・offset の
+  #to_int 変換、`#readpartial` 優先 (対話的な pipe でデッドロックしない)。
+- **autoload** — Module#autoload / autoload? / Kernel#autoload。koruby は定数を
+  即時解決するので「モジュールごとの表に記録し #const_missing で require して
+  引き直す」形。top-level の定数ミスでも Object.const_missing を呼ぶよう修正。
+  require が `$LOADED_FEATURES` に絶対パスを積むようにした。
+- **Fiber**: #raise (Kernel/Thread と共通の例外ビルダ)、#transfer、#kill
+  (中断点で unwind、ensure は走る。実行中の親を子から kill する場合は
+  killing フラグを立てて switch 点で unwind)、storage (`Fiber[]` / `#storage` /
+  `Fiber.new(storage:)`)、blocking?、scheduler スタブ。
+- **File::Stat**: readable?/writable?/executable? とその *_real? (access(2) では
+  なく保持している stat 値で判定)、size?、dev_major/dev_minor/rdev_major/
+  rdev_minor、birthtime (statx(STATX_BTIME))。File#lstat、File.birthtime。
+- **Process**: PRIO_* と getpriority/setpriority、CLOCK_* 定数一式、
+  times (getrusage + Process::Tms)、groups/waitall/setproctitle/getsid/warmup、
+  Process::Status.wait。
+- **Regexp**: linear_time?、timeout/timeout=、try_convert、fixed_encoding?。
+- **Binding**: implicit_parameter_get / implicit_parameter_defined? /
+  implicit_parameters (`_1..._9` / `it`)、#inspect。`{ it }` ブロックは prism が
+  locals を持たないので Binding ノード生成時にスロット 0 を "it" と名付ける。
+- **その他**: Kernel#putc、IO#close_read/close_write (socket なら shutdown(2))、
+  Enumerator::Lazy#eager、GC.config/total_time/measure_total_time、
+  Encoding::Converter のフラグ定数 14 個。
+
+### 直した汎用バグ (spec 以外にも効く)
+- splat 呼び出しで空 kwsplat が elide されない (`node_ary_push_kw` 追加)。
+  `f.raise(*args, **kwargs)` 形の delegation が全部壊れていた。
+- `define_method(:m, &SomeClass.method(:x))` が LocalJumpError。
+- `Klass.send(:new)` が define_method した特異 `new` を無視 (直接呼び出しは効く)。
+- Regexp が inspect で `#<Object>` になる (C プリンタに枝が無かった)。
+- **Kernel#exit が SystemExit を raise しない** — rescue/ensure が効かず、
+  exit 系 spec 4 file が途中で黙って終了していた。abort も $stderr 経由に。
+- 未捕捉例外の表示が etype 名なので LoadError/ThreadError/ユーザ定義が
+  全部 RuntimeError と出ていた。
+- 双方向ストリームのデッドロック 2 種 (read 前の flush / copy_stream の read)。
+- define_method の body 内 `break` がフレームを突き抜けてプログラム終了。
+- 変換プロトコルの respond_to? を include_private 付きで呼んでいなかった。
+
+### CRuby 追従 (既存機能の詰め)
+- **String#unpack** のディレクティブ解析を全面修正 (#to_str・`#` コメント・
+  `X`・`@`・修飾子検査・`u`・結果 encoding・`Z*`・`U` の malformed 検出) →
+  unpack バケツ 61err → 0。**Array#pack** も `@`/`Z`/`M`/`m`/`u` と結果 encoding。
+- IO の Integer 引数を #to_int 変換、IO#reopen が #to_io、IO.new の options Hash
+  (mode:/binmode:/encoding: 系)、File.open の keyword options と第3引数 perm、
+  File.new(fd) 形、File.chmod の mode 変換。
+- require/load のパス引数を #to_path/#to_str 変換、LoadError#path。
+- Time: 秒未満精度 (clock_gettime)、Time.now(in:)、軍事タイムゾーン 1 文字表記、
+  Time.at の Rational 精度と #to_r 変換、Time#to_i の floor、utc_offset の範囲検査。
+- Kernel#Rational の Complex 引数と #to_int fallback、Complex の j/J と極形式、
+  Integer/Float/Rational/Complex の `exception:` 値検査、Kernel#exit の引数変換。
+- String#byteslice/#bytesplice の境界と型エラー、Array#find/#rfind の ifnone。
+- Thread#to_s に生成位置と BINARY encoding。IO.popen の "r+" (socketpair)。
+
 ## 2026-08-12 に入れたもの (継続ラウンド)
 
 - socket: recvfrom / recvmsg / sendmsg / gethostbyname / accept_nonblock /

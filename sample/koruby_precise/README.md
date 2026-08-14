@@ -36,14 +36,22 @@ GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy
 
 ## rubyspec 充足（core, CRuby drop-in 目標）
 
-計測: `ruby tools/rubyspec_run.rb`（mspec shim + spec 連結方式）。2026-07-13 時点:
+計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb` を使う。
+2026-08-14 時点:
 
-- **core example pass-rate 84.6%**（pass=44,673 / fail=4,437 / err=3,723）。
-- ファイル単位で **fully-clean（0 fail 0 err）= 873 / 2,097（42%）**。
-- 内訳の目安: matchdata 96% / 多数の core クラスが 90%+。残りは下記「意図的除外」隣接の long tail。
+```
+DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12
+files=2144   fully-clean（0 fail 0 err）= 1,026
+examples=22,326  pass=17,908  fail=3,111  err=1,307   → core example pass-rate 80.2%
+```
+
 - 単一 spec の失敗詳細は `ruby tools/runspec1.rb <spec>`（例 `array/uniq`）。
+- `tools/rubyspec_run.rb`（mspec **shim** + spec 連結方式）は速いが `it_behaves_like` や
+  mock が独自実装なので **pass を水増しする**（同時期に shim 86.7% / 実 mspec 78%）。
+  数字を出すときは実 mspec のほうを使うこと。
+- 残りの分布と意図的除外は [docs/rubyspec.md](./docs/rubyspec.md)。
 
-corpus（`make test`）は CRuby オラクル差分の golden test **93,399 件を 0 fail / 0 crash** で維持している。
+corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件を 0 fail / 0 crash** で維持している。
 
 ## 実装済み機能（抜粋・すべて CRuby 一致を確認）
 
@@ -59,7 +67,9 @@ corpus（`make test`）は CRuby オラクル差分の golden test **93,399 件�
   （lazy Enumerator 一部）/Time（sub-second）/pack・unpack/sprintf。
 - **メタプロ**: Module#include/prepend/extend、`class << self` 一般 body、class instance variable、
   const_set/alias_method/undef_method、builtin subclass/extend（side-table 方式）。
-- **stdlib**: ENV/ARGV/File/Dir/IO/StringIO/Marshal（一部）。
+- **stdlib**: ENV/ARGV/File/Dir/IO/StringIO/Marshal（一部）、IO::Buffer、IO.copy_stream、autoload。
+- **Thread / Fiber**: green thread M:1（scheduler + blop 層。Thread/Mutex/Queue/ConditionVariable/
+  IO.select）、Fiber の resume/yield/raise/transfer/kill/storage。
 
 ## 意図的な除外（現時点でスコープ外）
 
@@ -80,7 +90,8 @@ make bench                 # 多モード bench（interp / aot+compile / aot+cac
 make optcarrot             # optcarrot をインタプリタで（--plain, FRAMES= 指定可）
 make optcarrot-aot         # optcarrot を AOT で（bake → --compiled-only の fps）
 
-ruby tools/rubyspec_run.rb <dir>   # rubyspec 充足率（DUMP=path WORST=1 で詳細）
+ruby tools/mspec_real_run.rb <dir> [jobs]   # rubyspec 充足率（本物の mspec。DUMP=path は ENV で）
+ruby tools/rubyspec_run.rb <dir>   # 同（shim 版・速いが pass 水増し。DUMP=path WORST=1 で詳細）
 ruby tools/runspec1.rb <spec>      # 単一 spec の pass/fail 詳細
 ```
 

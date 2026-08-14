@@ -296,3 +296,83 @@ long tail（mock protocol、message 整形、deep-MRO nested super、sized Enume
 encoding transcoding / Unicode case、真の並行性（Thread 同期モデル・Ractor・Fiber scheduler）、
 gem/require/autoload/native 拡張。encoding 依存 regex もここ（regex 本体は対応済み）。
 （**Marshal byte-exact は 2026-07 に CRuby 4.8 wire format へ全書換して除外から外した** — 主流オブジェクトグラフは byte 一致。残るのは fixture の encoding tag 依存・Time#_dump binary format など encoding/edge のみ。）
+
+## 2026-08-13〜14 実 mspec sweep ラウンド（75.9% → 80.2%）
+
+計測は **本物の mspec を無改造 spec に噛ませる** `tools/mspec_real_run.rb`
+（shim の `tools/rubyspec_run.rb` は `it_behaves_like` や mock が独自実装で
+pass を水増しするので、実数はこちらで見る。DUMP は **ENV** で渡す：
+`DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`）。
+
+```
+起点   files=2144 clean=946   examples=22,263 pass=16,906 fail=3,372 err=1,985  → 75.9%
+現在   files=2144 clean=1,026 examples=22,326 pass=17,908 fail=3,111 err=1,307  → 80.2%
+whole-file-fail 15 → 9    make test 100,098 → 100,354 PASS
+```
+
+**⚠ sweep 中に `make` を走らせない。** バイナリを奪い合って whole-file-fail が
+15 → 1,579 に化ける（実測）。同じ理由でバックグラウンドのビルドと sweep は同時 1 本。
+
+### 見つかった汎用バグ（spec 以外にも効くもの）
+
+- **splat 呼び出しで空 kwsplat が elide されない** — `m(*a, **h)` の splat 経路
+  （`build_array`）が keyword bundle を positional に押し込んでいた。`f.raise(*args, **kwargs)`
+  形の delegation が軒並み壊れる。`node_ary_push_kw` を追加して固定 arity 経路と規則を揃えた。
+- **`define_method(:m, &SomeClass.method(:x))` が LocalJumpError** — Method#to_proc 由来の
+  Proc は node_entry を持たず、captured_self に「Proc 自身」を要求するのに、DM 経路が
+  receiver スロットを渡していた。
+- **`Klass.send(:new)` が define_method した特異 `new` を無視** — mid_new カスケードが
+  override として ISEQ/CFUNC しか認めていなかった（直接呼び出しは効いていたので send 経由だけの差）。
+- **Regexp が inspect で `#<Object>`** — C の inspect プリンタに `KORB_OBJ_REGEXP` の枝が無く、
+  `p /x/` や配列/Hash 内の Regexp が全部 `#<Object>` になっていた（`Regexp#inspect` 自体は正しい）。
+- **`Kernel#exit` が exit(3) 直叩き** — SystemExit を raise しないので rescue も ensure も効かず、
+  テストフレームワークが exit を捕まえられない。SystemExit 化して main.c で終了コードに変換。
+- **未捕捉例外の表示が etype 名** — LoadError/ThreadError やユーザ定義サブクラスが全部
+  RuntimeError と表示されていた（exc_class を見るように）。
+- **双方向ストリームのデッドロック 2 種** — read(2) でブロックする前に自分の書き込みバッファを
+  flush していなかった／`IO.copy_stream` が `#read(n)`（n バイト揃うまで待つ）を使っていた。
+- **`define_method` の body 内 `break`** — lambda 意味論なのにフレームを突き抜けてプログラムごと終了していた。
+- **変換プロトコルの `respond_to?`** — CRuby (rb_check_funcall) は private も見えるよう
+  2 引数で尋ねる。koruby は 1 引数だった。
+
+### 新規実装
+
+IO::Buffer（`prelude/io_buffer.rb`、binary String + offset 表現、valid? は親 generation と
+bounds で判定）/ IO.copy_stream / autoload（const_missing 経由＋`$LOADED_FEATURES`）/
+Fiber の raise・transfer・kill・storage（`Fiber[]` / `#storage` / `Fiber.new(storage:)`）/
+File::Stat の権限述語・dev_major 系・birthtime(statx) / File#lstat / Kernel#putc /
+Process の priority・CLOCK_*・times(getrusage)・groups・waitall / Regexp の linear_time?・
+timeout・try_convert・fixed_encoding? / GC.config 系 / Binding の implicit parameter API
+(`_1..._9` / `it`) / IO#close_read・close_write / Enumerator::Lazy#eager / Process::Status.wait。
+
+### CRuby 追従（既存機能の詰め）
+
+String#unpack のディレクティブ解析を全面的に合わせた（`#to_str`・`#` コメント・`X`・`@`・
+修飾子検査・`u`・結果 encoding・`Z*`・`U` の malformed 検出）ので unpack バケツは 61err → 0。
+Array#pack も `@`/`Z`/`M`/`m`/`u` と結果 encoding（CRuby の enc_info 状態機械）を合わせた。
+ほかに IO の Integer 引数 `#to_int`・IO.new の options Hash・File.open の keyword options と perm・
+require/load のパス変換と LoadError#path・Time の秒未満精度（clock_gettime）と `in:`・軍事 TZ・
+Time.at の Rational 精度・Kernel#Rational/Complex/exit の引数変換・String#byteslice/bytesplice の境界。
+
+### 残っている構造的ギャップ
+
+`docs/todo.md` に詳細。要点だけ：
+
+- **`eval(str)` が呼び出し元のローカルを見ない**。parse 時に `eval(str, binding)` へ
+  desugar すれば同一フレーム分は直る（実装・計測済み: kernel/eval 17fail+16err → 14+12）が、
+  **body root が `node_binding` のメソッドが AOT bake されない**バグに当たって optcarrot の
+  AOT ゲートが落ちるため revert して保留。`@noinline` を付けても exempt されなかった。
+- **Binding が外側スコープのローカルを列挙しない**（closure chain 未走査）。
+- `core/io/copy_stream_spec.rb` が今ラウンドの IO 変更で whole-file timeout に退行。
+  単体で切り出したケースは全部 CRuby 一致で通るのに spec 実行だと無限ループする。
+- ObjectSpace.each_object は GC のヒープ走査 API が要る（未着手）。
+- Encoding::Converter の実 transcoding、Unicode normalization、TracePoint は従来どおり除外域。
+
+### 残 error バケツ（core, err 数）
+
+```
+kernel 106  string 93  io 75  file 72  [tracepoint 69]  time 61  module 61
+enumerator 54  [encoding 50]  thread 45  process 35  regexp 34
+```
+`[...]` = 除外域。単一ファイル最大は tracepoint/enable 32（棚上げ）、time/new 29、
+objectspace/each_object 19、kernel/eval 16。
