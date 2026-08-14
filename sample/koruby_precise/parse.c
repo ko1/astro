@@ -2470,7 +2470,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t flags = rn->base.flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE |
                                            PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
                                            PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE |
-                                           PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT);
+                                           PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT |
+                                           PM_REGULAR_EXPRESSION_FLAGS_EUC_JP |
+                                           PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
+                                           PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
         return ALLOC_node_regexp(bytes, len, flags);
       }
       case PM_SYMBOL_NODE: {
@@ -2687,7 +2690,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t flags = in->base.flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE |
                                            PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
                                            PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE |
-                                           PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT);
+                                           PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT |
+                                           PM_REGULAR_EXPRESSION_FLAGS_EUC_JP |
+                                           PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J |
+                                           PM_REGULAR_EXPRESSION_FLAGS_UTF_8);
         NODE *src;
         WITH_CHAIN(tc, kind_node_regexp_dyn.slot_count, (src = build_dstr(tc, in->parts.nodes, in->parts.size)));
         return ALLOC_node_regexp_dyn(flags, src);

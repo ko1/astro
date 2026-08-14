@@ -260,3 +260,12 @@ class Enumerator
     v
   end
 end
+
+class Enumerator::Lazy
+  # #eager — 以降を非 lazy に戻す (列挙内容は同じ)。koruby の lazy は
+  # Enumerator の mode で表すので、eager な Enumerator を作り直す。
+  def eager
+    src = self
+    Enumerator.new { |y| src.each { |*a| y.yield(*a) } }
+  end
+end

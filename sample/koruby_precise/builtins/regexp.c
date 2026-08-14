@@ -522,7 +522,18 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
-static int korb_re_ruby_opts(uint32_t flags) { int o = 0; if (flags & 4u) o |= 1; if (flags & 8u) o |= 2; if (flags & 16u) o |= 4; return o; }
+/* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
+ * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
+ * for /u /e /s and NOENCODING (32) for /n. */
+static int korb_re_ruby_opts(uint32_t flags) {
+    int o = 0;
+    if (flags & 4u)  o |= 1;    /* IGNORECASE */
+    if (flags & 8u)  o |= 2;    /* EXTENDED */
+    if (flags & 16u) o |= 4;    /* MULTILINE */
+    if (flags & (64u | 256u | 512u)) o |= 16;   /* EUC-JP / Windows-31J / UTF-8 → FIXEDENCODING */
+    if (flags & 128u) o |= 32;                  /* ASCII-8BIT (/n) → NOENCODING */
+    return o;
+}
 static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
 static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

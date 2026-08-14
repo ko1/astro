@@ -893,6 +893,13 @@ end
 module Process
   # The wait(2) status word behind $?.  `@raw` is the value waitpid filled in.
   class Status
+    # Process::Status.wait(pid, flags = 0) — wait2 の Status だけを返す形。
+    def self.wait(pid = -1, flags = 0)
+      _, st = Process.wait2(pid, flags)
+      st
+    rescue Errno::ECHILD
+      nil
+    end
     def initialize(pid, raw)
       @pid = pid
       @raw = raw
@@ -1250,5 +1257,13 @@ class Fiber
   end
   def self.schedule(*args, &blk)
     raise RuntimeError, "No scheduler is available!"
+  end
+end
+
+class Regexp
+  # fixed_encoding? — /u /e /s /n のような encoding 指定が付いた正規表現か。
+  # koruby は source の encoding タグで判定する (UTF-8 でない = 明示指定)。
+  def fixed_encoding?
+    (options & Regexp::FIXEDENCODING) != 0
   end
 end
