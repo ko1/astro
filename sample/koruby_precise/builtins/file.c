@@ -1258,89 +1258,290 @@ static RESULT korb_m_dir_i_children(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     }
     return RESULT_OK(VALUE_REF_GET(out));
 }
-/* Push the glob(3) matches of one concrete pattern into `arr`.  When `strip` is
- * set, a synthetic "./" base prefix (added for a leading `**`) is removed so the
- * results match CRuby's bare relative paths. */
-static RESULT korb_glob_push(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat, int flags, bool strip) {
-    glob_t g; memset(&g, 0, sizeof g);
-    glob(pat, flags, NULL, &g);
-    for (size_t i = 0; i < g.gl_pathc; i++) {
-        const char *m = g.gl_pathv[i];
-        if (strip && m[0] == '.' && m[1] == '/') m += 2;
-        slots[0] = UNWRAP(korb_str_new(c, slots, m, (uint32_t)strlen(m)));
-        if (korb_ary_push_val(c, slots + 1, arr, slots[0]).state != KORB_NORMAL) break;
+/* ---- Dir.glob --------------------------------------------------------------
+ *
+ * A directory walk rather than glob(3): Ruby's `**` (recursive), its dotfile
+ * rules and the `base:` option have no POSIX equivalent.  The pattern is split
+ * on '/' into segments matched one directory level at a time; a "**" segment
+ * that is followed by a '/' consumes zero or more directory levels.
+ *
+ * Results are relative to `base` (the process cwd when there is none), which is
+ * what CRuby returns, so the walk keeps the result path and the filesystem path
+ * separate. */
+struct korb_glob {
+    CTX *c;
+    VALUE_REF arr;                     /* the result array (rooted by the caller) */
+    int fnm;                           /* fnmatch(3) flags */
+    bool dotmatch;
+    const char *base;                  /* "" = the process cwd */
+};
+
+/* the filesystem path for a result path (which is relative to base) */
+static void korb_glob_fspath(const struct korb_glob *g, const char *rel, char *out, size_t outsz) {
+    if (g->base[0] == '\0') snprintf(out, outsz, "%s", rel[0] ? rel : ".");
+    else if (rel[0] == '\0')  snprintf(out, outsz, "%s", g->base);
+    else                      snprintf(out, outsz, "%s/%s", g->base, rel);
+}
+
+static bool korb_glob_isdir(const struct korb_glob *g, const char *rel) {
+    char fp[PATH_MAX]; korb_glob_fspath(g, rel, fp, sizeof fp);
+    struct stat st;
+    return stat(fp, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static RESULT korb_glob_emit(struct korb_glob *g, VALUE *slots, const char *rel, bool dir_only) {
+    char buf[PATH_MAX];
+    if (dir_only) snprintf(buf, sizeof buf, "%s/", rel);      /* empty rel becomes "./", for a dot double-star */
+    else if (rel[0] == '\0') return RESULT_OK(KORB_NIL);
+    else snprintf(buf, sizeof buf, "%s", rel);
+    if (dir_only && rel[0] == '\0') snprintf(buf, sizeof buf, "./");
+    slots[0] = UNWRAP(korb_str_new(g->c, slots, buf, (uint32_t)strlen(buf)));
+    return korb_ary_push_val(g->c, slots + 1, g->arr, slots[0]);
+}
+
+/* "." and ".." are only ever produced by a segment that spells them out (".*"
+ * counts as spelling "." — CRuby returns it, but never ".."). */
+static bool korb_glob_skip_dot(const char *name, const char *seg, bool dotmatch) {
+    if (name[0] != '.') return false;
+    if (name[1] == '\0') return seg[0] != '.' && !dotmatch;             /* "."  */
+    if (name[1] == '.' && name[2] == '\0') return strcmp(seg, "..");    /* ".." */
+    return false;
+}
+
+static int korb_glob_dsel(const struct dirent *d) { (void)d; return 1; }
+
+static RESULT
+korb_glob_walk(struct korb_glob *g, VALUE *slots, char *rel, size_t rlen,
+               char *const *segs, const bool *slashed, int nseg, int si, bool dir_only)
+{
+    if (si == nseg) {                                  /* pattern exhausted → a hit */
+        if (dir_only && !korb_glob_isdir(g, rel)) return RESULT_OK(KORB_NIL);
+        return korb_glob_emit(g, slots, rel, dir_only);
     }
-    globfree(&g);
+    const char *const seg = segs[si];
+    /* a double star recurses only when a '/' follows it; a trailing one is just a star */
+    const bool rec = slashed[si] && (!strcmp(seg, "**") || !strcmp(seg, ".**"));
+    const bool recdot = rec && seg[0] == '.';
+    char fp[PATH_MAX]; korb_glob_fspath(g, rel, fp, sizeof fp);
+    struct dirent **ents = NULL;
+    const int nent = scandir(fp, &ents, korb_glob_dsel, alphasort);     /* sorted, as CRuby lists */
+    RESULT r = RESULT_OK(KORB_NIL);
+    if (rec) {
+        /* zero directories: the dot form also yields the base itself ("./") */
+        /* at the base only the dot form yields "./"; deeper, every level is a hit */
+        if (si + 1 < nseg || recdot || rel[0] != '\0')
+            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only);
+        for (int i = 0; nent > 0 && i < nent && r.state == KORB_NORMAL; i++) {
+            const char *const nm = ents[i]->d_name;
+            if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
+            if (!recdot && !g->dotmatch && nm[0] == '.') continue;
+            const size_t nl = strlen(nm);
+            if (rlen + nl + 2 >= PATH_MAX) continue;
+            char sub[PATH_MAX]; struct stat lst;
+            snprintf(sub, sizeof sub, "%s/%s", fp, nm);
+            if (lstat(sub, &lst) != 0 || !S_ISDIR(lst.st_mode)) continue;   /* lstat: never follow symlinks */
+            const size_t save = rlen;
+            if (rlen) rel[rlen++] = '/';
+            memcpy(rel + rlen, nm, nl); rlen += nl; rel[rlen] = '\0';
+            r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si, dir_only);   /* still `**` */
+            rlen = save; rel[rlen] = '\0';
+        }
+    } else {
+        for (int i = 0; nent > 0 && i < nent && r.state == KORB_NORMAL; i++) {
+            const char *const nm = ents[i]->d_name;
+            if (korb_glob_skip_dot(nm, seg, g->dotmatch)) continue;
+            if (fnmatch(seg, nm, g->fnm) != 0) continue;
+            const size_t nl = strlen(nm);
+            if (rlen + nl + 2 >= PATH_MAX) continue;
+            const size_t save = rlen;
+            if (rlen) rel[rlen++] = '/';
+            memcpy(rel + rlen, nm, nl); rlen += nl; rel[rlen] = '\0';
+            if (si + 1 == nseg || korb_glob_isdir(g, rel))                  /* only a dir can carry more */
+                r = korb_glob_walk(g, slots, rel, rlen, segs, slashed, nseg, si + 1, dir_only);
+            rlen = save; rel[rlen] = '\0';
+        }
+    }
+    if (nent > 0) { for (int i = 0; i < nent; i++) free(ents[i]); }
+    free(ents);
+    return r;
+}
+
+/* Glob one brace-free pattern.  A leading '/' makes the walk absolute (the base
+ * is then the root and the results carry it). */
+static RESULT korb_glob_one(struct korb_glob *g, VALUE *slots, const char *pat) {
+    char segbuf[PATH_MAX];
+    snprintf(segbuf, sizeof segbuf, "%s", pat);
+    char *p = segbuf;
+    const bool absolute = (p[0] == '/');
+    struct korb_glob gl = *g;
+    char abase[PATH_MAX];
+    if (absolute) {
+        while (*p == '/') p++;
+        snprintf(abase, sizeof abase, "/");
+        gl.base = abase;
+    }
+    const size_t plen = strlen(p);
+    const bool dir_only = plen > 0 && p[plen - 1] == '/';
+    char *segs[256]; bool slashed[256];
+    int nseg = 0;
+    for (char *q = p; *q && nseg < 256; ) {
+        char *const sl = strchr(q, '/');
+        if (sl) *sl = '\0';
+        if (*q) { segs[nseg] = q; slashed[nseg] = (sl != NULL); nseg++; }
+        if (!sl) break;
+        q = sl + 1;
+    }
+    if (nseg == 0) return RESULT_OK(KORB_NIL);
+    char rel[PATH_MAX]; rel[0] = '\0';
+    RESULT r = korb_glob_walk(&gl, slots, rel, 0, segs, slashed, nseg, 0, dir_only);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (absolute) {                                    /* re-prefix the '/' the walk dropped */
+        const uint32_t n = VAL2ARY(VALUE_REF_GET(g->arr))->len;
+        for (uint32_t i = 0; i < n; i++) {
+            const VALUE v = korb_items_data(VAL2ARY(VALUE_REF_GET(g->arr))->items)[i];
+            if (!KORB_STRING_P(v) || korb_strbuf_data(VAL2STR(v)->buf)[0] == '/') continue;
+            char buf[PATH_MAX];
+            snprintf(buf, sizeof buf, "/%.*s", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf));
+            slots[0] = UNWRAP(korb_str_new(g->c, slots, buf, (uint32_t)strlen(buf)));
+            ARO_STORE(g->c, VAL2ARY(VALUE_REF_GET(g->arr))->items,
+                      &korb_items_data(VAL2ARY(VALUE_REF_GET(g->arr))->items)[i], slots[0]);
+        }
+    }
     return RESULT_OK(KORB_NIL);
 }
-/* Glob one pattern into `arr`, expanding a recursive double-star segment (which
- * glob(3) does not support) by trying prefix + N intermediate wildcard dirs +
- * suffix, for N = 0..24. */
-static RESULT korb_glob_one(CTX *c, VALUE *slots, VALUE_REF arr, const char *pat) {
-    const int flags = GLOB_BRACE | GLOB_TILDE;
-    const char *ss = strstr(pat, "**");
-    if (!ss) return korb_glob_push(c, slots, arr, pat, flags, false);
-    /* split into the prefix before the double-star and the suffix after it. */
-    char prefix[4096], suffix[4096];
-    size_t plen = (size_t)(ss - pat);
-    while (plen > 0 && pat[plen - 1] == '/') plen--;                 /* trim the '/' before ** */
-    if (plen >= sizeof prefix) plen = sizeof prefix - 1;
-    memcpy(prefix, pat, plen); prefix[plen] = '\0';
-    const bool strip = (plen == 0);                                 /* leading `**`: drop the synthetic "./" base */
-    const char *suf = ss + 2;                                        /* after "**" */
-    while (*suf == '/') suf++;                                       /* skip the slash after the stars */
-    snprintf(suffix, sizeof suffix, "%s", suf);
-    for (int depth = 0; depth <= 24; depth++) {                      /* ** matches 0..24 directory levels */
-        char pbuf[8192]; int n = 0;
-        n += snprintf(pbuf + n, sizeof pbuf - n, "%s", prefix[0] ? prefix : ".");
-        for (int d = 0; d < depth; d++) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/*");
-        if (suffix[0]) n += snprintf(pbuf + n, sizeof pbuf - (size_t)n, "/%s", suffix);
-        CHECK(korb_glob_push(c, slots, arr, pbuf, flags, strip));
-        /* stop once no directory exists at this depth (nothing deeper to match). */
-        char dbuf[8192]; int m = 0;
-        m += snprintf(dbuf + m, sizeof dbuf - (size_t)m, "%s", prefix[0] ? prefix : ".");
-        for (int d = 0; d <= depth; d++) m += snprintf(dbuf + m, sizeof dbuf - (size_t)m, "/*");
-        glob_t gd; memset(&gd, 0, sizeof gd);
-        glob(dbuf, flags | GLOB_ONLYDIR, NULL, &gd);
-        const size_t dirs = gd.gl_pathc; globfree(&gd);
-        if (dirs == 0) break;
+
+/* Expand `{a,b}` left-to-right (CRuby's order) and glob each result. */
+static RESULT korb_glob_brace(struct korb_glob *g, VALUE *slots, const char *pat, int depth) {
+    const char *ob = NULL;
+    int nest = 0;
+    for (const char *q = pat; *q; q++) {               /* the left-most outermost brace group */
+        if (*q == '\\' && q[1]) { q++; continue; }
+        if (*q == '{') { if (nest++ == 0) ob = q; }
+        else if (*q == '}' && nest && --nest == 0) {
+            char head[PATH_MAX], alt[PATH_MAX], out[PATH_MAX];
+            const size_t hl = (size_t)(ob - pat);
+            if (hl >= sizeof head || depth > 16) break;
+            memcpy(head, pat, hl); head[hl] = '\0';
+            const char *const tail = q + 1;
+            const char *a = ob + 1;
+            int an = 0;
+            for (const char *e = a;; e++) {            /* split the group on top-level commas */
+                if (*e == '\\' && e[1]) { e++; continue; }
+                if (*e == '{') an++;
+                else if (*e == '}' && an) an--;
+                if ((*e == ',' && an == 0) || e == q) {
+                    const size_t al = (size_t)(e - a);
+                    if (al < sizeof alt) {
+                        memcpy(alt, a, al); alt[al] = '\0';
+                        snprintf(out, sizeof out, "%s%s%s", head, alt, tail);
+                        CHECK(korb_glob_brace(g, slots, out, depth + 1));
+                    }
+                    if (e == q) break;
+                    a = e + 1;
+                }
+            }
+            return RESULT_OK(KORB_NIL);
+        }
     }
-    return RESULT_OK(KORB_NIL);
+    return korb_glob_one(g, slots, pat);
 }
-/* Dir.glob(pattern | [patterns]) [ { |path| } ] / Dir[pattern] → matched paths.
- * Supports `**` recursion, brace/tilde expansion, and multiple patterns. */
+
+/* Dir.glob(pattern | [patterns] [, flags] [, base:, sort:, flags:]) [ { |p| } ]
+ * / Dir[...] → the matching paths. */
 static RESULT korb_m_dir_glob(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                               struct Node *block, VALUE *def_env, VALUE *captured_self) {
     (void)self;
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
-    const VALUE p0 = VALUE_SLICE_GET(a, 0);
-    if (KORB_ARRAY_P(p0)) {                                          /* array of patterns */
-        slots[1] = p0;                                              /* root the pattern array */
-        const uint32_t np = VAL2ARY(slots[1])->len;
-        for (uint32_t i = 0; i < np; i++) {
-            const VALUE pv = korb_items_data(VAL2ARY(slots[1])->items)[i];
-            if (!KORB_STRING_P(pv)) continue;
-            uint32_t pl; char pbuf[8192]; const char *ps = korb_str_cstr_len(pv, &pl);
-            if (pl >= sizeof pbuf) continue;
-            memcpy(pbuf, ps, pl); pbuf[pl] = '\0';                   /* copy: korb_glob_one allocs */
-            CHECK(korb_glob_one(c, slots + 2, arr, pbuf));
+    uint32_t na = VALUE_SLICE_LEN(a);
+    long rflags = 0;
+    char basebuf[PATH_MAX]; basebuf[0] = '\0';
+    if (na >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {          /* base: / sort: / flags: */
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
+        int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "sort", 4)));
+        if (ix >= 0) {
+            const VALUE sv = korb_items_data(h->items)[2 * ix + 1];
+            if (UNLIKELY(sv != KORB_TRUE && sv != KORB_FALSE)) {
+                char *ib = NULL; size_t il = 0;
+                FILE *const ms = open_memstream(&ib, &il);
+                if (ms) { korb_fprint_inspect_s(c, slots, ms, sv); fclose(ms); }
+                const RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as sort: %s", ib ? ib : "");
+                free(ib);
+                return er;
+            }
         }
-    } else {
-        if (UNLIKELY(!KORB_STRING_P(p0)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(p0));
-        uint32_t pl; char pbuf[8192]; const char *ps = korb_str_cstr_len(p0, &pl);
-        if (pl < sizeof pbuf) { memcpy(pbuf, ps, pl); pbuf[pl] = '\0'; CHECK(korb_glob_one(c, slots + 2, arr, pbuf)); }
+        ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "flags", 5)));
+        if (ix >= 0) {
+            const VALUE fv = korb_items_data(h->items)[2 * ix + 1];
+            if (FIXNUM_P(fv)) rflags = FIX2LONG(fv);
+        } else if (na >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {
+            rflags = FIX2LONG(VALUE_SLICE_GET(a, 1));
+        }
+        ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "base", 4)));
+        if (ix >= 0) {
+            VALUE bv = korb_items_data(h->items)[2 * ix + 1];
+            if (bv != KORB_NIL) {
+                if (!KORB_STRING_P(bv)) {
+                    slots[0] = bv;
+                    const uint32_t to_path = korb_intern(c->vm, "to_path", 7);
+                    const uint32_t mid = korb_responds_to(c, bv, to_path) ? to_path : korb_intern(c->vm, "to_str", 6);
+                    if (!korb_responds_to(c, bv, mid))
+                        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, bv));
+                    const RESULT br = korb_send(c, slots + 1, mid, 0, 0);
+                    if (UNLIKELY(br.state != KORB_NORMAL)) return br;
+                    bv = br.value;
+                    if (!KORB_STRING_P(bv))
+                        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
+                }
+                if (VAL2STR(bv)->len > 0)
+                    snprintf(basebuf, sizeof basebuf, "%.*s", (int)VAL2STR(bv)->len, korb_strbuf_data(VAL2STR(bv)->buf));
+            }
+        }
+        na--;
+    } else if (na >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) {
+        rflags = FIX2LONG(VALUE_SLICE_GET(a, 1));
+    }
+    /* a base: that is not a directory matches nothing */
+    if (basebuf[0]) { struct stat bst; if (stat(basebuf, &bst) != 0 || !S_ISDIR(bst.st_mode)) return korb_ary_new(c, slots, 0); }
+
+    slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
+    struct korb_glob g = { c, VALUE_REF_AT(&slots[0]), 0, (rflags & 4) != 0, basebuf };
+    if (rflags & 1) g.fnm |= FNM_NOESCAPE;             /* Ruby's bits differ from glibc's */
+    if (rflags & 8) g.fnm |= FNM_CASEFOLD;
+    if (!(rflags & 4)) g.fnm |= FNM_PERIOD;            /* no FNM_DOTMATCH → '*' skips a leading '.' */
+
+    /* the patterns: one String, an Array of them, or anything with #to_path */
+    slots[1] = VALUE_SLICE_GET(a, 0);
+    const uint32_t np = KORB_ARRAY_P(slots[1]) ? VAL2ARY(slots[1])->len : 1u;
+    for (uint32_t i = 0; i < np; i++) {
+        VALUE pv = KORB_ARRAY_P(slots[1]) ? korb_items_data(VAL2ARY(slots[1])->items)[i] : slots[1];
+        if (!KORB_STRING_P(pv)) {
+            slots[2] = pv;
+            const uint32_t to_path = korb_intern(c->vm, "to_path", 7);
+            const uint32_t mid = korb_responds_to(c, pv, to_path) ? to_path : korb_intern(c->vm, "to_str", 6);
+            if (!korb_responds_to(c, pv, mid))
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, pv));
+            const RESULT pr = korb_send(c, slots + 3, mid, 0, 0);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+            pv = pr.value;
+            if (!KORB_STRING_P(pv))
+                return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion into String");
+        }
+        const KorbString *const ps = VAL2STR(pv);
+        if (UNLIKELY(memchr(korb_strbuf_data(ps->buf), '\0', ps->len) != NULL))
+            return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "nul-separated glob pattern is deprecated");
+        char pbuf[PATH_MAX];
+        if (ps->len >= sizeof pbuf) continue;
+        memcpy(pbuf, korb_strbuf_data(ps->buf), ps->len); pbuf[ps->len] = '\0';   /* copy: the walk allocs */
+        CHECK(korb_glob_brace(&g, slots + 2, pbuf, 0));
     }
     if (block != NULL) {                                            /* yield each, return nil */
-        const uint32_t n = VAL2ARY(VALUE_REF_GET(arr))->len;
+        const uint32_t n = VAL2ARY(slots[0])->len;
         for (uint32_t i = 0; i < n; i++) {
-            slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(arr))->items)[i];
+            slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];
             CHECK(korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self));
         }
         return RESULT_OK(KORB_NIL);
     }
-    return RESULT_OK(VALUE_REF_GET(arr));
+    return RESULT_OK(slots[0]);
 }
 /* Dir.chdir(path) [ { ... } ] — with a block, restores the old cwd after. */
 static RESULT korb_m_dir_chdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
