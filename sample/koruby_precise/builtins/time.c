@@ -683,6 +683,23 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return korb_time_make(c, slots, cls, e, false);
 }
+/* A Time derived from another (arithmetic, round/floor/ceil): `cls`'s instance
+ * (KORB_NIL = the source's own class) with the source's UTC flag and zone.
+ * CRuby keeps the utc_offset across `t + 10`, so the zone ivars are carried
+ * over; each is re-read right before its (GC-point) set. */
+static RESULT korb_time_derive(CTX *c, VALUE *slots, VALUE_REF src, double epoch, VALUE cls)
+{
+    if (cls == KORB_NIL) cls = korb_class_obj_of(c, VALUE_REF_GET(src));
+    slots[0] = UNWRAP(korb_time_make(c, slots, cls, epoch, korb_time_is_utc(c, VALUE_REF_GET(src))));
+    const VALUE_REF nt = VALUE_REF_AT(&slots[0]);
+    const VALUE zsym[3] = { korb_time_off_sym(c->vm), korb_time_tz_sym(c->vm), korb_time_offx_sym(c->vm) };
+    for (uint32_t i = 0; i < 3; i++) {
+        const VALUE v = korb_ivar_get(c, VALUE_REF_GET(src), zsym[i]);
+        if (v != KORB_NIL) CHECK(korb_ivar_set(c, slots + 1, nt, zsym[i], v));
+    }
+    return RESULT_OK(VALUE_REF_GET(nt));
+}
+
 static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
     const VALUE o = VALUE_SLICE_GET(a, 0);
@@ -691,7 +708,7 @@ static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     double d = 0;
     if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
-    return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t) + d, korb_time_is_utc(c, t));
+    return korb_time_derive(c, slots, self, korb_time_epoch(c, t) + d, KORB_NIL);
 }
 static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
@@ -701,7 +718,7 @@ static RESULT korb_m_time_minus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     double d = 0;
     if (UNLIKELY(!korb_num_to_d(o, &d)))                              /* String / non-Numeric → TypeError */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into an exact number", korb_type_name(o));
-    return korb_time_make(c, slots, korb_class_obj_of(c, t), korb_time_epoch(c, t) - d, korb_time_is_utc(c, t));
+    return korb_time_derive(c, slots, self, korb_time_epoch(c, t) - d, KORB_NIL);
 }
 static RESULT korb_m_time_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; const VALUE o = VALUE_SLICE_GET(a, 0);
@@ -829,7 +846,8 @@ static RESULT korb_m_time_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const int nd = (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) ? (int)FIX2LONG(VALUE_SLICE_GET(a, 0)) : 0;
     const double scale = pow(10.0, nd);
     const double r = round(e * scale) / scale;
-    return korb_time_make(c, slots, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)), r, korb_time_is_utc(c, VALUE_REF_GET(self)));
+    /* CRuby#round hands back a plain Time even for a subclass receiver */
+    return korb_time_derive(c, slots, self, r, korb_const_get(c->vm, korb_intern(c->vm, "Time", 4)));
 }
 
 void korb_init_time(CTX *c, VALUE *slots) {
