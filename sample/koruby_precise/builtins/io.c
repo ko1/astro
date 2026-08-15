@@ -575,27 +575,68 @@ static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), rep));
     return RESULT_OK(KORB_NIL);
 }
-/* IO#read([length]) → `length` bytes (nil at EOF), or the whole rest. */
+/* IO#read([length[, outbuf]]) → `length` bytes (nil at EOF), or the whole rest.
+ * With `outbuf` the data replaces that String's contents and the buffer itself is
+ * returned; it is cleared (and nil returned) when the read hits EOF. */
 static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    if (VALUE_SLICE_LEN(a) >= 1 && FIXNUM_P(VALUE_SLICE_GET(a, 0))) {   /* bounded read */
-        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 0));
-        if (n < 0) n = 0;
-        uint32_t got = 0;
-        RESULT r = korb_io_read_bytes(c, slots, rep, (uint32_t)n, &got);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (got == 0 && n > 0) return RESULT_OK(KORB_NIL);                /* EOF */
-        if (korb_io_is_binary(c, VALUE_REF_GET(self)))
-            KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);                   /* 'rb' → ASCII-8BIT (byte-indexed) */
-        return r;
+    const uint32_t na = VALUE_SLICE_LEN(a);
+    bool bounded = false;
+    intptr_t want = 0;
+    if (na >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
+        const VALUE lv = VALUE_SLICE_GET(a, 0);
+        if (FIXNUM_P(lv)) want = FIX2LONG(lv);
+        else if (!korb_to_index(lv, &want)) {
+            if (!KORB_OBJECT_P(lv) || !korb_responds_to(c, lv, korb_intern(c->vm, "to_int", 6)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lv));
+            slots[0] = lv;
+            const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            if (!FIXNUM_P(ir.value))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lv));
+            want = FIX2LONG(ir.value);
+        }
+        if (UNLIKELY(want < 0))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
+        bounded = true;
     }
-    RESULT r = korb_io_read_all_bytes(c, slots, rep);
+    /* the output buffer is checked (and its #to_str run) before any read, so a
+     * frozen buffer raises even when nothing would be read */
+    slots[0] = (na >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    if (slots[0] != KORB_NIL) {
+        if (!KORB_STRING_P(slots[0])) {
+            if (!KORB_OBJECT_P(slots[0]) || !korb_responds_to(c, slots[0], korb_intern(c->vm, "to_str", 6)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+            slots[1] = slots[0];
+            const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (!KORB_STRING_P(sr.value))
+                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion into String");
+            slots[0] = sr.value;
+        }
+        KORB_CHECK_FROZEN(c, slots + 1, slots[0]);
+    }
+    const VALUE_REF bufref = VALUE_REF_AT(&slots[0]);
+    rep = korb_io_rep(c, VALUE_REF_GET(self));          /* the coercions above dispatch */
+    uint32_t got = 0;
+    RESULT r = bounded ? korb_io_read_bytes(c, slots + 1, rep, (uint32_t)want, &got)
+                       : korb_io_read_all_bytes(c, slots + 1, rep);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    if (korb_io_is_binary(c, VALUE_REF_GET(self)))
-        KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
-    return r;
+    slots[1] = r.value;
+    const bool eof = bounded && got == 0 && want > 0;
+    /* a read with a size is always ASCII-8BIT (it counts bytes, not characters) */
+    if (bounded || korb_io_is_binary(c, VALUE_REF_GET(self)))
+        KORB_STR_ENC_SET(slots[1], KORB_ENC_BINARY);
+    if (VALUE_REF_GET(bufref) == KORB_NIL)
+        return eof ? RESULT_OK(KORB_NIL) : RESULT_OK(slots[1]);
+    VAL2STR(VALUE_REF_GET(bufref))->len = 0;            /* replace the buffer's contents */
+    if (!eof) CHECK(korb_str_append_str(c, slots + 2, bufref, VALUE_REF_AT(&slots[1])));
+    /* a bounded read leaves the buffer's own encoding alone, and so does hitting
+     * EOF; an unbounded read takes the encoding of what it read (ruby-lang #20416) */
+    if (!bounded && !eof) KORB_STR_ENC_SET(VALUE_REF_GET(bufref), KORB_STR_ENC(slots[1]));
+    return eof ? RESULT_OK(KORB_NIL) : RESULT_OK(VALUE_REF_GET(bufref));
 }
 /* Read one record: bytes up to and including the separator held in `sepref`
  * (nil = slurp to EOF), at most `la->limit` bytes when that is >= 0.  Paragraph
