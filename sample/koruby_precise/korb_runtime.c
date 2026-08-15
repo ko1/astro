@@ -6802,7 +6802,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         if (um) return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self);
     }
     /* class receiver → Klass.new (allocate + initialize). */
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->name_fiber &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_FIBER) &&
              (mid == vm->mid_yield || mid == korb_intern(vm, "current", 7) ||
               mid == korb_intern(vm, "[]", 2) || mid == korb_intern(vm, "[]=", 3) ||
               mid == korb_intern(vm, "blocking?", 9))) {
@@ -6844,7 +6844,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for Kernel", korb_sym_name(vm, mid));
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
-             VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_SET]) {       /* Set[a, b, ...] */
+             self == korb_builtin_class_obj(vm, KORB_C_SET)) {       /* Set[a, b, ...] */
         VALUE *const base = &slots[-(intptr_t)argc];
         slots[0] = UNWRAP(korb_ary_new(c, slots, argc));
         VALUE_REF arr = VALUE_REF_AT(&slots[0]);
@@ -6852,10 +6852,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         return korb_set_from_array(c, slots + 1, arr);
     }
     else if (KORB_CLASS_P(self) && mid == vm->mid_aref &&
-             (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] ||
-              VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH])) {
+             (self == korb_builtin_class_obj(vm, KORB_C_ARRAY) ||
+              self == korb_builtin_class_obj(vm, KORB_C_HASH))) {
         VALUE *const base = &slots[-(intptr_t)argc];
-        if (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY]) {   /* Array[a, b, ...] → [a, b, ...] */
+        if (self == korb_builtin_class_obj(vm, KORB_C_ARRAY)) {   /* Array[a, b, ...] → [a, b, ...] */
             slots[0] = UNWRAP(korb_ary_new(c, slots, argc));
             VALUE_REF dst = VALUE_REF_AT(&slots[0]);
             for (uint32_t i = 0; i < argc; i++) CHECK(korb_ary_push_val(c, slots + 1, dst, base[i]));
@@ -6960,7 +6960,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         korb_klass_override_set(c, slots[1], slots[0]);
         return RESULT_OK(slots[1]);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_ARRAY] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_ARRAY) &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Array.try_convert(obj) */
         VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_ARRAY_P(arg)) return RESULT_OK(arg);
@@ -6975,7 +6975,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_INTEGER] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Integer.try_convert(obj) → obj/to_int/nil */
         VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_INTEGER_P(arg)) return RESULT_OK(arg);
@@ -6990,7 +6990,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_STRING] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_STRING) &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* String.try_convert(obj) → obj/to_str/nil */
         VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_STRING_P(arg)) return RESULT_OK(arg);
@@ -7005,7 +7005,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
              mid == korb_intern(vm, "try_convert", 11)) {                  /* Hash.try_convert(obj) → obj/to_hash/nil */
         VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
         if (KORB_HASH_P(arg)) return RESULT_OK(arg);
@@ -7020,11 +7020,11 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
         }
         return RESULT_OK(KORB_NIL);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
              mid == korb_intern(vm, "ruby2_keywords_hash?", 20)) {          /* koruby doesn't flag ruby2_keywords */
         return RESULT_OK(KORB_FALSE);
     }
-    else if (KORB_CLASS_P(self) && VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_HASH] &&
+    else if (KORB_CLASS_P(self) && self == korb_builtin_class_obj(vm, KORB_C_HASH) &&
              mid == korb_intern(vm, "ruby2_keywords_hash", 19)) {           /* return the hash unchanged (no flag tracked) */
         return RESULT_OK(argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL);
     }
@@ -7040,7 +7040,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 2..3)", argc);
         VALUE *const base = &slots[-(intptr_t)argc];
         const uint32_t excl = (argc >= 3 && KORB_TRUTHY(base[2])) ? 1u : 0u;
-        if (VAL2CLASS(self)->name_sym == vm->class_name[KORB_C_RANGE])
+        if (self == korb_builtin_class_obj(vm, KORB_C_RANGE))
             return korb_range_new(c, slots, VALUE_REF_AT(&base[0]), base[1], excl);
         slots[0] = self;                                    /* root the subclass across the alloc */
         const VALUE rng = UNWRAP(korb_range_new(c, slots + 1, VALUE_REF_AT(&base[0]), base[1], excl));
@@ -7070,12 +7070,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 return korb_dispatch_method(c, slots, snew, mid, line, argc, sdef, block, def_env, captured_self);
         }
         uint32_t cname = VAL2CLASS(self)->name_sym;
-        if (cname == vm->class_name[KORB_C_NIL] || cname == vm->class_name[KORB_C_TRUE] ||
-            cname == vm->class_name[KORB_C_FALSE] || cname == vm->class_name[KORB_C_INTEGER] ||
-            cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL] ||
-            cname == vm->class_name[KORB_C_RATIONAL] || cname == vm->class_name[KORB_C_COMPLEX])   /* #new is undefined (built via Rational()/Complex()) */
+        if (self == korb_builtin_class_obj(vm, KORB_C_NIL) || self == korb_builtin_class_obj(vm, KORB_C_TRUE) ||
+            self == korb_builtin_class_obj(vm, KORB_C_FALSE) || self == korb_builtin_class_obj(vm, KORB_C_INTEGER) ||
+            self == korb_builtin_class_obj(vm, KORB_C_FLOAT) || self == korb_builtin_class_obj(vm, KORB_C_SYMBOL) ||
+            self == korb_builtin_class_obj(vm, KORB_C_RATIONAL) || self == korb_builtin_class_obj(vm, KORB_C_COMPLEX))   /* #new is undefined (built via Rational()/Complex()) */
             return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method 'new' for class %s", korb_sym_name(vm, cname));
-        if (cname == vm->name_fiber) {
+        if (self == korb_builtin_class_obj(vm, KORB_C_FIBER)) {
             const RESULT fr = korb_fiber_new(c, slots, block, def_env, captured_self);
             if (LIKELY(fr.state == KORB_NORMAL) && argc >= 1) {   /* Fiber.new(storage: h) { … } */
                 const VALUE opts = slots[-(intptr_t)argc];
@@ -7091,12 +7091,12 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return fr;
         }
-        if (cname == vm->name_thread)
+        if (self == korb_builtin_class_obj(vm, KORB_C_THREAD))
             return korb_thread_s_new(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, captured_self);
-        if (cname == vm->class_name[KORB_C_MUTEX])   return korb_mutex_s_new(c, slots);
-        if (cname == vm->class_name[KORB_C_CONDVAR]) return korb_condvar_s_new(c, slots);
-        if (cname == vm->class_name[KORB_C_CLASS] || cname == vm->name_module) {   /* Class.new([super]) / Module.new [do…end] */
-            const bool is_mod = (cname == vm->name_module);
+        if (self == korb_builtin_class_obj(vm, KORB_C_MUTEX))   return korb_mutex_s_new(c, slots);
+        if (self == korb_builtin_class_obj(vm, KORB_C_CONDVAR)) return korb_condvar_s_new(c, slots);
+        if (self == korb_builtin_class_obj(vm, KORB_C_CLASS) || self == korb_const_get(vm, vm->name_module)) {   /* Class.new([super]) / Module.new [do…end] */
+            const bool is_mod = self == korb_const_get(vm, vm->name_module);
             slots[0] = (!is_mod && argc >= 1) ? slots[-(intptr_t)argc] : korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* super (rooted) */
             if (UNLIKELY(!is_mod && (!KORB_CLASS_P(slots[0]) || VAL2CLASS(slots[0])->is_module || VAL2CLASS(slots[0])->is_singleton)))
                 return korb_raise(c, slots, KORB_E_TYPE, line, "superclass must be a Class (%s given)", korb_type_name(slots[0]));   /* a Module or a metaclass is not a valid superclass */
@@ -7123,9 +7123,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
              * members of its own (`class Apple < Struct; end; Apple.new("C", :x)`
              * → Apple::C < Apple).  A real struct class has members set, so it
              * falls through to instance creation. */
-            bool struct_factory = (cname == vm->name_struct);
+            bool struct_factory = self == korb_const_get(vm, vm->name_struct);
             for (VALUE sc = self; !struct_factory && KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
-                if (VAL2CLASS(sc)->name_sym == vm->name_struct) struct_factory = true;
+                if (sc == korb_const_get(vm, vm->name_struct)) struct_factory = true;
             if (struct_factory)
                 return korb_struct_define(c, slots, VALUE_SLICE_MAKE(&slots[-(intptr_t)argc], argc), block, def_env, self);   /* → new struct class */
         }
@@ -7266,7 +7266,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(slots[0]);
         }
-        if (cname == vm->class_name[KORB_C_ARRAY]) {       /* Array.new(n[,v]) / Array.new(n){|i|} / Array.new(ary) */
+        if (self == korb_builtin_class_obj(vm, KORB_C_ARRAY)) {       /* Array.new(n[,v]) / Array.new(n){|i|} / Array.new(ary) */
             if (UNLIKELY(argc >= 3)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %u, expected 0..2)", argc);
             if (argc == 1) {                               /* Array.new(ary) / #to_ary-able → a copy */
                 VALUE av = slots[-(intptr_t)argc];
@@ -7318,7 +7318,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(VALUE_REF_GET(dst));
         }
-        if (cname == vm->class_name[KORB_C_PROC]) {         /* Proc.new { } → a real Proc (not a generic Object) */
+        if (self == korb_builtin_class_obj(vm, KORB_C_PROC)) {         /* Proc.new { } → a real Proc (not a generic Object) */
             if (UNLIKELY(block == NULL))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, line, "tried to create Proc object without a block");
             /* `Proc.new(&p)` / `Proc.new(&method)` — the block is a forwarded Proc
@@ -7329,7 +7329,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);
             return korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0);
         }
-        if (cname == vm->class_name[KORB_C_ENUMERATOR] && block != NULL) {   /* Enumerator.new([size]) { |y| ... } — deferred generator */
+        if (self == korb_builtin_class_obj(vm, KORB_C_ENUMERATOR) && block != NULL) {   /* Enumerator.new([size]) { |y| ... } — deferred generator */
             VALUE *const denv = (VALUE *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env is tagged (base|1) */
             slots[0] = UNWRAP(korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(captured_self), 0));
             const VALUE gsize = (argc >= 1) ? slots[-(intptr_t)argc] : KORB_NIL;   /* optional leading size arg — re-read after proc alloc (may be a heap callable) */
@@ -7343,7 +7343,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (LIKELY(lr.state == KORB_NORMAL) && KORB_ENUM_P(lr.value)) VAL2ENUM(lr.value)->size = FIXNUM_P(lsize) ? lsize : KORB_NIL;
             return lr;
         }
-        if (cname == vm->class_name[KORB_C_HASH]) {         /* Hash.new([default]) / Hash.new { |h,k| } */
+        if (self == korb_builtin_class_obj(vm, KORB_C_HASH)) {         /* Hash.new([default]) / Hash.new { |h,k| } */
             if (argc > 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given %d, expected 0..1)", (int)argc);
             if (block != NULL && argc >= 1) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "wrong number of arguments (given 1, expected 0)");
             slots[0] = UNWRAP(korb_hash_new(c, slots, 4));
@@ -7356,7 +7356,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return RESULT_OK(slots[0]);
         }
-        if (cname == vm->class_name[KORB_C_SET]) {          /* Set.new([enum]) { |o| … } */
+        if (self == korb_builtin_class_obj(vm, KORB_C_SET)) {          /* Set.new([enum]) { |o| … } */
             const VALUE arg = argc >= 1 ? slots[-(intptr_t)argc] : KORB_NIL;
             if (argc < 1 || arg == KORB_NIL) {              /* Set.new / Set.new(nil) → empty */
                 slots[0] = UNWRAP(korb_ary_new(c, slots, 0)); return korb_set_new(c, slots + 1, slots[0]);
@@ -7389,7 +7389,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             return korb_set_from_array(c, slots + 1, VALUE_REF_AT(&slots[0]));
         }
-        if (cname == vm->class_name[KORB_C_STRING]) {       /* String.new([str]) */
+        if (self == korb_builtin_class_obj(vm, KORB_C_STRING)) {       /* String.new([str]) */
             if (argc >= 1 && KORB_STRING_P(slots[-(intptr_t)argc])) {
                 slots[0] = slots[-(intptr_t)argc];          /* root source across the alloc */
                 uint32_t len = VAL2STR(slots[0])->len;
@@ -7643,29 +7643,28 @@ korb_send(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc)
     return korb_send_impl(c, slots, mid, line, argc, NULL, NULL, NULL);
 }
 
-/* Classify a class for `.new` (cached in cls->new_kind; the inputs — name_sym,
- * is_module, members, builtin-base — are all fixed once the class exists, so a
- * one-shot classification stays valid).  1 = plain user class (generic alloc +
+/* Classify a class for `.new` (cached in cls->new_kind; the inputs — the class
+ * identity, is_module, members, builtin-base — are all fixed once the class
+ * exists, so a one-shot classification stays valid).  1 = plain user class (generic alloc +
  * initialize), 2 = special (Fiber / Struct factory / Struct subclass / a builtin
  * class or subclass / module) that needs korb_send_impl's bespoke handling. */
 static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
     struct korb_vm *const vm = c->vm;
     KorbClass *const k = VAL2CLASS(cls);
     if (LIKELY(k->new_kind != 0)) return k->new_kind;
-    const uint32_t cname = k->name_sym;
     uint8_t kind = 1;
-    if (k->is_module || k->members != KORB_NIL || cname == vm->name_fiber ||
-        cname == vm->name_thread ||
-        cname == vm->class_name[KORB_C_MUTEX] || cname == vm->class_name[KORB_C_CONDVAR] ||
-        (cname == vm->name_struct) || cname == vm->name_module ||
-        cname == vm->class_name[KORB_C_CLASS]  ||   /* Class.new / Module.new → real class, not a generic object */
-        cname == vm->class_name[KORB_C_ARRAY]  || cname == vm->class_name[KORB_C_HASH] ||
-        cname == vm->class_name[KORB_C_SET]    || cname == vm->class_name[KORB_C_STRING] ||
-        cname == vm->class_name[KORB_C_RANGE] ||   /* Range.new(begin,end[,excl]) → real Range, not a generic object */
-        cname == vm->class_name[KORB_C_NIL]   || cname == vm->class_name[KORB_C_TRUE] ||
-        cname == vm->class_name[KORB_C_FALSE] || cname == vm->class_name[KORB_C_INTEGER] ||
-        cname == vm->class_name[KORB_C_FLOAT] || cname == vm->class_name[KORB_C_SYMBOL] ||
-        cname == vm->class_name[KORB_C_RATIONAL] || cname == vm->class_name[KORB_C_COMPLEX]) {   /* immediate/#new-undefined classes → slow path raises NoMethodError */
+    if (k->is_module || k->members != KORB_NIL || cls == korb_builtin_class_obj(vm, KORB_C_FIBER) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_THREAD) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_MUTEX) || cls == korb_builtin_class_obj(vm, KORB_C_CONDVAR) ||
+        cls == korb_const_get(vm, vm->name_struct) || cls == korb_const_get(vm, vm->name_module) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_CLASS)  ||   /* Class.new / Module.new → real class, not a generic object */
+        cls == korb_builtin_class_obj(vm, KORB_C_ARRAY)  || cls == korb_builtin_class_obj(vm, KORB_C_HASH) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_SET)    || cls == korb_builtin_class_obj(vm, KORB_C_STRING) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_RANGE) ||   /* Range.new(begin,end[,excl]) → real Range, not a generic object */
+        cls == korb_builtin_class_obj(vm, KORB_C_NIL)   || cls == korb_builtin_class_obj(vm, KORB_C_TRUE) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_FALSE) || cls == korb_builtin_class_obj(vm, KORB_C_INTEGER) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_FLOAT) || cls == korb_builtin_class_obj(vm, KORB_C_SYMBOL) ||
+        cls == korb_builtin_class_obj(vm, KORB_C_RATIONAL) || cls == korb_builtin_class_obj(vm, KORB_C_COMPLEX)) {   /* immediate/#new-undefined classes → slow path raises NoMethodError */
         kind = 2;
     } else if (korb_class_exc_etype(vm, cls) >= 0) {   /* exception class → KorbException, not a generic object */
         kind = 2;
@@ -7677,7 +7676,7 @@ static uint8_t korb_class_new_kind(CTX *const c, const VALUE cls) {
         else   /* a Struct-derived class with no members of its own (`class X < Struct`)
                 * acts as a factory (X.new(...) → new struct class), not an instance */
             for (VALUE sc = cls; KORB_CLASS_P(sc); sc = VAL2CLASS(sc)->superclass)
-                if (VAL2CLASS(sc)->name_sym == vm->name_struct) { kind = 2; break; }
+                if (sc == korb_const_get(vm, vm->name_struct)) { kind = 2; break; }
     }
     if (kind == 1) {   /* a user/builtin `new` singleton method (def self.new / Time.new) overrides the default allocator → route to the smethod path */
         const VALUE sing = korb_dispatch_class(c, cls);

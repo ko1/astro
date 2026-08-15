@@ -761,18 +761,21 @@ static RESULT korb_m_class_superclass(CTX *c, VALUE *slots, VALUE_REF self, VALU
 static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     if (KORB_CLASS_P(VALUE_REF_GET(self))) {             /* immediate classes have no allocator */
-        const uint32_t cn = VAL2CLASS(VALUE_REF_GET(self))->name_sym;
-        if (cn == c->vm->class_name[KORB_C_NIL] || cn == c->vm->class_name[KORB_C_TRUE] ||
-            cn == c->vm->class_name[KORB_C_FALSE] || cn == c->vm->class_name[KORB_C_INTEGER] ||
-            cn == c->vm->class_name[KORB_C_FLOAT] || cn == c->vm->class_name[KORB_C_SYMBOL] ||
-            cn == c->vm->class_name[KORB_C_PROC])         /* Proc is built from a block, not allocate'd */
+        /* identity, not name: a user class nested in a namespace may well be
+         * called "Float" without being ::Float */
+        const VALUE cv = VALUE_REF_GET(self);
+        const uint32_t cn = VAL2CLASS(cv)->name_sym;
+        #define KORB_IS_BC(e) (cv == korb_builtin_class_obj(c->vm, (e)))
+        if (KORB_IS_BC(KORB_C_NIL) || KORB_IS_BC(KORB_C_TRUE) || KORB_IS_BC(KORB_C_FALSE) ||
+            KORB_IS_BC(KORB_C_INTEGER) || KORB_IS_BC(KORB_C_FLOAT) || KORB_IS_BC(KORB_C_SYMBOL) ||
+            KORB_IS_BC(KORB_C_PROC) ||                    /* Proc is built from a block, not allocate'd */
+            KORB_IS_BC(KORB_C_THREAD) || KORB_IS_BC(KORB_C_FIBER))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", korb_sym_name(c->vm, cn));
-        if (cn == c->vm->class_name[KORB_C_MATCHDATA])   /* MatchData has no allocator (built only by a match) → NoMethodError */
+        if (KORB_IS_BC(KORB_C_MATCHDATA))   /* MatchData has no allocator (built only by a match) → NoMethodError */
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'allocate' for class %s", korb_sym_name(c->vm, cn));
-        if (cn == c->vm->name_thread || cn == c->vm->name_fiber)   /* CRuby: allocator undefined */
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "allocator undefined for %s", korb_sym_name(c->vm, cn));
-        if (cn == c->vm->class_name[KORB_C_MUTEX])   return korb_mutex_s_new(c, slots);     /* 実 payload */
-        if (cn == c->vm->class_name[KORB_C_CONDVAR]) return korb_condvar_s_new(c, slots);
+        if (KORB_IS_BC(KORB_C_MUTEX))   return korb_mutex_s_new(c, slots);     /* 実 payload */
+        if (KORB_IS_BC(KORB_C_CONDVAR)) return korb_condvar_s_new(c, slots);
+        #undef KORB_IS_BC
     }
     /* Enumerator.allocate must produce a KorbEnumerator (not a generic object),
      * else enumerator methods VAL2ENUM-cast a too-small object → heap corruption.
