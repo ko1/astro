@@ -629,81 +629,188 @@ static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(LONG2FIX((intptr_t)w));
 }
 
-/* split `buf` (len bytes) into line Strings (keeping the trailing '\n'), pushed
- * onto the rooted array `arr`. */
-static RESULT korb_file_push_lines_c(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len, bool chomp) {
-    size_t start = 0;
-    for (size_t i = 0; i < len; i++) {
-        if (buf[i] == '\n') {
-            size_t end = i + 1;
-            if (chomp) { end = i; if (end > start && buf[end - 1] == '\r') end--; }   /* drop \n (and \r\n) */
-            slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(end - start)));
-            CHECK(korb_ary_push_val(c, slots + 1, arr, slots[0]));
-            start = i + 1;
+/* ---- line arguments (IO#gets / #readlines / #each_line, IO.foreach, …) -----
+ *
+ * Every line reader takes the same `(sep = $/, limit = nil, chomp: false)`.  A
+ * lone argument is the separator when it is (or converts to) a String and the
+ * byte limit otherwise; `nil` slurps to EOF and `""` selects paragraph mode
+ * (records end at a blank line, and the run of newlines after it is consumed).
+ * The limit counts bytes of the returned String, separator included. */
+struct korb_line_args { bool slurp, paragraph, chomp; intptr_t limit; };
+
+/* Parse them, starting at positional index `from`.  The separator is left in
+ * slots[0] (rooted, so a reader that allocates can re-read its bytes through the
+ * slot instead of caching a pointer across a GC); paragraph mode leaves the
+ * "\n\n" it actually matches there.  The caller therefore works from slots+1. */
+static RESULT
+korb_io_line_args(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t from, struct korb_line_args *o)
+{
+    o->slurp = o->paragraph = o->chomp = false;
+    o->limit = -1;
+    uint32_t n = VALUE_SLICE_LEN(a);
+    if (n > from && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {          /* trailing chomp: */
+        const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
+        const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "chomp", 5)));
+        if (hx >= 0) o->chomp = KORB_TRUTHY(korb_items_data(h->items)[2 * hx + 1]);
+        n--;
+    }
+    const uint32_t np = (n > from) ? n - from : 0;
+    if (UNLIKELY(np > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..2)", np);
+    VALUE sep = KORB_UNDEF, lim = KORB_NIL;
+    if (np == 1) {
+        const VALUE v = VALUE_SLICE_GET(a, from);
+        /* String-ish → separator, anything else → limit (CRuby tries the String
+         * conversion first, non-raising) */
+        if (v == KORB_NIL || KORB_STRING_P(v) ||
+            (KORB_OBJECT_P(v) && korb_responds_to(c, v, korb_intern(c->vm, "to_str", 6)))) sep = v;
+        else lim = v;
+    } else if (np == 2) {
+        sep = VALUE_SLICE_GET(a, from);
+        lim = VALUE_SLICE_GET(a, from + 1);
+    }
+    if (lim != KORB_NIL) {
+        intptr_t n2;
+        if (FIXNUM_P(lim)) n2 = FIX2LONG(lim);
+        else if (!korb_to_index(lim, &n2)) {
+            if (!KORB_OBJECT_P(lim) || !korb_responds_to(c, lim, korb_intern(c->vm, "to_int", 6)))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, lim));
+            slots[0] = lim;
+            const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            if (!FIXNUM_P(ir.value))
+                return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into `long'");
+            n2 = FIX2LONG(ir.value);
         }
+        o->limit = n2 < 0 ? -1 : n2;                                   /* a negative limit means "no limit" */
     }
-    if (start < len) {   /* trailing line without newline */
-        slots[0] = UNWRAP(korb_str_new(c, slots, buf + start, (uint32_t)(len - start)));
-        CHECK(korb_ary_push_val(c, slots + 1, arr, slots[0]));
+    if (sep == KORB_NIL) { o->slurp = true; slots[0] = KORB_NIL; return RESULT_OK(KORB_NIL); }
+    if (sep == KORB_UNDEF) {                                           /* default: $/ */
+        const VALUE rs = korb_const_get(c->vm, korb_intern(c->vm, "$/", 2));
+        if (rs == KORB_NIL) { o->slurp = true; slots[0] = KORB_NIL; return RESULT_OK(KORB_NIL); }
+        sep = KORB_STRING_P(rs) ? rs : KORB_UNDEF;
+        if (sep == KORB_UNDEF) {                                       /* $/ unset → "\n" */
+            slots[0] = UNWRAP(korb_str_new(c, slots, "\n", 1));
+            return RESULT_OK(slots[0]);
+        }
+        slots[0] = sep;
+        return RESULT_OK(sep);
     }
-    return RESULT_OK(VALUE_REF_GET(arr));
-}
-static RESULT korb_file_push_lines(CTX *c, VALUE *slots, VALUE_REF arr, const char *buf, size_t len) {
-    return korb_file_push_lines_c(c, slots, arr, buf, len, false);
+    if (!KORB_STRING_P(sep)) {                                         /* #to_str */
+        slots[0] = sep;
+        const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (!KORB_STRING_P(sr.value))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, sep));
+        sep = sr.value;
+    }
+    if (VAL2STR(sep)->len == 0) {                                      /* "" → paragraph mode */
+        o->paragraph = true;
+        slots[0] = UNWRAP(korb_str_new(c, slots, "\n\n", 2));
+        return RESULT_OK(slots[0]);
+    }
+    slots[0] = sep;
+    return RESULT_OK(sep);
 }
 
-/* File.readlines(path) → array of line Strings. */
+/* Next record in `buf` from *pos, per `la` and the separator [sep, seplen).
+ * false at EOF; otherwise [*rs, *re) is the record (separator and all) and *pos
+ * moves past everything consumed — in paragraph mode that includes the run of
+ * blank lines after the record, which belongs to no record at all. */
+static bool
+korb_line_next(const char *buf, size_t len, size_t *pos, const char *sep, size_t seplen,
+               const struct korb_line_args *la, size_t *rs, size_t *re)
+{
+    size_t i = *pos;
+    if (la->paragraph) while (i < len && buf[i] == '\n') i++;
+    if (i >= len) { *pos = len; return false; }
+    size_t end;
+    bool matched = false;
+    if (la->slurp) end = len;
+    else {
+        const char *const h = memmem(buf + i, len - i, sep, seplen);
+        if (h) { end = (size_t)(h - buf) + seplen; matched = true; }
+        else end = len;
+    }
+    if (la->limit >= 0 && end - i > (size_t)la->limit) { end = i + (size_t)la->limit; matched = false; }
+    *rs = i; *re = end; *pos = end;
+    if (matched && la->paragraph) while (*pos < len && buf[*pos] == '\n') (*pos)++;
+    if (la->chomp && !la->slurp) {                     /* drop the separator we matched */
+        if (la->paragraph) { while (*re > *rs && buf[*re - 1] == '\n') (*re)--; }
+        else if (matched) {
+            *re -= seplen;
+            if (seplen == 1 && sep[0] == '\n' && *re > *rs && buf[*re - 1] == '\r') (*re)--;
+        }
+    }
+    return true;
+}
+
+
+/* File.readlines(path, sep = $/, limit = nil, chomp: false) → the records. */
 static RESULT korb_m_file_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
-    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-    bool chomp = false;   /* trailing `chomp: true` kwarg strips line terminators */
-    const uint32_t na = VALUE_SLICE_LEN(a);
-    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) {
-        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, na - 1));
-        const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "chomp", 5)));
-        if (hx >= 0) { const VALUE v = korb_items_data(h->items)[2 * hx + 1]; chomp = (v != KORB_NIL && v != KORB_FALSE); }
+    slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    struct korb_line_args la;
+    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
+    if (UNLIKELY(la.limit == 0))
+        return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
+    const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
+    uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
+    size_t len; char *const buf = korb_file_slurp(path, &len);                    /* libc only, no GC */
+    if (!buf) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 16));
+    const VALUE_REF arr = VALUE_REF_AT(&slots[2]);
+    RESULT r = RESULT_OK(KORB_NIL);
+    size_t pos = 0, rs, re;
+    /* the separator's bytes are re-read every pass: pushing a String can GC */
+    while (korb_line_next(buf, len, &pos,
+                          la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
+                          la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
+        slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
+        r = korb_ary_push_val(c, slots + 4, arr, slots[3]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
     }
-    size_t len; char *buf = korb_file_slurp(path, &len);
-    if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-    RESULT r = korb_file_push_lines_c(c, slots + 1, VALUE_REF_AT(&slots[0]), buf, len, chomp);
     free(buf);
-    return r;
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(VALUE_REF_GET(arr));
 }
 
-/* File.foreach(path) { |line| ... } → yields each line; returns nil. */
+/* File.foreach(path, sep = $/, limit = nil, chomp: false) { |rec| … } → nil. */
 static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   struct Node *block, VALUE *def_env, VALUE *captured_self) {
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
-    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-    if (block == NULL) {                                             /* no block → an Enumerator of the lines */
-        size_t len2; char *buf2 = korb_file_slurp(path, &len2);
-        if (!buf2) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-        slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-        RESULT lr = korb_file_push_lines(c, slots + 1, VALUE_REF_AT(&slots[0]), buf2, len2);
-        free(buf2);
-        if (UNLIKELY(lr.state != KORB_NORMAL)) return lr;
-        return korb_enum_new(c, slots + 1, slots[0], KORB_NIL);
+    slots[0] = pv;                                     /* park: parsing the arguments dispatches */
+    struct korb_line_args la;
+    CHECK(korb_io_line_args(c, slots + 1, a, 1, &la));  /* separator → slots[1] */
+    if (UNLIKELY(la.limit == 0))
+        return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "invalid limit: 0 for foreach");
+    const VALUE_REF sepref = VALUE_REF_AT(&slots[1]);
+    uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
+    size_t len; char *const buf = korb_file_slurp(path, &len);                    /* libc only, no GC */
+    if (!buf) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+    slots[2] = KORB_NIL;
+    VALUE_REF arr = VALUE_REF_AT(&slots[2]);
+    if (block == NULL) {                               /* no block → an Enumerator of the records */
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 16));
+        arr = VALUE_REF_AT(&slots[2]);
     }
-    size_t len; char *buf = korb_file_slurp(path, &len);
-    if (!buf) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-    size_t start = 0;
-    RESULT rr = RESULT_OK(KORB_NIL);
-    for (size_t i = 0; i <= len; i++) {
-        if (i == len ? (start < len) : (buf[i] == '\n')) {
-            const size_t end = (i == len) ? len : i + 1;
-            slots[0] = korb_str_new(c, slots, buf + start, (uint32_t)(end - start)).value;
-            rr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
-            if (rr.state != KORB_NORMAL) break;
-            start = end;
-        }
+    RESULT r = RESULT_OK(KORB_NIL);
+    size_t pos = 0, rs, re;
+    while (korb_line_next(buf, len, &pos,
+                          la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
+                          la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
+        slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
+        r = block ? korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, captured_self)
+                  : korb_ary_push_val(c, slots + 4, arr, slots[3]);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
     }
     free(buf);
-    if (rr.state != KORB_NORMAL) return rr;
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (block == NULL) return korb_enum_new(c, slots + 3, VALUE_REF_GET(arr), KORB_NIL);
     return RESULT_OK(KORB_NIL);
 }
 

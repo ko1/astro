@@ -414,32 +414,6 @@ static RESULT korb_io_read_all_bytes(CTX *c, VALUE *slots, KorbIORep *rep) {
 
 /* Read one line, up to and including '\n' (nil at EOF).  The scan runs over the
  * rep's buffer, which stays put across the String growth below. */
-static RESULT korb_io_read_line(CTX *c, VALUE *slots, KorbIORep *rep) {
-    RESULT err = RESULT_OK(KORB_NIL);
-    if (korb_io_fill_p(c, slots, rep, &err) == 0)
-        return UNLIKELY(err.state != KORB_NORMAL) ? err : RESULT_OK(KORB_NIL);
-    slots[0] = (VALUE)korb_str_alloc(c, slots, 0);
-    VALUE_REF sref = VALUE_REF_AT(&slots[0]);
-    uint32_t len = 0;
-    for (;;) {
-        const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);   /* may park → may GC */
-        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
-        if (avail == 0) break;
-        const char *const p = rep->rbuf + rep->rpos;
-        const char *const nl = memchr(p, '\n', avail);
-        const uint32_t take = nl ? (uint32_t)(nl - p) + 1 : avail;
-        KorbString *s = korb_str_ensure(c, slots + 1, sref, len + take);   /* may GC; rep is stable */
-        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
-        rep->rpos += take;
-        len += take;
-        s->len = len;
-        if (nl) break;
-    }
-    KorbString *s = VAL2STR(VALUE_REF_GET(sref));
-    s->len = len;
-    korb_strbuf_data(s->buf)[len] = '\0';
-    return RESULT_OK(VALUE_REF_GET(sref));
-}
 
 /* coerce v to a String (to_s if needed) and write it; accumulate bytes. */
 static RESULT korb_io_emit(CTX *c, VALUE *slots, VALUE v, KorbIORep *rep, size_t *nbytes) {
@@ -623,17 +597,111 @@ static RESULT korb_m_io_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);
     return r;
 }
-/* IO#gets → the next line (with '\n'), or nil at EOF. */
+/* Read one record: bytes up to and including the separator held in `sepref`
+ * (nil = slurp to EOF), at most `la->limit` bytes when that is >= 0.  Paragraph
+ * mode matches "\n\n" and then swallows the run of newlines that follows, so the
+ * next read starts at the next paragraph.  nil at EOF.
+ *
+ * Both the separator and the accumulating result are read back through their
+ * slots on every pass: filling the buffer and growing the String are GC points,
+ * and a cached `char *` into either would go stale under a moving collector. */
+static RESULT
+korb_io_read_sep(CTX *c, VALUE *slots, KorbIORep *rep, VALUE_REF sepref, const struct korb_line_args *la)
+{
+    RESULT err = RESULT_OK(KORB_NIL);
+    if (la->paragraph) {                               /* skip a leading run of blank lines */
+        for (;;) {
+            const uint32_t avail = korb_io_fill_p(c, slots, rep, &err);
+            if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+            if (avail == 0) break;
+            uint32_t i = 0;
+            while (i < avail && rep->rbuf[rep->rpos + i] == '\n') i++;
+            rep->rpos += i;
+            if (i < avail) break;
+        }
+    }
+    if (korb_io_fill_p(c, slots, rep, &err) == 0)
+        return UNLIKELY(err.state != KORB_NORMAL) ? err : RESULT_OK(KORB_NIL);
+    if (la->limit == 0) return korb_str_new(c, slots, "", 0);
+    slots[0] = (VALUE)korb_str_alloc(c, slots, 0);
+    const VALUE_REF sref = VALUE_REF_AT(&slots[0]);
+    uint32_t len = 0;
+    bool hit_sep = false;
+    for (;;) {
+        const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);
+        if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+        if (avail == 0) break;
+        uint32_t take = avail;
+        if (la->limit >= 0 && len + take > (uint32_t)la->limit) take = (uint32_t)la->limit - len;
+        KorbString *s = korb_str_ensure(c, slots + 1, sref, len + take);   /* may GC; rep is libc-stable */
+        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
+        rep->rpos += take;
+        len += take;
+        s->len = len;
+        if (!la->slurp) {
+            const KorbString *const sp = VAL2STR(VALUE_REF_GET(sepref));
+            const uint32_t sl = sp->len;
+            if (len >= sl) {
+                /* a match may straddle the chunk boundary, so start (sl-1) bytes
+                 * back into what was already accumulated */
+                const char *const data = korb_strbuf_data(VAL2STR(VALUE_REF_GET(sref))->buf);
+                const uint32_t from = (len - take >= sl - 1) ? (len - take) - (sl - 1) : 0;
+                const char *const hit = memmem(data + from, len - from, korb_strbuf_data(sp->buf), sl);
+                if (hit) {
+                    const uint32_t end = (uint32_t)(hit - data) + sl;
+                    rep->rpos -= len - end;            /* hand the overshoot back to the buffer */
+                    len = end;
+                    hit_sep = true;
+                    break;
+                }
+            }
+        }
+        if (la->limit >= 0 && len >= (uint32_t)la->limit) break;
+    }
+    if (hit_sep && la->paragraph) {                    /* swallow the blank lines after the record */
+        for (;;) {
+            const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);
+            if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+            if (avail == 0) break;
+            uint32_t i = 0;
+            while (i < avail && rep->rbuf[rep->rpos + i] == '\n') i++;
+            rep->rpos += i;
+            if (i < avail) break;
+        }
+    }
+    if (la->chomp && !la->slurp) {                     /* drop the separator we just matched */
+        const uint32_t sl = VAL2STR(VALUE_REF_GET(sepref))->len;
+        const char *const data = korb_strbuf_data(VAL2STR(VALUE_REF_GET(sref))->buf);
+        if (la->paragraph) { while (len > 0 && data[len - 1] == '\n') len--; }
+        else if (len >= sl && !memcmp(data + len - sl, korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf), sl)) {
+            len -= sl;
+            if (sl == 1 && data[len] == '\n' && len > 0 && data[len - 1] == '\r') len--;   /* "\r\n" */
+        }
+    }
+    KorbString *const s = VAL2STR(VALUE_REF_GET(sref));
+    s->len = len;
+    korb_strbuf_data(s->buf)[len] = '\0';
+    return RESULT_OK(VALUE_REF_GET(sref));
+}
+
+/* IO#gets(sep = $/, limit = nil, chomp: false) → the next record, nil at EOF. */
 static RESULT korb_m_io_gets(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    const RESULT r = korb_io_read_line(c, slots, rep);
-    /* IO#lineno counts the lines #gets handed out.  Re-fetch the rep: the read
-     * may have GC'd, and the rep lives in a libc allocation the IO points at. */
-    if (r.state == KORB_NORMAL && r.value != KORB_NIL)
-        korb_io_rep(c, VALUE_REF_GET(self))->lineno++;
+    struct korb_line_args la;
+    CHECK(korb_io_line_args(c, slots, a, 0, &la));      /* separator → slots[0] */
+    rep = korb_io_rep(c, VALUE_REF_GET(self));          /* the parse may dispatch #to_str/#to_int */
+    const RESULT r = korb_io_read_sep(c, slots + 1, rep, VALUE_REF_AT(&slots[0]), &la);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    /* IO#lineno counts the records #gets handed out; $. mirrors it and $_ holds
+     * the last line (nil once the stream is exhausted).  Re-fetch the rep: the
+     * read may have GC'd, and it lives in a libc allocation the IO points at. */
+    if (r.value != KORB_NIL) {
+        const uint32_t ln = ++korb_io_rep(c, VALUE_REF_GET(self))->lineno;
+        korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((intptr_t)ln));
+    }
+    korb_const_define(c, korb_intern(c->vm, "$_", 2), r.value);
     return r;
 }
 /* IO#lineno / IO#lineno= — the #gets counter (not affected by other reads). */
@@ -655,44 +723,56 @@ static RESULT korb_m_io_lineno_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     rep->lineno = (uint32_t)(n < 0 ? 0 : n);
     return RESULT_OK(v);
 }
-/* IO#readlines / IO#each_line — remaining lines. */
+/* IO#readlines / IO#each_line — the remaining records, same arguments as #gets. */
 static RESULT korb_m_io_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a;
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    struct korb_line_args la;
+    CHECK(korb_io_line_args(c, slots, a, 0, &la));      /* separator → slots[0] */
+    if (UNLIKELY(la.limit == 0))                        /* would yield "" forever */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid limit: 0 for readlines");
+    const VALUE_REF sepref = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 16));
+    const VALUE_REF arr = VALUE_REF_AT(&slots[1]);
     for (;;) {
-        slots[1] = UNWRAP(korb_io_read_line(c, slots + 1, rep));
-        if (slots[1] == KORB_NIL) break;
-        if (korb_ary_push_val(c, slots + 2, arr, slots[1]).state != KORB_NORMAL) break;
+        rep = korb_io_rep(c, VALUE_REF_GET(self));
+        slots[2] = UNWRAP(korb_io_read_sep(c, slots + 2, rep, sepref, &la));
+        if (slots[2] == KORB_NIL) break;
+        CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                   struct Node *block, VALUE *def_env, VALUE *captured_self) {
-    (void)a;
-    KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
-    if (block == NULL) {   /* no block → an Enumerator over the remaining lines */
-        slots[0] = UNWRAP(korb_ary_new(c, slots, 16));
-        VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    struct korb_line_args la;
+    CHECK(korb_io_line_args(c, slots, a, 0, &la));      /* separator → slots[0] */
+    if (UNLIKELY(la.limit == 0))                        /* would yield "" forever */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid limit: 0 for each_line");
+    const VALUE_REF sepref = VALUE_REF_AT(&slots[0]);
+    if (block == NULL) {   /* no block → an Enumerator over the remaining records */
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 16));
+        const VALUE_REF arr = VALUE_REF_AT(&slots[1]);
         for (;;) {
-            slots[1] = UNWRAP(korb_io_read_line(c, slots + 1, rep));
-            if (slots[1] == KORB_NIL) break;
-            CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
+            rep = korb_io_rep(c, VALUE_REF_GET(self));
+            slots[2] = UNWRAP(korb_io_read_sep(c, slots + 2, rep, sepref, &la));
+            if (slots[2] == KORB_NIL) break;
+            CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
         }
-        return korb_enum_new(c, slots + 1, VALUE_REF_GET(arr), KORB_NIL);
+        return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), KORB_NIL);
     }
     RESULT rr = RESULT_OK(KORB_NIL);
     for (;;) {
         /* the rep pointer stays valid across the yield (libc-allocated); a block
            that closes the stream just makes the next read report EOF. */
-        slots[0] = UNWRAP(korb_io_read_line(c, slots, rep));
-        if (slots[0] == KORB_NIL) break;
-        rr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        rep = korb_io_rep(c, VALUE_REF_GET(self));
+        slots[1] = UNWRAP(korb_io_read_sep(c, slots + 1, rep, sepref, &la));
+        if (slots[1] == KORB_NIL) break;
+        korb_io_rep(c, VALUE_REF_GET(self))->lineno++;
+        rr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (rr.state != KORB_NORMAL) break;
     }
     if (rr.state != KORB_NORMAL) return rr;
