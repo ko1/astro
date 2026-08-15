@@ -130,6 +130,7 @@ static NODE *kp_send_n(uint32_t mid, uint32_t line, NODE *recv, NODE *const *arg
 #define KP_SEND0_SC (1u + KORB_FRAME_HDR)   /* recv only            */
 #define KP_SEND1_SC (2u + KORB_FRAME_HDR)   /* recv + 1 arg         */
 #define KP_SEND2_SC (3u + KORB_FRAME_HDR)   /* recv + 2 args        */
+#define KP_SENDN_SC(n) ((1u + (n)) + KORB_FRAME_HDR)   /* recv + n args */
 
 /* ---------------------------------------------------------------------- */
 
@@ -2083,6 +2084,17 @@ massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t 
     return ALLOC_node_seq(acc, bake_lget(tc, rettmp));
 }
 
+/* `[elems..., lget(src_local)]` — the argument Array for a splatted `[]=`
+ * target (`a[*idx] = v`), i.e. the index args with the assigned value appended. */
+static NODE *
+build_args_plus_value(struct kp_ctx *tc, struct pm_node **elems, uint32_t n, uint32_t src_local)
+{
+    NODE *acc, *elem;
+    WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc  = build_array(tc, elems, n, n + 1u),
+                                                   elem = bake_lget(tc, src_local)));
+    return ALLOC_node_ary_push(acc, elem);
+}
+
 /* Assign the value held in synth local `src_local` to multi-assign target `t`
  * (local / @ivar / CONST / $global / recv.setter= / recv[k]= / nested group),
  * reading the source at each target's own staging chain — this is how
@@ -2115,14 +2127,31 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
         WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, ct->receiver), v = bake_lget(tc, src_local)));
         return kp_send1(kp_intern_cid(tc, ct->name), line, r, v);
     }
-    if (PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE)) {
+    if (PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE)) {     /* recv[k...] = v — any index arity, `*splat` included */
         const pm_index_target_node_t *it = (const pm_index_target_node_t *)t;
-        if (it->block || !it->arguments || it->arguments->arguments.size != 1) return NULL;
-        NODE *r, *k, *v;
-        WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, it->receiver),
-                                     k = transduce(tc, it->arguments->arguments.nodes[0]),
-                                     v = bake_lget(tc, src_local)));
-        return kp_send2(korb_intern(tc->c->vm, "[]=", 3), line, r, k, v);
+        if (it->block) return NULL;
+        const uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
+        struct pm_node **const ia = it->arguments ? it->arguments->arguments.nodes : NULL;
+        const uint32_t na = it->arguments ? (uint32_t)it->arguments->arguments.size : 0u;
+        bool has_splat = false;
+        for (uint32_t i = 0; i < na; i++) if (PM_NODE_TYPE_P(ia[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+        if (has_splat) {                               /* build [indices..., value] and dispatch dynamically */
+            NODE *r, *arr;
+            WITH_CHAIN(tc, 2, (r   = transduce(tc, it->receiver),
+                               arr = build_args_plus_value(tc, ia, na, src_local)));
+            return ALLOC_node_send_splat(aset, line, r, arr);
+        }
+        NODE **const av = malloc(sizeof(NODE *) * (na + 1u));
+        if (!av) abort();
+        const int32_t saved = tc->chain;
+        tc->chain = saved + (int32_t)KP_SENDN_SC(na + 1u);
+        NODE *const r = transduce(tc, it->receiver);
+        for (uint32_t i = 0; i < na; i++) av[i] = transduce(tc, ia[i]);
+        av[na] = bake_lget(tc, src_local);
+        tc->chain = saved;
+        NODE *const s = kp_send_n(aset, line, r, av, na + 1u);
+        free(av);
+        return s;
     }
     if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE))       /* nested `(a, b)` → the synth already holds its source */
     {
