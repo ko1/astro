@@ -1191,7 +1191,7 @@ korb_ary_concat_val(CTX *c, VALUE *slots, VALUE_REF aref, VALUE val)
             if (ta.value == KORB_NIL)                    /* to_a → nil: `*x` is just `[x]` */
                 return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_a gives %s)",   /* to_a → non-Array */
-                              korb_type_name(VALUE_REF_GET(vr)), korb_type_name(VALUE_REF_GET(vr)), korb_type_name(ta.value));
+                              korb_coerce_name(c, VALUE_REF_GET(vr)), korb_coerce_name(c, VALUE_REF_GET(vr)), korb_type_name(ta.value));
         }
         return korb_ary_push_val(c, slots, aref, VALUE_REF_GET(vr));   /* re-read: coerce may have moved val */
     }
@@ -1214,7 +1214,7 @@ korb_massign_coerce(CTX *c, VALUE *slots)
     if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
     if (r.value == KORB_NIL) return RESULT_OK(slots[0]);   /* to_ary → nil: keep scalar */
     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array (%s#to_ary gives %s)",
-                      korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
+                      korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(r.value));
 }
 
 /* Concatenate two arrays into a fresh one (Array#+ / the `+` binop).  lref/rref
@@ -4542,6 +4542,22 @@ korb_range_new(CTX *c, VALUE *slots, VALUE_REF bref, VALUE end, uint32_t exclude
 /* ---------------------------------------------------------------------------
  * Type names for messages.
  * ------------------------------------------------------------------------- */
+
+/* Class name for coercion errors: nil/true/false render as "nil"/"true"/"false",
+ * a user instance as its actual class name (not the generic "Object"). */
+const char *
+korb_coerce_name(CTX *c, VALUE v)
+{
+    if (v == KORB_NIL)   return "nil";
+    if (v == KORB_TRUE)  return "true";
+    if (v == KORB_FALSE) return "false";
+    if (KORB_OBJECT_P(v)) {
+        const VALUE k = VAL2OBJ(v)->klass;
+        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym)
+            return korb_sym_name(c->vm, VAL2CLASS(k)->name_sym);
+    }
+    return korb_type_name(v);                       /* builtins: String / Integer / ... */
+}
 
 const char *
 korb_type_name(VALUE v)
@@ -11081,7 +11097,7 @@ korb_bi_string(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (UNLIKELY(!KORB_STRING_P(r.value)))               /* #to_s must return a String */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_s gives %s)",
-                          korb_type_name(slots[0]), korb_type_name(slots[0]), korb_type_name(r.value));
+                          korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_type_name(r.value));
     return r;
 }
 

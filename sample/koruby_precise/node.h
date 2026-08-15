@@ -414,6 +414,9 @@ enum korb_etype {
 /* class names for messages: "Integer" / "an instance of String" forms */
 const char *korb_type_name(VALUE v);
 const char *korb_a_type_name(VALUE v);
+/* coercion-error form: nil/true/false spelled out, a user instance as its own
+ * class name rather than the generic "Object" */
+const char *korb_coerce_name(CTX *c, VALUE v);
 
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */

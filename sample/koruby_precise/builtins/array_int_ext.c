@@ -137,19 +137,6 @@ static RESULT korb_m_ary_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     return RESULT_OK(cur);
 }
 
-/* Class name for coercion errors: nil/true/false render as "nil"/"true"/"false",
- * a user instance as its actual class name (not the generic "Object"). */
-static const char *korb_coerce_name(CTX *c, VALUE v) {
-    if (v == KORB_NIL)   return "nil";
-    if (v == KORB_TRUE)  return "true";
-    if (v == KORB_FALSE) return "false";
-    if (KORB_OBJECT_P(v)) {
-        const VALUE k = VAL2OBJ(v)->klass;
-        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym)
-            return korb_sym_name(c->vm, VAL2CLASS(k)->name_sym);
-    }
-    return korb_type_name(v);                       /* builtins: String / Integer / ... */
-}
 /* Coerce a shift amount to an Integer (Fixnum/Bignum) via #to_int, rooting self
  * in slots[0].  A Bignum amount that doesn't fit a word is an extreme shift:
  * right by a huge count → 0 (or -1 for negative self); left by a huge count of a
