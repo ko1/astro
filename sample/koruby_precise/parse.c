@@ -2047,6 +2047,10 @@ mw_index_get(struct kp_ctx *tc, uint32_t t, uint32_t i, uint32_t aref, uint32_t 
 }
 
 extern const struct NodeKind kind_node_const_set;
+static NODE *mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32_t idx, uint32_t aref);
+static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);
+static NODE *destructure_into(struct kp_ctx *tc, const pm_multi_target_node_t *mt, uint32_t src_local);
+
 /* Assign src_tmp[idx] to a (possibly nested) multi-assign target.  Builds the
  * index-get with the chain context each target type needs to stage its value
  * (const_set advances by its slot_count; local/ivar/multi stage at chain+0).
@@ -2092,18 +2096,57 @@ mw_assign_target(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_tmp, uint32
         return kp_send2(aset, line, r, k, v);
     }
     if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {     /* nested `(a, b[, *r], c)` → materialize then destructure */
-        const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)t;
-        if (mt->rest || mt->rights.size) return NULL;  /* nested splat/post not yet supported */
         uint32_t tmp2 = alloc_synth_local(tc);
         NODE *acc = bake_lset(tc, tmp2, mw_index_get(tc, src_tmp, idx, aref, line));   /* tmp2 = src[idx] */
+        NODE *sub = destructure_into(tc, (const pm_multi_target_node_t *)t, tmp2);
+        return sub ? ALLOC_node_seq(acc, sub) : NULL;
+    }
+    return NULL;
+}
+
+/* Destructure the value held in synth local `src_local` into the nested
+ * multi-target `(a, b[, *r][, c])`.  Without a splat each target just takes
+ * `src[j]`; with one, the same node_massign_splat the top level uses assigns
+ * into synth locals (it handles #to_ary coercion and CRuby's nil padding), then
+ * each synth is plumbed out to its real target.  NULL if unsupported. */
+static NODE *
+destructure_into(struct kp_ctx *tc, const pm_multi_target_node_t *mt, uint32_t src_local)
+{
+    const uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+    const bool has_splat = mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE);
+    /* `(a, b,)` → implicit rest, i.e. just discard the extras: the plain path does that. */
+    if (mt->rest && !has_splat && !PM_NODE_TYPE_P(mt->rest, PM_IMPLICIT_REST_NODE)) return NULL;
+
+    if (!has_splat) {
+        if (mt->rights.size) return NULL;                  /* posts only ever accompany a rest */
+        NODE *acc = bake_lget(tc, src_local);
         for (uint32_t j = 0; j < mt->lefts.size; j++) {
-            NODE *sub = mw_assign_target(tc, mt->lefts.nodes[j], tmp2, j, aref);
+            NODE *sub = mw_assign_target(tc, mt->lefts.nodes[j], src_local, j, aref);
             if (!sub) return NULL;
             acc = ALLOC_node_seq(acc, sub);
         }
         return acc;
     }
-    return NULL;
+
+    const pm_splat_node_t *const sp = (const pm_splat_node_t *)mt->rest;
+    const uint32_t npre = (uint32_t)mt->lefts.size, npost = (uint32_t)mt->rights.size, no = npre + 1u + npost;
+    uint32_t *const synth = malloc(sizeof(uint32_t) * no);
+    int32_t  *const offs  = malloc(sizeof(int32_t) * no);
+    if (!synth || !offs) abort();
+    for (uint32_t k = 0; k < no; k++) { synth[k] = alloc_synth_local(tc); offs[k] = (int32_t)synth[k] - tc->chain; }
+    NODE *acc = ALLOC_node_massign_splat(offs, npre, npost, bake_lget(tc, src_local));
+    for (uint32_t k = 0; k < no; k++) bake_add(tc, &offs[k]);
+    for (uint32_t i = 0; i < no; i++) {
+        const pm_node_t *t = i < npre        ? mt->lefts.nodes[i]
+                           : i == npre       ? sp->expression        /* NULL for an anonymous `*` → nothing to plumb */
+                                             : mt->rights.nodes[i - npre - 1u];
+        if (!t) continue;
+        NODE *a = assign_target_from_synth(tc, t, synth[i]);
+        if (!a) { free(synth); return NULL; }
+        acc = ALLOC_node_seq(acc, a);
+    }
+    free(synth);                                           /* offs stays: the node owns it */
+    return acc;
 }
 
 /* Assign the value held in synth local `src_local` to multi-assign target `t`
@@ -2147,7 +2190,9 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
                                      v = bake_lget(tc, src_local)));
         return kp_send2(korb_intern(tc->c->vm, "[]=", 3), line, r, k, v);
     }
-    return NULL;   /* nested multi-target splat etc. → caller falls to unsupported */
+    if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE))       /* nested `(a, b)` → the synth already holds its source */
+        return destructure_into(tc, (const pm_multi_target_node_t *)t, src_local);
+    return NULL;
 }
 
 /* Emit a `super`/`super(args)` that forwards the current method's incoming block.
