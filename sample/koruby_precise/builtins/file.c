@@ -562,33 +562,132 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
     return off;
 }
 
-/* File.read(path[, length[, offset]]) → the file (or a slice) as a String. */
+/* ---- open options for the IO class methods -------------------------------
+ *
+ * IO.read / IO.write and friends open the file themselves, so they take the
+ * options `open` would: `mode:`, `encoding:` / `external_encoding:`, and
+ * `open_args:` (an Array of literal arguments to `open`, which supersedes every
+ * other option).  An `open_args:` without a mode leaves the default "r" in
+ * place — that is exactly why `IO.write(f, s, open_args: [{…}])` is an IOError. */
+struct korb_open_args { char mode[32]; int enc; };
+
+/* the encoding name of an `encoding:` value (an Encoding or a String) */
+static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_t cap) {
+    out[0] = '\0';
+    if (KORB_STRING_P(v)) { snprintf(out, cap, "%.*s", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf)); return RESULT_OK(KORB_NIL); }
+    if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
+    slots[0] = v;
+    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (KORB_STRING_P(r.value)) snprintf(out, cap, "%.*s", (int)VAL2STR(r.value)->len, korb_strbuf_data(VAL2STR(r.value)->buf));
+    return RESULT_OK(KORB_NIL);
+}
+
+/* mode / encoding out of one options Hash (also used for an open_args element) */
+static RESULT korb_open_args_hash(CTX *c, VALUE *slots, VALUE h, struct korb_open_args *o) {
+    const KorbHash *const hh = VAL2HASH(h);
+    int32_t ix = korb_hash_find(hh, ID2SYM(korb_intern(c->vm, "mode", 4)));
+    if (ix >= 0) {
+        const VALUE mv = korb_items_data(hh->items)[2 * ix + 1];
+        if (KORB_STRING_P(mv)) snprintf(o->mode, sizeof o->mode, "%.*s", (int)VAL2STR(mv)->len, korb_strbuf_data(VAL2STR(mv)->buf));
+    }
+    static const struct { const char *nm; uint32_t len; } ek[] = { { "encoding", 8 }, { "external_encoding", 17 } };
+    for (size_t i = 0; i < 2; i++) {
+        ix = korb_hash_find(VAL2HASH(h), ID2SYM(korb_intern(c->vm, ek[i].nm, ek[i].len)));
+        if (ix < 0) continue;
+        char nm[64];
+        CHECK(korb_open_enc_name(c, slots, korb_items_data(VAL2HASH(h)->items)[2 * ix + 1], nm, sizeof nm));
+        if (nm[0]) o->enc = (int)korb_enc_index_for_name(c->vm, nm);
+    }
+    return RESULT_OK(KORB_NIL);
+}
+
+static RESULT
+korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct korb_open_args *o) {
+    snprintf(o->mode, sizeof o->mode, "%s", defmode);
+    o->enc = -1;
+    if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
+    const int32_t ox = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "open_args", 9)));
+    if (ox >= 0 && KORB_ARRAY_P(korb_items_data(VAL2HASH(opts)->items)[2 * ox + 1])) {
+        slots[0] = korb_items_data(VAL2HASH(opts)->items)[2 * ox + 1];   /* park: the Hash walk dispatches */
+        snprintf(o->mode, sizeof o->mode, "r");                          /* `open`'s own default */
+        const uint32_t n = VAL2ARY(slots[0])->len;
+        for (uint32_t i = 0; i < n; i++) {
+            const VALUE el = korb_items_data(VAL2ARY(slots[0])->items)[i];
+            if (KORB_STRING_P(el)) snprintf(o->mode, sizeof o->mode, "%.*s", (int)VAL2STR(el)->len, korb_strbuf_data(VAL2STR(el)->buf));
+            else if (KORB_HASH_P(el)) CHECK(korb_open_args_hash(c, slots + 1, el, o));
+        }
+    } else {
+        CHECK(korb_open_args_hash(c, slots, opts, o));
+    }
+    /* a "r:UTF-8" style mode carries the external encoding */
+    char *const colon = strchr(o->mode, ':');
+    if (colon) { *colon = '\0'; if (colon[1]) o->enc = (int)korb_enc_index_for_name(c->vm, colon + 1); }
+    return RESULT_OK(KORB_NIL);
+}
+
+static bool korb_mode_readable(const char *m) { return m[0] == 'r' || strchr(m, '+') != NULL; }
+static bool korb_mode_writable(const char *m) { return m[0] == 'w' || m[0] == 'a' || strchr(m, '+') != NULL; }
+
+/* One optional Integer argument (length / offset), with #to_int coercion. */
+static RESULT korb_io_int_arg(CTX *c, VALUE *slots, VALUE v, bool *given, intptr_t *out) {
+    *given = false;
+    if (v == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (FIXNUM_P(v)) { *out = FIX2LONG(v); *given = true; return RESULT_OK(KORB_NIL); }
+    if (!KORB_OBJECT_P(v) || !korb_responds_to(c, v, korb_intern(c->vm, "to_int", 6)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
+    slots[0] = v;
+    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (!FIXNUM_P(r.value))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
+    *out = FIX2LONG(r.value); *given = true;
+    return RESULT_OK(KORB_NIL);
+}
+
+/* IO.read(path[, length[, offset]], **opts) → the file (or a slice) as a String. */
 static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
     VALUE pv;
     KORB_PATH_ARG(c, slots, a, 0, pv);
-    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
+    slots[0] = pv;                                     /* park: the option walk dispatches */
+    uint32_t na = VALUE_SLICE_LEN(a);
+    VALUE opts = KORB_NIL;
+    if (na >= 2 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) { opts = VALUE_SLICE_GET(a, na - 1); na--; }
+    struct korb_open_args oa;
+    CHECK(korb_io_open_args(c, slots + 1, opts, "r", &oa));
+    if (UNLIKELY(!korb_mode_readable(oa.mode)))
+        return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "not opened for reading");
+    bool has_len = false, has_off = false;
+    intptr_t want = 0, off = 0;
+    if (na >= 2) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 1), &has_len, &want));
+    if (na >= 3) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 2), &has_off, &off));
+    if (UNLIKELY(has_off && off < 0))
+        return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "negative offset %ld given", (long)off);
+    if (UNLIKELY(has_len && want < 0))
+        return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "negative length %ld given", (long)want);
+    uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: it may have moved */
     const int fd = open(path, O_RDONLY);
-    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-    const bool has_len = VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1));
-    if (VALUE_SLICE_LEN(a) >= 3 && FIXNUM_P(VALUE_SLICE_GET(a, 2)))   /* offset */
-        (void)lseek(fd, (off_t)FIX2LONG(VALUE_SLICE_GET(a, 2)), SEEK_SET);
+    if (fd < 0) return korb_raise_errno(c, slots + 1, errno, "rb_sysopen", path);
+    if (has_off) (void)lseek(fd, (off_t)off, SEEK_SET);
+    RESULT r;
     if (has_len) {                                                    /* bounded read */
-        intptr_t n = FIX2LONG(VALUE_SLICE_GET(a, 1)); if (n < 0) n = 0;
-        char *b = malloc((size_t)n + 1);
-        if (!b) { close(fd); return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory"); }
-        const size_t got = korb_fd_read_n(fd, b, (size_t)n); close(fd);
-        if (got == 0 && n > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
-        RESULT r = korb_str_new(c, slots, b, (uint32_t)got);
+        char *const b = malloc((size_t)want + 1);
+        if (!b) { close(fd); return korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "out of memory"); }
+        const size_t got = korb_fd_read_n(fd, b, (size_t)want); close(fd);
+        if (got == 0 && want > 0) { free(b); return RESULT_OK(KORB_NIL); }   /* EOF */
+        r = korb_str_new(c, slots + 1, b, (uint32_t)got);
         free(b);
+        if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);   /* a sized read counts bytes */
         return r;
     }
     size_t len = 0;
     char *const buf = korb_fd_slurp(fd, &len);
     close(fd);
-    if (!buf) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
-    RESULT r = korb_str_new(c, slots, buf, (uint32_t)len);
+    if (!buf) return korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
+    r = korb_str_new(c, slots + 1, buf, (uint32_t)len);
     free(buf);
+    if (LIKELY(r.state == KORB_NORMAL) && oa.enc >= 0) KORB_STR_ENC_SET(r.value, (uint32_t)oa.enc);
     return r;
 }
 
@@ -601,30 +700,40 @@ static char *korb_file_slurp(const char *path, size_t *out_len) {
     return buf;
 }
 
-/* File.write(path, string, mode: "w") → byte count (mode: "a" appends). */
+/* IO.write(path, string[, offset], **opts) → the byte count.  An offset writes
+ * into the existing file instead of truncating it. */
 static RESULT korb_m_file_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
-    uint32_t n = VALUE_SLICE_LEN(a);
-    const char *mode = "wb";
-    if (n >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {   /* trailing kwarg: mode: */
-        const KorbHash *h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
-        const int32_t hx = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "mode", 4)));
-        if (hx >= 0 && KORB_STRING_P(korb_items_data(h->items)[2 * hx + 1])) {
-            uint32_t ml; const char *m = korb_str_cstr_len(korb_items_data(h->items)[2 * hx + 1], &ml);
-            if (ml >= 1 && m[0] == 'a') mode = "ab";
-        }
-        n--;
+    VALUE pv;
+    KORB_PATH_ARG(c, slots, a, 0, pv);
+    slots[0] = pv;                                     /* park: the coercions below dispatch */
+    uint32_t na = VALUE_SLICE_LEN(a);
+    VALUE opts = KORB_NIL;
+    if (na >= 3 && KORB_HASH_P(VALUE_SLICE_GET(a, na - 1))) { opts = VALUE_SLICE_GET(a, na - 1); na--; }
+    bool has_off = false; intptr_t off = 0;
+    if (na >= 3) CHECK(korb_io_int_arg(c, slots + 1, VALUE_SLICE_GET(a, 2), &has_off, &off));
+    struct korb_open_args oa;
+    /* an offset without an explicit mode means "r+": writing at a position is
+     * meant to leave the rest of the file alone */
+    CHECK(korb_io_open_args(c, slots + 1, opts, has_off ? "r+" : "w", &oa));
+    if (UNLIKELY(!korb_mode_writable(oa.mode)))
+        return korb_raise(c, slots + 1, KORB_E_IOERROR, 0, "not opened for writing");
+    slots[1] = VALUE_SLICE_GET(a, 1);
+    if (!KORB_STRING_P(slots[1])) {                    /* CRuby writes obj.to_s */
+        const RESULT sr = korb_send(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (UNLIKELY(!KORB_STRING_P(sr.value)))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, VALUE_SLICE_GET(a, 1)));
+        slots[1] = sr.value;
     }
-    const VALUE pv = VALUE_SLICE_GET(a, 0), sv = VALUE_SLICE_GET(a, 1);
-    if (UNLIKELY(!KORB_STRING_P(pv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(pv));
-    if (UNLIKELY(!KORB_STRING_P(sv)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
-    uint32_t plen; const char *path = korb_str_cstr_len(pv, &plen);
-    uint32_t dlen; const char *data = korb_str_cstr_len(sv, &dlen);
-    const int fd = open(path, O_WRONLY | O_CREAT | (mode[0] == 'a' ? O_APPEND : O_TRUNC), 0666);
-    if (fd < 0) return korb_raise_errno(c, slots, errno, "rb_sysopen", path);
-    const size_t w = korb_fd_write_all(fd, data, dlen);
+    uint32_t plen; const char *const path = korb_str_cstr_len(slots[0], &plen);   /* re-read: they may have moved */
+    const int oflags = O_WRONLY | O_CREAT |
+                       (oa.mode[0] == 'a' ? O_APPEND : (oa.mode[0] == 'w' ? O_TRUNC : 0));
+    const int fd = open(path, oflags, 0666);
+    if (fd < 0) return korb_raise_errno(c, slots + 2, errno, "rb_sysopen", path);
+    if (has_off) (void)lseek(fd, (off_t)off, SEEK_SET);
+    const KorbString *const ds = VAL2STR(slots[1]);
+    const size_t w = korb_fd_write_all(fd, korb_strbuf_data(ds->buf), ds->len);   /* libc only: no GC below */
     close(fd);
     return RESULT_OK(LONG2FIX((intptr_t)w));
 }
