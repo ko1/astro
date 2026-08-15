@@ -3214,6 +3214,32 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         bake_add(tc, &mk->u.node_make_proc.self_off);   /* self at base[-1] */
         return mk;
       }
+      case PM_MATCH_WRITE_NODE: {
+        /* `/(?<n>…)/ =~ str` — the ONE form where a regexp literal binds its named
+         * captures to local variables.  prism hands us the `=~` call plus one
+         * local-variable target per name; desugar to
+         *     tmp = (re =~ str);  n = $~ && $~[:n];  …;  tmp
+         * (`$~` is nil on a failed match, so the locals become nil, as CRuby does).
+         * The synthetic tmp keeps the expression's value = the match position. */
+        const pm_match_write_node_t *mw = (const pm_match_write_node_t *)node;
+        const uint32_t line = kp_line(tc, node);
+        const uint32_t tmp = alloc_synth_local(tc);
+        NODE *seq = bake_lset(tc, tmp, transduce(tc, (const pm_node_t *)mw->call));
+        const uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+        for (size_t i = 0; i < mw->targets.size; i++) {
+            const pm_node_t *t = mw->targets.nodes[i];
+            if (!PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) continue;
+            const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)t;
+            /* $~ && $~[:name] — read the global twice; it is a VM slot, not a call */
+            const uint32_t lastmatch = korb_intern(tc->c->vm, "$~", 2);   /* globals live in the flat const table */
+            NODE *md1 = ALLOC_node_const(lastmatch, 0);
+            NODE *md2 = ALLOC_node_const(lastmatch, 0);
+            NODE *sym = ALLOC_node_lit(ID2SYM(kp_intern_cid(tc, lt->name)));
+            NODE *val = ALLOC_node_and(md1, kp_send1(aref, line, md2, sym));
+            seq = ALLOC_node_seq(seq, lvar_write(tc, t, lt->name, lt->depth, val));
+        }
+        return ALLOC_node_seq(seq, bake_lget(tc, tmp));
+      }
       case PM_MATCH_PREDICATE_NODE: {                /* `expr in pattern` → bool */
         const pm_match_predicate_node_t *mp = (const pm_match_predicate_node_t *)node;
         struct korb_pat *desc = build_pattern_desc(tc, mp->pattern);
