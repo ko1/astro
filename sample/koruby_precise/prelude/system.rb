@@ -973,7 +973,7 @@ module Signal
     when nil, "DEFAULT", "SIG_DFL"
       raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
     else
-      h.respond_to?(:call) ? h.call(signo) : nil
+      h.call(signo)   # a non-callable handler is a NoMethodError at the point of use (CRuby)
     end
   end
 

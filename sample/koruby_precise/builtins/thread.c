@@ -422,13 +422,8 @@ static RESULT
 korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
     double sec = -1.0;                              /* forever */
-    if (VALUE_SLICE_LEN(args) >= 1 && VALUE_SLICE_GET(args, 0) != KORB_NIL) {
-        const VALUE v = VALUE_SLICE_GET(args, 0);
-        if (FIXNUM_P(v)) sec = (double)FIX2LONG(v);
-        else if (KORB_FLOAT_P(v)) sec = korb_float_val(v);
-        else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
-        if (sec < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");
-    }
+    if (VALUE_SLICE_LEN(args) >= 1 && VALUE_SLICE_GET(args, 0) != KORB_NIL)
+        CHECK(korb_thread_tmo_arg(c, slots, VALUE_SLICE_GET(args, 0), &sec));   /* validates negative / NaN */
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
     if (sec >= 0) korb_blop_deadline_in(&b, sec);
@@ -1373,10 +1368,15 @@ korb_condvar_s_new(CTX *c, VALUE *slots)
 static RESULT
 korb_thread_tmo_arg(CTX *c, VALUE *slots, VALUE v, double *out)
 {
-    if (v == KORB_NIL) { *out = -1.0; return RESULT_OK(KORB_NIL); }
+    if (v == KORB_NIL) { *out = -1.0; return RESULT_OK(KORB_NIL); }   /* -1 = wait forever */
     if (FIXNUM_P(v)) *out = (double)FIX2LONG(v);
     else if (KORB_FLOAT_P(v)) *out = korb_float_val(v);
-    else return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_type_name(v));
+    else if (!korb_num_to_d(v, out))                                  /* Rational / Bignum */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into time interval", korb_coerce_name(c, v));
+    /* an unvalidated negative would land on the -1 "forever" sentinel and hang */
+    if (isnan(*out)) return korb_raise(c, slots, KORB_E_RANGE, 0, "NaN out of Time range");
+    if (*out < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time interval must not be negative");
+    if (isinf(*out)) *out = -1.0;                                     /* +Infinity: no deadline */
     return RESULT_OK(KORB_NIL);
 }
 
