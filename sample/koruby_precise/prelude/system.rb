@@ -354,8 +354,69 @@ module ObjectSpace
   end
   def self.count_objects(*); {}; end
   def self.garbage_collect(*); nil; end
-  def self.define_finalizer(obj, proc = nil, &blk); 0; end     # no-op (GC finalizer 未対応)
-  def self.undefine_finalizer(obj); obj; end
+
+  # Finalizers.  koruby's GC has no per-object finalization hook, so a finalizer
+  # never fires on collection — but it does fire at process exit, which is the
+  # only timing CRuby actually guarantees.  The registry holds the object itself
+  # (both to keep it alive and because object_id is not stable across a moving
+  # GC), so entries are matched by identity, not by id.
+  FINALIZERS__ = []                      # [[obj, [callable, ...]], ...]
+
+  def self.define_finalizer(obj, callable = nil, &blk)
+    callable = blk if callable.nil?
+    raise ArgumentError, "no finalizer given" if callable.nil?
+    unless callable.respond_to?(:call)
+      raise ArgumentError, "wrong type argument #{callable.class} (should be callable)"
+    end
+    # only a real (heap) object can carry one; immediates cannot be finalized
+    case obj
+    when Integer, Symbol, Float, NilClass, TrueClass, FalseClass
+      raise ArgumentError, "cannot define finalizer for #{obj.class}"
+    end
+    entry = FINALIZERS__.find { |e| e[0].equal?(obj) }
+    if entry.nil?
+      entry = [obj, []]
+      FINALIZERS__ << entry
+    end
+    # CRuby registers a given callable once per object and hands back the one it
+    # already holds, so re-registering an equal callable is a no-op.
+    existing = entry[1].find { |f| f.equal?(callable) || f == callable }
+    if existing
+      [0, existing]
+    else
+      entry[1] << callable
+      __install_finalizer_hook__
+      [0, callable]
+    end
+  end
+
+  def self.undefine_finalizer(obj)
+    FINALIZERS__.reject! { |e| e[0].equal?(obj) }
+    obj
+  end
+
+  # Run every registered finalizer with the object's id.  A finalizer may itself
+  # register more (CRuby runs those too), so the drain loops until the registry
+  # is empty.  An exception from one is reported and the rest still run.
+  def self.__run_finalizers__
+    until FINALIZERS__.empty?
+      obj, list = FINALIZERS__.shift
+      id = obj.object_id
+      list.reverse_each do |f|
+        begin
+          f.call(id)
+        rescue Exception => e
+          warn "Exception in finalizer #{f.inspect}: #{e.message}" if $VERBOSE
+        end
+      end
+    end
+  end
+
+  def self.__install_finalizer_hook__
+    return if @finalizer_hook
+    @finalizer_hook = true
+    at_exit { ObjectSpace.__run_finalizers__ }
+  end
 end
 
 # 定義済みグローバル (CRuby 初期値)

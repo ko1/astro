@@ -398,6 +398,19 @@ static RESULT korb_m_sym_to_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     ARO_STORE(c, p, (VALUE *)(uintptr_t)&p->self, KORB_NIL);
     return RESULT_OK((VALUE)p);
 }
+/* Proc#== / #eql? — CRuby 3.2+: two Procs are equal when they are the same
+ * block with the same captured environment, so `p.dup == p`. */
+static RESULT korb_m_proc_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots;
+    const VALUE o = VALUE_SLICE_GET(a, 0);
+    const VALUE s = VALUE_REF_GET(self);
+    if (s == o) return RESULT_OK(KORB_TRUE);
+    if (!KORB_PROC_P(o)) return RESULT_OK(KORB_FALSE);
+    const KorbProc *const x = VAL2PROC(s), *const y = VAL2PROC(o);
+    const bool eq = x->iseq == y->iseq && x->env == y->env && x->self == y->self &&
+                    x->sym_mid == y->sym_mid && x->is_lambda == y->is_lambda;
+    return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
+}
 static RESULT korb_m_proc_lambda_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2PROC(VALUE_REF_GET(self))->is_lambda ? KORB_TRUE : KORB_FALSE);
 }

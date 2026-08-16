@@ -8623,8 +8623,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, -1);
     korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
-    korb_def_cmethod(c, KORB_C_PROC, "==",  korb_m_obj_eq, 1);      /* #eql? is an alias of #== (same rfn) */
-    korb_def_cmethod(c, KORB_C_PROC, "eql?", korb_m_obj_eq, 1);
+    korb_def_cmethod(c, KORB_C_PROC, "==",  korb_m_proc_eq, 1);     /* #eql? is an alias of #== (same rfn) */
+    korb_def_cmethod(c, KORB_C_PROC, "eql?", korb_m_proc_eq, 1);
     korb_def_cmethod(c, KORB_C_PROC, "to_s", korb_m_obj_to_s, 0);   /* #inspect is an alias of #to_s */
     korb_def_cmethod(c, KORB_C_PROC, "inspect", korb_m_obj_to_s, 0);
     korb_def_cmethod(c, KORB_C_METHOD, "receiver", korb_m_meth_recv, 0);
