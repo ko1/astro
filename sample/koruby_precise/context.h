@@ -761,6 +761,11 @@ struct korb_vm {
     struct korb_method **methods;
     uint32_t method_cnt, method_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    /* bumped whenever constant *resolution* could change: a new (name, owner)
+     * entry, a remove_const, or an include/prepend/extend that alters an
+     * ancestry.  Reassigning an existing constant does not move its index, so it
+     * does not need one. */
+    uint64_t const_serial;
     VALUE super_new_skip;    /* transient: the singleton whose `def self.new` is
                               * super-ing right now — korb_send_impl skips that
                               * override once so the default allocator runs.

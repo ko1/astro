@@ -1603,7 +1603,8 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
             const VALUE old = vm->const_vals[i];
             vm->const_names[i] = 0;            /* tombstone (interned ids are >0) */
             vm->const_vals[i] = KORB_NIL;
-            vm->method_serial++;              /* invalidate const caches */
+            vm->method_serial++;
+            vm->const_serial++;               /* invalidate const caches */
             return RESULT_OK(old);
         }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));

@@ -1164,7 +1164,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(cache->idx_plus1 != 0))               /* per-node cache (name+owner fixed → stable idx) */
+    if (LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))   /* per-node cache */
         return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
     uint32_t idx;
     if (owner_name != 0) {                            /* scoped `M::X` or bare read in a namespace */
@@ -1248,6 +1248,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         return nr;
     }
     cache->idx_plus1 = idx + 1;
+    cache->serial = vm->const_serial;
     return RESULT_OK(vm->const_vals[idx]);
 }
 

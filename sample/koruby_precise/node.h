@@ -74,6 +74,9 @@ struct korb_ivcache {
  * each read, so reassignment and GC-forwarding are both seen). */
 struct korb_constcache {
     uint32_t idx_plus1;
+    /* vm->const_serial the entry was resolved under: an include/prepend or a
+     * newly defined constant can change which entry the name resolves to. */
+    uint64_t serial;
     /* Bare (lexical) const reads only: the enclosing class/module names,
      * outermost→innermost (immortal, parse-baked; NULL for explicit paths /
      * top-level).  Resolving this chain owner-scoped yields the UNIQUE innermost

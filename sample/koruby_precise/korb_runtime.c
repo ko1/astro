@@ -3052,6 +3052,7 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
             vm->const_vals[i] = val;
             return;
         }
+    vm->const_serial++;                               /* a new (name, owner) can change what a lookup finds */
     if (vm->const_cnt == vm->const_capa) {
         uint32_t nc = vm->const_capa ? vm->const_capa * 2 : 16;
         vm->const_names  = realloc(vm->const_names,  sizeof(uint32_t) * nc);
@@ -3814,6 +3815,7 @@ korb_include_collect(CTX *c, VALUE *slots, VALUE_REF cref, VALUE_REF dst, VALUE 
 RESULT
 korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
+    c->vm->const_serial++;   /* the ancestry changed: constant lookups can resolve differently */
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* include/extend on a frozen class/object → FrozenError */
@@ -3857,6 +3859,7 @@ korb_do_include(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 RESULT
 korb_do_prepend(CTX *c, VALUE *slots, VALUE klass, VALUE_SLICE mods)
 {
+    c->vm->const_serial++;   /* the ancestry changed: constant lookups can resolve differently */
     if (UNLIKELY(VALUE_SLICE_LEN(mods) == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1+)");
     { RESULT fr = korb_check_def_frozen(c, slots, klass); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* prepend on a frozen class → FrozenError */
