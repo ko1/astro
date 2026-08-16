@@ -2466,3 +2466,38 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       足りないのは「リテラル正規表現 =~ で local を作る」構文だけ。
       transduce_call の `=~` 経路で、左辺が PM_REGULAR_EXPRESSION_NODE かつ
       names が空でない場合に「match して各 name を local に代入」へ desugar すればよい。
+
+## moving GC 下で object_id / Object#hash が安定しない (2026-08-16 発見)
+- [ ] `o.object_id` は GC を跨ぐと値が変わる (アドレス由来)。CRuby は寿命の間
+      不変を保証する。`Object#hash` も同様に変わるが、Hash 側は GC 後も引けている
+      (`h[o]` は通る) ので実害は id の値そのものを持ち回る場合に限る。
+      直すなら sklass_obj/sklass_cls と同じ「両列を root として forward する
+      サイドテーブル」で、初回 object_id 呼び出し時に単調増加 id を割り当て、
+      オブジェクトにフラグビットを立てて線形検索する形。
+      spec への影響は小さい (kernel/object_id・basicobject/__id__ が各 1 例) が、
+      ObjectSpace の finalizer 登録などで id をキーにできない制約になっている
+      (今の実装は identity 比較で回避した)。
+
+## caller / caller_locations が常に空 (2026-08-16 確認)
+- [ ] 例外の backtrace は巻き戻し中に korb_bt_append で組み立てているだけで、
+      「今のコールスタックを歩く」機構が無いため `caller` は `[]` を返す。
+      Thread#backtrace / #backtrace_locations も同様。実装するには per-frame の
+      (line, name) シャドースタックを push/pop する必要があり、呼び出しごとの
+      コストになるので fast path への影響を測ってから。
+      core/kernel/caller_locations・core/thread/backtrace_locations 系が
+      これ待ち (12 err ほど)。
+
+## 定数解決の flat fallback が無関係な名前空間を拾う (2026-08-16 確認)
+- [ ] `class C; def self.get = Z; end` の時点で Z がどこにも無く、後から
+      `module ZM; Z = :zm; end` があると、C の祖先に ZM が無くても :zm が返る
+      (node_const の最後の `korb_const_index` フォールバック)。CRuby は NameError。
+      prelude が「入れ子定数を非修飾で参照する」ことに依存しているため、外すには
+      prelude 側の参照を先に直す必要がある。
+      core/module/prepend の "updates the constant" 系 (8 例) と
+      core/module/const_source_location (36 例) がこの構造に引っかかっている。
+
+## core/kernel/require_spec が busy loop で終わらない (2026-08-16 確認)
+- [ ] 74 例まで進んだあと CPU を回し続ける (400s 走らせても user 時間が丸ごと
+      消費される = 待ちではなくループ)。$LOADED_FEATURES 基準の重複判定と
+      CLI の -I/-r を入れて 12 例 → 74 例まで伸びた分の先。
+      次は example 名を出しながら流して該当例を特定するところから。
