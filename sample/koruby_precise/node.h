@@ -207,6 +207,10 @@ RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner);   /* owner = defining module (nil = top-level) — for Module#constants */
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
+/* command-line -I / -r: prepend a directory to $LOAD_PATH, and require a
+ * feature by name (the same path search `require` itself does) */
+void   korb_load_path_unshift(CTX *c, VALUE *slots, const char *dir);
+RESULT korb_require_feature(CTX *c, VALUE *slots, const char *name);
 /* `$!` stack (per-CTX, GC-visited): push the exception on entering a rescue
  * body, pop on exit; top == `$!`.  See node_rescue / node_errinfo. */
 void   korb_errinfo_push(CTX *c, VALUE v);

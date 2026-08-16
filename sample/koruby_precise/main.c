@@ -358,6 +358,8 @@ main(int argc, char *argv[])
     /* sample flags + positional script */
     const char *eval_code = NULL;
     const char *script = NULL;
+    const char *load_dirs[64]; uint32_t nload_dirs = 0;    /* -I */
+    const char *req_libs[64];  uint32_t nreq_libs  = 0;    /* -r */
     int i = 1;
     for (; i < argc; i++) {
         const char *a = argv[i];
@@ -378,6 +380,22 @@ main(int argc, char *argv[])
         else if (strcmp(a, "--") == 0) {
             i++;
             break;
+        }
+        /* CRuby flags that scripts and spec harnesses pass through: -I adds to
+         * $LOAD_PATH, -r requires, and the warning / feature switches are
+         * accepted so an invocation that only decorates itself with them runs. */
+        else if (strncmp(a, "-I", 2) == 0) {
+            const char *const dir = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : NULL);
+            if (dir) { if (nload_dirs < 64) load_dirs[nload_dirs++] = dir; }
+        }
+        else if (strncmp(a, "-r", 2) == 0) {
+            const char *const lib = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : NULL);
+            if (lib) { if (nreq_libs < 64) req_libs[nreq_libs++] = lib; }
+        }
+        else if (strcmp(a, "-w") == 0 || strncmp(a, "-W", 2) == 0 ||
+                 strncmp(a, "--disable", 9) == 0 || strncmp(a, "--enable", 8) == 0 ||
+                 strcmp(a, "--copyright") == 0) {
+            /* accepted, no effect */
         }
         else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "koruby_precise: unknown flag %s\n", a);
@@ -494,6 +512,13 @@ main(int argc, char *argv[])
                                           c->slots[-1]);
             if (tb.state == KORB_NORMAL)
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
+        }
+        /* -I directories join $LOAD_PATH and -r libraries are required before
+         * the program runs, as CRuby does. */
+        for (uint32_t k = nload_dirs; k-- > 0; ) korb_load_path_unshift(c, toplevel_cursor, load_dirs[k]);
+        for (uint32_t k = 0; k < nreq_libs; k++) {
+            const RESULT rr = korb_require_feature(c, toplevel_cursor, req_libs[k]);
+            if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_std(c->vm); return 1; }
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);

@@ -9903,6 +9903,18 @@ static bool korb_mark_loaded(struct korb_vm *vm, const char *abspath) {
 }
 static RESULT korb_raise_load_error(CTX *c, VALUE *slots, const char *path);   /* fwd (defined with require) */
 
+/* Drop the last `abspath` entry from the C-side loaded list (a load that raised). */
+static void korb_unmark_loaded(struct korb_vm *vm, const char *abspath)
+{
+    for (uint32_t i = vm->loaded_cnt; i-- > 0; )
+        if (strcmp(vm->loaded_files[i], abspath) == 0) {
+            free(vm->loaded_files[i]);
+            memmove(&vm->loaded_files[i], &vm->loaded_files[i + 1], sizeof(char *) * (vm->loaded_cnt - i - 1));
+            vm->loaded_cnt--;
+            return;
+        }
+}
+
 /* Append `path` to $LOADED_FEATURES (Ruby code — autoload?, `require`-guards —
  * reads it; the C-side loaded list is not visible from Ruby). */
 static void korb_loaded_features_push(CTX *c, VALUE *slots, const char *path)
@@ -9916,16 +9928,56 @@ static void korb_loaded_features_push(CTX *c, VALUE *slots, const char *path)
     (void)korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]);
 }
 
+/* Remove `path` from $LOADED_FEATURES again (its load raised). */
+static void korb_loaded_features_pop(CTX *c, VALUE *slots, const char *path)
+{
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return;
+    const uint32_t plen = (uint32_t)strlen(path);
+    KorbArray *const a = VAL2ARY(lf);
+    for (uint32_t i = a->len; i-- > 0; ) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e) || VAL2STR(e)->len != plen) continue;
+        if (memcmp(korb_strbuf_data(VAL2STR(e)->buf), path, plen) != 0) continue;
+        slots[0] = lf; slots[1] = LONG2FIX((intptr_t)i);
+        (void)korb_send(c, slots + 2, korb_intern(c->vm, "delete_at", 9), 0, 1);
+        return;
+    }
+}
+
+/* Has `path` already been required?  $LOADED_FEATURES is the authority when it
+ * exists — Ruby code (mspec's load-path fixtures, `require`-guards) manipulates
+ * that array and expects the answer to follow; the C-side list only covers the
+ * bootstrap window before the global is created. */
+static bool korb_feature_loaded_p(CTX *c, const char *path)
+{
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (KORB_ARRAY_P(lf)) {
+        const uint32_t plen = (uint32_t)strlen(path);
+        const KorbArray *const a = VAL2ARY(lf);
+        for (uint32_t i = 0; i < a->len; i++) {
+            const VALUE e = korb_items_data(a->items)[i];
+            if (KORB_STRING_P(e) && VAL2STR(e)->len == plen &&
+                memcmp(korb_strbuf_data(VAL2STR(e)->buf), path, plen) == 0) return true;
+        }
+        /* a bare feature name (no '/') can also be one the interpreter pre-marked
+         * as built in before $LOADED_FEATURES existed — "set" is core-loaded, so
+         * `require "set"` is false.  Real files always arrive as absolute paths,
+         * so this never overrides a $LOADED_FEATURES the program has edited. */
+        if (strchr(path, '/') != NULL) return false;
+    }
+    for (uint32_t i = 0; i < c->vm->loaded_cnt; i++)
+        if (strcmp(c->vm->loaded_files[i], path) == 0) return true;
+    return false;
+}
+
 /* Load `abspath` (read + eval at top level), tracking it as a required feature.
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
 korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out)
 {
     struct korb_vm *const vm = c->vm;
-    if (dedup) {
-        for (uint32_t i = 0; i < vm->loaded_cnt; i++)
-            if (strcmp(vm->loaded_files[i], abspath) == 0) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
-    }
+    if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
     if (!buf) return korb_raise_load_error(c, slots, abspath);
@@ -9940,7 +9992,12 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
     RESULT r = korb_eval_toplevel(c, slots, buf, got, abscopy);
     vm->cur_load_file = saved;
     free(buf);
-    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (UNLIKELY(r.state != KORB_NORMAL)) {
+        /* a load that raised did not happen: CRuby leaves neither the C-side
+         * record nor $LOADED_FEATURES behind, so the next require retries */
+        if (dedup) { korb_unmark_loaded(vm, abspath); korb_loaded_features_pop(c, slots, abspath); }
+        return r;
+    }
     *out = KORB_TRUE;
     return RESULT_OK(KORB_TRUE);
 }
@@ -10049,12 +10106,34 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
     for (uint32_t i = 0; builtin_features[i]; i++)
         if (strcmp(stem, builtin_features[i]) == 0) {                 /* built-in: load-once contract by feature name */
-            const bool fresh = korb_mark_loaded(c->vm, stem);
-            if (fresh) korb_loaded_features_push(c, slots, stem);
-            return RESULT_OK(fresh ? KORB_TRUE : KORB_FALSE);
+            if (korb_feature_loaded_p(c, stem)) return RESULT_OK(KORB_FALSE);
+            (void)korb_mark_loaded(c->vm, stem);
+            korb_loaded_features_push(c, slots, stem);
+            return RESULT_OK(KORB_TRUE);
         }
     return korb_raise_load_error(c, slots, namebuf);
 }
+/* -I DIR: prepend to $LOAD_PATH (CRuby order: the last -I ends up first). */
+void korb_load_path_unshift(CTX *c, VALUE *slots, const char *dir)
+{
+    const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+    if (!KORB_ARRAY_P(lp)) return;
+    slots[0] = lp;
+    const RESULT sr = korb_str_new(c, slots + 1, dir, (uint32_t)strlen(dir));
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return;
+    slots[1] = sr.value;
+    (void)korb_send(c, slots + 2, korb_intern(c->vm, "unshift", 7), 0, 1);
+}
+
+/* -r LIB: require it the same way Ruby code would. */
+RESULT korb_require_feature(CTX *c, VALUE *slots, const char *name)
+{
+    const RESULT sr = korb_str_new(c, slots, name, (uint32_t)strlen(name));
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[0] = sr.value;
+    return korb_bi_require(c, slots + 1, VALUE_SLICE_MAKE(&slots[0], 1));
+}
+
 /* Method-shaped wrappers for require / require_relative / load.  They go on the
  * Kernel module (which Object includes), so a Ruby-level `def require` on Object
  * — mspec installs one — finds them via `super` instead of hitting BasicObject.
