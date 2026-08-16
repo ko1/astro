@@ -5662,6 +5662,9 @@ korb_etype_name(unsigned int etype)
       case KORB_E_FLOAT_DOMAIN:   return "FloatDomainError";
       case KORB_E_NO_MATCHING_PATTERN:     return "NoMatchingPatternError";
       case KORB_E_NO_MATCHING_PATTERN_KEY: return "NoMatchingPatternKeyError";
+      case KORB_E_SYNTAX:   return "SyntaxError";
+      case KORB_E_LOADERR:  return "LoadError";
+      case KORB_E_IOERROR:  return "IOError";
       default:              return "RuntimeError";
     }
 }
@@ -10081,7 +10084,12 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_strbuf_data(VAL2STR(nv)->buf), nl); namebuf[nl] = '\0';
     char abspath[4096];
-    if (korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
+    /* Only an explicitly relative ("./x", "../x") or absolute name is resolved
+     * against the working directory; a bare feature name comes from $LOAD_PATH
+     * alone (CRuby dropped "." from the load path in 1.9.2, and searching it
+     * would let a stray ./stringio.rb shadow the real feature). */
+    if ((namebuf[0] == '/' || namebuf[0] == '.') &&
+        korb_resolve_load(".", namebuf, abspath, sizeof abspath)) {
         VALUE out; return korb_load_abspath(c, slots, abspath, true, &out);
     }
     if (namebuf[0] != '/' && namebuf[0] != '.') {          /* search each $LOAD_PATH dir (no alloc until the load) */
