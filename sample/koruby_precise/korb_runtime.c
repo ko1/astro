@@ -5674,10 +5674,22 @@ korb_etype_name(unsigned int etype)
 RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
+    /* name the object's real class and let it inspect itself: a user instance is
+     * not "Object", and a Time renders as a Time */
+    slots[0] = v;
+    if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
+        const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
+        if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
+            const KorbString *const is = VAL2STR(ir.value);
+            return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %.*s",
+                              korb_coerce_name(c, slots[0]), (int)is->len, korb_strbuf_data(is->buf));
+        }
+    }
     char *ibuf = NULL; size_t ilen = 0;
     FILE *ims = open_memstream(&ibuf, &ilen);
-    if (ims) { korb_fprint_inspect(c, ims, v); fclose(ims); }
-    RESULT r = korb_raise(c, slots, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", korb_type_name(v), ibuf ? ibuf : "");
+    if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
+    RESULT r = korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s",
+                          korb_coerce_name(c, slots[0]), ibuf ? ibuf : "");
     free(ibuf);
     return r;
 }

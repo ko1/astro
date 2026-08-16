@@ -700,6 +700,42 @@ static RESULT korb_time_derive(CTX *c, VALUE *slots, VALUE_REF src, double epoch
     return RESULT_OK(VALUE_REF_GET(nt));
 }
 
+/* Time#localtime([zone]) / #gmtime / #utc — unlike the get* variants these
+ * convert the receiver in place and return it.  Frozen is only an error when the
+ * zone would actually change (CRuby lets a no-op through). */
+static RESULT korb_m_time_localtime_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    const bool have_arg = VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL;
+    intptr_t off = 0; bool utcish = false;
+    if (have_arg) {
+        const double e = korb_time_epoch(c, VALUE_REF_GET(self));
+        CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), e, false, &off, &utcish));
+    }
+    /* already in that zone → no change, so a frozen receiver is fine */
+    intptr_t cur; const bool had = korb_time_fixed_off(c, VALUE_REF_GET(self), &cur);
+    const bool was_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
+    if (have_arg ? (had && cur == off && was_utc == utcish)
+                 : (!had && !was_utc)) return RESULT_OK(VALUE_REF_GET(self));
+    KORB_CHECK_FROZEN(c, slots + 2, VALUE_REF_GET(self));
+    const VALUE_REF t = self;
+    CHECK(korb_ivar_set(c, slots + 2, t, korb_time_utc_sym(c->vm), utcish ? KORB_TRUE : KORB_FALSE));
+    if (have_arg) return korb_time_set_zone(c, slots + 2, t, off, VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
+    /* no argument: back to the process time zone — drop any fixed offset */
+    CHECK(korb_ivar_set(c, slots + 2, t, korb_time_off_sym(c->vm), KORB_NIL));
+    CHECK(korb_ivar_set(c, slots + 2, t, korb_time_tz_sym(c->vm), KORB_NIL));
+    CHECK(korb_ivar_set(c, slots + 2, t, korb_time_offx_sym(c->vm), KORB_NIL));
+    return RESULT_OK(VALUE_REF_GET(t));
+}
+/* Time#utc / #gmtime — convert the receiver to UTC in place. */
+static RESULT korb_m_time_utc_bang(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    if (korb_time_is_utc(c, VALUE_REF_GET(self))) return RESULT_OK(VALUE_REF_GET(self));
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
+    CHECK(korb_ivar_set(c, slots, self, korb_time_utc_sym(c->vm), KORB_TRUE));
+    CHECK(korb_ivar_set(c, slots, self, korb_time_off_sym(c->vm), KORB_NIL));
+    CHECK(korb_ivar_set(c, slots, self, korb_time_tz_sym(c->vm), KORB_NIL));
+    CHECK(korb_ivar_set(c, slots, self, korb_time_offx_sym(c->vm), KORB_NIL));
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_time_plus(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
     const VALUE o = VALUE_SLICE_GET(a, 0);
@@ -903,9 +939,9 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "getutc",   korb_m_time_getutc,   0);
     korb_class_def_cfn(c, t, "getgm",    korb_m_time_getutc,   0);
     korb_class_def_cfn(c, t, "getlocal", korb_m_time_getlocal, -1);
-    korb_class_def_cfn(c, t, "utc",       korb_m_time_getutc,   0);   /* instance utc/gmtime → UTC view */
-    korb_class_def_cfn(c, t, "gmtime",    korb_m_time_getutc,   0);
-    korb_class_def_cfn(c, t, "localtime", korb_m_time_getlocal, -1);
+    korb_class_def_cfn(c, t, "utc",       korb_m_time_utc_bang,       0);   /* these convert in place */
+    korb_class_def_cfn(c, t, "gmtime",    korb_m_time_utc_bang,       0);
+    korb_class_def_cfn(c, t, "localtime", korb_m_time_localtime_bang, -1);
     korb_class_def_cfn(c, t, "+",   korb_m_time_plus,  1);
     korb_class_def_cfn(c, t, "-",   korb_m_time_minus, 1);
     korb_class_def_cfn(c, t, "<=>", korb_m_time_cmp,   1);
