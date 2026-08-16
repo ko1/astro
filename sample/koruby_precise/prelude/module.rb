@@ -73,6 +73,7 @@ class Module
 
   def autoload(name, path)
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
+    raise NameError, "autoload must be constant name: #{n}" unless n.to_s =~ /\A[A-Z][A-Za-z0-9_]*\z/
     unless path.is_a?(String) || path.respond_to?(:to_path) || path.respond_to?(:to_str)
       raise TypeError, "no implicit conversion of #{path.class} into String"
     end
@@ -84,11 +85,13 @@ class Module
 
   def autoload?(name, inherit = true)
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
-    return nil if const_defined?(n, false)
+    # 自分の登録が先: const_defined? は未ロードの autoload も真を返すので、
+    # 先に問うと自分の登録を見失う
     if __autoload_table.key?(n)
       p0 = __autoload_table[n]
       return __autoload_loaded?(p0) ? nil : p0     # 既に require 済みなら nil (CRuby)
     end
+    return nil if const_defined?(n, false)
     return nil unless inherit
     ancestors.each do |m|
       next if m.equal?(self)
@@ -123,4 +126,7 @@ module Kernel
   # 単独の `autoload :X, "path"` は Object への登録 (CRuby と同じ)。
   private def autoload(name, path) = Object.autoload(name, path)
   private def autoload?(name, inherit = true) = Object.autoload?(name, inherit)
+  # `Kernel.autoload` も同じく Object に登録する (Kernel 自身ではない)。
+  def self.autoload(name, path) = Object.autoload(name, path)
+  def self.autoload?(name, inherit = true) = Object.autoload?(name, inherit)
 end

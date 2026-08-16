@@ -1589,6 +1589,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(result);
 }
+static bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);   /* fwd (defined with const_defined?) */
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -1598,6 +1599,14 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
     else if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); id = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); }
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(name));
     struct korb_vm *const vm = c->vm;
+    if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) {   /* pending autoload → just unregister */
+        slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+        slots[1] = ID2SYM(id);
+        const RESULT dr = korb_send(c, slots + 2, korb_intern(vm, "delete", 6), 0, 1);
+        if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+        vm->const_serial++;
+        return RESULT_OK(KORB_NIL);
+    }
     for (uint32_t i = 0; i < vm->const_cnt; i++)
         if (vm->const_names[i] == id) {
             const VALUE old = vm->const_vals[i];
@@ -1609,6 +1618,16 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
         }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }
+/* Is `sym` registered as an autoload on `mod` (or, with `inherit`, on one of its
+ * ancestors)?  The registry is the module's own @__autoloads Hash (prelude
+ * Module#autoload).  CRuby reports such a constant as defined before the file is
+ * loaded, and removing it must not trigger the load. */
+static bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym) {
+    if (!KORB_CLASS_P(mod)) return false;
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(c->vm, "@__autoloads", 12)));
+    return KORB_HASH_P(t) && korb_hash_find(VAL2HASH(t), ID2SYM(sym)) >= 0;
+}
+
 /* Module#const_defined?(sym|str) — flat table membership. */
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
@@ -1629,6 +1648,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         const char *const sn = korb_sym_name(vm, id);      /* a Symbol name is atomic — validate the whole thing */
         if (UNLIKELY(!korb_valid_const_name(sn, (uint32_t)strlen(sn))))
             return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %s", sn);
+        if (korb_autoload_registered_p(c, VALUE_REF_GET(self), id)) return RESULT_OK(KORB_TRUE);
     }
     else if (KORB_STRING_P(name)) {
         const KorbString *const s = VAL2STR(name);
