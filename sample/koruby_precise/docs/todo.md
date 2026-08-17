@@ -2525,3 +2525,43 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
           → (a) を直しても残る。ループ back-edge に安価なチェックを置く必要があるが、
           fast path のコストになるので計測してから (feedback_koruby_fastpath_no_slowdown)。
       当面の回避は `kill -9` か、trap されていない別シグナル (通常 TERM)。
+
+      **(a) の実装方針は signalfd で確定 (2026-08-17 実測)**。block したまま
+      check point で回収する今の方針を崩さずに poll を起こせる唯一の手:
+      | 測定 | 結果 |
+      |---|---|
+      | poll 前から pending でも readable か | rc=1 revents=1 / 0.0ms |
+      | sigtimedwait で回収したら静まるか | rc=0 revents=0 |
+      | poll 中に届いた場合 | rc=1 revents=1 / 送信と同時 |
+      | 別 thread が共有 fd を poll (process 宛) | rc=1 / 見える |
+      | 別 thread が共有 fd を poll (thread 宛) | 見えない |
+      2 行目が肝で、**drain を既存の korb_signal_deliver (sigtimedwait) に任せられる**
+      ので二重消費もスピンも起きない。4 行目より **signalfd は 1 本で足りる**
+      (koruby の Ruby レベルのシグナルは全部 process 宛)。M:N でも 1 本のまま。
+      pump への変更: (1) 遅延生成した signalfd を pollfd 配列の先頭に常に足す
+      (2) `total == 0 && ms == 0` の早期 return は blop 由来の fd 数で判定する
+      (3) revents 書き戻しのインデックスを 1 つずらす
+      (4) 未 block のシグナルを mask に入れておくのは無害 (pending になり得ない) なので
+      __signal_block との同期は不要。
+
+## targeted wakeup (Thread#kill / #raise / IO#close) の手段 (2026-08-17 実測)
+- [ ] **close(2) は read も poll も起こさない**ので、close 自体は wakeup 機構に
+      ならない。実測 (別 thread が対象 fd を close、2s 待ち):
+      | 状況 | 結果 |
+      |---|---|
+      | read ブロック中に close | **起きない** (その後 pthread_kill で EINTR) |
+      | poll ブロック中に close | **起きない** (起きた後の revents=POLLNVAL) |
+      | read ブロック中に pthread_kill | EINTR 即座 |
+      | poll ブロック中に pthread_kill | EINTR 即座 |
+      pthread_kill は no-op ハンドラ + SA_RESTART を落とせば poll/nanosleep/waitpid
+      すべてを EINTR にできる (fd 0 本)。ただし syscall に入る直前に届くと取りこぼす
+      ので、CRuby のように「フラグを立てて抜けたと確認できるまで叩き直す」が要る。
+      eventfd は level-triggered で書いた事実が残るため取りこぼしが無い代わりに、
+      pump の poll に乗っている待機しか起こせない。
+      境界は「close かどうか」ではなく **pump の poll に乗っているか**:
+      - 乗っている (今の koruby は自前 fd を O_NONBLOCK にして全部 POLL blop に park)
+        → close は「blop を ECANCELED で cancel + eventfd を叩く」で足り、signal 不要。
+        eventfd の本数は **worker (OS thread) 数**で、Ruby thread 数ではない。
+      - 乗っていない (`KORB_BLOP_CFUNC` で C ライブラリ内、waitpid、通常ファイル/NFS の
+        blocking read、getaddrinfo) → pthread_kill しかない。blop の union が既に
+        ubf/ubf_arg を持っているのはこのため。CFUNC blop を実際に使い出す時点が分水嶺。
