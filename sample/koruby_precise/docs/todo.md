@@ -2502,12 +2502,26 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       CLI の -I/-r を入れて 12 例 → 74 例まで伸びた分の先。
       次は example 名を出しながら流して該当例を特定するところから。
 
-## ブロッキング待機中に届いたシグナルが遅れる (2026-08-17 確認)
+## trap 済みシグナルが無限待ち / CPU ループ中に配送されない (2026-08-17 実測)
 - [ ] シグナルはプロセス全体で block して check point で sigtimedwait 回収する
-      設計なので、scheduler が poll(2) に -1 (無期限) で入っていると、その間に
-      届いたシグナルは poll が明けるまで配送されない。`sleep` 中の Ctrl-C が
-      効かない形になる (kill の *前* に pending があるケースは
-      Process.kill 側の check point で拾えるので spec は通る)。
-      直すなら pump の直前に sigpending() を見て pending があれば ms=0 にする、
-      加えて trap 済みシグナルがある間は poll を数十 ms で頭打ちにする、
-      あるいは self-pipe を足して ppoll する。
+      設計なので、**trap したシグナル**は check point に来るまで配送されない。
+      trap していないシグナルは block されないので OS 既定がそのまま効く
+      (素の `sleep` への Ctrl-C は問題なく効く)。実測 (0.7s 後に送信し 2s 待つ):
+
+      | プログラム | INT | TERM | KILL |
+      |---|---|---|---|
+      | trap 無し + `sleep`              | 即死 130 | 即死 143 | 即死 |
+      | INT trap + 無限 `sleep`          | **効かない** | 即死 143 | 即死 137 |
+      | INT trap + `loop { }`            | **効かない** | (未 block なので即死) | 即死 |
+      | INT+TERM trap + 無限 `sleep`     | **効かない** | **効かない** | 即死 137 |
+      | INT trap + `100.times{sleep 0.1}`| 効く 3 | — | — |
+
+      CRuby は `Signal.trap(:INT){exit 3}; sleep` に INT で即 rc=3。
+      原因は **2 つある**:
+      (a) scheduler が poll(2) に -1 (無期限) で入っている間は明けるまで配送されない。
+          → pump の直前に sigpending() を見て pending があれば ms=0、加えて trap 済み
+          シグナルがある間は poll を数十 ms で頭打ちにするか、self-pipe + ppoll。
+      (b) 純 CPU ループには check point 自体が無い。
+          → (a) を直しても残る。ループ back-edge に安価なチェックを置く必要があるが、
+          fast path のコストになるので計測してから (feedback_koruby_fastpath_no_slowdown)。
+      当面の回避は `kill -9` か、trap されていない別シグナル (通常 TERM)。
