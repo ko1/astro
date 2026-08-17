@@ -514,6 +514,10 @@ static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
+    if (!plan.use_shell) {                       /* CRuby reports a bad command in the parent */
+        const int probe = korb_exec_probe(plan.argv[0]);
+        if (probe != 0) return korb_raise_errno(c, slots, probe, NULL, plan.argv[0]);
+    }
     korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) return korb_raise_errno(c, slots, errno, "spawn", plan.argv[0]);
@@ -550,6 +554,8 @@ static RESULT korb_m_kernel_system(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
+    /* no exec probe here: Kernel#system reports a failure to run as nil, not as
+       an exception (the child's 127 exit below is what surfaces it) */
     korb_io_flush_std(c->vm);   /* the child inherits our write buffer: drain it first */
     const pid_t pid = korb_spawn_run(&plan);
     if (pid < 0) return RESULT_OK(KORB_NIL);
