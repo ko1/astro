@@ -38,9 +38,64 @@ class Exception
   end
 end
 module Warning
-  def self.[](category); false; end
-  def self.[]=(category, flag); flag; end
-  def self.warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end
+  # The categories CRuby knows, each off by default.  An unknown name is an
+  # error rather than a silent false, so a typo does not quietly disable.
+  CATEGORIES__ = { deprecated: false, experimental: false, performance: false,
+                   strict_unused_block: false }
+  def self.__category!(category)
+    raise TypeError, "wrong argument type #{category.class} (expected Symbol)" unless category.is_a?(Symbol)
+    raise ArgumentError, "unknown category: #{category}" unless CATEGORIES__.key?(category)
+    category
+  end
+  def self.categories; CATEGORIES__.keys.sort; end
+  def self.[](category); CATEGORIES__[__category!(category)]; end
+  def self.[]=(category, flag); CATEGORIES__[__category!(category)] = flag ? true : false; flag; end
+  # #warn is an *instance* method made available on the module by `extend self`,
+  # exactly as CRuby has it: that is what makes Warning.method(:warn).owner
+  # Warning (not its singleton) and lets a program reopen `module Warning` and
+  # call `super`.
+  def warn(msg, category: nil); $stderr.print(msg) if $stderr; nil; end
+  extend self
+end
+
+module Kernel
+  # Kernel#warn builds one String from its arguments and hands it to
+  # Warning.warn, which is the hook programs override.  `category:` is only
+  # forwarded when the (possibly redefined) Warning.warn accepts keywords, and
+  # the delegation is skipped when self *is* Warning so a `super` inside a
+  # redefined Warning.warn cannot recurse.
+  def warn(*msgs, uplevel: nil, category: nil)
+    return nil if $VERBOSE.nil?
+    unless uplevel.nil?
+      unless uplevel.is_a?(Integer)
+        raise TypeError, "no implicit conversion of #{uplevel.nil? ? 'nil' : uplevel.class} into Integer" unless uplevel.respond_to?(:to_int)
+        uplevel = uplevel.to_int
+        raise TypeError, "can't convert to Integer" unless uplevel.is_a?(Integer)
+      end
+      raise ArgumentError, "negative level (#{uplevel})" if uplevel < 0
+    end
+    unless category.nil?
+      raise TypeError, "no implicit conversion of #{category.class} into Symbol" unless category.respond_to?(:to_sym)
+      category = category.to_sym
+      # the category gate lives here (CRuby): a disabled category never reaches
+      # Warning.warn at all
+      return nil unless Warning[category]
+    end
+    return nil if msgs.empty?
+    msg = +""
+    msgs.each do |m|
+      s = m.to_s
+      msg << s
+      msg << "\n" unless s.end_with?("\n")
+    end
+    return ($stderr.write(msg) if $stderr) && nil if equal?(Warning)
+    if Warning.method(:warn).parameters.any? { |t, _| t == :key || t == :keyreq || t == :keyrest }
+      Warning.warn(msg, category: category)
+    else
+      Warning.warn(msg)
+    end
+    nil
+  end
 end
 class Object
   # Lazy: the underlying `meth` runs only when the returned Enumerator is

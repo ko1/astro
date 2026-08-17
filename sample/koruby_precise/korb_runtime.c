@@ -11574,7 +11574,9 @@ korb_ctx_new(void)
     korb_builtin_define(c, "print", korb_bi_print, -1);
     korb_builtin_define(c, "raise", korb_bi_raise, -1);
     korb_builtin_define(c, "fail",  korb_bi_raise, -1);   /* Kernel#fail — alias of raise */
-    korb_builtin_define(c, "warn", korb_bi_warn, -1);
+    /* the raw writer: Kernel#warn itself is Ruby (prelude/exception.rb) so it can
+       delegate to Warning.warn and introspect its arity */
+    korb_builtin_define(c, "__warn_raw", korb_bi_warn, -1);
     korb_builtin_define(c, "global_variables", korb_bi_global_variables, 0);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
