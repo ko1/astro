@@ -134,6 +134,9 @@ struct korb_spawn_plan {
     char  envbuf[8192];
     size_t envbuf_len;
     bool  have_env;
+    bool  unsetenv_others;                  /* start the child from an empty environment */
+    char *unsetv[64];                       /* names to remove (a nil value in the env Hash) */
+    uint32_t nunset;
     struct korb_redir redir[8];
     uint32_t nredir;
 };
@@ -165,6 +168,16 @@ static bool korb_spawn_push_env(struct korb_spawn_plan *p, const char *k, uint32
     p->envbuf_len += kn + vn + 2;
     p->envp[i] = dst;
     p->envp[i + 1] = NULL;
+    return true;
+}
+
+/* Record a name the child should drop from its environment (`{"FOO" => nil}`). */
+static bool korb_spawn_push_unset(struct korb_spawn_plan *p, const char *k, uint32_t kn) {
+    if (p->nunset >= 64 || p->envbuf_len + kn + 1 > sizeof p->envbuf) return false;
+    char *const dst = p->envbuf + p->envbuf_len;
+    memcpy(dst, k, kn); dst[kn] = '\0';
+    p->envbuf_len += kn + 1;
+    p->unsetv[p->nunset++] = dst;
     return true;
 }
 
@@ -262,18 +275,43 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
 static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct korb_spawn_plan *p) {
     memset(p, 0, sizeof *p);
     uint32_t lo = 0, hi = VALUE_SLICE_LEN(a);
+    /* a leading Hash (or anything with #to_hash) is the environment */
+    if (hi > 0 && !KORB_HASH_P(VALUE_SLICE_GET(a, 0)) && KORB_OBJECT_P(VALUE_SLICE_GET(a, 0)) &&
+        korb_responds_to(c, VALUE_SLICE_GET(a, 0), korb_intern(c->vm, "to_hash", 7))) {
+        slots[0] = VALUE_SLICE_GET(a, 0);
+        const RESULT hr = korb_send(c, slots + 1, korb_intern(c->vm, "to_hash", 7), 0, 0);
+        if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        if (KORB_HASH_P(hr.value)) VALUE_REF_SET(VALUE_SLICE_REF(a, 0), hr.value);
+    }
     if (hi > 0 && KORB_HASH_P(VALUE_SLICE_GET(a, 0))) {          /* leading env Hash */
-        const VALUE ev = VALUE_SLICE_GET(a, 0);
-        const KorbHash *h = VAL2HASH(ev);
-        for (uint32_t i = 0; i < h->len; i++) {
-            const VALUE k = korb_items_data(h->items)[2 * i];
-            const VALUE v = korb_items_data(h->items)[2 * i + 1];
-            if (!KORB_STRING_P(k)) continue;
-            uint32_t kn; const char *ks = korb_str_cstr_len(k, &kn);
-            if (KORB_STRING_P(v)) {
-                uint32_t vn; const char *vs = korb_str_cstr_len(v, &vn);
-                if (!korb_spawn_push_env(p, ks, kn, vs, vn)) break;
+        slots[0] = VALUE_SLICE_GET(a, 0);                        /* park: #to_str below dispatches */
+        const uint32_t n = VAL2HASH(slots[0])->len;
+        for (uint32_t i = 0; i < n; i++) {
+            slots[1] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i];
+            slots[2] = korb_items_data(VAL2HASH(slots[0])->items)[2 * i + 1];
+            for (uint32_t w = 1; w <= 2; w++) {                  /* keys and values take #to_str */
+                if (KORB_STRING_P(slots[w]) || (w == 2 && slots[2] == KORB_NIL)) continue;
+                if (!KORB_OBJECT_P(slots[w]) || !korb_responds_to(c, slots[w], korb_intern(c->vm, "to_str", 6)))
+                    return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                                      korb_coerce_name(c, slots[w]));
+                slots[3] = slots[w];                            /* receiver sits just below the cursor */
+                const RESULT sr = korb_send(c, slots + 4, korb_intern(c->vm, "to_str", 6), 0, 0);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                if (UNLIKELY(!KORB_STRING_P(sr.value)))
+                    return korb_raise(c, slots + 3, KORB_E_TYPE, 0, "no implicit conversion into String");
+                slots[w] = sr.value;
             }
+            uint32_t kn; const char *ks = korb_str_cstr_len(slots[1], &kn);
+            if (UNLIKELY(memchr(ks, '\0', kn) != NULL))
+                return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "string contains null byte");
+            if (UNLIKELY(memchr(ks, '=', kn) != NULL))
+                return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "environment name contains a equal : %.*s", (int)kn, ks);
+            if (slots[2] == KORB_NIL) { if (!korb_spawn_push_unset(p, ks, kn)) break; continue; }
+            uint32_t vn; const char *vs = korb_str_cstr_len(slots[2], &vn);
+            if (UNLIKELY(memchr(vs, '\0', vn) != NULL))
+                return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "string contains null byte");
+            ks = korb_str_cstr_len(slots[1], &kn);                /* re-read: the value coercion may have moved it */
+            if (!korb_spawn_push_env(p, ks, kn, vs, vn)) break;
         }
         p->have_env = true;
         lo = 1;
@@ -300,6 +338,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
                     return er;
                 }
                 if ((uint32_t)SYM2ID(k) == close_others_id) p->close_others = KORB_TRUTHY(v);
+                else p->unsetenv_others = KORB_TRUTHY(v);
                 continue;
             }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id && !KORB_STRING_P(v) && KORB_OBJECT_P(v)) {
@@ -392,6 +431,8 @@ static bool korb_spawn_child_setup(const struct korb_spawn_plan *p) {
         }
     }
     for (uint32_t i = 0; p->envp[i] != NULL; i++) putenv(p->envp[i]);
+    if (p->unsetenv_others) { extern char **environ; environ = NULL; }   /* start from nothing */
+    for (uint32_t i = 0; i < p->nunset; i++) unsetenv(p->unsetv[i]);
     for (uint32_t i = 0; p->envp[i] != NULL; i++) putenv(p->envp[i]);
     return true;
 }
