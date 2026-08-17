@@ -1070,10 +1070,11 @@ module Signal
       if h == "IGNORE"
         __signal_trap(n, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
         __signal_block(n, false)
-      elsif h == "SYSTEM_DEFAULT" || h == "DEFAULT"
-        __signal_trap(n, "DEFAULT")    # hand it back to the OS
+      elsif h == "SYSTEM_DEFAULT"
+        __signal_trap(n, "DEFAULT")    # hand it back to the OS (only SYSTEM_DEFAULT does)
         __signal_block(n, false)
-      else
+      else                             # "DEFAULT" means *Ruby's* default: raise
+                                       # SignalException/Interrupt at a check point
         __signal_trap(n, "DEFAULT")    # undo a previous SIG_IGN; blocked, so it just stays pending
         __signal_block(n, true)        # deliver it ourselves at the next check point
       end
@@ -1084,7 +1085,13 @@ module Signal
   # Called from the interpreter with a signal number just reaped from the
   # pending set.  Runs the trap handler, or raises for the default disposition.
   def self.__deliver(signo)
-    case (h = @@handlers[signame(signo)])
+    nm = signame(signo)
+    # never trapped → Ruby's default disposition (raise), which is NOT the same
+    # as trap(sig, nil), whose stored nil means "ignore"
+    unless @@handlers.key?(nm)
+      raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
+    end
+    case (h = @@handlers[nm])
     when "IGNORE", "SIG_IGN" then nil
     when "EXIT"              then exit(0)
     when nil                 then nil          # trap(sig, nil) → ignore
