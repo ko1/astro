@@ -1268,7 +1268,12 @@ node_defined(CTX *c, NODE *n, VALUE *slots, uint32_t kind, uint32_t id@sym, int3
         for (uint32_t i = 0; i < vm->method_cnt; i++)            /* top-level / global function table */
             if (vm->methods[i]->mid == id) { res = "method"; break; }
         break;
-      case 1: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX) res = "constant"; break; }   /* nil-valued constant still counts */
+      case 1: { uint32_t i = korb_const_index(vm, id);                                          /* nil-valued constant still counts */
+                if (i != UINT32_MAX) { res = "constant"; break; }
+                /* inside a module body self IS the module: a pending autoload
+                 * there is already "constant" (and must not be loaded to say so) */
+                if (korb_autoload_registered_p(c, slots[self_off], id)) res = "constant";
+                break; }
       case 2: if (korb_ivar_defined(c, slots[self_off], ID2SYM(id))) res = "instance-variable"; break;   /* membership, not value (nil counts) */
       case 3: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX) res = "global-variable"; break; }   /* a global assigned nil is still defined */
       case 4: res = "local-variable"; break;
@@ -1321,7 +1326,8 @@ node_defined_cpath(CTX *c, NODE *n, VALUE *slots, uint32_t owner_name@sym, uint3
     if (!KORB_CLASS_P(owner)) return RESULT_OK(KORB_NIL);         /* parent undefined / not a module */
     uint32_t idx = korb_const_index_owned(vm, name, owner);
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, owner, name);   /* inherited constants count */
-    if (idx == UINT32_MAX) return RESULT_OK(KORB_NIL);                       /* nil-valued constant still counts as defined */
+    if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, name))   /* a pending autoload counts too */
+        return RESULT_OK(KORB_NIL);                                          /* nil-valued constant still counts as defined */
     RESULT dr = korb_str_new(c, slots, "constant", 8);
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;

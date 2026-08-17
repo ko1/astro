@@ -1589,7 +1589,6 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     }
     return RESULT_OK(result);
 }
-static bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);   /* fwd (defined with const_defined?) */
 /* Module#remove_const(sym|str) → the removed value (flat table tombstone). */
 static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -1618,16 +1617,6 @@ static RESULT korb_m_class_remove_const(CTX *c, VALUE *slots, VALUE_REF self, VA
         }
     return korb_raise(c, slots, KORB_E_NAME, 0, "constant %s not defined", korb_sym_name(vm, id));
 }
-/* Is `sym` registered as an autoload on `mod` (or, with `inherit`, on one of its
- * ancestors)?  The registry is the module's own @__autoloads Hash (prelude
- * Module#autoload).  CRuby reports such a constant as defined before the file is
- * loaded, and removing it must not trigger the load. */
-static bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym) {
-    if (!KORB_CLASS_P(mod)) return false;
-    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(c->vm, "@__autoloads", 12)));
-    return KORB_HASH_P(t) && korb_hash_find(VAL2HASH(t), ID2SYM(sym)) >= 0;
-}
-
 /* Module#const_defined?(sym|str) — flat table membership. */
 static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;

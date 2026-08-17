@@ -424,6 +424,8 @@ const char *korb_a_type_name(VALUE v);
 /* coercion-error form: nil/true/false spelled out, a user instance as its own
  * class name rather than the generic "Object" */
 const char *korb_coerce_name(CTX *c, VALUE v);
+/* a constant name registered for autoload on `mod` but not yet loaded */
+bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
 
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
  * frozen heap object.  Used at the top of in-place mutators. */

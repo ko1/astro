@@ -3328,13 +3328,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         if (PM_NODE_TYPE_P(v, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(v, PM_IT_LOCAL_VARIABLE_READ_NODE))
             return ALLOC_node_defined(4, 0, 0);                          /* "local-variable" */
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_READ_NODE))
-            return ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), 0);
+            /* self_off: inside a module body self is the module, which is where a
+             * pending autoload for this name would be registered */
+            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), self_off);
+              bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_NODE)) {             /* `A::B` */
             const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)v;
             if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))   /* static `A::B` → owner-aware check */
                 return ALLOC_node_defined_cpath(kp_intern_cid(tc, ((const pm_constant_read_node_t *)cp->parent)->name),
                                                 kp_intern_cid(tc, cp->name));
-            return ALLOC_node_defined(1, kp_intern_cid(tc, cp->name), 0);   /* nested/dynamic parent → flat probe */
+            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, cp->name), self_off);   /* nested/dynamic parent → flat probe */
+              bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         }
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
             { NODE *_d = ALLOC_node_defined(2, kp_intern_cid(tc, ((const pm_instance_variable_read_node_t *)v)->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d; }

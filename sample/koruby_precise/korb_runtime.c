@@ -1569,6 +1569,7 @@ korb_class_ivar_get(VALUE cls, VALUE name_sym)
 static RESULT
 korb_class_ivar_set(CTX *c, VALUE *slots, VALUE_REF clsref, VALUE name_sym, VALUE val)
 {
+    KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(clsref));   /* a frozen class/module takes no ivars */
     VALUE_REF vref = SLOTS_PUSH(slots, val);          /* root across hash alloc/grow */
     VALUE_REF nref = SLOTS_PUSH(slots, name_sym);
     if (VAL2CLASS(VALUE_REF_GET(clsref))->class_ivars == KORB_NIL) {
@@ -4554,6 +4555,7 @@ korb_coerce_name(CTX *c, VALUE v)
     if (v == KORB_NIL)   return "nil";
     if (v == KORB_TRUE)  return "true";
     if (v == KORB_FALSE) return "false";
+    if (KORB_CLASS_P(v)) return VAL2CLASS(v)->is_module ? "Module" : "Class";
     if (KORB_OBJECT_P(v)) {
         const VALUE k = VAL2OBJ(v)->klass;
         if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym)
@@ -5674,6 +5676,18 @@ korb_etype_name(unsigned int etype)
 
 /* FrozenError with CRuby's message shape: "can't modify frozen <Type>: <inspect>".
  * Called from the KORB_CHECK_FROZEN macro (error path → the inspect cost is fine). */
+/* Is `sym` registered as a (not yet loaded) autoload on `mod`?  The registry is
+ * the module's own @__autoloads Hash (prelude Module#autoload).  CRuby reports
+ * such a constant as defined before the file is loaded, and removing it must not
+ * trigger the load. */
+bool
+korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
+{
+    if (!KORB_CLASS_P(mod)) return false;
+    const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(c->vm, "@__autoloads", 12)));
+    return KORB_HASH_P(t) && korb_hash_find(VAL2HASH(t), ID2SYM(sym)) >= 0;
+}
+
 RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
