@@ -2467,6 +2467,15 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       transduce_call の `=~` 経路で、左辺が PM_REGULAR_EXPRESSION_NODE かつ
       names が空でない場合に「match して各 name を local に代入」へ desugar すればよい。
 
+## sweep の whole-file-fail には ±1 のノイズがある (2026-08-17 確認)
+- [ ] `tools/mspec_real_run.rb` は 1 ファイル 20s のタイムアウトで 12 並列に流すので、
+      子プロセスを大量に起こすファイルは負荷次第で WFAIL に化ける。
+      `core/io/popen_spec.rb` は単体だと **9.7s / 40 例 27 pass** で安定して通るが、
+      sweep では回によって WFAIL (exit 124) になる (0817 → WFAIL、0817b → 27 pass、
+      0817c → WFAIL、コードは同一)。process/spawn も同じ性質。
+      whole-file-fail の増減を退行と読む前に、その 1 本を単体で回して切り分ける。
+      直すなら subprocess 系だけタイムアウトを伸ばすか並列度を落とす。
+
 ## moving GC 下で object_id / Object#hash が安定しない (2026-08-16 発見)
 - [ ] `o.object_id` は GC を跨ぐと値が変わる (アドレス由来)。CRuby は寿命の間
       不変を保証する。`Object#hash` も同様に変わるが、Hash 側は GC 後も引けている
