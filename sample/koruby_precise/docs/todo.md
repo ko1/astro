@@ -2501,3 +2501,13 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       消費される = 待ちではなくループ)。$LOADED_FEATURES 基準の重複判定と
       CLI の -I/-r を入れて 12 例 → 74 例まで伸びた分の先。
       次は example 名を出しながら流して該当例を特定するところから。
+
+## ブロッキング待機中に届いたシグナルが遅れる (2026-08-17 確認)
+- [ ] シグナルはプロセス全体で block して check point で sigtimedwait 回収する
+      設計なので、scheduler が poll(2) に -1 (無期限) で入っていると、その間に
+      届いたシグナルは poll が明けるまで配送されない。`sleep` 中の Ctrl-C が
+      効かない形になる (kill の *前* に pending があるケースは
+      Process.kill 側の check point で拾えるので spec は通る)。
+      直すなら pump の直前に sigpending() を見て pending があれば ms=0 にする、
+      加えて trap 済みシグナルがある間は poll を数十 ms で頭打ちにする、
+      あるいは self-pipe を足して ppoll する。
