@@ -1008,21 +1008,76 @@ module Signal
   # prompt — become koruby-delivered as soon as a program traps them.
   @@handlers = {}
 
-  def self.trap(sig, command = nil, &blk)
-    n = signo(sig)
-    raise ArgumentError, "unsupported signal '#{sig}'" if n.nil?
-    key = signame(n) || sig.to_s
-    prev = @@handlers[key]
-    h = command.is_a?(Symbol) ? command.to_s : (command || blk)   # :SIG_DFL / :IGNORE spell the same handlers
-    @@handlers[key] = h
-    if h.is_a?(String) && (h == "IGNORE" || h == "SIG_IGN")
-      __signal_trap(sig, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
-      __signal_block(n, false)
-    else
-      __signal_trap(sig, "DEFAULT")    # undo a previous SIG_IGN; blocked, so it just stays pending
-      __signal_block(n, true)          # deliver it ourselves at the next check point
+  # Ruby installs its own handlers for these, so a program may not trap them.
+  RESERVED__ = %w[SEGV BUS ILL FPE VTALRM].freeze
+  # A signal nobody has trapped yet reports the OS disposition; the ones the
+  # interpreter itself arms report "DEFAULT" (CRuby arms SIGINT at startup).
+  # CRuby arms these at startup (so an untrapped one reports "DEFAULT"); the rest
+  # are left to the OS and report "SYSTEM_DEFAULT" until something traps them.
+  ARMED__ = %w[ALRM CHLD CLD HUP INT QUIT TERM USR1 USR2 ABRT PIPE SYS].freeze
+
+  # The signal argument: Integer / String / Symbol, or an object with #to_str.
+  # Deliberately NOT #to_int — CRuby refuses that.  Returns the short name.
+  def self.__signame_arg(sig)
+    if sig.is_a?(Integer)
+      nm = signame(sig)
+      raise ArgumentError, "invalid signal number (#{sig})" if nm.nil?
+      return nm
     end
-    prev.nil? ? "DEFAULT" : prev
+    if sig.is_a?(String) || sig.is_a?(Symbol)
+      nm = sig.to_s
+    elsif sig.respond_to?(:to_str)
+      nm = sig.to_str
+      raise ArgumentError, "bad signal type #{sig.class}" unless nm.is_a?(String)
+    else
+      raise ArgumentError, "bad signal type #{sig.class}"
+    end
+    raise ArgumentError, "negative signal name: #{nm}" if nm.start_with?("-")
+    short = nm.start_with?("SIG") ? nm[3..] : nm
+    return short if short == "EXIT"
+    raise ArgumentError, "unsupported signal 'SIG#{short}'" if list[short].nil?
+    short
+  end
+
+  # The command argument, normalized to what #trap stores and hands back:
+  # a callable, nil (ignore), or one of "DEFAULT" / "IGNORE" / "SYSTEM_DEFAULT".
+  def self.__command_arg(command, blk)
+    return blk if command.nil? && blk
+    return nil if command.nil?
+    if command.is_a?(Symbol) || command.is_a?(String)
+      case command.to_s
+      when "SIG_DFL", "DEFAULT"     then return "DEFAULT"
+      when "SIG_IGN", "IGNORE"      then return "IGNORE"
+      when "SYSTEM_DEFAULT"         then return "SYSTEM_DEFAULT"
+      when "EXIT"                   then return "EXIT"
+      end
+    end
+    command
+  end
+
+  def self.trap(sig, command = nil, &blk)
+    short = __signame_arg(sig)
+    raise ArgumentError, "can't trap reserved signal: SIG#{short}" if RESERVED__.include?(short)
+    if short == "KILL" || short == "STOP"
+      raise Errno::EINVAL, "SIG#{short}"                          # man 2 signal: not catchable
+    end
+    h = __command_arg(command, blk)
+    prev = @@handlers.key?(short) ? @@handlers[short] : (ARMED__.include?(short) ? "DEFAULT" : "SYSTEM_DEFAULT")
+    @@handlers[short] = h
+    n = short == "EXIT" ? 0 : list[short]
+    if n && n > 0
+      if h == "IGNORE"
+        __signal_trap(n, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
+        __signal_block(n, false)
+      elsif h == "SYSTEM_DEFAULT" || h == "DEFAULT"
+        __signal_trap(n, "DEFAULT")    # hand it back to the OS
+        __signal_block(n, false)
+      else
+        __signal_trap(n, "DEFAULT")    # undo a previous SIG_IGN; blocked, so it just stays pending
+        __signal_block(n, true)        # deliver it ourselves at the next check point
+      end
+    end
+    prev
   end
 
   # Called from the interpreter with a signal number just reaped from the
@@ -1031,7 +1086,8 @@ module Signal
     case (h = @@handlers[signame(signo)])
     when "IGNORE", "SIG_IGN" then nil
     when "EXIT"              then exit(0)
-    when nil, "DEFAULT", "SIG_DFL"
+    when nil                 then nil          # trap(sig, nil) → ignore
+    when "DEFAULT", "SIG_DFL", "SYSTEM_DEFAULT"
       raise(signo == Signal.list["INT"] ? Interrupt.new : SignalException.new(signo))
     else
       h.call(signo)   # a non-callable handler is a NoMethodError at the point of use (CRuby)
