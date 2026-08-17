@@ -1371,7 +1371,19 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (KORB_INTEGER_P(sr.value)) sv = sr.value;
         }
     }
-    if (block == NULL) {                              /* → lazy ArithmeticSequence (recv = self range) */
+    /* An ArithmeticSequence describes a *numeric* progression; a String (or any
+     * other Comparable) range steps through #succ / #+ and is a plain
+     * Enumerator.  Which one applies is decided by the range's own endpoints. */
+    const VALUE probe_ = SELF_RANGE->rbegin != KORB_NIL ? SELF_RANGE->rbegin : SELF_RANGE->rend;
+    const bool numeric_range = FIXNUM_P(probe_) || KORB_FLOAT_P(probe_) ||
+                               KORB_BIGNUM_P(probe_) || KORB_RATIONAL_P(probe_);
+    if (block == NULL) {
+        if (!numeric_range) {                         /* → Enumerator over the stepped values (lazy) */
+            slots[0] = VALUE_REF_GET(self);
+            slots[1] = ID2SYM(korb_intern(c->vm, is_pct ? "%" : "step", is_pct ? 1 : 4));
+            if (na) slots[2] = sv;
+            return korb_send(c, slots + 2 + na, korb_intern(c->vm, "to_enum", 7), 0, 1 + na);
+        }
         if (UNLIKELY((FIXNUM_P(sv) && sv == LONG2FIX(0)) || (KORB_FLOAT_P(sv) && korb_float_val(sv) == 0.0)))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
         return korb_arithseq_new(c, slots, VALUE_REF_GET(self), sv, KORB_NIL, na, is_pct);
@@ -1441,11 +1453,11 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const KorbRange *const rng = SELF_RANGE;
         const VALUE bg = rng->rbegin;
         const bool numeric_begin = FIXNUM_P(bg) || KORB_FLOAT_P(bg) || KORB_BIGNUM_P(bg) || KORB_RATIONAL_P(bg);
-        const bool numeric_step  = FIXNUM_P(sv) || KORB_FLOAT_P(sv) || KORB_BIGNUM_P(sv) || KORB_RATIONAL_P(sv);
-        /* Only when BOTH the range and the step are non-numeric objects: an
-         * Integer step over a String range uses #succ (fall through), and a
-         * Float step over a String range is a TypeError (fall through to 1324). */
-        if (block != NULL && bg != KORB_NIL && !numeric_begin && !numeric_step) {
+        const bool int_step = FIXNUM_P(sv) || KORB_BIGNUM_P(sv);
+        /* An Integer step over a String range means "#succ that many times" and
+         * falls through; anything else goes through #+, which is also how a Float
+         * step gets the element type's own TypeError ("Float into String"). */
+        if (block != NULL && bg != KORB_NIL && !numeric_begin && !int_step) {
             const bool excl = rng->exclude_end;       /* value copy — safe across GC */
             const uint32_t mid_plus = korb_intern(c->vm, "+", 1);
             slots[0] = bg;                            /* v    — all rooted (moving GC): the range,   */
@@ -1474,7 +1486,10 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     if (UNLIKELY(!FIXNUM_P(sv))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(sv));
     intptr_t st = FIX2LONG(sv);
-    if (UNLIKELY(st == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    if (UNLIKELY(st == 0)) {
+        if (!numeric_range) return RESULT_OK(VALUE_REF_GET(self));   /* CRuby: no iteration, no error */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");
+    }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {   /* non-int (e.g. String) range → stride over to_a */
         if (st > 0) {                                    /* (backward string stepping not supported here) */

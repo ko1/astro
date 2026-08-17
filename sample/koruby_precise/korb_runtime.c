@@ -5290,14 +5290,29 @@ korb_plus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         if (h) return ur;
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '+' for %s", korb_a_type_name(l));
     }
-    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 0);
-    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
-    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
-    if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_union(c, slots + 1, lhs, VALUE_SLICE_MAKE(&slots[0], 1)); }   /* Set + → union */
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         VALUE_REF r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
         return korb_str_plus_ref(c, slots, lhs, r);
     }
+    if (KORB_STRING_P(l)) {                           /* String + non-String → #to_str, else TypeError */
+        const char *const rcls = korb_coerce_name(c, rhs);   /* name it before any dispatch moves it */
+        VALUE o = rhs;
+        const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+        if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
+            slots[0] = o;
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            if (KORB_STRING_P(sr.value)) {
+                VALUE_REF r = SLOTS_PUSH(slots, sr.value);
+                return korb_str_plus_ref(c, slots, lhs, r);
+            }
+        }
+        return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into String", rcls);
+    }
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 0);
+    if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 0, line);
+    if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 0);
+    if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_union(c, slots + 1, lhs, VALUE_SLICE_MAKE(&slots[0], 1)); }   /* Set + → union */
     if (KORB_ARRAY_P(l)) {
         if (!KORB_ARRAY_P(rhs)) {                    /* Array + non-Array → coerce via #to_ary (lhs is a VALUE_REF) */
             RESULT cr = korb_coerce_to_ary(c, slots, &rhs);
