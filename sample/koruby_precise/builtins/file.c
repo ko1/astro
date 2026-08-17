@@ -74,9 +74,12 @@ static RESULT korb_m_errno_table(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 /* raise Errno::<errno> with CRuby's "<strerror> @ <func> - <path>" message; falls
  * back to SystemCallError/RuntimeError if the Errno class is absent. */
+/* `func` NULL → CRuby's plain "message - path" shape (exec / kill / …); with a
+ * func it is the "message @ func - path" shape the IO/File layer uses. */
 static RESULT korb_raise_errno(CTX *c, VALUE *slots, int e, const char *func, const char *path) {
     char msg[4096];
-    snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
+    if (func) snprintf(msg, sizeof msg, "%s @ %s - %s", strerror(e), func, path);   /* format now: path is a movable-String interior ptr, korb_raise allocs */
+    else      snprintf(msg, sizeof msg, "%s - %s", strerror(e), path);
     const char *cn = korb_errno_name(e);
     const VALUE cls = cn ? korb_const_get(c->vm, korb_intern(c->vm, cn, (uint32_t)strlen(cn))) : KORB_NIL;
     slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;

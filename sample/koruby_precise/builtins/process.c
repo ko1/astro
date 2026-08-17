@@ -139,6 +139,9 @@ struct korb_spawn_plan {
 };
 
 /* Copy `s` into the plan's argument arena and record it as the next argv slot. */
+/* CRuby rejects an argument containing a NUL before it ever reaches execve. */
+static bool korb_spawn_arg_has_nul(const char *s, uint32_t n) { return memchr(s, '\0', n) != NULL; }
+
 static bool korb_spawn_push_arg(struct korb_spawn_plan *p, const char *s, uint32_t n) {
     uint32_t i = 0;
     while (p->argv[i] != NULL && i < KORB_SPAWN_MAX_ARGV - 1) i++;
@@ -280,11 +283,23 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         const KorbHash *h = VAL2HASH(ov);
         const uint32_t chdir_id = korb_intern(c->vm, "chdir", 5);
         const uint32_t close_others_id = korb_intern(c->vm, "close_others", 12);
+        const uint32_t unsetenv_id = korb_intern(c->vm, "unsetenv_others", 15);
         for (uint32_t i = 0; i < h->len; i++) {
             const VALUE k = korb_items_data(h->items)[2 * i];
             VALUE v = korb_items_data(h->items)[2 * i + 1];
-            if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == close_others_id) {
-                p->close_others = KORB_TRUTHY(v);
+            /* these two are strictly boolean; CRuby rejects anything else before
+               it forks (and Process.exec would otherwise replace this process) */
+            if (SYMBOL_P(k) && ((uint32_t)SYM2ID(k) == close_others_id || (uint32_t)SYM2ID(k) == unsetenv_id)) {
+                if (UNLIKELY(v != KORB_TRUE && v != KORB_FALSE && v != KORB_NIL)) {
+                    char *ib = NULL; size_t il = 0;
+                    FILE *const ms = open_memstream(&ib, &il);
+                    if (ms) { korb_fprint_inspect_s(c, slots, ms, v); fclose(ms); }
+                    const RESULT er = korb_raise(c, slots, KORB_E_ARGUMENT, 0, "expected true or false as %s: %s",
+                                                 korb_sym_name(c->vm, SYM2ID(k)), ib ? ib : "");
+                    free(ib);
+                    return er;
+                }
+                if ((uint32_t)SYM2ID(k) == close_others_id) p->close_others = KORB_TRUTHY(v);
                 continue;
             }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id && !KORB_STRING_P(v) && KORB_OBJECT_P(v)) {
@@ -306,13 +321,17 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
 
     if (hi - lo == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, lo))) {
         uint32_t n; const char *s = korb_str_cstr_len(VALUE_SLICE_GET(a, lo), &n);
+        if (UNLIKELY(korb_spawn_arg_has_nul(s, n)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
         if (korb_cmd_needs_shell(s, n)) {
             p->use_shell = true;
             if (!korb_spawn_push_arg(p, "/bin/sh", 7) || !korb_spawn_push_arg(p, "-c", 2) ||
                 !korb_spawn_push_arg(p, s, n))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "command too long");
         } else if (!korb_spawn_split(p, s, n)) {
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no command given");
+            /* an all-blank command: keep it as the (empty) argv[0] so exec can
+               report ENOENT for it the way CRuby does */
+            if (!korb_spawn_push_arg(p, "", 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "command too long");
         }
         return RESULT_OK(KORB_NIL);
     }
@@ -323,32 +342,35 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
             if (UNLIKELY(!KORB_STRING_P(e0)))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(e0));
             uint32_t n; const char *s = korb_str_cstr_len(e0, &n);
+            if (UNLIKELY(korb_spawn_arg_has_nul(s, n)))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
             if (!korb_spawn_push_arg(p, s, n)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "command too long");
             continue;
         }
         if (UNLIKELY(!KORB_STRING_P(v)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(v));
         uint32_t n; const char *s = korb_str_cstr_len(v, &n);
+        if (UNLIKELY(korb_spawn_arg_has_nul(s, n)))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
         if (!korb_spawn_push_arg(p, s, n)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "command too long");
     }
     if (UNLIKELY(p->argv[0] == NULL)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no command given");
     return RESULT_OK(KORB_NIL);
 }
 
-/* fork + exec.  Returns the child pid, or -1 with errno set. */
-static pid_t korb_spawn_run(const struct korb_spawn_plan *p) {
-    fflush(NULL);
-    const pid_t pid = fork();
-    if (pid != 0) return pid;                       /* parent (or error) */
+/* Everything a child does between fork and exec: signal mask, chdir, redirects,
+ * descriptor hygiene, environment.  Returns false with errno set instead of
+ * exiting, because Process.exec runs this in the calling process itself. */
+static bool korb_spawn_child_setup(const struct korb_spawn_plan *p) {
     korb_child_reset_signals();                     /* the mask survives execve — the child must not start with signals blocked */
-    if (p->chdir[0] != '\0' && chdir(p->chdir) != 0) _exit(127);
+    if (p->chdir[0] != '\0' && chdir(p->chdir) != 0) return false;
     for (uint32_t i = 0; i < p->nredir; i++) {
         const struct korb_redir *r = &p->redir[i];
         if (r->to == -2) { close(r->from); continue; }
         int fd = r->to;
         if (fd == -1) {
             fd = open(r->path, r->oflags, 0666);
-            if (fd < 0) _exit(127);
+            if (fd < 0) return false;
         }
         if (fd != r->from) dup2(fd, r->from);
         if (r->to == -1) close(fd);
@@ -370,8 +392,49 @@ static pid_t korb_spawn_run(const struct korb_spawn_plan *p) {
         }
     }
     for (uint32_t i = 0; p->envp[i] != NULL; i++) putenv(p->envp[i]);
+    for (uint32_t i = 0; p->envp[i] != NULL; i++) putenv(p->envp[i]);
+    return true;
+}
+
+/* fork + exec.  Returns the child pid, or -1 with errno set. */
+static pid_t korb_spawn_run(const struct korb_spawn_plan *p) {
+    fflush(NULL);
+    const pid_t pid = fork();
+    if (pid != 0) return pid;                       /* parent (or error) */
+    if (!korb_spawn_child_setup(p)) _exit(127);
     execvp(p->argv[0], p->argv);
     _exit(127);
+}
+
+/* Would execvp(cmd) work?  0, or the errno it would fail with.  Process.exec
+ * checks this before applying any redirect, so a bad command raises without
+ * having first disturbed the calling process (CRuby behaves the same). */
+static int korb_exec_probe(const char *cmd) {
+    if (cmd == NULL || cmd[0] == '\0') return ENOENT;
+    struct stat st;
+    if (strchr(cmd, '/') != NULL) {
+        if (stat(cmd, &st) != 0) return errno;
+        if (S_ISDIR(st.st_mode)) return EACCES;
+        return access(cmd, X_OK) == 0 ? 0 : errno;
+    }
+    const char *path = getenv("PATH");
+    if (path == NULL || path[0] == '\0') path = "/bin:/usr/bin";
+    int last = ENOENT;
+    for (const char *q = path; *q; ) {
+        const char *const colon = strchr(q, ':');
+        const size_t dlen = colon ? (size_t)(colon - q) : strlen(q);
+        char cand[PATH_MAX];
+        if (dlen == 0) snprintf(cand, sizeof cand, "./%s", cmd);
+        else snprintf(cand, sizeof cand, "%.*s/%s", (int)dlen, q, cmd);
+        if (stat(cand, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) last = EACCES;
+            else if (access(cand, X_OK) == 0) return 0;
+            else last = EACCES;
+        }
+        if (!colon) break;
+        q = colon + 1;
+    }
+    return last;
 }
 
 /* ---- Process::Status ------------------------------------------------------ */
@@ -390,6 +453,21 @@ static RESULT korb_status_make(CTX *c, VALUE *slots, pid_t pid, int raw) {
 }
 
 /* ---- Ruby entry points ---------------------------------------------------- */
+
+/* Process.exec / Kernel#exec — spawn's arguments, but this process is replaced.
+ * Only the failure path returns. */
+static RESULT korb_m_process_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self;
+    struct korb_spawn_plan plan;
+    CHECK(korb_spawn_plan_build(c, slots, a, &plan));
+    const int probe = korb_exec_probe(plan.argv[0]);          /* before any redirect is applied */
+    if (probe != 0) return korb_raise_errno(c, slots, probe, NULL, plan.argv[0]);
+    korb_io_flush_std(c->vm);   /* our write buffer would otherwise die with the image */
+    fflush(NULL);
+    if (!korb_spawn_child_setup(&plan)) return korb_raise_errno(c, slots, errno, NULL, plan.argv[0]);
+    execvp(plan.argv[0], plan.argv);
+    return korb_raise_errno(c, slots, errno, NULL, plan.argv[0]);
+}
 
 static RESULT korb_m_process_spawn(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self;
@@ -899,8 +977,10 @@ void korb_init_process(CTX *c, VALUE *slots) {
     const VALUE obj = korb_builtin_class_obj(c->vm, KORB_C_OBJECT);
     korb_class_def_cfn(c, obj, "system",     korb_m_kernel_system,   -1);
     korb_class_def_cfn(c, obj, "spawn",      korb_m_process_spawn,   -1);
+    korb_class_def_cfn(c, obj, "exec",       korb_m_process_exec,    -1);
     korb_class_def_cfn(c, obj, "`",          korb_m_kernel_backtick,  1);
     korb_class_def_cfn(c, obj, "__spawn",    korb_m_process_spawn,   -1);
+    korb_class_def_cfn(c, obj, "__exec",     korb_m_process_exec,    -1);
     korb_class_def_cfn(c, obj, "__waitpid",  korb_m_process_wait,    -1);
     korb_class_def_cfn(c, obj, "__waitpid2", korb_m_process_wait2,   -1);
     korb_class_def_cfn(c, obj, "__kill",     korb_m_process_kill,    -1);

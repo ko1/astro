@@ -990,6 +990,7 @@ module Process
   WNOHANG = 1
   WUNTRACED = 2
   def self.spawn(*a) = __spawn(*a)
+  def self.exec(*a) = __exec(*a)
   def self.wait(*a) = __waitpid(*a)
   def self.waitpid(*a) = __waitpid(*a)
   def self.wait2(*a) = __waitpid2(*a)
