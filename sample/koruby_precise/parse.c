@@ -2094,6 +2094,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("class", entry, true);          /* its own AOT entry */
     NODE *_ncls = ALLOC_node_class(name_sym, entry, -1 - tc->chain - 1, path_owner, super_node);   /* self_off = enclosing self (base[-1]); -1 extra for the staged super child */
+    korb_reg_srcloc(tc->c->vm, _ncls, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)cn));   /* Module#const_source_location */
     bake_add(tc, &_ncls->u.node_class.self_off);
     return _ncls;
 }
@@ -2321,6 +2322,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, NULL, -1, NULL, 0, NULL, NULL, -1);
     code_repo_add("module", entry, true);
     NODE *_nmod = ALLOC_node_module(name_sym, entry, -1 - tc->chain, path_owner);   /* self_off = enclosing self (base[-1]) */
+    korb_reg_srcloc(tc->c->vm, _nmod, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, (const pm_node_t *)mn));   /* Module#const_source_location */
     bake_add(tc, &_nmod->u.node_module.self_off);
     return _nmod;
 }
@@ -2440,6 +2442,14 @@ build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
 {
     NODE *cn = ALLOC_node_const_set(name_cid, tc->frame->class_name_sym, val);
     bake_cref_chain(tc, &cn->u.node_const_set.cache);
+    return cn;
+}
+/* same, remembering where the assignment is written (Module#const_source_location) */
+static NODE *
+build_const_set_at(struct kp_ctx *tc, uint32_t name_cid, NODE *val, const pm_node_t *at)
+{
+    NODE *cn = build_const_set(tc, name_cid, val);
+    korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, at));
     return cn;
 }
 
@@ -3717,7 +3727,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
-        return build_const_set(tc, name, val);
+        return build_const_set_at(tc, name, val, node);
       }
       case PM_CONSTANT_OR_WRITE_NODE: {  /* `X ||= v` — assign when undefined or falsy (the read never raises) */
         const pm_constant_or_write_node_t *ow = (const pm_constant_or_write_node_t *)node;

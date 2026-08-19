@@ -972,6 +972,9 @@ struct korb_vm {
      * encoding-name symbol per index (0 = free).  Character-level ops on these
      * raise NotImplementedError; #encoding still round-trips via the name. */
     const char *last_syntax_msg;     /* parse-time SyntaxError detail (static string), NULL if none */
+    /* Module#const_source_location: where each (name, owner) constant was assigned. */
+    struct korb_constloc { uint32_t name; VALUE owner; uint32_t file_sym; uint32_t line; } *constlocs;
+    uint32_t constloc_cnt, constloc_capa;
     uint32_t str_enc_names[8];
     uint8_t  str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
     /* source_location: def/block body NODE → (file symbol, line), populated at

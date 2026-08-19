@@ -8143,7 +8143,7 @@ static RESULT korb_arithseq_new(CTX *c, VALUE *slots, VALUE recv, VALUE a0, VALU
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);
 static RESULT korb_srcloc_result(CTX *c, VALUE *slots, const struct Node *body);   /* fwd (defined near require) */
 static void korb_aseq_params(const KorbArithSeq *as, VALUE *beginv, VALUE *limv, VALUE *stepv, bool *excl);   /* fwd (arithseq.c) */
-static bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* fwd (near require) */
+
 static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool utc);   /* fwd (time.c) — used by File::Stat */
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — used by integer.c / float.c */
 /* Regexp-pattern String operations live in builtins/regexp.c (included after
@@ -9097,7 +9097,6 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "public_constant", korb_m_visibility_noop, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "private_class_method", korb_m_private_class_method, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "public_class_method", korb_m_public_class_method, -1);
-    korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_lit_nil, -1);   /* source location not tracked */
     /* Module#autoload / #autoload? live in the prelude (they record a per-module
      * table honoured from #const_missing); only the top-level forms are wired
      * here, delegating to Object. */
@@ -9105,6 +9104,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_OBJECT, "caller",           korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_OBJECT, "caller_locations", korb_m_empty_ary, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, -1);
+    korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_defined?", korb_m_class_const_defined, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "class_variable_get", korb_m_class_cvar_get, 1);
@@ -9146,6 +9146,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("prepend_features", korb_m_mod_prepend_features, 1);
     MOD_CFN("const_set", korb_m_class_const_set, 2);
     MOD_CFN("const_get", korb_m_class_const_get, -1);
+    MOD_CFN("const_source_location", korb_m_mod_const_source_location, -1);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
     MOD_CFN("class_variable_get", korb_m_class_cvar_get, 1);
     MOD_CFN("class_variable_set", korb_m_class_cvar_set, 2);
@@ -9171,7 +9172,6 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("private_constant", korb_m_visibility_noop, -1);
     MOD_CFN("deprecate_constant", korb_m_deprecate_constant, -1);
     MOD_CFN("public_constant", korb_m_visibility_noop, -1);
-    MOD_CFN("const_source_location", korb_m_lit_nil, -1);
     /* default no-op callbacks so a module (Kernel, `module M`) responds to the
      * hooks and user overrides can `super` (Class also has method_added/inherited). */
     MOD_CFN("method_added", korb_m_lit_nil, 1);
@@ -10110,6 +10110,40 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
     return EVAL(c, ast, cur);
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */
+/* Where a constant was assigned, for Module#const_source_location.  Keyed by
+ * (name, owner) like the constant table itself; append-only with the newest
+ * entry winning, and only written from the two nodes that know a position
+ * (a constant assignment and a class/module body), so a constant defined in C
+ * has no entry — which is exactly the empty result CRuby reports for those. */
+void
+korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t file_sym, uint32_t line)
+{
+    for (uint32_t i = 0; i < vm->constloc_cnt; i++)
+        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner == owner) {
+            vm->constlocs[i].file_sym = file_sym; vm->constlocs[i].line = line; return;
+        }
+    if (vm->constloc_cnt == vm->constloc_capa) {
+        vm->constloc_capa = vm->constloc_capa ? vm->constloc_capa * 2 : 128;
+        vm->constlocs = realloc(vm->constlocs, sizeof(*vm->constlocs) * vm->constloc_capa);
+        if (!vm->constlocs) abort();
+    }
+    vm->constlocs[vm->constloc_cnt].name = name_sym;
+    vm->constlocs[vm->constloc_cnt].owner = owner;
+    vm->constlocs[vm->constloc_cnt].file_sym = file_sym;
+    vm->constlocs[vm->constloc_cnt].line = line;
+    vm->constloc_cnt++;
+}
+/* false when the constant has no recorded position (defined in C). */
+bool
+korb_const_get_loc(const struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t *file_sym, uint32_t *line)
+{
+    for (uint32_t i = vm->constloc_cnt; i-- > 0; )
+        if (vm->constlocs[i].name == name_sym && vm->constlocs[i].owner == owner) {
+            *file_sym = vm->constlocs[i].file_sym; *line = vm->constlocs[i].line; return true;
+        }
+    return false;
+}
+
 void
 korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line)
 {
@@ -10125,7 +10159,7 @@ korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32
     vm->srcloc_cnt++;
 }
 /* look up a body NODE's source location; false if never registered. */
-static bool
+bool
 korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
 {
     if (!node) return false;

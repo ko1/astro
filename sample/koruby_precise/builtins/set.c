@@ -1529,6 +1529,51 @@ static bool korb_valid_const_name(const char *p, uint32_t len) {
     }
     return true;
 }
+/* Module#const_source_location(name, inherit = true) — [file, line] where the
+ * constant was assigned, [] for one defined in C (no position recorded), nil
+ * when the constant is not defined at all. */
+static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    struct korb_vm *const vm = c->vm;
+    VALUE name = VALUE_SLICE_GET(a, 0);
+    const bool inherit = !(VALUE_SLICE_LEN(a) >= 2 && !KORB_TRUTHY(VALUE_SLICE_GET(a, 1)));
+    if (!SYMBOL_P(name) && !KORB_STRING_P(name)) {          /* #to_str, else TypeError */
+        const uint32_t to_str = korb_intern(vm, "to_str", 6);
+        if (!KORB_OBJECT_P(name) || !korb_responds_to(c, name, to_str))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, name));
+        slots[0] = name;
+        const RESULT r = korb_send(c, slots + 1, to_str, 0, 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (UNLIKELY(!KORB_STRING_P(r.value)))            /* #to_str that is not a String */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+        name = r.value;
+    }
+    const char *nm; uint32_t nlen;
+    if (SYMBOL_P(name)) { nm = korb_sym_name(vm, SYM2ID(name)); nlen = (uint32_t)strlen(nm); }
+    else { const KorbString *const ns = VAL2STR(name); nm = korb_strbuf_data(ns->buf); nlen = ns->len; }
+    if (UNLIKELY(!korb_valid_const_name(nm, nlen)))
+        return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)nlen, nm);
+    const uint32_t sym = korb_intern(vm, nm, nlen);
+    const VALUE owner = VALUE_REF_GET(self);
+    uint32_t idx = korb_const_index_owned(vm, sym, owner);
+    VALUE loc_owner = owner;
+    if (idx == UINT32_MAX && inherit) {
+        idx = korb_const_in_ancestry(vm, owner, sym);
+        if (idx != UINT32_MAX) loc_owner = vm->const_owners[idx];
+        else {                                             /* top-level (owner nil) constants */
+            idx = korb_const_index_owned(vm, sym, KORB_NIL);
+            if (idx != UINT32_MAX) loc_owner = KORB_NIL;
+        }
+    }
+    if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, sym)) return RESULT_OK(KORB_NIL);
+    uint32_t fsym = 0, line = 0;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 2));
+    if (!korb_const_get_loc(vm, sym, loc_owner, &fsym, &line)) return RESULT_OK(slots[0]);   /* defined in C → [] */
+    const char *const f = korb_sym_name(vm, fsym);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, f, (uint32_t)strlen(f)));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), LONG2FIX((intptr_t)line)));
+    return RESULT_OK(slots[0]);
+}
 static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     struct korb_vm *const vm = c->vm;
     VALUE name = VALUE_SLICE_GET(a, 0);

@@ -990,7 +990,7 @@ node_match_req(CTX *c, NODE *n, VALUE *slots, VALUE subj@child, void *desc)
 NODE_DEF @noinline
 node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
 {
-    (void)n; (void)body_dispatcher;
+    (void)body_dispatcher;
     VALUE definee = slots[self_off];
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
@@ -1012,7 +1012,7 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t p
 NODE_DEF @noinline
 node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, VALUE_REF recv@child)
 {
-    (void)n; (void)body_dispatcher;
+    (void)body_dispatcher;
     VALUE obj = VALUE_REF_GET(recv);
     if (UNLIKELY(!AROH_IS_GC_OBJECT(obj))) {
         /* nil/true/false have a sole instance, so a singleton def lands on their class;
@@ -1043,10 +1043,12 @@ node_singleton_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, 
 NODE_DEF @noinline
 node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym, VALUE_REF super@child)
 {
-    (void)n; (void)body_dispatcher;
+    (void)body_dispatcher;
     /* enclosing = the path's parent module (`class M::C`, baked const name) if
      * present, else the lexical self (`module M; class C`). */
     VALUE enclosing = path_owner ? korb_const_get(c->vm, path_owner) : slots[self_off];
+    { uint32_t fs, ln;                                    /* Module#const_source_location */
+      if (korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL, fs, ln); }
     return korb_class_body(c, slots, name_sym, body, VALUE_REF_GET(super), 0, enclosing);
 }
 
@@ -1056,7 +1058,7 @@ node_class(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int
 NODE_DEF @noinline
 node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
 {
-    (void)n; (void)body_dispatcher;
+    (void)body_dispatcher;
     return korb_sclass_body(c, slots, body, VALUE_REF_GET(recv));
 }
 
@@ -1065,9 +1067,11 @@ node_sclass(CTX *c, NODE *n, VALUE *slots, NODE *body, VALUE_REF recv@child)
 NODE_DEF @noinline
 node_module(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, NODE *body, int32_t self_off, uint32_t path_owner@sym)
 {
-    (void)n; (void)body_dispatcher;
+    (void)body_dispatcher;
     /* enclosing = the path's parent (`module M::Inner`) if present, else lexical self. */
     VALUE enclosing = path_owner ? korb_const_get(c->vm, path_owner) : slots[self_off];
+    { uint32_t fs, ln;                                    /* Module#const_source_location */
+      if (korb_get_srcloc(c->vm, n, &fs, &ln)) korb_const_reg_loc(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL, fs, ln); }
     return korb_class_body(c, slots, name_sym, body, KORB_NIL, 1, enclosing);
 }
 
@@ -1429,6 +1433,8 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
     const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
     korb_const_define_owned(c, name_sym, val, ownc);
+    { uint32_t fsym, fline;                              /* Module#const_source_location */
+      if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
     if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */
         const uint32_t ca = korb_intern(c->vm, "const_added", 11);
         if (UNLIKELY(korb_responds_to(c, ownc, ca))) {
