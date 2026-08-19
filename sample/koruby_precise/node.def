@@ -1515,6 +1515,27 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
           if (strcmp(gn, "$~") == 0 && val != KORB_NIL && !KORB_MATCHDATA_P(val))
               return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected MatchData)",
                                 korb_coerce_name(c, val));
+          if (strcmp(gn, "$/") == 0 || strcmp(gn, "$-0") == 0 || strcmp(gn, "$\\") == 0) {
+              /* the record separators take a String (no #to_str) or nil; `$/` also
+               * freezes a copy, so a later mutation cannot change the separator */
+              if (val != KORB_NIL) {
+                  if (!KORB_STRING_P(val))
+                      return korb_raise(c, slots, KORB_E_TYPE, 0, "value of %s must be String", gn);
+                  if (gn[1] != '\\' && !(((const AroObjectHeader *)(uintptr_t)val)->flags & KORB_FL_FROZEN)) {
+                      slots[0] = val;
+                      const KorbString *const vs = VAL2STR(slots[0]);
+                      RESULT dup = korb_str_new(c, slots + 1, korb_strbuf_data(vs->buf), vs->len);
+                      if (UNLIKELY(dup.state != KORB_NORMAL)) return dup;
+                      KORB_STR_ENC_SET(dup.value, KORB_STR_ENC(slots[0]));
+                      ((AroObjectHeader *)(uintptr_t)dup.value)->flags |= KORB_FL_FROZEN;
+                      val = dup.value;
+                  }
+              }
+              if (strcmp(gn, "$/") == 0 || strcmp(gn, "$-0") == 0) {   /* the two names are one variable */
+                  const uint32_t other = korb_intern(c->vm, gn[1] == '/' ? "$-0" : "$/", gn[1] == '/' ? 3 : 2);
+                  korb_const_define_owned(c, other, val, KORB_NIL);
+              }
+          }
           if (strcmp(gn, "$.") == 0 && !FIXNUM_P(val)) {   /* the line counter takes any #to_int */
               VALUE iv = val;
               const char *const on = korb_coerce_name(c, iv);
