@@ -669,6 +669,13 @@ static RESULT korb_m_time_getutc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* getlocal / localtime: with no argument the process time zone renders the
  * instant; with a utc_offset ("+09:00" or seconds) the result carries that fixed
  * offset instead, the same representation Time.new(..., utc_offset) produces. */
+/* Carry the source's exact nanoseconds to a Time built for the SAME instant
+ * (zone changes only) — the double epoch alone would round them. */
+static RESULT korb_time_copy_nsec(CTX *c, VALUE *slots, VALUE src, VALUE_REF dst) {
+    const VALUE ns = korb_ivar_get(c, src, korb_time_ns_sym(c->vm));
+    if (ns != KORB_NIL) CHECK(korb_ivar_set(c, slots, dst, korb_time_ns_sym(c->vm), ns));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE t = VALUE_REF_GET(self);
     const double e = korb_time_epoch(c, t);
@@ -678,10 +685,13 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), e, false, &off, &utcish));
         /* re-read the class: resolving the zone dispatches, i.e. it can move objects */
         slots[2] = UNWRAP(korb_time_make(c, slots + 2, korb_class_obj_of(c, VALUE_REF_GET(self)), e, utcish));
+        CHECK(korb_time_copy_nsec(c, slots + 3, VALUE_REF_GET(self), VALUE_REF_AT(&slots[2])));
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
                                   VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
     }
-    return korb_time_make(c, slots, cls, e, false);
+    slots[0] = UNWRAP(korb_time_make(c, slots, cls, e, false));
+    CHECK(korb_time_copy_nsec(c, slots + 1, VALUE_REF_GET(self), VALUE_REF_AT(&slots[0])));
+    return RESULT_OK(slots[0]);
 }
 /* A Time derived from another (arithmetic, round/floor/ceil): `cls`'s instance
  * (KORB_NIL = the source's own class) with the source's UTC flag and zone.
@@ -690,8 +700,16 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 static RESULT korb_time_derive(CTX *c, VALUE *slots, VALUE_REF src, double epoch, VALUE cls)
 {
     if (cls == KORB_NIL) cls = korb_class_obj_of(c, VALUE_REF_GET(src));
+    const double src_epoch = korb_time_epoch(c, VALUE_REF_GET(src));
     slots[0] = UNWRAP(korb_time_make(c, slots, cls, epoch, korb_time_is_utc(c, VALUE_REF_GET(src))));
     const VALUE_REF nt = VALUE_REF_AT(&slots[0]);
+    /* A whole-second shift (or none — #getlocal / #getutc) leaves the sub-second
+     * part untouched, so carry the exact nanoseconds over instead of letting
+     * them be re-derived from the double epoch (which rounds). */
+    if (epoch - src_epoch == floor(epoch - src_epoch)) {
+        const VALUE ns = korb_ivar_get(c, VALUE_REF_GET(src), korb_time_ns_sym(c->vm));
+        if (ns != KORB_NIL) CHECK(korb_ivar_set(c, slots + 1, nt, korb_time_ns_sym(c->vm), ns));
+    }
     const VALUE zsym[3] = { korb_time_off_sym(c->vm), korb_time_tz_sym(c->vm), korb_time_offx_sym(c->vm) };
     for (uint32_t i = 0; i < 3; i++) {
         const VALUE v = korb_ivar_get(c, VALUE_REF_GET(src), zsym[i]);

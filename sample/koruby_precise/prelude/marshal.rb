@@ -247,8 +247,18 @@ module Marshal
     # Time's zone rides along as the pseudo-ivars :offset / :zone (no '@' — CRuby
     # writes them straight into the payload's ivar table, so they are invisible
     # to #instance_variables).
-    extra = (Time === o && !o.utc?) ? [[:offset, o.utc_offset],
-                                       [:zone, o.zone.dup.force_encoding("US-ASCII")]] : []
+    extra = if Time === o
+              o.utc? ? [[:zone, "UTC".dup.force_encoding("US-ASCII")]]   # UTC: the zone alone, no offset
+                     : [[:offset, o.utc_offset], [:zone, o.zone.dup.force_encoding("US-ASCII")]]
+            else []
+            end
+    if Time === o && (sub = o.nsec % 1000) != 0
+      # digits below the microsecond, packed BCD without sign (CRuby's :submicro):
+      # 789ns → "\x78\x90", 700ns → "\x70"
+      b0 = ((sub / 100) << 4) | ((sub / 10) % 10)
+      b1 = (sub % 10) << 4
+      extra.unshift([:submicro, (b1 == 0 ? [b0] : [b0, b1]).pack("C*")])
+    end
     if enc || !ivars.empty? || !extra.empty?
       out << "I"
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
@@ -520,17 +530,28 @@ module Marshal
         idx = st[:objs].size; st[:objs] << nil
         cls = _read0(st)
         data = _bytes(st, _rlong(st))
-        offset = nil
+        offset = nil; submicro = nil
         _rlong(st).times do
           name = _read0(st); val = _read(st)
           next if name == :E || name == :encoding
           offset = val if name == :offset
+          submicro = val if name == :submicro
           data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
         end
         obj = _const(cls)._load(data)
+        if Time === obj && submicro                        # restore the sub-microsecond digits
+          b = submicro.bytes
+          sub = ((b[0] >> 4) * 100) + ((b[0] & 0xF) * 10) + (b[1] ? (b[1] >> 4) : 0)
+          if sub != 0
+            t2 = Time.at(obj.to_i, Rational(obj.nsec + sub, 1000))   # exact: no Float round-trip
+            obj = obj.utc? ? t2.utc : t2
+          end
+        end
         # A non-UTC Time was packed in local wall-clock fields: shift back to the
-        # instant, then re-attach the fixed offset so #utc_offset survives.
-        obj = (obj - offset).getlocal(offset) if Time === obj && offset
+        # instant, then re-attach the fixed offset so #utc_offset survives.  The
+        # shift is done on the integer seconds so the nanoseconds stay exact
+        # (Time#- goes through a Float).
+        obj = Time.at(obj.to_i - offset, Rational(obj.nsec, 1000)).getlocal(offset) if Time === obj && offset
         st[:objs][idx] = obj
         return obj
       end
@@ -621,6 +642,8 @@ module Marshal
 
   def self._bytes(st, n)
     r = st[:s].byteslice(st[:i], n)
+    # a truncated stream is a data error, not a nil payload
+    raise ArgumentError, "marshal data too short" if r.nil? || r.bytesize < n
     st[:i] += n
     r
   end
