@@ -780,11 +780,18 @@ static RESULT korb_m_meth_bind_call(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     const VALUE owner = m->unbound ? m->recv : m->owner;   /* unbound: recv is the owner class */
     if (owner != KORB_NIL && KORB_CLASS_P(owner)) {        /* invoke the FIXED method from its owner */
         struct korb_method *const entry = korb_class_find_method(owner, mid, NULL);
-        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {   /* ISEQ only; builtins fall to virtual */
+        if (LIKELY(entry != NULL && entry->kind == KORB_METHOD_ISEQ)) {
             slots[0] = VALUE_SLICE_GET(a, 0);             /* self (the bind target) */
             slots[1] = owner;
             for (uint32_t i = 0; i < argc; i++) slots[2 + i] = VALUE_SLICE_GET(a, 1 + i);
             return korb_invoke_method(c, slots + 2 + argc, entry, argc, 0, mid, slots[0], slots[1], NULL, NULL, KORB_NIL);
+        }
+        if (entry != NULL) {                              /* builtin (cfunc/attr): still the CAPTURED entry, not a
+                                                           * re-dispatch — a singleton override of the same name on
+                                                           * the target must not win (Module#name is the classic). */
+            slots[0] = VALUE_SLICE_GET(a, 0);             /* recv, in the slot below the args */
+            for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, 1 + i);
+            return korb_dispatch_method(c, slots + 1 + argc, entry, mid, 0, argc, owner, NULL, NULL, NULL);
         }
     }
     slots[0] = VALUE_SLICE_GET(a, 0);                                /* recv */

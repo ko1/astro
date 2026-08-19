@@ -96,8 +96,8 @@ static uint32_t korb_mt_entropy(const void *salt) {
 
 /* @__mt ivar holds a binary String of one KorbMT. */
 /* ivar name as a Symbol VALUE (korb_ivar_get/set take ID2SYM(id), not a raw id). */
-static VALUE korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern(vm, "__mt", 4)); }
-static VALUE korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "__seed", 6)); }
+static VALUE korb_mt_sym(struct korb_vm *const vm)   { return ID2SYM(korb_intern(vm, "@__mt", 5)); }
+static VALUE korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_intern(vm, "@__seed", 7)); }
 
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
 ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, VALUE rndobj) {
@@ -225,15 +225,27 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
 /* Random#initialize(seed = nil). */
 static RESULT korb_m_random_init(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE seed = (VALUE_SLICE_LEN(a) >= 1) ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
-    if (UNLIKELY(seed != KORB_NIL && !FIXNUM_P(seed) && !KORB_BIGNUM_P(seed)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(seed));
+    if (seed != KORB_NIL && !FIXNUM_P(seed) && !KORB_BIGNUM_P(seed)) {
+        /* any Numeric seed is truncated to an Integer (Float/Rational/Complex);
+         * anything else goes through #to_int */
+        slots[0] = seed;
+        const char *const on = korb_coerce_name(c, slots[0]);
+        const uint32_t mid = (KORB_FLOAT_P(slots[0]) || KORB_RATIONAL_P(slots[0]) || KORB_COMPLEX_P(slots[0])) ? korb_intern(c->vm, "to_i", 4) : korb_intern(c->vm, "to_int", 6);
+        if (UNLIKELY(!korb_responds_to(c, slots[0], mid)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
+        const RESULT ir = korb_send(c, slots + 1, mid, 0, 0);
+        if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+        if (UNLIKELY(!FIXNUM_P(ir.value) && !KORB_BIGNUM_P(ir.value)))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
+        seed = ir.value;
+    }
+    if (seed == KORB_NIL) seed = LONG2FIX((intptr_t)(korb_mt_entropy(slots) & 0x3FFFFFFF));   /* #seed reports the drawn value */
     CHECK(korb_ivar_set(c, slots, self, korb_seed_sym(c->vm), seed));   /* @__seed (may GC; seed re-read below) */
     KorbString *const s = korb_str_alloc(c, slots, (uint32_t)sizeof(KorbMT));   /* binary state buffer (may GC) */
     slots[0] = (VALUE)s;                                                /* root */
     KorbMT *const st = (KorbMT *)korb_strbuf_data(s->buf);
     const VALUE seed2 = korb_ivar_get(c, VALUE_REF_GET(self), korb_seed_sym(c->vm));   /* re-read post-GC */
-    if (seed2 == KORB_NIL) korb_mt_init_genrand(st, korb_mt_entropy(st));
-    else                   korb_mt_seed_int(st, seed2);
+    korb_mt_seed_int(st, seed2);
     CHECK(korb_ivar_set(c, slots + 1, self, korb_mt_sym(c->vm), slots[0]));
     return RESULT_OK(VALUE_REF_GET(self));
 }
