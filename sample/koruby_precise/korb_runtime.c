@@ -3987,24 +3987,38 @@ static VALUE korb_dispatch_class(CTX *c, VALUE self);
  * prepended modules (most-recent first), then the class, then the included
  * modules (most-recent first).  Caps at `max`.  Matches korb_class_find_method's
  * search order, so a forward scan finds the same method it would. */
+/* One MRO segment into buf: the class's prepends (each a segment of its own —
+ * a prepended module brings its own prepends), the class, then its includes.
+ * Same order as korb_mro_seg_find; a repeat keeps its first (nearest) slot. */
+static int
+korb_linearize_seg(VALUE klass, VALUE *buf, int n, int max, int depth)
+{
+    if (!KORB_CLASS_P(klass) || depth > 64 || n >= max) return n;
+    const KorbClass *const k = VAL2CLASS(klass);
+    if (k->prepended != KORB_NIL) {
+        const KorbArray *const pa = VAL2ARY(k->prepended);
+        for (int32_t j = (int32_t)pa->len - 1; j >= 0; j--)
+            n = korb_linearize_seg(korb_items_data(pa->items)[j], buf, n, max, depth + 1);
+    }
+    if (n < max) {
+        bool dup = false;
+        for (int i = 0; i < n; i++) if (buf[i] == klass) { dup = true; break; }
+        if (!dup) buf[n++] = klass;
+    }
+    if (k->included != KORB_NIL) {
+        const KorbArray *const ia = VAL2ARY(k->included);
+        for (int32_t j = (int32_t)ia->len - 1; j >= 0; j--)
+            n = korb_linearize_seg(korb_items_data(ia->items)[j], buf, n, max, depth + 1);
+    }
+    return n;
+}
 static int
 korb_linearize_mro(VALUE klass, VALUE *buf, int max)
 {
     int n = 0;
     while (KORB_CLASS_P(klass) && n < max) {
-        KorbClass *k = VAL2CLASS(klass);
-        if (k->prepended != KORB_NIL) {
-            const KorbArray *pa = VAL2ARY(k->prepended);
-            for (int32_t j = (int32_t)pa->len - 1; j >= 0 && n < max; j--)
-                if (KORB_CLASS_P(korb_items_data(pa->items)[j])) buf[n++] = korb_items_data(pa->items)[j];
-        }
-        if (n < max) buf[n++] = klass;
-        if (k->included != KORB_NIL) {
-            const KorbArray *ia = VAL2ARY(k->included);
-            for (int32_t j = (int32_t)ia->len - 1; j >= 0 && n < max; j--)
-                if (KORB_CLASS_P(korb_items_data(ia->items)[j])) buf[n++] = korb_items_data(ia->items)[j];
-        }
-        klass = k->superclass;
+        n = korb_linearize_seg(klass, buf, n, max, 0);
+        klass = VAL2CLASS(klass)->superclass;
     }
     return n;
 }

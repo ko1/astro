@@ -907,27 +907,42 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
-/* Module#ancestors — self, its included modules (most-recent first), then the
- * superclass chain (each followed by its modules).  Singleton classes skipped. */
+/* Append one MRO segment (a class/module with its own prepended and included
+ * modules) to `out`, in method-lookup order — the same walk korb_mro_seg_find
+ * does, so `ancestors` and dispatch agree.  A prepended module brings its own
+ * prepends along, hence the recursion.  Duplicates are dropped (a module keeps
+ * its first, nearest position). */
+static RESULT korb_ancestors_seg(CTX *c, VALUE *slots, VALUE_REF out, VALUE klass, int depth) {
+    if (!KORB_CLASS_P(klass) || depth > 64) return RESULT_OK(KORB_NIL);
+    slots[0] = klass;                                        /* the segment's class (rooted) */
+    VALUE lst = VAL2CLASS(slots[0])->prepended;              /* prepended: most-recently-prepended first */
+    if (lst != KORB_NIL) {
+        slots[1] = lst;
+        for (uint32_t j = VAL2ARY(slots[1])->len; j-- > 0; )
+            CHECK(korb_ancestors_seg(c, slots + 2, out, korb_items_data(VAL2ARY(slots[1])->items)[j], depth + 1));
+    }
+    if (!VAL2CLASS(slots[0])->is_singleton) {
+        bool dup = false;
+        const KorbArray *const d = VAL2ARY(VALUE_REF_GET(out));
+        for (uint32_t i = 0; i < d->len; i++) if (korb_items_data(d->items)[i] == slots[0]) { dup = true; break; }
+        if (!dup) CHECK(korb_ary_push_val(c, slots + 1, out, slots[0]));
+    }
+    lst = VAL2CLASS(slots[0])->included;                     /* included: most-recently-included first */
+    if (lst != KORB_NIL) {
+        slots[1] = lst;
+        for (uint32_t j = VAL2ARY(slots[1])->len; j-- > 0; )
+            CHECK(korb_ancestors_seg(c, slots + 2, out, korb_items_data(VAL2ARY(slots[1])->items)[j], depth + 1));
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* Module#ancestors — each class of the superclass chain as a segment (its
+ * prepends, itself, its includes).  Singleton classes skipped. */
 static RESULT korb_m_class_ancestors(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));        /* result (rooted) */
     slots[1] = VALUE_REF_GET(self);                          /* current class (rooted) */
     while (KORB_CLASS_P(slots[1])) {
-        VALUE pre = VAL2CLASS(slots[1])->prepended;   /* prepended modules precede the class */
-        if (pre != KORB_NIL) {
-            slots[2] = pre;
-            for (uint32_t j = VAL2ARY(slots[2])->len; j-- > 0; )
-                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[0]), korb_items_data(VAL2ARY(slots[2])->items)[j]));
-        }
-        if (!VAL2CLASS(slots[1])->is_singleton)
-            CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
-        VALUE inc = VAL2CLASS(slots[1])->included;
-        if (inc != KORB_NIL) {
-            slots[2] = inc;                                  /* root the module list */
-            for (uint32_t j = VAL2ARY(slots[2])->len; j-- > 0; )
-                CHECK(korb_ary_push_val(c, slots + 3, VALUE_REF_AT(&slots[0]), korb_items_data(VAL2ARY(slots[2])->items)[j]));
-        }
+        CHECK(korb_ancestors_seg(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1], 0));
         slots[1] = VAL2CLASS(slots[1])->superclass;
     }
     return RESULT_OK(slots[0]);
