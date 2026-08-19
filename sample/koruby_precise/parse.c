@@ -3673,6 +3673,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_GLOBAL_VARIABLE_READ_NODE: {
         const uint32_t gn = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_read_node_t *)node)->name));
         if (gn == korb_intern(tc->c->vm, "$!", 2)) return ALLOC_node_errinfo();   /* $! = current exception */
+        if (gn == korb_intern(tc->c->vm, "$@", 2)) return ALLOC_node_errinfo_bt(0);   /* $@ = $!.backtrace */
         if (gn == korb_intern(tc->c->vm, "$&", 2)) return ALLOC_node_backref(0);  /* alias 経由 ($MATCH 等) */
         if (gn == korb_intern(tc->c->vm, "$`", 2)) return ALLOC_node_backref(1);
         if (gn == korb_intern(tc->c->vm, "$'", 2)) return ALLOC_node_backref(2);
@@ -3694,6 +3695,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
         { NODE *ro = kp_gvar_readonly_write(tc, node, ((const pm_global_variable_write_node_t *)node)->name); if (ro) return ro; }
+        if ((kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_write_node_t *)node)->name))
+            == korb_intern(tc->c->vm, "$@", 2)) {                /* `$@ = v` → $!.set_backtrace(v) */
+            NODE *v; WITH_CHAIN(tc, 2, (v = transduce(tc, ((const pm_global_variable_write_node_t *)node)->value)));
+            return ALLOC_node_errinfo_bt_set(v);
+        }
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;

@@ -137,6 +137,31 @@ node_unsupported(CTX *c, NODE *n, VALUE *slots, const char *what, uint32_t line)
     return korb_raise(c, slots, KORB_E_NOTIMPL, line, "M0 unsupported: %s", what);
 }
 
+// `$@` — the current exception's backtrace (nil when `$!` is nil).
+NODE_DEF
+node_errinfo_bt(CTX *c, NODE *n, VALUE *slots, int32_t unused)
+{
+    (void)n; (void)unused;
+    const VALUE e = korb_errinfo_top(c);
+    if (!KORB_EXC_P(e)) return RESULT_OK(KORB_NIL);
+    slots[0] = e;
+    return korb_send(c, slots + 1, korb_intern(c->vm, "backtrace", 9), 0, 0);
+}
+
+// `$@ = v` — set the current exception's backtrace (RuntimeError when `$!` is
+// nil, exactly as CRuby reports it).
+NODE_DEF
+node_errinfo_bt_set(CTX *c, NODE *n, VALUE *slots, VALUE val@child)
+{
+    (void)n;
+    const VALUE e = korb_errinfo_top(c);
+    if (!KORB_EXC_P(e)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "$! not set");
+    slots[0] = e;
+    slots[1] = val;
+    CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "set_backtrace", 13), 0, 1));
+    return RESULT_OK(slots[1]);
+}
+
 // A read-only global (`$&`, `$1`, `$!`, … or an alias of one) on the left of an
 // assignment: CRuby reports it as a NameError naming the variable as written.
 NODE_DEF

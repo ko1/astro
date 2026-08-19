@@ -1917,7 +1917,7 @@ static RESULT korb_m_exc_set_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VAL
     const VALUE bt = VALUE_SLICE_LEN(a) >= 1 ? VALUE_SLICE_GET(a, 0) : KORB_NIL;
     /* CRuby accepts nil, a String, or an Array of Strings; store as given. */
     if (bt != KORB_NIL && !KORB_STRING_P(bt) && !KORB_ARRAY_P(bt))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "backtrace must be Array of String");
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
     KorbException *const e = VAL2EXC(VALUE_REF_GET(self));
     ARO_STORE(c, e, &e->backtrace, bt);
     return RESULT_OK(bt);
