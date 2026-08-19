@@ -51,14 +51,17 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
     if (has_prec) min_digits = tc ? (prec > 2 ? prec - 2 : 0) : prec;
     const int pad_digits = (int)dlen < min_digits ? min_digits - (int)dlen : 0;
 
-    char pre[2]; int pi = 0;                            /* explicit sign character */
+    char pre[2] = { 0, 0 }; int pi = 0;                  /* explicit sign character */
     if (signed_mode)      pre[pi++] = '-';
     else if (!neg) { if (plus) pre[pi++] = '+'; else if (space) pre[pi++] = ' '; }
-    char altb[2]; int altn = 0;                         /* # alternate-form prefix (omitted for value 0) */
-    if (alt && mpz_sgn(z) != 0) {
-        if (base == 16)     { altb[0] = '0'; altb[1] = upper ? 'X' : 'x'; altn = 2; }
-        else if (base == 2) { altb[0] = '0'; altb[1] = upper ? 'B' : 'b'; altn = 2; }
-        else if (!tc)       { altb[0] = '0'; altn = 1; }   /* octal: leading 0 (omitted for ".." negatives) */
+    char altb[2] = { 0, 0 }; int altn = 0;              /* # alternate-form prefix */
+    if (alt) {
+        if (base == 16)     { if (mpz_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'X' : 'x'; altn = 2; } }
+        else if (base == 2) { if (mpz_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'B' : 'b'; altn = 2; } }
+        /* octal `#` means "starts with 0", so it applies to 0 as well — but only
+         * when the digits do not already begin with one ("%#o" % 0 is "0", not
+         * "00", while "%#.0o" % 0 renders no digits and so needs the prefix). */
+        else if (!tc && (dlen == 0 || digits[0] != '0')) { altb[0] = '0'; altn = 1; }
     }
     const int dots = tc ? 2 : 0;
     const int content = pi + altn + dots + pad_digits + (int)dlen;
@@ -184,6 +187,10 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
+    /* CRuby refuses to mix `%1$s` with `%s` in one format string; which one came
+     * first decides the wording of the error. */
+    bool saw_numbered = false, saw_unnumbered = false, saw_named = false;
+    char mixmsg[64];
     RESULT coerce_err = RESULT_OK(KORB_NIL); bool has_coerce_err = false;   /* a #to_int/#to_f arg coercion that raised */
     const uint32_t fmt_to_int = korb_intern(c->vm, "to_int", 6);   /* %c fallback coercion */
     for (uint32_t i = 0; i < flen; i++) {
@@ -258,7 +265,14 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
               if (wany && i < flen && fmt[i] == '$') { i++; wv = ((uint32_t)(wnum-1) < argn) ? args[wnum-1] : KORB_NIL; }
               else { i = sv; wv = (ai < argn) ? args[ai++] : KORB_NIL; } }
             intptr_t w;
-            if (!korb_to_index(wv, &w)) { err = true; errmsg = "width too big"; break; }   /* to_int coercion */
+            if (!korb_to_index(wv, &w) && KORB_OBJECT_P(wv) && korb_responds_to(c, wv, fmt_to_int)) {
+                slots[1] = wv;                              /* a `*` width may be any #to_int object */
+                RESULT wr = korb_send_impl(c, slots + 2, fmt_to_int, 0, 0, NULL, NULL, NULL);
+                if (UNLIKELY(wr.state != KORB_NORMAL)) { coerce_err = wr; has_coerce_err = true; err = true; break; }
+                FMT_REREAD_ARGS();
+                wv = wr.value;
+            }
+            if (!korb_to_index(wv, &w)) { err = true; errmsg = "width too big"; break; }
             if (w < 0) { if (si < 70) spec[si++] = '-'; w = -w; }                           /* negative width → left-justify */
             si += snprintf(spec + si, sizeof(spec) - (size_t)si, "%ld", (long)w);
         } else while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
@@ -276,6 +290,10 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 if (!korb_to_index(pv, &pl)) { err = true; errmsg = "precision too big"; break; }
                 if (pl >= 0) si += snprintf(spec + si, sizeof(spec) - (size_t)si, ".%ld", (long)pl);   /* negative precision → ignored (CRuby) */
             } else {
+                { const uint32_t ps = i; long long pv2 = 0;      /* a literal precision must fit an int */
+                  while (i < flen && isdigit((unsigned char)fmt[i])) { if (pv2 < 1000000000LL) pv2 = pv2 * 10 + (fmt[i]-'0'); i++; }
+                  if (pv2 > 2147483647LL / 2) { err = true; errmsg = "precision too big"; break; }
+                  i = ps; }
                 if (si < 70) spec[si++] = '.';
                 while (i < flen && isdigit((unsigned char)fmt[i])) { if (si < 70) spec[si++] = fmt[i]; i++; }
             }
@@ -291,7 +309,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         }
         TRY_NAMED(); if (err) break;                       /* %flagsWIDTH.PREC<name>type */
         #undef TRY_NAMED
-        if (i >= flen) { err = true; errmsg = "malformed format sequence"; break; }
+        if (i >= flen) { err = true; errmsg = "incomplete format specifier; use %% (double %) instead"; break; }
         char conv;
         if (fmt[i] == '{') {                               /* %[flags][width][.prec]{name}: named value to_s (implicit 's') */
             i++; const uint32_t nstart = i;
@@ -308,6 +326,15 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             named_arg = korb_items_data(VAL2HASH(nh)->items)[2 * hidx + 1]; has_named = true; conv = 's';   /* i at '}'; loop i++ steps past it */
         } else conv = fmt[i];
         const bool sequential = (!has_named && explicit_idx < 0);
+        if (conv != '%' && !has_named) {
+            if (explicit_idx >= 0) {
+                if (saw_unnumbered) { snprintf(mixmsg, sizeof mixmsg, "numbered(%d) after unnumbered(%u)", explicit_idx + 1, ai); errmsg = mixmsg; err = true; break; }
+                saw_numbered = true;
+            } else {
+                if (saw_numbered) { snprintf(mixmsg, sizeof mixmsg, "unnumbered(%u) mixed with numbered", ai + 1); errmsg = mixmsg; err = true; break; }
+                saw_unnumbered = true;
+            }
+        } else if (has_named) saw_named = true;
         if (sequential && conv != '%' && ai >= argn) { err = true; errmsg = "too few arguments"; break; }
         if (explicit_idx >= 0 && (uint32_t)explicit_idx >= argn && conv != '%') { err = true; errmsg = "too few arguments"; break; }
         VALUE arg = has_named ? named_arg
@@ -479,9 +506,17 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             korb_fmt_emit_c(ms, cbytes, cnbytes, spec, si);
             break;
           }
-          default: err = true; errmsg = "malformed format sequence"; break;
+          default:
+            snprintf(mixmsg, sizeof mixmsg, "malformed format string - %%%c", conv);
+            errmsg = mixmsg; err = true; break;
         }
         if (err) break;
+    }
+    /* $DEBUG turns a format string that consumed fewer arguments than it was
+     * given into an error (CRuby); positional/named directives opt out. */
+    if (!err && !saw_numbered && !saw_named && ai < argn &&
+        KORB_TRUTHY(korb_const_get(vm, korb_intern(vm, "$DEBUG", 6)))) {
+        err = true; errmsg = "too many arguments for format string";
     }
     #undef FMT_REREAD_ARGS
     if (has_coerce_err) {                                /* a #to_int/#to_f arg coercion raised → propagate it */
