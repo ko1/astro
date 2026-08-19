@@ -10110,6 +10110,24 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
     return EVAL(c, ast, cur);
 }
 /* source_location: register a def/block body NODE → (file, line) at parse time. */
+/* CRuby warns on every constant reassignment, naming where the previous one was
+ * (which is exactly what the const-location table records). */
+void
+korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
+{
+    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    const char *const nm = korb_sym_name(c->vm, name_sym);
+    char qual[256];
+    if (KORB_CLASS_P(owner) && VAL2CLASS(owner)->name_sym) {      /* CRuby names it Owner::CONST */
+        char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
+        snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
+    } else snprintf(qual, sizeof qual, "%s", nm);
+    korb_warn(c, slots, "already initialized constant %s", qual);
+    uint32_t fsym = 0, line = 0;
+    if (korb_const_get_loc(c->vm, name_sym, owner, &fsym, &line))
+        korb_warn(c, slots, "previous definition of %s was here (%s:%u)", nm, korb_sym_name(c->vm, fsym), line);
+}
+
 /* Where a constant was assigned, for Module#const_source_location.  Keyed by
  * (name, owner) like the constant table itself; append-only with the newest
  * entry winning, and only written from the two nodes that know a position

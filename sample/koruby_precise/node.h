@@ -463,6 +463,7 @@ bool korb_responds_to_coerce_p(CTX *c, VALUE *slots, VALUE *selfp, uint32_t mid)
 RESULT korb_massign_coerce(CTX *c, VALUE *slots);   /* to_ary for multiple assignment (node_eval.c) */
 void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line);
 bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
+void korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner);
 void korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t file_sym, uint32_t line);
 bool korb_const_get_loc(const struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t *file_sym, uint32_t *line);
 const char *korb_sym_name(const struct korb_vm *vm, uint32_t id);

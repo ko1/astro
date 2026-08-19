@@ -1432,6 +1432,11 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * Only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
     const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
+    /* reassigning an existing constant warns (the name table doubles as the
+     * global-variable table — `$x = 1` is a plain assignment, never a warning) */
+    if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&
+        korb_sym_name(c->vm, name_sym)[0] != '$')
+        korb_warn_const_redef(c, slots, name_sym, ownc);
     korb_const_define_owned(c, name_sym, val, ownc);
     { uint32_t fsym, fline;                              /* Module#const_source_location */
       if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
