@@ -996,7 +996,7 @@ static RESULT korb_m_str_ord(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const KorbString *s = VAL2STR(v);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty string");
     const uint32_t enc = KORB_STR_ENC(v);
-    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, v);
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(enc)) && !korb_str_bytes_ascii(v)) return korb_str_enc_notimpl(c, slots, v);
     const unsigned char *d = (const unsigned char *)korb_strbuf_data(s->buf);
     if (KORB_ENC_IS_SINGLE_BYTE(enc)) return RESULT_OK(LONG2FIX(d[0]));   /* single-byte: the first byte */
     unsigned char c0 = d[0]; uint32_t cp, n;

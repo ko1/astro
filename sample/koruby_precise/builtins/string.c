@@ -9,7 +9,29 @@ static inline bool korb_str_is_frozen(VALUE v) {
     return AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_FROZEN);
 }
 static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v);                               /* fwd */
+/* All bytes 7-bit?  A multi-byte "other" encoding still indexes byte-wise while
+ * the content is pure ASCII, so such a string needs no per-encoding hook. */
+static bool korb_str_bytes_ascii(VALUE v) {
+    const KorbString *const s = VAL2STR(v);
+    const char *const d = korb_strbuf_data(s->buf);
+    for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)d[i] >= 0x80) return false;
+    return true;
+}
 static inline uint32_t korb_str_char_bytes(uint32_t enc, const unsigned char *p, uint32_t i, uint32_t n);   /* fwd */
+/* Is this encoding one byte per character?  The multi-byte families are the
+ * short list, so they are the ones named here; everything else (ISO-8859-x,
+ * KOI8-x, Windows-125x, IBM/CP 8-bit code pages, TIS-620, macRoman, …) is a
+ * single-byte, ASCII-compatible encoding as far as character indexing goes. */
+static bool korb_enc_name_single_byte(const char *name) {
+    static const char *const multi[] = {
+        "UTF-16", "UTF16", "UTF-32", "UTF32", "UTF-7", "UTF7", "EUC", "euc",
+        "Shift_JIS", "SHIFT_JIS", "SJIS", "Windows-31J", "CP932", "CP51932",
+        "Big5", "BIG5", "GB", "ISO-2022", "stateless-ISO-2022", "Emacs-Mule",
+    };
+    for (size_t i = 0; i < sizeof multi / sizeof multi[0]; i++)
+        if (strncmp(name, multi[i], strlen(multi[i])) == 0) return false;
+    return true;
+}
 /* Map an encoding name to a header index: 0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT
  * directly; any other name is registered in vm->str_enc_names[3..7] and its
  * slot index returned (character ops on it will raise until hooks exist). */
@@ -19,8 +41,13 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     if (strcmp(name, "UTF-8") == 0 || strcmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
     const uint32_t sym = korb_intern(vm, name, (uint32_t)strlen(name));
     for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == sym) return i;
-    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == 0) { vm->str_enc_names[i] = sym; return i; }
-    return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
+    /* single-byte names take a 3..5 slot (character ops just work); multi-byte
+     * ones take 6..7, where character ops still raise. */
+    const bool sb = korb_enc_name_single_byte(name);
+    const uint32_t lo = sb ? KORB_ENC_OTHER_MIN : KORB_ENC_SB_MAX + 1;
+    const uint32_t hi = sb ? KORB_ENC_SB_MAX : 7u;
+    for (uint32_t i = lo; i <= hi; i++) if (vm->str_enc_names[i] == 0) { vm->str_enc_names[i] = sym; return i; }
+    return hi;   /* that half of the registry is full: reuse its last slot */
 }
 /* String#__encoding_tag → the header encoding index (0..7). */
 static RESULT korb_m_str_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -279,7 +306,7 @@ static RESULT korb_m_str_capitalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_m_str_reverse(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(enc)) && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
     char *const sd = korb_str_data(VALUE_REF_GET(self));  /* borrow: no alloc below */
@@ -600,7 +627,7 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     }
     const KorbString *s = VAL2STR(VALUE_REF_GET(self));
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(enc)) && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     const bool sb = KORB_ENC_IS_SINGLE_BYTE(enc);   /* single-byte enc: char index == byte index */
     uint32_t ncp = sb ? s->len : korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     *found = true;
@@ -1989,14 +2016,14 @@ static RESULT korb_m_str_charlen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     const KorbString *const s = VAL2STR(v);
     const uint32_t enc = KORB_STR_ENC(v);
     if (LIKELY(enc == KORB_ENC_UTF8)) return RESULT_OK(LONG2FIX((intptr_t)korb_utf8_count(korb_strbuf_data(s->buf), s->len)));
-    if (KORB_ENC_IS_SINGLE_BYTE(enc)) return RESULT_OK(LONG2FIX((intptr_t)s->len));
+    if (KORB_ENC_IS_SINGLE_BYTE(enc) || korb_str_bytes_ascii(v)) return RESULT_OK(LONG2FIX((intptr_t)s->len));
     return korb_str_enc_notimpl(c, slots, v);
 }
 
 static RESULT korb_m_str_chars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(enc)) && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     const bool single = KORB_ENC_IS_SINGLE_BYTE(enc);
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     uint32_t pos = 0;
@@ -2068,7 +2095,7 @@ static RESULT korb_m_str_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     const KorbString *s = SELF_STR;
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (UNLIKELY(enc >= KORB_ENC_OTHER_MIN)) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
+    if (UNLIKELY(KORB_ENC_NEEDS_HOOK(enc)) && !korb_str_bytes_ascii(VALUE_REF_GET(self))) return korb_str_enc_notimpl(c, slots, VALUE_REF_GET(self));
     const bool sb = KORB_ENC_IS_SINGLE_BYTE(enc);   /* single-byte enc: char index == byte index */
     uint32_t ncp = sb ? s->len : korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     #define BOFF(ci) (sb ? ((uint32_t)(ci) < s->len ? (uint32_t)(ci) : s->len) : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)(ci)))

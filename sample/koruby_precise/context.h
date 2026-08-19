@@ -241,11 +241,20 @@ enum korb_obj_type {
 #define KORB_ENC_USASCII    1u
 #define KORB_ENC_BINARY     2u
 #define KORB_ENC_OTHER_MIN  3u
+/* The "other" slots are split by width so a plain index tells the two apart:
+ * 3..5 single-byte (Latin-1 family, KOI8, Windows-125x, …) — every character op
+ * works byte-wise, only the NAME differs from ASCII-8BIT; 6..7 multi-byte
+ * (EUC-JP, Shift_JIS, UTF-16/32, …) — character ops need per-encoding hooks. */
+#define KORB_ENC_SB_MAX     5u
 #define KORB_STR_ENC(v)     ((uint32_t)((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT))
 #define KORB_STR_ENC_SET(v, idx) do { AroObjectHeader *h__ = (AroObjectHeader *)(uintptr_t)(v); \
     h__->flags = (uint16_t)((h__->flags & ~KORB_STR_ENC_MASK) | (((uint16_t)(idx) << KORB_STR_ENC_SHIFT) & KORB_STR_ENC_MASK)); } while (0)
-/* single-byte encodings: 1 byte = 1 character (US-ASCII / ASCII-8BIT). */
-#define KORB_ENC_IS_SINGLE_BYTE(idx) ((idx) == KORB_ENC_USASCII || (idx) == KORB_ENC_BINARY)
+/* single-byte encodings: 1 byte = 1 character (US-ASCII / ASCII-8BIT / the
+ * single-byte "other" slots). */
+#define KORB_ENC_IS_SINGLE_BYTE(idx) ((idx) == KORB_ENC_USASCII || (idx) == KORB_ENC_BINARY || \
+                                      ((idx) >= KORB_ENC_OTHER_MIN && (idx) <= KORB_ENC_SB_MAX))
+/* character-level ops on this encoding need hooks koruby does not have yet */
+#define KORB_ENC_NEEDS_HOOK(idx)     ((idx) > KORB_ENC_SB_MAX)
 
 /* growable byte buffer for a KorbString (header never moves on grow). */
 typedef struct KorbStrBuf {
