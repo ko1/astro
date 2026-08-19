@@ -3641,18 +3641,6 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                            * namespace A (the parent's rightmost name,
                                            * resolved at runtime); so M::C finds M's C. */
         const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)node;
-        if (cp->parent != NULL &&
-            !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE) &&
-            !PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_PATH_NODE)) {
-            /* `expr::CONST` (parent is an arbitrary expression, e.g. `obj::Foo`)
-             * → desugar to `(expr).const_get(:CONST)`, which searches the module
-             * and its ancestors and raises NameError if absent (matches `::`). */
-            NODE *r, *k;
-            const uint32_t cg = korb_intern(tc->c->vm, "const_get", 9);
-            WITH_CHAIN(tc, KP_SEND1_SC, (r = transduce(tc, cp->parent),
-                                         k = ALLOC_node_lit(ID2SYM(kp_intern_cid(tc, cp->name)))));
-            return kp_send1(cg, kp_line(tc, node), r, k);
-        }
         if (cp->parent != NULL) {                    /* `A::B` — resolve the parent as an expression */
             NODE *par = transduce(tc, cp->parent);
             return ALLOC_node_const_path(kp_intern_cid(tc, cp->name), par);

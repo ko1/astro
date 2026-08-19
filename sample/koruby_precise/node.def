@@ -1383,8 +1383,14 @@ node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     slots[0] = pr.value;                                  /* the namespace (rooted for const_missing) */
     struct korb_vm *const vm = c->vm;
-    if (UNLIKELY(!KORB_CLASS_P(slots[0])))
-        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a class/module", korb_coerce_name(c, slots[0]));
+    if (UNLIKELY(!KORB_CLASS_P(slots[0]))) {           /* `13::X` — CRuby names the VALUE, not its class */
+        char *ib = NULL; size_t iz = 0;
+        FILE *const ims = open_memstream(&ib, &iz);
+        if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
+        RESULT tr = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a class/module", ib ? ib : "value");
+        free(ib);
+        return tr;
+    }
     uint32_t idx = korb_const_index_owned(vm, name, slots[0]);
     if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, slots[0], name);
     if (idx == UINT32_MAX)                                /* then top-level / builtin constants (owner nil) */
