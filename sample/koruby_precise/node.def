@@ -1304,6 +1304,19 @@ node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid@sym)
     return dr;
 }
 
+// defined?(super): "super" iff the enclosing method has an MRO successor of the
+// same name — resolved exactly as `super` would, but without calling it.
+NODE_DEF
+node_defined_super(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t self_off, int32_t dc_off)
+{
+    (void)n;
+    if (korb_super_find(c, mid, slots[dc_off], slots[self_off], NULL) == NULL) return RESULT_OK(KORB_NIL);
+    RESULT dr = korb_str_new(c, slots, "super", 5);
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
 // defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent
 // path (nil if it raises, i.e. any segment is undefined), then run the same
 // owner-aware membership test as the static two-segment form.

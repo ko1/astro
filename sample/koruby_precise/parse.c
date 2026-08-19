@@ -3394,6 +3394,17 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
         if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) { tc->frame->uses_block = true; return ALLOC_node_defined_yield(-4 - tc->chain); }   /* "yield" iff block present */
+        if (PM_NODE_TYPE_P(v, PM_SUPER_NODE) || PM_NODE_TYPE_P(v, PM_FORWARDING_SUPER_NODE)) {
+            /* "super" iff the enclosing method has an MRO successor.  The frame's
+             * self and entry cell are read at the same offsets node_super_fwd uses. */
+            const uint32_t m_mid = tc->frame->method_mid;
+            /* outside a method body (top level, or a block — koruby has no `super`
+             * there yet): CRuby answers "super" from a block, we can only say nil. */
+            if (m_mid == 0) return ALLOC_node_lit(KORB_NIL);
+            NODE *_d = ALLOC_node_defined_super(m_mid, -1 - tc->chain, -1 - tc->chain);
+            bake_add(tc, &_d->u.node_defined_super.self_off);   /* self at base[-1]; dc_off stays cursor-relative (as in node_super_fwd) */
+            return _d;
+        }
         if (PM_NODE_TYPE_P(v, PM_SELF_NODE))  return ALLOC_node_defined(6, 0, 0);   /* "self" */
         if (PM_NODE_TYPE_P(v, PM_NIL_NODE))   return ALLOC_node_defined(8, 0, 0);   /* "nil" */
         if (PM_NODE_TYPE_P(v, PM_TRUE_NODE))  return ALLOC_node_defined(9, 0, 0);   /* "true" */

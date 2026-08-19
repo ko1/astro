@@ -4038,16 +4038,17 @@ korb_linearize_mro(VALUE klass, VALUE *buf, int max)
     return n;
 }
 
-/* `super` — invoke `mid` starting from after def_class in self's MRO, keeping
- * self.  `entry_cell` is the frame's fs-2 cell: the running method's entry
- * (tagged korb_method*); its owner is the def_class whose MRO successor runs. */
-RESULT
-korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
-           VALUE entry_cell, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+/* Resolve what `super` would call from the frame whose entry cell is
+ * `entry_cell`, without calling it: the MRO successor of the defining class.
+ * NULL when there is none (what `defined?(super)` reports as nil).  Shared by
+ * korb_super and node_defined_super so the two can never disagree. */
+struct korb_method *
+korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class)
 {
     const struct korb_method *const cur =
         ((uintptr_t)entry_cell & 1u) ? (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u) : NULL;
     const VALUE def_class = cur ? cur->owner : KORB_NIL;
+    if (out_def_class) *out_def_class = def_class;
     VALUE found_def = KORB_NIL;
     struct korb_method *m = NULL;
     /* Walk self's linearized MRO and resume the search strictly after def_class.
@@ -4082,6 +4083,21 @@ korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
         }
     }
+    if (out_def_class) *out_def_class = found_def;   /* the class the method came from (super's def_class) */
+    return m;
+}
+
+/* `super` — invoke `mid` starting from after def_class in self's MRO, keeping
+ * self.  `entry_cell` is the frame's fs-2 cell: the running method's entry
+ * (tagged korb_method*); its owner is the def_class whose MRO successor runs. */
+RESULT
+korb_super(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
+           VALUE entry_cell, VALUE self, NODE *block, VALUE *def_env, VALUE captured_self)
+{
+    VALUE found_def = KORB_NIL;
+    struct korb_method *const m = korb_super_find(c, mid, entry_cell, self, &found_def);
+    const VALUE def_class = ((uintptr_t)entry_cell & 1u)
+        ? ((const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)1u))->owner : KORB_NIL;
     if (m == NULL && mid == c->vm->mid_new && KORB_CLASS_P(self)) {
         /* super from a user `def Klass.new`: the default allocator is a dispatch
          * special-case with no table entry, so route the super straight into a

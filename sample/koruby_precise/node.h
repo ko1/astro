@@ -426,6 +426,7 @@ const char *korb_a_type_name(VALUE v);
 const char *korb_coerce_name(CTX *c, VALUE v);
 /* a constant name registered for autoload on `mod` but not yet loaded */
 bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
+struct korb_method *korb_super_find(CTX *c, uint32_t mid, VALUE entry_cell, VALUE self, VALUE *out_def_class);
 VALUE korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name);
 
 /* mutation guard: raise FrozenError (returning from the caller) if `v` is a
