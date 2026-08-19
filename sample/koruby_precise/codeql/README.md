@@ -70,10 +70,28 @@ the `interior_encapsulation` query is the CodeQL backstop.
   across a second producer / alias) + 4 true negatives (no-gc-between /
   staged-in-`slots[]` / re-read-from-slot / consumed-as-argument) for
   `value_after_gc`.
+- `test/param_cases.c` — the blind spot `value_after_gc` has (see below); not
+  part of the gate.
 - `test/annotation_cases.c` — one escape + one unused-annotation case for
   `borrow_escape` / `aro_borrow_unused`.
 - `test/encapsulation_cases.c` — direct-access-outside-accessor case for
   `interior_encapsulation`.
+
+## Known blind spot: a VALUE that arrives as a parameter
+
+`value_after_gc.ql` only tracks a VALUE whose defining value is a may-GC call
+*inside the same function* (`VALUE v = korb_str_new(...)`).  A VALUE the caller
+passed in is never seeded, so a parameter held across a may-GC call is not
+flagged.  That is exactly the shape of the 2026-08-19 `korb_re_str_span` SEGV
+(`group_or_nil` was live across the match run, which allocates).
+
+Measured on `test/param_cases.c` (2026-08-19): `value_after_gc.ql` reports only
+the local case, `value_param.ql` (an unwired experiment kept beside it) reports
+the parameter case and stays quiet on the slot-parked one.  `value_param.ql` is
+NOT in the gate: run against the real koruby DB it did not finish within 9
+minutes — seeding on every VALUE parameter makes the `reach` recursion blow up.
+Closing the gap needs a narrower seed (e.g. only parameters of functions that
+themselves write `slots[]`), not just the query as it stands.
 
 ## Files
 
@@ -83,6 +101,7 @@ run.sh                      the gate (invoked by `make codeql-check`)
 cqbuild.sh                  clean, ccache-disabled build for DB extraction
 borrow_after_gc.ql          temporal check (raw pointer)
 value_after_gc.ql           temporal check (bare VALUE)
+value_param.ql              EXPERIMENT: same for VALUE parameters (not in the gate)
 interior_encapsulation.ql   spatial check
 borrow_escape.ql            escape check
 aro_borrow_unused.ql        annotation-hygiene check

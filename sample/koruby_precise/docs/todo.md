@@ -2574,3 +2574,18 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
       - 乗っていない (`KORB_BLOP_CFUNC` で C ライブラリ内、waitpid、通常ファイル/NFS の
         blocking read、getaddrinfo) → pthread_kill しかない。blop の union が既に
         ubf/ubf_arg を持っているのはこのため。CFUNC blop を実際に使い出す時点が分水嶺。
+
+## CodeQL: value-after-gc は「引数で来た VALUE」を見ていない (2026-08-19)
+
+`codeql/value_after_gc.ql` は「関数内で may-GC 呼び出しから生まれた VALUE を
+ローカルに保持したまま次の may-GC を跨ぐ」形だけを種にする。呼び出し元から
+**引数で渡された VALUE** は種にならないので、`korb_re_str_span` の
+`group_or_nil` を korb_re_run (alloc する) 跨ぎで保持していたバグ (STRESS+PURGE
+で SEGV、2026-08-19 に修正) は検出できなかった。
+
+計測: `codeql/test/param_cases.c` を作って比較したところ、既存 rule は
+ローカル版だけを報告し引数版を報告しない。引数も種にする実験 rule
+(`codeql/value_param.ql`) は引数版を報告し、slot に置いて読み直す版は報告
+しない。ただし実 DB に対しては 9 分でも終わらなかった (VALUE 引数は数が多く
+`reach` の再帰が爆発する)。gate に入れるには種を絞る必要がある
+(例: 自分で `slots[]` に書く関数の引数だけ、など)。詳細は codeql/README.md。
