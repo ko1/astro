@@ -1192,17 +1192,35 @@ static RESULT korb_io_mode_coerce(CTX *c, VALUE *slots, VALUE *mv, char *mode, s
 static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
-    const VALUE t = VALUE_SLICE_GET(a, 0);
-    if (KORB_STRING_P(t)) {
+    const uint32_t na_ = VALUE_SLICE_LEN(a);
+    if (UNLIKELY(na_ < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(na_ > 2 && !KORB_HASH_P(VALUE_SLICE_GET(a, na_ - 1))))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", na_);
+    slots[0] = VALUE_SLICE_GET(a, 0);
+    /* A non-String, non-IO target that answers #to_path is a path (CRuby tries
+       #to_path before #to_io), so convert it up front. */
+    if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_io_rep(c, slots[0]) == NULL &&
+        korb_responds_to(c, slots[0], korb_intern(c->vm, "to_path", 7))) {
+        const RESULT pr = korb_send(c, slots + 1, korb_intern(c->vm, "to_path", 7), 0, 0);
+        if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+        if (KORB_STRING_P(pr.value)) slots[0] = pr.value;
+    }
+    if (KORB_STRING_P(slots[0])) {
         /* Take the path onto the stack: the flush below can park (and so GC),
            which would move the String's bytes out from under a borrow. */
-        uint32_t pl; const char *const pbytes = korb_str_cstr_len(t, &pl);
+        uint32_t pl; const char *const pbytes = korb_str_cstr_len(slots[0], &pl);
         char path[4096];
         if (UNLIKELY(pl >= sizeof path)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "path too long");
         memcpy(path, pbytes, pl); path[pl] = '\0';
+        /* No mode given → keep the receiver's own mode: reopening a write-only
+           IO onto a path must still write (and create), not switch to reading. */
         char mode[16] = "r";
-        if (VALUE_SLICE_LEN(a) >= 2 && !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
+        const VALUE ms_ = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)));
+        if (KORB_STRING_P(ms_)) (void)korb_io_mode_arg(ms_, mode, sizeof mode);
+        else { const int rw_ = korb_io_rw(c, VALUE_REF_GET(self));
+               if (rw_ == 2) strcpy(mode, "w"); else if (rw_ == 3) strcpy(mode, "r+"); }
+        if (na_ >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL && !KORB_HASH_P(VALUE_SLICE_GET(a, 1)) &&
+            !korb_io_mode_arg(VALUE_SLICE_GET(a, 1), mode, sizeof mode))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid access mode");
         /* Re-point the same descriptor at another file, keeping the fd number
            (a reopened $stdout must stay fd 1).  dup2 does that atomically. */
@@ -1213,10 +1231,14 @@ static RESULT korb_m_io_reopen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         close(nfd);
         korb_io_drop_rbuf(rep);
         (void)fcntl(rep->fd, F_SETFD, FD_CLOEXEC);
+        /* the reopened stream takes the new mode's direction: `f.reopen(p, "r")`
+           on a write-only IO is readable afterwards */
+        CHECK(korb_ivar_set(c, slots + 1, self, ID2SYM(korb_io_mode_mid(c)), LONG2FIX(korb_io_mode_rw(mode))));
+        slots[1] = UNWRAP(korb_str_new(c, slots + 1, mode, (uint32_t)strlen(mode)));
+        CHECK(korb_ivar_set(c, slots + 2, self, ID2SYM(korb_intern(c->vm, "@__io_modestr", 13)), slots[1]));
         return RESULT_OK(VALUE_REF_GET(self));
     }
     /* Not a path: an IO, or anything that converts to one via #to_io. */
-    slots[0] = t;
     if (!KORB_OBJECT_P(slots[0]) || korb_io_rep(c, slots[0]) == NULL) {
         const uint32_t to_io = korb_intern(c->vm, "to_io", 5);
         char cls[192];                                            /* the class name, captured before dispatch */
