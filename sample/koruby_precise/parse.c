@@ -3892,12 +3892,12 @@ kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser)
 }
 
 NODE *
-koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
+koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, bool exit_on_error)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
     pm_options_filepath_set(&options, fname);
-    pm_options_line_set(&options, 1);
+    pm_options_line_set(&options, first_line);
 
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
@@ -3943,6 +3943,13 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
     pm_parser_free(&parser);
     pm_options_free(&options);
     return ast;
+}
+
+/* eval/require with no explicit position: line numbering starts at 1. */
+NODE *
+koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
+{
+    return koruby_parse_source_at(c, src, len, fname, 1, exit_on_error);
 }
 
 /* Parse `src` for eval(str, binding): the binding's local names are declared as

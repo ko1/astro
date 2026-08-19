@@ -1794,7 +1794,33 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
             if (UNLIKELY(!KORB_STRING_P(src)))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
         }
-        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self));
+        /* optional 2nd/3rd args: the filename and first line the source is
+         * reported as (CRuby uses them for __FILE__ / __LINE__ / backtraces) */
+        char fbuf[256]; const char *fname = "(eval)"; int32_t line = 1;
+        if (VALUE_SLICE_LEN(a) >= 2) {
+            slots[0] = VALUE_SLICE_GET(a, 1);
+            if (!KORB_STRING_P(slots[0])) {
+                const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+                if (!KORB_OBJECT_P(slots[0]) || !korb_responds_to(c, slots[0], to_str))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+                const RESULT fr = korb_send(c, slots + 1, to_str, 0, 0);
+                if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+                if (!KORB_STRING_P(fr.value))
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+                slots[0] = fr.value;
+            }
+            const KorbString *const fs = VAL2STR(slots[0]);
+            const uint32_t n = fs->len < sizeof fbuf - 1 ? fs->len : (uint32_t)(sizeof fbuf - 1);
+            memcpy(fbuf, korb_strbuf_data(fs->buf), n); fbuf[n] = '\0';
+            fname = korb_sym_name(c->vm, korb_intern(c->vm, fbuf, n));   /* interned → outlives this frame, like the AST */
+        }
+        if (VALUE_SLICE_LEN(a) >= 3) {
+            intptr_t l = 1;
+            if (!korb_to_index(VALUE_SLICE_GET(a, 2), &l))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 2)));
+            line = (int32_t)l;
+        }
+        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line);
     }
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));

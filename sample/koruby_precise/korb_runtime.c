@@ -379,7 +379,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
-static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val);   /* defined below — for instance/class_eval(String) in set.c */
+static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line);   /* defined below — for instance/class_eval(String) in set.c */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
 static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
@@ -11017,10 +11017,10 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
  * String form (self = the receiver, so `def` in class_eval attaches to the class).
  * The eval'd code sees its own locals only (no caller binding). */
 static RESULT
-korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val)
+korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line)
 {
     const KorbString *const s = VAL2STR(str);
-    NODE *ast = koruby_parse_source(c, korb_strbuf_data(s->buf), s->len, "(eval)", false);   /* immortal AST; no GC */
+    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
@@ -11028,7 +11028,17 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val)
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     fb[-1] = self_val;                                  /* self cell (base[-1]) */
-    return EVAL(c, ast, cur);
+    /* a raise inside the string is reported against the file the caller named */
+    const char *const saved = c->vm->script_name;
+    c->vm->script_name = fname;
+    RESULT r = EVAL(c, ast, cur);
+    if (UNLIKELY(r.state == KORB_RAISE)) {              /* snapshot while the name is still ours */
+        slots[0] = r.value;                             /* park: capture allocates */
+        (void)korb_capture_backtrace(c, slots);
+        r.value = slots[0];
+    }
+    c->vm->script_name = saved;
+    return r;
 }
 
 /* Kernel#eval(string) — parse + run the string as a program in a fresh frame
