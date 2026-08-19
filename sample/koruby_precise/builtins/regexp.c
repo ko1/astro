@@ -539,19 +539,24 @@ static int korb_re_ruby_opts(uint32_t flags) {
 }
 static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
 static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
-static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)a; slots[0] = VALUE_REF_GET(self);
-    const uint32_t f = VAL2RE(slots[0])->flags;
-    const VALUE srcv = VAL2RE(slots[0])->source;                /* nil for an allocate'd / never-compiled Regexp */
+/* `(?mix-mix:source)` — a Regexp's own options travel with its source, which is
+ * what makes an embedded copy (Regexp#to_s, Regexp.union) keep them. */
+static void korb_re_write_to_s(FILE *ms, VALUE re) {
+    const uint32_t f = VAL2RE(re)->flags;
+    const VALUE srcv = VAL2RE(re)->source;                      /* nil for an allocate'd / never-compiled Regexp */
     const KorbString *const src = KORB_STRING_P(srcv) ? VAL2STR(srcv) : NULL;
     char on[4]; int no = 0; char off[4]; int nf = 0;
     if (f & 16u) on[no++]='m'; else off[nf++]='m';
     if (f & 4u)  on[no++]='i'; else off[nf++]='i';
     if (f & 8u)  on[no++]='x'; else off[nf++]='x';
-    char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     fputs("(?", ms); fwrite(on, 1, (size_t)no, ms);
     if (nf) { fputc('-', ms); fwrite(off, 1, (size_t)nf, ms); }
     fputc(':', ms); if (src) fwrite(korb_strbuf_data(src->buf), 1, src->len, ms); fputc(')', ms);
+}
+static RESULT korb_m_re_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; slots[0] = VALUE_REF_GET(self);
+    char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
+    korb_re_write_to_s(ms, slots[0]);
     fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)z); free(buf); return r;
 }
 static RESULT korb_m_re_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1123,7 +1128,7 @@ static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     for (uint32_t i = 0; i < n; i++) {
         VALUE it = (items != KORB_NIL) ? korb_items_data(VAL2ARY(items)->items)[i] : VALUE_SLICE_GET(a, i);
         if (i) fputc('|', ms);
-        if (KORB_REGEXP_P(it)) { const KorbString *s = VAL2STR(VAL2RE(it)->source); fwrite(korb_strbuf_data(s->buf), 1, s->len, ms); }
+        if (KORB_REGEXP_P(it)) korb_re_write_to_s(ms, it);   /* keep each part's own options */
         else if (KORB_STRING_P(it)) { const KorbString *s = VAL2STR(it);
             for (uint32_t j = 0; j < s->len; j++) { unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[j]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); } }
         else { fclose(ms); free(buf); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(it)); }
