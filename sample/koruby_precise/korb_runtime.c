@@ -241,6 +241,12 @@ RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(KORB_RATIONAL_P(l) ? r : l));
     }
+    /* Modulo is not a variant of division: it needs the floored quotient, which
+     * korb_int_rat_divmod computes (it only ever calls back with ops 1/2/3). */
+    if (op == 4) return korb_int_rat_divmod(c, slots, l, r, 1);
+    /* Rational ⊗ Complex is Complex arithmetic (korb_cpx_parts takes a Rational
+     * component as-is), not a coercion failure. */
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(r)) return korb_cpx_arith(c, slots, l, r, op);
     /* slots[0..3] = ln, ld, rn, rd (rooted); compute num→slots[6], den→slots[7]. */
     if (op == 0 || op == 1) {                                  /* (ln*rd ± rn*ld) / (ld*rd) */
         slots[4] = UNWRAP(korb_int_arith(c, slots + 4, slots[0], slots[3], 2, 0));   /* ln*rd */
@@ -728,6 +734,9 @@ static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
  * korb_num_binop (Int/Float/Rational-aware). Division (op 3) is unsupported. */
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
+    if (UNLIKELY(op == 4))                                /* Complex defines no #% (CRuby) */
+        return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%%' for %s",
+                          korb_a_type_name(KORB_COMPLEX_P(l) ? l : r));
     if (UNLIKELY(!korb_cpx_parts(l, &lre, &lim) || !korb_cpx_parts(r, &rre, &rim))) {
         if (KORB_COMPLEX_P(l) && KORB_OBJECT_P(r) && op >= 0 && op <= 3) {   /* Complex op object → coerce protocol */
             static const char *const opn[] = { "+", "-", "*", "/" };
@@ -8568,7 +8577,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_RANGE, "to_a", korb_m_range_to_a, 0);
     korb_def_cmethod(c, KORB_C_RANGE, "==", korb_m_range_eq, 1);
     korb_def_cmethod(c, KORB_C_RANGE, "eql?", korb_m_range_eql, 1);
-    korb_def_cmethod(c, KORB_C_RANGE, "to_ary", korb_m_range_to_a, 0);
+    /* NB: no Range#to_ary — CRuby has none, and defining it makes a Range
+     * silently splat (`[1] + (1..2)`, `a, b = (1..2)`) where CRuby does not. */
     korb_def_cmethod(c, KORB_C_RANGE, "entries", korb_m_range_to_a, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each", korb_m_range_each, 0);
     korb_def_cmethod_blk(c, KORB_C_RANGE, "each_entry", korb_m_range_each, 0);
