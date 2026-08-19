@@ -3958,13 +3958,13 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * set to the eval program's frame (caller seeds those slots from the binding and
  * writes them back).  NULL on syntax error. */
 NODE *
-koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname,
+koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line,
                           const uint32_t *name_syms, uint32_t name_cnt)
 {
     pm_parser_t parser;
     pm_options_t options = { 0 };
     pm_options_filepath_set(&options, fname);
-    pm_options_line_set(&options, 1);
+    pm_options_line_set(&options, first_line);
     /* declare the binding's locals so the eval code recognises them as locals
      * (prism folds a single declared scope into the parsed program's own scope). */
     pm_options_scopes_init(&options, 1);

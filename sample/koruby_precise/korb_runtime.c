@@ -379,6 +379,7 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
+static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname);   /* defined below */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line);   /* defined below — for instance/class_eval(String) in set.c */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
@@ -11028,11 +11029,23 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     fb[-1] = self_val;                                  /* self cell (base[-1]) */
-    /* a raise inside the string is reported against the file the caller named */
+    return korb_eval_run(c, slots, ast, cur, fname);   /* raises report the caller's filename */
+}
+
+/* Kernel#eval(string) — parse + run the string as a program in a fresh frame
+ * (self = a throwaway `main`).  No caller-binding/lvar access (M0 minimal): the
+ * eval'd code sees its own locals + a fresh self, which suffices for the common
+ * literal/expression eval (e.g. eval("(1..)")). */
+/* Run a parsed eval program with the named file in effect, so a raise inside it
+ * is reported against that file (the backtrace is snapshotted before the name is
+ * restored).  `slots` is scratch for the snapshot; `cur` is the program cursor. */
+static RESULT
+korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname)
+{
     const char *const saved = c->vm->script_name;
     c->vm->script_name = fname;
     RESULT r = EVAL(c, ast, cur);
-    if (UNLIKELY(r.state == KORB_RAISE)) {              /* snapshot while the name is still ours */
+    if (UNLIKELY(r.state == KORB_RAISE)) {
         slots[0] = r.value;                             /* park: capture allocates */
         (void)korb_capture_backtrace(c, slots);
         r.value = slots[0];
@@ -11041,10 +11054,6 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
     return r;
 }
 
-/* Kernel#eval(string) — parse + run the string as a program in a fresh frame
- * (self = a throwaway `main`).  No caller-binding/lvar access (M0 minimal): the
- * eval'd code sees its own locals + a fresh self, which suffices for the common
- * literal/expression eval (e.g. eval("(1..)")). */
 static RESULT
 korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
 {
@@ -11076,6 +11085,31 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected Binding)",
                           korb_type_name(VALUE_SLICE_GET(args, 1)));
     const bool have_bind = VALUE_SLICE_LEN(args) >= 2 && KORB_BINDING_P(VALUE_SLICE_GET(args, 1));
+    /* optional 3rd/4th args: the filename and first line the source is reported
+     * as (CRuby uses them for __FILE__ / __LINE__ / backtraces) */
+    const char *fname = "(eval)"; int32_t eline = 1;
+    if (VALUE_SLICE_LEN(args) >= 3 && VALUE_SLICE_GET(args, 2) != KORB_NIL) {
+        slots[0] = VALUE_SLICE_GET(args, 2);
+        if (!KORB_STRING_P(slots[0])) {
+            const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
+            if (!KORB_OBJECT_P(slots[0]) || !korb_responds_to(c, slots[0], to_str))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+            const RESULT fr = korb_send(c, slots + 1, to_str, 0, 0);
+            if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+            if (!KORB_STRING_P(fr.value))
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, slots[0]));
+            slots[0] = fr.value;
+        }
+        const KorbString *const fs = VAL2STR(slots[0]);
+        fname = korb_sym_name(c->vm, korb_intern(c->vm, korb_strbuf_data(fs->buf), fs->len));   /* interned → outlives the frame */
+        sv = VALUE_SLICE_GET(args, 0);                 /* the dispatch above may have moved the source */
+    }
+    if (VALUE_SLICE_LEN(args) >= 4 && VALUE_SLICE_GET(args, 3) != KORB_NIL) {
+        intptr_t l = 1;
+        if (!korb_to_index(VALUE_SLICE_GET(args, 3), &l))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(args, 3)));
+        eline = (int32_t)l;
+    }
     const KorbString *s = VAL2STR(sv);
     if (have_bind) {                                    /* eval(str, binding) — seed the eval frame from the binding, run, write back */
         const VALUE bv = VALUE_SLICE_GET(args, 1);
@@ -11087,7 +11121,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         uint32_t *decl = declc ? malloc(sizeof(uint32_t) * declc) : NULL;
         for (uint32_t i = 0; i < b0->name_cnt; i++) decl[i] = b0->name_syms[i];
         for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
-        NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, "(eval)", decl, declc);
+        NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, fname, eline, decl, declc);
         free(decl);
         if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
         const uint32_t L = koruby_toplevel_locals_cnt;
@@ -11122,7 +11156,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         #undef EVAL_BIND
         return RESULT_OK(fb[L]);
     }
-    NODE *ast = koruby_parse_source(c, korb_strbuf_data(s->buf), s->len, "(eval)", false);   /* immortal AST; no GC */
+    NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, eline, false);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
@@ -11132,7 +11166,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;                          /* self cell (base[-1]) */
-    return EVAL(c, ast, cur);
+    return korb_eval_run(c, slots, ast, cur, fname);
 }
 
 /* strict string→integer parse for Integer():  optional surrounding whitespace,
