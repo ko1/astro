@@ -4828,7 +4828,14 @@ korb_value_eq(VALUE a, VALUE b)
 #endif
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
-        return x->len == y->len && memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) == 0;
+        if (x->len != y->len || memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) != 0) return false;
+        /* same bytes: equal unless the encodings differ AND the content is not
+         * plain ASCII (CRuby's rb_str_comparable) */
+        const uint32_t ea = KORB_STR_ENC(a), eb = KORB_STR_ENC(b);
+        if (LIKELY(ea == eb)) return true;
+        const char *const d = korb_strbuf_data(x->buf);
+        for (uint32_t i = 0; i < x->len; i++) if ((unsigned char)d[i] >= 0x80) return false;
+        return true;
     }
     if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {         /* Array#==: same length, element-wise == */
         KorbArray *const x = VAL2ARY(a); const KorbArray *const y = VAL2ARY(b);
