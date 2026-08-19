@@ -2631,3 +2631,21 @@ PM_SUPER_NODE / PM_FORWARDING_SUPER_NODE は `tc->frame->method_mid` が 0
 フレームまで遡り、self / entry cell を env リンク経由 (depth) で読む必要がある。
 `defined?(super)` も同じ理由でブロック内では nil (CRuby は "super")。
 language/defined_spec の残り fail のうち 6 件がこれ。
+
+## 定数の flat fallback は特異クラス body が支えている (2026-08-19 実験)
+
+node_const は「レキシカル chain → cref の ancestry → owner nil (top-level) →
+**名前だけで最初に見つかったもの**」の順で引く。最後の flat fallback が
+`M::X` を M の外から見えるようにしてしまい、language/constants_spec の
+「呼び出し元のレキシカルスコープを探さない」「Object は明示的に open した
+ときだけ探す」系が落ちる (34 fail/9 err の主因)。
+
+**実験**: fallback を外すと `make test` は 100,510 のまま変わらないが、
+language/constants_spec が **fixture のロードで死ぬ**:
+`class << obj; CS_SINGLETON4_CLASSES = ...; end` の中から同じ定数を読めない。
+特異クラスは名前を持たないので、parse 時に焼く陣列 (class_name_sym の chain)
+で cref を再現できず、chain 解決が nil になるため。
+
+**やるなら**: node_const の cref を「名前 chain」ではなく実行時の cref
+オブジェクトで渡す設計に変える必要がある (AOT の bake キーは名前ベースなので、
+そこも一緒に考える)。fallback はそれまで残す。
