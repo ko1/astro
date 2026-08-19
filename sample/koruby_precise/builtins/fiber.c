@@ -114,10 +114,16 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
     c->cstack_limit = (const char *)rep->cstack + KORB_FIBER_CSTACK_MARGIN;
     korb_re_sync_floor(c);   /* astrogre \g<> guard must use the fiber's stack */
     c->vm->running_fiber = rep;
+    /* `$!` is fiber-local: the fiber starts from ITS own errinfo depth, and the
+     * resumer's stack is hidden while it runs (and restored on the way back). */
+    const uint32_t s_errinfo_n = c->errinfo_n;
+    c->errinfo_n = rep->errinfo_n;
 
     swapcontext(&here, (ucontext_t *)rep->uctx);       /* === into the fiber === */
 
     /* === back: fiber yielded or finished === */
+    rep->errinfo_n = c->errinfo_n;                     /* keep the fiber's depth for its next resume */
+    c->errinfo_n = s_errinfo_n;
     c->vm->running_fiber = prev;
     c->slots = s_slots; c->slots_top = s_top; c->slots_limit = s_limit;
     c->slots_high_water = s_hw; c->cstack_limit = s_cstack;

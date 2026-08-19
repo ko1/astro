@@ -415,6 +415,7 @@ typedef struct KorbFiberRep {
     void  *uctx;                     /* ucontext_t * (fiber's saved context) */
     void  *resume_uctx;              /* ucontext_t * to switch back to on yield */
     void  *cstack;                   /* malloc'd native stack for the fiber */
+    uint32_t errinfo_n;              /* the fiber's own `$!` stack depth (fiber-local) */
     uint8_t fstate;                  /* 0 created, 1 running, 2 suspended, 3 done */
     uint8_t raised;                  /* block raised → resume re-raises transfer */
     uint8_t pending_raise;           /* Fiber#raise: yield raises transfer instead of returning it */
