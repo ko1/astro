@@ -892,6 +892,19 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         if (dup) continue;
         CHECK(korb_ary_push_val(c, slots + 1, arr, csym));
     }
+    /* a pending autoload is already a constant to CRuby — it shows up in
+     * #constants before the file is required. */
+    slots[1] = korb_ivar_get(c, VALUE_REF_GET(self), ID2SYM(korb_intern(vm, "@__autoloads", 12)));
+    if (KORB_HASH_P(slots[1])) {
+        for (uint32_t i = 0; i < VAL2HASH(slots[1])->len; i++) {
+            const VALUE key = korb_items_data(VAL2HASH(slots[1])->items)[2 * i];   /* Symbol: immediate, GC-stable */
+            if (!SYMBOL_P(key)) continue;
+            bool dup = false;
+            const KorbArray *const d = VAL2ARY(VALUE_REF_GET(arr));
+            for (uint32_t j = 0; j < d->len; j++) if (korb_items_data(d->items)[j] == key) { dup = true; break; }
+            if (!dup) CHECK(korb_ary_push_val(c, slots + 2, arr, key));
+        }
+    }
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 /* Module#ancestors — self, its included modules (most-recent first), then the

@@ -71,6 +71,19 @@ class Module
     nil
   end
 
+  # `class M::C` / `module M::C` where C is a pending autoload: the file has to be
+  # required first so the body reopens what it defined (creating a fresh class
+  # here would silently discard the file's definition).  Unlike #const_missing
+  # this stays quiet when the file leaves the constant undefined — the caller
+  # then creates the class as usual.  LoadError still propagates, as in CRuby.
+  def __autoload_open(name)
+    path = __autoload_path_for(name)
+    return nil unless path
+    require path
+    __autoload_table.delete(name.to_sym)
+    nil
+  end
+
   def autoload(name, path)
     n = name.is_a?(Symbol) ? name : name.to_str.to_sym
     raise NameError, "autoload must be constant name: #{n}" unless n.to_s =~ /\A[A-Z][A-Za-z0-9_]*\z/

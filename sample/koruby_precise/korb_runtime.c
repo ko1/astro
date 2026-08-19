@@ -3729,7 +3729,19 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     /* find-or-create owner-aware: reopen the class/module of the SAME namespace
      * (M::C reopens M::C, not a top-level C). */
     const VALUE find_owner = KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL;
-    const uint32_t fidx = korb_const_index_owned(c->vm, name_sym, find_owner);
+    uint32_t fidx = korb_const_index_owned(c->vm, name_sym, find_owner);
+    if (fidx == UINT32_MAX && korb_autoload_registered_p(c, find_owner, name_sym)) {
+        /* reopening a name that is only registered as an autoload: require the
+         * file first, then look again — otherwise the body would open a brand
+         * new class and the file's definition would be lost. */
+        slots[0] = superclass;                        /* park across the require's GC */
+        slots[1] = find_owner;                        /* recv + arg sit just below the cursor */
+        slots[2] = ID2SYM(name_sym);
+        CHECK(korb_send(c, slots + 3, korb_intern(c->vm, "__autoload_open", 15), 0, 1));
+        superclass = slots[0];
+        enclosing = VALUE_REF_GET(encl_ref);          /* the require may have moved it */
+        fidx = korb_const_index_owned(c->vm, name_sym, KORB_CLASS_P(enclosing) ? enclosing : KORB_NIL);
+    }
     VALUE cls = (fidx != UINT32_MAX) ? c->vm->const_vals[fidx] : KORB_NIL;
     if (!KORB_CLASS_P(cls)) {
         slots[0] = superclass;                   /* root super across korb_class_new's GC */
@@ -5713,6 +5725,36 @@ korb_etype_name(unsigned int etype)
 
 /* FrozenError with CRuby's message shape: "can't modify frozen <Type>: <inspect>".
  * Called from the KORB_CHECK_FROZEN macro (error path → the inspect cost is fine). */
+/* Is the feature an `autoload` registration names already in $LOADED_FEATURES?
+ * The registration keeps the path as written ("foo", "foo.rb", "lib/foo"), while
+ * $LOADED_FEATURES holds absolute paths, so the ".rb"-completed form is matched
+ * against a whole trailing path component (mirrors prelude Module#autoload?). */
+static bool
+korb_autoload_feature_loaded_p(CTX *c, VALUE pathv)
+{
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return false;
+    const KorbString *const p = VAL2STR(pathv);
+    const char *const path = korb_strbuf_data(p->buf);
+    const size_t plen = p->len;
+    const bool has_rb = plen >= 3 && memcmp(path + plen - 3, ".rb", 3) == 0;
+    const size_t slen = has_rb ? plen : plen + 3;          /* length of the ".rb" form */
+    const KorbArray *const a = VAL2ARY(lf);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e)) continue;
+        const KorbString *const s = VAL2STR(e);
+        const char *const f = korb_strbuf_data(s->buf);
+        if (s->len == plen && memcmp(f, path, plen) == 0) return true;   /* verbatim */
+        if (s->len < slen) continue;
+        const char *const tail = f + s->len - slen;
+        if (s->len > slen && tail[-1] != '/') continue;    /* only a whole component matches */
+        if (memcmp(tail, path, plen) != 0) continue;
+        if (has_rb || memcmp(tail + plen, ".rb", 3) == 0) return true;
+    }
+    return false;
+}
+
 /* Is `sym` registered as a (not yet loaded) autoload on `mod`?  The registry is
  * the module's own @__autoloads Hash (prelude Module#autoload).  CRuby reports
  * such a constant as defined before the file is loaded, and removing it must not
@@ -5722,7 +5764,14 @@ korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym)
 {
     if (!KORB_CLASS_P(mod)) return false;
     const VALUE t = korb_ivar_get(c, mod, ID2SYM(korb_intern(c->vm, "@__autoloads", 12)));
-    return KORB_HASH_P(t) && korb_hash_find(VAL2HASH(t), ID2SYM(sym)) >= 0;
+    if (!KORB_HASH_P(t)) return false;
+    const int32_t idx = korb_hash_find(VAL2HASH(t), ID2SYM(sym));
+    if (idx < 0) return false;
+    /* a registration whose feature was already required is inert: the file will
+     * not run again, so the constant is simply not there (CRuby reports it as
+     * undefined and #autoload? as nil). */
+    const VALUE pathv = korb_items_data(VAL2HASH(t)->items)[2 * idx + 1];
+    return !(KORB_STRING_P(pathv) && korb_autoload_feature_loaded_p(c, pathv));
 }
 
 RESULT
