@@ -2886,6 +2886,28 @@ RESULT korb_make_proc(CTX *c, VALUE *slots, struct Node *entry, VALUE *def_env, 
 /* Build a Binding capturing the current frame: an open KorbEnv over `frame_base`
  * (shared with any closures over the same activation, promoted on frame exit),
  * `self`, and the immortal `names` table.  GC-safe (env/self rooted in slots). */
+/* `rescue *obj` where obj is not an Array: CRuby converts with #to_a. */
+RESULT
+korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot)
+{
+    const uint32_t to_a = korb_intern(c->vm, "to_a", 4);
+    if (korb_responds_to(c, *listslot, to_a)) {
+        slots[0] = *listslot;                          /* recv just below the cursor */
+        const RESULT r = korb_send(c, slots + 1, to_a, 0, 0);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (KORB_ARRAY_P(r.value)) { *listslot = r.value; return RESULT_OK(r.value); }
+    }
+    /* splatting something that is not a list yields a one-element list, so
+     * `rescue *SomeError` behaves like `rescue SomeError` */
+    slots[0] = *listslot;
+    const RESULT ar = korb_ary_new(c, slots + 1, 1);
+    if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    slots[1] = ar.value;
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), slots[0]));
+    *listslot = slots[1];
+    return RESULT_OK(slots[1]);
+}
+
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
     slots[0] = self_val;                                  /* root self across allocs */
     const VALUE pv = korb_ep_get(frame_base);                      /* original outer link (preserve into e->prev) */

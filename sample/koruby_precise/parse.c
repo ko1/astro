@@ -509,6 +509,10 @@ transduce_opt(struct kp_ctx *tc, const pm_node_t *node)
     return node ? transduce(tc, node) : lit_nil();
 }
 
+static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);
+static uint32_t alloc_synth_local(struct kp_ctx *tc);
+static NODE *bake_lset(struct kp_ctx *tc, uint32_t idx, NODE *val);
+
 /* Build a node_rescue chain from a prism rescue-clause list (one clause per
  * `rescue ...`, threaded via ->subsequent).  Each clause tests its class(es)
  * against the exception node_begin parks at slots[0]; the terminal `next` is
@@ -524,9 +528,16 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
     NODE *body = rc->statements ? transduce_statements(tc, rc->statements) : lit_nil();
     int32_t resc_var = 0;
     uint32_t flags = 0;
-    if (rc->reference) {
-        if (!PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE))
-            return kp_unsupported(tc, (const pm_node_t *)rc, "rescue => non-local target");
+    if (rc->reference && !PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+        /* `rescue => @ivar / CONST / $g / obj.x= / obj[k]=`: node_rescue has
+         * already pushed $! when the body runs, so stash it in a synth local and
+         * plumb it out with the same target writer multi-assign uses. */
+        const uint32_t tmp = alloc_synth_local(tc);
+        NODE *const store = bake_lset(tc, tmp, ALLOC_node_errinfo());
+        NODE *const assign = assign_target_from_synth(tc, rc->reference, tmp);
+        if (!assign) return kp_unsupported(tc, (const pm_node_t *)rc, "rescue => unsupported target");
+        body = ALLOC_node_seq(ALLOC_node_seq(store, assign), body);
+    } else if (rc->reference) {
         const pm_local_variable_target_node_t *ref = (const pm_local_variable_target_node_t *)rc->reference;
         if (ref->depth == 0) {                   /* `=> e` binds a current-frame slot */
             uint32_t idx = lvar_index(tc, rc->reference, ref->name);
@@ -554,9 +565,13 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
         /* node_rescue evaluates the matcher one slot up (slots+1), so bake its
          * offsets at chain+1 — otherwise a local / captured-var matcher (e.g.
          * `rescue klass`) reads the wrong slot and crashes. */
-        NODE *cls = WITH_CHAIN(tc, 1, transduce(tc, rc->exceptions.nodes[k]));
-        NODE *nd = ALLOC_node_rescue(cls, body, next, resc_var, flags);
-        if (flags & 1u) bake_add(tc, &nd->u.node_rescue.resc_var);
+        const pm_node_t *ex = rc->exceptions.nodes[k];
+        const bool splat = PM_NODE_TYPE_P(ex, PM_SPLAT_NODE);          /* `rescue *list` */
+        if (splat) ex = ((const pm_splat_node_t *)ex)->expression;
+        NODE *cls = WITH_CHAIN(tc, 1, transduce_opt(tc, ex));
+        NODE *nd = splat ? ALLOC_node_rescue_splat(cls, body, next, resc_var, flags)
+                         : ALLOC_node_rescue(cls, body, next, resc_var, flags);
+        if (flags & 1u) bake_add(tc, splat ? &nd->u.node_rescue_splat.resc_var : &nd->u.node_rescue.resc_var);
         next = nd;
     }
     return next;

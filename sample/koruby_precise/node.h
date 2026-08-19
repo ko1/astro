@@ -426,6 +426,7 @@ const char *korb_a_type_name(VALUE v);
 const char *korb_coerce_name(CTX *c, VALUE v);
 /* a constant name registered for autoload on `mod` but not yet loaded */
 bool korb_autoload_registered_p(CTX *c, VALUE mod, uint32_t sym);
+RESULT korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot);
 bool korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off);
 VALUE korb_cvar_cref(VALUE self, VALUE entry_cell);
 VALUE korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out);

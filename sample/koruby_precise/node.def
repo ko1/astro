@@ -790,6 +790,35 @@ node_rescue(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, 
     return EVAL_ARG(c, next);                            /* try next clause / re-raise */
 }
 
+// `rescue *list` — the matcher is a list (Array, or anything with #to_a) whose
+// elements are each tried in order.  Same body/binding handling as node_rescue.
+NODE_DEF @noinline
+node_rescue_splat(CTX *c, NODE *n, VALUE *slots, NODE *match, NODE *body, NODE *next, int32_t resc_var, uint32_t flags)
+{
+    (void)n;
+    RESULT cr = EVAL(c, match, slots + 1);             /* the list (exception stays at slots[0]) */
+    if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
+    slots[1] = cr.value;
+    if (!KORB_ARRAY_P(slots[1])) {
+        RESULT ar = korb_rescue_splat_list(c, slots + 2, &slots[1]);   /* #to_a, else TypeError */
+        if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+    }
+    const uint32_t cnt = VAL2ARY(slots[1])->len;
+    for (uint32_t i = 0; i < cnt; i++) {
+        const VALUE cls = korb_items_data(VAL2ARY(slots[1])->items)[i];   /* re-read: no alloc in this loop */
+        if (UNLIKELY(!KORB_CLASS_P(cls)))
+            return korb_raise(c, slots + 2, KORB_E_TYPE, 0, "class or module required for rescue clause");
+        if (!korb_exc_matches(c, slots[0], cls)) continue;
+        UNWRAP(korb_capture_backtrace(c, slots));
+        if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
+        korb_errinfo_push(c, slots[0]);
+        RESULT br = EVAL_ARG(c, body);
+        korb_errinfo_pop(c);
+        return br;
+    }
+    return EVAL_ARG(c, next);                          /* try next clause / re-raise */
+}
+
 // Terminal of a rescue chain: no clause matched — re-propagate the exception
 // parked at slots[0] by the enclosing node_begin.
 NODE_DEF @nogc
