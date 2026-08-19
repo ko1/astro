@@ -380,6 +380,9 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
 static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val);   /* defined below — for instance/class_eval(String) in set.c */
+/* SyntaxError from a parse: the parser leaves a detail message on the vm when it
+ * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
+static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
 static RESULT korb_alias_argsym(CTX *c, VALUE *slots, VALUE v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
 static RESULT korb_m_rat_divfloor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -10996,7 +10999,7 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val)
 {
     const KorbString *const s = VAL2STR(str);
     NODE *ast = koruby_parse_source(c, korb_strbuf_data(s->buf), s->len, "(eval)", false);   /* immortal AST; no GC */
-    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
+    if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self */
     VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */
@@ -11010,6 +11013,14 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val)
  * (self = a throwaway `main`).  No caller-binding/lvar access (M0 minimal): the
  * eval'd code sees its own locals + a fresh self, which suffices for the common
  * literal/expression eval (e.g. eval("(1..)")). */
+static RESULT
+korb_raise_syntax(CTX *c, VALUE *slots, const char *generic)
+{
+    const char *const detail = c->vm->last_syntax_msg;
+    c->vm->last_syntax_msg = NULL;
+    return korb_raise(c, slots, KORB_E_SYNTAX, 0, "%s", detail ? detail : generic);
+}
+
 static RESULT
 korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -11046,7 +11057,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         for (uint32_t i = 0; i < ecnt; i++) decl[b0->name_cnt + i] = SYM2ID(korb_items_data(VAL2HASH(b0->extra)->items)[2 * i]);
         NODE *entry = koruby_parse_binding_eval(c, korb_strbuf_data(s->buf), s->len, "(eval)", decl, declc);
         free(decl);
-        if (UNLIKELY(entry == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
+        if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
         const uint32_t L = koruby_toplevel_locals_cnt;
         const uint32_t ncnt = koruby_toplevel_local_cnt;
         const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
@@ -11080,7 +11091,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
         return RESULT_OK(fb[L]);
     }
     NODE *ast = koruby_parse_source(c, korb_strbuf_data(s->buf), s->len, "(eval)", false);   /* immortal AST; no GC */
-    if (UNLIKELY(ast == NULL)) return korb_raise(c, slots, KORB_E_SYNTAX, 0, "syntax error in eval string");
+    if (UNLIKELY(ast == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0;          /* eval frame meta: fb[-3]=magic, fb[-2]=EP, fb[-1]=self(step2) */
     VALUE *const fb = slots + 3;                        /* base (bottom header: fb[-2]=EP) */

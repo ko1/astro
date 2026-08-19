@@ -196,6 +196,8 @@ kp_gvar_resolve(uint32_t id)
     return id;
 }
 
+
+
 /* English.rb の標準 alias 集合を先付け seed する。alias は parse 時解決なので、
  * 同一ファイル内で `require "English"` → 即 $ERROR_INFO 使用というパターンに
  * 対応するには、require の実行を待たず最初から解決できる必要がある。
@@ -247,6 +249,7 @@ kp_cid_cstr(struct kp_ctx *tc, pm_constant_id_t cid)
 {
     return korb_sym_name(tc->c->vm, kp_intern_cid(tc, cid));
 }
+
 
 /* ---- frames + lvar offset bake ---------------------------------------- */
 
@@ -3816,6 +3819,19 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
 
 /* ---------------------------------------------------------------------- */
 
+/* Keep the parser's first diagnostic (with the line it points at) for the
+ * SyntaxError the eval path raises — "syntax error in eval string" alone tells
+ * the program nothing. */
+static void
+kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser)
+{
+    const pm_diagnostic_t *const d = (const pm_diagnostic_t *)parser->error_list.head;
+    if (d == NULL) return;
+    static char buf[192];
+    snprintf(buf, sizeof buf, "%s", d->message);
+    c->vm->last_syntax_msg = buf;
+}
+
 NODE *
 koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool exit_on_error)
 {
@@ -3829,6 +3845,7 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
 
     if (parser.error_list.size > 0) {
         if (!exit_on_error) {                        /* eval(str): return NULL so the caller raises SyntaxError */
+            kp_stash_syntax_msg(c, &parser);         /* hand the parser's own wording to the SyntaxError */
             pm_node_destroy(&parser, root);
             pm_parser_free(&parser);
             pm_options_free(&options);
@@ -3894,6 +3911,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
     if (parser.error_list.size > 0) {
+        kp_stash_syntax_msg(c, &parser);
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
