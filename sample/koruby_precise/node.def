@@ -1304,6 +1304,27 @@ node_defined_call(CTX *c, NODE *n, VALUE *slots, NODE *recv, uint32_t mid@sym)
     return dr;
 }
 
+// defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent
+// path (nil if it raises, i.e. any segment is undefined), then run the same
+// owner-aware membership test as the static two-segment form.
+NODE_DEF
+node_defined_cpath_dyn(CTX *c, NODE *n, VALUE *slots, NODE *parent, uint32_t name@sym)
+{
+    (void)n;
+    const RESULT pr = EVAL_ARG(c, parent);
+    if (pr.state != KORB_NORMAL) return RESULT_OK(KORB_NIL);      /* parent undefined → nil */
+    if (!KORB_CLASS_P(pr.value)) return RESULT_OK(KORB_NIL);
+    struct korb_vm *const vm = c->vm;
+    uint32_t idx = korb_const_index_owned(vm, name, pr.value);
+    if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, pr.value, name);   /* inherited counts */
+    if (idx == UINT32_MAX && !korb_autoload_registered_p(c, pr.value, name))   /* a pending autoload counts too */
+        return RESULT_OK(KORB_NIL);
+    RESULT dr = korb_str_new(c, slots, "constant", 8);
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
 // defined?(A::B): owner-aware — nil when the parent module A is undefined or B is
 // not a constant of A (or its ancestors); "constant" otherwise.  A is resolved by
 // its (rightmost) name from the flat table, so top-level `M::X` works; a lexically

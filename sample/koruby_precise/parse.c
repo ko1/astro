@@ -3356,7 +3356,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))   /* static `A::B` → owner-aware check */
                 return ALLOC_node_defined_cpath(kp_intern_cid(tc, ((const pm_constant_read_node_t *)cp->parent)->name),
                                                 kp_intern_cid(tc, cp->name));
-            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, cp->name), self_off);   /* nested/dynamic parent → flat probe */
+            if (cp->parent != NULL)                                  /* nested/dynamic parent → evaluate it, then probe */
+                return ALLOC_node_defined_cpath_dyn(transduce(tc, cp->parent), kp_intern_cid(tc, cp->name));
+            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, cp->name), self_off);   /* `::TOP` → flat probe */
               bake_add(tc, &_d->u.node_defined.self_off); return _d; }
         }
         if (PM_NODE_TYPE_P(v, PM_INSTANCE_VARIABLE_READ_NODE))
