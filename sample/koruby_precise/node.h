@@ -464,6 +464,7 @@ RESULT korb_massign_coerce(CTX *c, VALUE *slots);   /* to_ary for multiple assig
 void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line);
 bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
 RESULT korb_coerce_to_int_pub(CTX *c, VALUE *slots, VALUE *v);
+RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src);
 void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);
 void korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner);
 void korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t file_sym, uint32_t line);

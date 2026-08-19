@@ -1522,11 +1522,9 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
                   if (!KORB_STRING_P(val))
                       return korb_raise(c, slots, KORB_E_TYPE, 0, "value of %s must be String", gn);
                   if (gn[1] != '\\' && !(((const AroObjectHeader *)(uintptr_t)val)->flags & KORB_FL_FROZEN)) {
-                      slots[0] = val;
-                      const KorbString *const vs = VAL2STR(slots[0]);
-                      RESULT dup = korb_str_new(c, slots + 1, korb_strbuf_data(vs->buf), vs->len);
+                      slots[0] = val;                     /* park: the copy allocates (the source can move) */
+                      RESULT dup = korb_str_dup_pub(c, slots + 1, &slots[0]);
                       if (UNLIKELY(dup.state != KORB_NORMAL)) return dup;
-                      KORB_STR_ENC_SET(dup.value, KORB_STR_ENC(slots[0]));
                       ((AroObjectHeader *)(uintptr_t)dup.value)->flags |= KORB_FL_FROZEN;
                       val = dup.value;
                   }
