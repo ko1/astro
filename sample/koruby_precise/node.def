@@ -754,7 +754,12 @@ node_begin(CTX *c, NODE *n, VALUE *slots, NODE *body, NODE *rescues, NODE *ensur
          * chain+1) so a GC inside ensure forwards the parked value instead of
          * leaving the C-local `r.value` stale; re-read it afterwards. */
         slots[0] = r.value;
+        /* while unwinding, `$!` is the in-flight exception for the ensure body
+         * (CRuby); a normal exit leaves the enclosing $! alone. */
+        const bool unwinding = (r.state == KORB_RAISE) && KORB_EXC_P(slots[0]);
+        if (unwinding) korb_errinfo_push(c, slots[0]);
         RESULT er = EVAL(c, ensure_b, slots + 1);
+        if (unwinding) korb_errinfo_pop(c);
         if (er.state != KORB_NORMAL) return er;         /* ensure's raise/return wins */
         r.value = slots[0];
     }
