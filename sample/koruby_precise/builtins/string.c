@@ -584,10 +584,8 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
 }
 static RESULT korb_str_idx_conv(CTX *c, VALUE *slots, VALUE v, intptr_t *out);   /* fwd: index→long, Bignum too big → RangeError */
 static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE idx, VALUE len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
-    if (KORB_REGEXP_P(idx)) {                          /* str[re] / str[re, capture] → matched byte span (sets $~) */
-        (void)write;
-        return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be);
-    }
+    if (KORB_REGEXP_P(idx))                            /* str[re] / str[re, capture] → matched byte span (sets $~) */
+        return korb_re_str_span(c, slots, self, idx, len_v, found, bs, be, write);
     if (!KORB_STRING_P(idx) && !KORB_RANGE_P(idx)) {   /* coerce a non-String/Range index via #to_int (before reading self) */
         const char *onm = korb_type_name(idx);
         RESULT cr = korb_coerce_to_int(c, slots, &idx);
@@ -609,11 +607,15 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
     if (KORB_STRING_P(idx)) {                          /* substring target */
         const KorbString *sub = VAL2STR(idx);
         int32_t at = korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(sub->buf), sub->len);
-        if (at < 0) { *found = false; return RESULT_OK(KORB_NIL); }
+        if (at < 0) {
+            *found = false;
+            if (write) return korb_raise(c, slots, KORB_E_INDEX, 0, "string not matched");
+            return RESULT_OK(KORB_NIL);
+        }
         *bs = (uint32_t)at; *be = (uint32_t)at + sub->len;
         return RESULT_OK(KORB_NIL);
     }
-    intptr_t st, ln;
+    intptr_t st, ln, st_raw = 0;
     if (KORB_RANGE_P(idx)) {
         const KorbRange *r = VAL2RANGE(idx);
         const bool beginless = (r->rbegin == KORB_NIL);
@@ -625,19 +627,29 @@ static RESULT korb_str_target_span(CTX *c, VALUE *slots, VALUE_REF self, VALUE i
         else { RESULT cr = korb_str_idx_conv(c, slots, r->rend, &e); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
         const intptr_t b_raw = b;
         if (b < 0) b += ncp;
-        if (write && (b < 0 || b > (intptr_t)ncp))       /* []= : an out-of-range Range begin is a RangeError (not IndexError) */
-            return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld%s out of range", (long)b_raw, endless ? "..." : "..");
+        if (write && (b < 0 || b > (intptr_t)ncp)) {     /* []= : an out-of-range Range begin is a RangeError (not IndexError) */
+            char lo[24] = "", hi[24] = "";               /* the range as written, CRuby's message shape ("-9..1 out of range") */
+            if (!beginless) snprintf(lo, sizeof lo, "%ld", (long)b_raw);
+            if (!endless)   snprintf(hi, sizeof hi, "%ld", (long)e);
+            return korb_raise(c, slots, KORB_E_RANGE, 0, "%s%s%s out of range", lo, r->exclude_end ? "..." : "..", hi);
+        }
         if (!endless && e < 0) e += ncp;
         st = b; ln = ((endless || r->exclude_end) ? e - 1 : e) - b + 1; if (ln < 0) ln = 0;
     } else {
         if (UNLIKELY(!korb_to_index(idx, &st))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(idx));
+        st_raw = st;                                                 /* the index as written, for the error message */
         if (st < 0) st += ncp;
         if (len_v != KORB_NIL) {
             if (UNLIKELY(!korb_to_index(len_v, &ln))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(len_v));
         } else ln = 1;
     }
     const bool single = (len_v == KORB_NIL && !KORB_RANGE_P(idx));   /* str[i]: one char, nil at end (read only) */
-    if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && !write && st == (intptr_t)ncp)) { *found = false; return RESULT_OK(KORB_NIL); }
+    if (st < 0 || st > (intptr_t)ncp || ln < 0 || (single && !write && st == (intptr_t)ncp)) {
+        *found = false;
+        if (write && ln < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "negative length %ld", (long)ln);
+        if (write && !KORB_RANGE_P(idx)) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)st_raw);
+        return RESULT_OK(KORB_NIL);
+    }
     if (single && write && st == (intptr_t)ncp) ln = 0;              /* str[len]=x → append (empty span at end) */
     if (st + ln > (intptr_t)ncp) ln = (intptr_t)ncp - st;
     *bs = sb ? ((uint32_t)st < s->len ? (uint32_t)st : s->len) : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)st);
@@ -648,7 +660,19 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     uint32_t na = VALUE_SLICE_LEN(a);
     if (UNLIKELY(na < 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
-    slots[0] = VALUE_SLICE_GET(a, na - 1);             /* replacement — coerce via #to_str first (Integer-index: TypeError before IndexError) */
+    VALUE idx = VALUE_SLICE_GET(a, 0);
+    VALUE len_v = (na == 3) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
+    /* Which comes first, locating the target or converting the replacement?
+     * CRuby resolves a Regexp/String/Range target up front (a miss there raises
+     * without ever asking the replacement for #to_str) and only the plain index
+     * path converts first. */
+    const bool span_first = !FIXNUM_P(idx) || len_v != KORB_NIL;
+    bool found; uint32_t bs = 0, be = 0;
+    if (span_first) {
+        RESULT sp = korb_str_target_span(c, slots, self, idx, len_v, &found, &bs, &be, true);
+        if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
+    }
+    slots[0] = VALUE_SLICE_GET(a, na - 1);             /* replacement — #to_str it (may run Ruby → keep it rooted here) */
     if (UNLIKELY(!KORB_STRING_P(slots[0]))) {
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
@@ -658,12 +682,15 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         }
         if (!KORB_STRING_P(slots[0])) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, na - 1)));
     }
-    VALUE idx = VALUE_SLICE_GET(a, 0);
-    VALUE len_v = (na == 3) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
-    bool found; uint32_t bs = 0, be = 0;
-    RESULT sp = korb_str_target_span(c, slots + 1, self, idx, len_v, &found, &bs, &be, true);   /* slots+1: preserve repl in slots[0] */
-    if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
-    if (!found) return korb_raise(c, slots, KORB_E_INDEX, 0, "index %ld out of string", (long)(VALUE_SLICE_LEN(a)>=1 && FIXNUM_P(VALUE_SLICE_GET(a,0)) ? FIX2LONG(VALUE_SLICE_GET(a,0)) : 0));
+    if (!span_first) {
+        RESULT sp = korb_str_target_span(c, slots + 1, self, idx, len_v, &found, &bs, &be, true);   /* slots+1: preserve repl in slots[0] */
+        if (UNLIKELY(sp.state != KORB_NORMAL)) return sp;
+    } else {                                           /* #to_str could have shortened self meanwhile */
+        const uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
+        if (bs > slen) bs = slen;
+        if (be > slen) be = slen;
+    }
+    if (!found) return korb_raise(c, slots, KORB_E_INDEX, 0, "index out of string");
     CHECK(korb_str_splice(c, slots + 1, self, bs, be, VALUE_REF_AT(&slots[0]), true));   /* bs/be are byte offsets (GC-stable) */
     return RESULT_OK(VALUE_SLICE_GET(a, na - 1));   /* `a[i]=v` evaluates to v (original RHS, not the coerced string) */
 }
