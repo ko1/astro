@@ -278,7 +278,7 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
     /* Inside a class, `\b` is backspace (0x08), not word-boundary. */
     case 'b': *out_byte = '\b'; return 0;
     case 'x': {
-        if (q->p + 2 > q->end) { re_error(q, "bad \\x"); return 0; }
+        if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return 0; }
         char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
         q->p += 2;
         *out_byte = (uint8_t)strtol(h, NULL, 16);
@@ -300,21 +300,21 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
                 if (ch >= '0' && ch <= '9') d = ch - '0';
                 else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
                 else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
-                else { re_error(q, "bad \\u{} hex digit in []"); return 0; }
+                else { re_error(q, "invalid Unicode list"); return 0; }
                 cp = (cp << 4) | (uint32_t)d;
                 q->p++; n++;
             }
-            if (q->p >= q->end || *q->p != '}') { re_error(q, "expected } in \\u{} in []"); return 0; }
+            if (q->p >= q->end || *q->p != '}') { re_error(q, "invalid Unicode list"); return 0; }
             q->p++;
         } else {
-            if (q->p + 4 > q->end) { re_error(q, "bad \\u in []: need 4 hex digits"); return 0; }
+            if (q->p + 4 > q->end) { re_error(q, "invalid Unicode escape"); return 0; }
             for (int n = 0; n < 4; n++) {
                 const int ch = q->p[n];
                 int d;
                 if (ch >= '0' && ch <= '9') d = ch - '0';
                 else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
                 else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
-                else { re_error(q, "bad \\u hex digit in []"); return 0; }
+                else { re_error(q, "invalid Unicode escape"); return 0; }
                 cp = (cp << 4) | (uint32_t)d;
             }
             q->p += 4;
@@ -393,7 +393,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
                     first = false;
                     continue;
                 }
-                re_error(q, "unknown POSIX class");
+                re_error(q, "invalid POSIX bracket type");
                 return;
             }
             q->p = save;  /* restore; treat `[` as nested class below */
@@ -443,7 +443,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
                 uint64_t dummy[4] = {0};
                 uint8_t hib;
                 if (parse_class_escape(q, dummy, &hib)) {
-                    re_error(q, "char-class escape in range");
+                    re_error(q, "char-class value at end of range");
                     return;
                 }
                 hi = hib;
@@ -452,7 +452,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
                 hi = (uint8_t)c2;
             }
             uint8_t lo = byte_val;
-            if (lo > hi) { re_error(q, "bad range"); return; }
+            if (lo > hi) { re_error(q, "empty range in char class"); return; }
             for (int i = lo; i <= hi; i++) {
                 bm_set_ci(bm, (uint8_t)i, q->case_insensitive);
             }
@@ -460,7 +460,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
             bm_set_ci(bm, byte_val, q->case_insensitive);
         }
     }
-    re_error(q, "unterminated character class");
+    re_error(q, "premature end of char-class");
 }
 
 static ire_node_t *parse_class(re_parser_t *q) {
@@ -676,7 +676,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             }
         }
         ire_node_t *body = parse_alt(q);
-        if (re_get(q) != ')') re_error(q, "expected )");
+        if (re_get(q) != ')') re_error(q, "end pattern with unmatched parenthesis");
 
         if (saved_flags) {
             q->case_insensitive = saved_ci;
@@ -724,6 +724,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
     case '\\': {
         q->p++;
         int e = re_get(q);
+        if (e < 0) { re_error(q, "too short escape sequence"); return NULL; }   /* trailing backslash */
         switch (e) {
         case 'A': return ire_new(IRE_BOS);
         case 'z': return ire_new(IRE_EOS);
@@ -823,22 +824,23 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                     if (c >= '0' && c <= '9') d = c - '0';
                     else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
                     else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-                    else { re_error(q, "bad \\u{} hex digit"); return NULL; }
+                    else { re_error(q, "invalid Unicode list"); return NULL; }
                     cp = (cp << 4) | (uint32_t)d;
                     q->p++;
                     n++;
                 }
-                if (q->p >= q->end || *q->p != '}') { re_error(q, "expected } in \\u{}"); return NULL; }
+                if (q->p >= q->end || *q->p != '}') { re_error(q, "invalid Unicode list"); return NULL; }
+                if (n == 0) { re_error(q, "invalid Unicode list"); return NULL; }   /* \u{} with no digits */
                 q->p++;
             } else {
-                if (q->p + 4 > q->end) { re_error(q, "bad \\u: need 4 hex digits"); return NULL; }
+                if (q->p + 4 > q->end) { re_error(q, "invalid Unicode escape"); return NULL; }
                 for (int n = 0; n < 4; n++) {
                     const int c = q->p[n];
                     int d;
                     if (c >= '0' && c <= '9') d = c - '0';
                     else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
                     else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-                    else { re_error(q, "bad \\u hex digit"); return NULL; }
+                    else { re_error(q, "invalid Unicode escape"); return NULL; }
                     cp = (cp << 4) | (uint32_t)d;
                 }
                 q->p += 4;
@@ -864,7 +866,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 bytes[3] = (uint8_t)(0x80 | (cp & 0x3F));
                 len = 4;
             } else {
-                re_error(q, "\\u codepoint out of range");
+                re_error(q, "invalid Unicode range");
                 return NULL;
             }
             ire_node_t *n = ire_new(IRE_LIT);
@@ -892,7 +894,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             case 'e': b = 0x1b; break;
             case '0': b = 0;    break;
             case 'x': {
-                if (q->p + 2 > q->end) { re_error(q, "bad \\x"); return NULL; }
+                if (q->p + 2 > q->end) { re_error(q, "invalid hex escape"); return NULL; }
                 char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
                 q->p += 2;
                 b = (uint8_t)strtol(h, NULL, 16);
@@ -921,7 +923,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
     case '|': case ')':
         return ire_new(IRE_EMPTY);
     case '*': case '+': case '?': case '{':
-        re_error(q, "quantifier with no operand");
+        re_error(q, "target of repeat operator is not specified");
         return NULL;
     default: {
         /* Plain literal byte (or first byte of multi-byte UTF-8 sequence) */

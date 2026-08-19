@@ -374,6 +374,7 @@ static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num == LONG2FIX(0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
+void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
@@ -2722,8 +2723,21 @@ void korb_re_sync_floor(CTX *c) {
         ((void (*)(const void *))fn)(c->cstack_limit);
 }
 /* The engine's message for the last failed compile (NULL if unavailable). */
+/* The engine's reason for the last parse failure, trimmed to the bare wording
+ * CRuby's RegexpError carries: astrogre prefixes "regex parse error: " and
+ * appends " (at offset N)" for its own CLI, neither of which Onigmo prints. */
 static const char *korb_re_error(struct korb_vm *vm) {
-    return vm->re_err_fn ? ((const char *(*)(void))vm->re_err_fn)() : NULL;
+    const char *const m = vm->re_err_fn ? ((const char *(*)(void))vm->re_err_fn)() : NULL;
+    if (m == NULL) return NULL;
+    static char buf[288];
+    const char *p = m;
+    const char *const pfx = "regex parse error: ";
+    if (strncmp(p, pfx, strlen(pfx)) == 0) p += strlen(pfx);
+    const char *const at = strstr(p, " (at offset ");
+    const size_t n = at ? (size_t)(at - p) : strlen(p);
+    const size_t cap = n < sizeof buf - 1 ? n : sizeof buf - 1;
+    memcpy(buf, p, cap); buf[cap] = '\0';
+    return buf;
 }
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
@@ -8080,7 +8094,6 @@ static RESULT korb_exc_build_with_cause(CTX *c, VALUE *slots, VALUE_SLICE args);
 #include "builtins/file.c"
 #include "builtins/env.c"
 static RESULT korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep);   /* defined below; io.c IO#puts uses it */
-void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 /* IO の readiness 系は blop 層 (builtins/thread.c、io.c より後に include) 実装 */
 static RESULT korb_m_io_wait_readable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);
 static RESULT korb_m_io_wait_writable(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);

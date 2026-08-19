@@ -1054,7 +1054,9 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             slots[0] = r.value;
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(src));
     }
-    /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored. */
+    /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored (with a warning, as in CRuby). */
+    if (from_regexp && VALUE_SLICE_LEN(a) >= 2 && VALUE_SLICE_GET(a, 1) != KORB_NIL)
+        korb_warn(c, slots + 1, "flags ignored");
     if (!from_regexp && VALUE_SLICE_LEN(a) >= 2) {
         VALUE opt = VALUE_SLICE_GET(a, 1);
         if (opt == KORB_NIL || opt == KORB_FALSE) {}
@@ -1066,11 +1068,20 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
                   case 'i': flags |= 4u;  break;          /* IGNORECASE */
                   case 'm': flags |= 16u; break;          /* MULTILINE */
                   case 'x': flags |= 8u;  break;          /* EXTENDED */
-                  default: return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %c", korb_strbuf_data(fs->buf)[k]);
+                  default:                            /* CRuby names the whole option string, not the offending char */
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %.*s", (int)fs->len, korb_strbuf_data(fs->buf));
                 }
             }
         }
-        else flags |= 4u;                                 /* any other truthy value → IGNORECASE (CRuby warns) */
+        else {
+            flags |= 4u;                                  /* any other truthy value → IGNORECASE, with CRuby's warning */
+            slots[1] = opt;                               /* CRuby names the value itself (its #inspect) */
+            char *ib = NULL; size_t iz = 0;
+            FILE *const ims = open_memstream(&ib, &iz);
+            if (ims) { korb_fprint_inspect_s(c, slots + 2, ims, slots[1]); fclose(ims); }
+            korb_warn(c, slots + 2, "expected true or false as ignorecase: %s", ib ? ib : "");
+            free(ib);
+        }
     }
     (void)korb_re_load(c->vm);
     korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
