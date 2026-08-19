@@ -64,7 +64,7 @@ module Kernel
   # forwarded when the (possibly redefined) Warning.warn accepts keywords, and
   # the delegation is skipped when self *is* Warning so a `super` inside a
   # redefined Warning.warn cannot recurse.
-  def warn(*msgs, uplevel: nil, category: nil)
+  private def warn(*msgs, uplevel: nil, category: nil)
     return nil if $VERBOSE.nil?
     unless uplevel.nil?
       unless uplevel.is_a?(Integer)
@@ -83,13 +83,20 @@ module Kernel
     end
     return nil if msgs.empty?
     msg = +""
-    msgs.each do |m|
-      s = m.to_s
-      msg << s
-      msg << "\n" unless s.end_with?("\n")
+    append = lambda do |m|                    # an Array argument prints one element per line (like puts)
+      if m.is_a?(Array)
+        m.each { |e| append.call(e) }
+      else
+        s = m.to_s
+        msg << s
+        msg << "\n" unless s.end_with?("\n")
+      end
     end
+    msgs.each { |m| append.call(m) }
     return ($stderr.write(msg) if $stderr) && nil if equal?(Warning)
-    if Warning.method(:warn).parameters.any? { |t, _| t == :key || t == :keyreq || t == :keyrest }
+    # CRuby's rule verbatim: a Warning.warn of arity 1 takes the message alone;
+    # anything else is handed the category keyword too.
+    if Warning.method(:warn).arity != 1
       Warning.warn(msg, category: category)
     else
       Warning.warn(msg)
