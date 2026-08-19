@@ -1209,17 +1209,11 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * UNIQUE innermost cref class, so a same-named class in another namespace
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
         const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
-        const bool bare = !cache->is_path;
-        if (bare) {
-            for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
-                idx = korb_const_index_owned(vm, name_sym, o);
-                if (idx != UINT32_MAX) break;
-            }
-        } else {
-            /* explicit `X::C` looks in X and its ancestors ONLY — never in X's
-             * lexical surroundings, or an unrelated `Outer::C` would answer it
-             * (and a pending autoload on X would never fire). */
-            idx = korb_const_index_owned(vm, name_sym, cref);
+        /* every read that reaches here is a BARE one now (`A::B` goes through
+         * node_const_path), so the lexical walk and the by-name fallback apply */
+        for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
+            idx = korb_const_index_owned(vm, name_sym, o);
+            if (idx != UINT32_MAX) break;
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
@@ -1228,7 +1222,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * an explicit `A::B::C` must resolve inside B, or miss — otherwise a
          * same-named constant elsewhere answers it, and a pending autoload on B
          * never gets its chance. */
-        if (idx == UINT32_MAX && bare) idx = korb_const_index(vm, name_sym);
+        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);            /* finally any namespace (koruby's flat fallback) */
     } else {                                          /* top-level bare read */
         /* A real top-level constant wins over a same-named nested one.  The
          * table is flat, so a plain first-match would let a prelude-defined

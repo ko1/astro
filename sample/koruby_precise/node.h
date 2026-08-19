@@ -85,8 +85,6 @@ struct korb_constcache {
      * the result. */
     const uint32_t *owner_chain;
     uint32_t chain_len;
-    uint8_t is_path;                 /* 1 → an explicit `A::B` read (owner_chain, when set, is the
-                                      * parent PATH; no lexical-enclosing search, no by-name fallback) */
 };
 
 /* Per-call-site monomorphic method cache — embedded in send nodes via @ref.
