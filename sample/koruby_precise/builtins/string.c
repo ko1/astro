@@ -24,23 +24,28 @@ static inline uint32_t korb_str_char_bytes(const struct korb_vm *vm, uint32_t en
  * single-byte, ASCII-compatible encoding as far as character indexing goes. */
 static bool korb_enc_name_single_byte(const char *name) {
     static const char *const multi[] = {
-        "UTF-16", "UTF16", "UTF-32", "UTF32", "UTF-7", "UTF7", "EUC", "euc",
-        "Shift_JIS", "SHIFT_JIS", "SJIS", "Windows-31J", "CP932", "CP51932",
-        "Big5", "BIG5", "GB", "ISO-2022", "stateless-ISO-2022", "Emacs-Mule",
+        "UTF-16", "UTF16", "UTF-32", "UTF32", "UTF-7", "UTF7", "EUC",
+        "Shift_JIS", "SJIS", "Windows-31J", "CP932", "CP51932",
+        "Big5", "GB", "ISO-2022", "stateless-ISO-2022", "Emacs-Mule",
     };
     for (size_t i = 0; i < sizeof multi / sizeof multi[0]; i++)
-        if (strncmp(name, multi[i], strlen(multi[i])) == 0) return false;
+        if (strncasecmp(name, multi[i], strlen(multi[i])) == 0) return false;
     return true;
 }
 /* Map an encoding name to a header index: 0 UTF-8 / 1 US-ASCII / 2 ASCII-8BIT
  * directly; any other name is registered in vm->str_enc_names[3..7] and its
  * slot index returned (character ops on it will raise until hooks exist). */
 static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
-    if (strcmp(name, "ASCII-8BIT") == 0 || strcmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
-    if (strcmp(name, "US-ASCII") == 0 || strcmp(name, "ASCII") == 0 || strcmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
-    if (strcmp(name, "UTF-8") == 0 || strcmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
+    /* Ruby matches encoding names case-insensitively ("binary" == "BINARY"), and
+     * getting this wrong is silent: the name lands in the "other" registry and
+     * the string reports some unrelated encoding. */
+    if (strcasecmp(name, "ASCII-8BIT") == 0 || strcasecmp(name, "BINARY") == 0) return KORB_ENC_BINARY;
+    if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
+    if (strcasecmp(name, "UTF-8") == 0 || strcasecmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
     const uint32_t sym = korb_intern(vm, name, (uint32_t)strlen(name));
-    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == sym) return i;
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++)
+        if (vm->str_enc_names[i] != 0 &&
+            (vm->str_enc_names[i] == sym || strcasecmp(korb_sym_name(vm, vm->str_enc_names[i]), name) == 0)) return i;
     for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == 0) {
         vm->str_enc_names[i] = sym;
         if (korb_enc_name_single_byte(name)) vm->str_enc_sb_mask |= (uint8_t)(1u << i);   /* byte == character */
