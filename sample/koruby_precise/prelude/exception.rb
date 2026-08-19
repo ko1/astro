@@ -103,6 +103,7 @@ module Kernel
     end
     nil
   end
+  module_function :warn      # CRuby exposes it both ways: private Kernel#warn and public Kernel.warn
 end
 class Object
   # Lazy: the underlying `meth` runs only when the returned Enumerator is

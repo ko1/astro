@@ -22,7 +22,7 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
      * byte-wise (astrogre PR_FLAGS_ASCII_8BIT=128); UTF-8 subjects match by
      * codepoint.  So `.` on a binary string consumes one byte, not a codepoint. */
     unsigned eff_flags = VAL2RE(re)->flags;
-    if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(subj))) eff_flags |= 128u;
+    if (KORB_ENC_SB(c->vm, KORB_STR_ENC(subj))) eff_flags |= 128u;
     const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
     if (UNLIKELY(rc < 0)) {
@@ -42,10 +42,10 @@ static RESULT korb_re_slice(CTX *c, VALUE *slots, VALUE *subjslot, long b, long 
 /* byte offset → character index within `s`.  For single-byte encodings
  * (US-ASCII / ASCII-8BIT) a byte IS a character, so return the offset as-is
  * (else begin/end and StringScanner-style byte callers desync on multibyte). */
-static long korb_re_bchar(const KorbString *s, long boff) {
+static long korb_re_bchar(const struct korb_vm *vm, const KorbString *s, long boff) {
     if (boff <= 0) return 0;
     if (boff >= (long)s->len) boff = (long)s->len;
-    if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC((VALUE)(uintptr_t)s))) return boff;
+    if (KORB_ENC_SB(vm, KORB_STR_ENC((VALUE)(uintptr_t)s))) return boff;
     return (long)korb_utf8_count(korb_strbuf_data(s->buf), (uint32_t)boff);
 }
 
@@ -290,7 +290,7 @@ static RESULT korb_md_pos(CTX *c, VALUE *slots, VALUE_REF self, VALUE arg, int w
     KorbMatchData *md = VAL2MD(VALUE_REF_GET(self));
     const long o = korb_md_off(md, gi, which);
     if (o < 0) return RESULT_OK(KORB_NIL);
-    return RESULT_OK(LONG2FIX(bytes ? o : korb_re_bchar(VAL2STR(md->subject), o)));
+    return RESULT_OK(LONG2FIX(bytes ? o : korb_re_bchar(c->vm, VAL2STR(md->subject), o)));
 }
 static RESULT korb_m_md_begin(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 0, false); }
 static RESULT korb_m_md_end(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)   { return korb_md_pos(c, slots, self, VALUE_SLICE_GET(a, 0), 1, false); }
@@ -306,8 +306,8 @@ static RESULT korb_md_offset_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE ar
     slots[0] = VALUE_REF_GET(self); slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 2));
     if (b < 0) { CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL)); CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), KORB_NIL)); }
     else { const KorbString *s = VAL2STR(VAL2MD(slots[0])->subject);
-           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? b : korb_re_bchar(s, b))));
-           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? e : korb_re_bchar(s, e)))); }
+           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? b : korb_re_bchar(c->vm, s, b))));
+           CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[1]), LONG2FIX(bytes ? e : korb_re_bchar(c->vm, s, e)))); }
     return RESULT_OK(slots[1]);
 }
 static RESULT korb_m_md_offset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_md_offset_impl(c, slots, self, VALUE_SLICE_GET(a, 0), false); }
@@ -494,7 +494,7 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
     RESULT rr = korb_re_run(c, slots + 2, slots[0], slots[1], 0, &m);
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
-    const long cidx = korb_re_bchar(VAL2STR(slots[1]), m.starts[0]);
+    const long cidx = korb_re_bchar(c->vm, VAL2STR(slots[1]), m.starts[0]);
     slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[1], slots[0], &m));
     korb_re_set_lastmatch(c, slots[2]);
     return RESULT_OK(LONG2FIX(cidx));
@@ -625,7 +625,7 @@ static RESULT korb_m_re_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const KorbString *s = VAL2STR(slots[1]);
     /* pos is a character index in the subject's encoding — a byte index for
      * single-byte encodings (US-ASCII / ASCII-8BIT), else a UTF-8 char index. */
-    const bool sb = KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(slots[1]));
+    const bool sb = KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[1]));
     if (startc < 0) startc += sb ? (long)s->len : (long)korb_utf8_count(korb_strbuf_data(s->buf), s->len);
     size_t startb = (startc <= 0) ? 0 : (sb ? (size_t)startc : korb_utf8_byteoff(korb_strbuf_data(s->buf), s->len, (uint32_t)startc));
     korb_re_match_t m;
@@ -998,7 +998,7 @@ RESULT korb_re_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long st
     if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
     if (rr.value != KORB_TRUE) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[2]);
-    return RESULT_OK(LONG2FIX(bytes ? m.starts[0] : korb_re_bchar(VAL2STR(slots[0]), m.starts[0])));
+    return RESULT_OK(LONG2FIX(bytes ? m.starts[0] : korb_re_bchar(c->vm, VAL2STR(slots[0]), m.starts[0])));
 }
 /* rindex/byterindex with a Regexp: last match starting at position <= stop
  * (char position for rindex, byte for byterindex). Considers overlapping starts. */
@@ -1021,7 +1021,7 @@ RESULT korb_re_str_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE re, long s
     }
     if (!have) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     slots[2] = UNWRAP(korb_re_build_md(c, slots + 2, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[2]);
-    return RESULT_OK(LONG2FIX(bytes ? last_m.starts[0] : korb_re_bchar(VAL2STR(slots[0]), last_m.starts[0])));
+    return RESULT_OK(LONG2FIX(bytes ? last_m.starts[0] : korb_re_bchar(c->vm, VAL2STR(slots[0]), last_m.starts[0])));
 }
 
 /* ---- Regexp class methods ------------------------------------------------ */
