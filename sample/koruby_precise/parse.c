@@ -509,6 +509,7 @@ transduce_opt(struct kp_ctx *tc, const pm_node_t *node)
     return node ? transduce(tc, node) : lit_nil();
 }
 
+static NODE *massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t *rest, const pm_node_list_t *rights, NODE *rhs);
 static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);
 static uint32_t alloc_synth_local(struct kp_ctx *tc);
 static NODE *bake_lset(struct kp_ctx *tc, uint32_t idx, NODE *val);
@@ -1144,8 +1145,11 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         pop_frame(tc);
                         return kp_unsupported(tc, t, "nested destructuring block parameter");
                     }
-                    if (lvar_index(tc, t, cid) != i)
-                        kp_failf(tc, t, "koruby_precise: destructure target '%s' is not locals[%u]", kp_cid_cstr(tc, cid), i);
+                    /* the destructure writes position j into locals[j]; a repeated
+                     * name (`|(_, a, _)|`) makes prism reuse a slot, so the
+                     * identity mapping no longer holds — refuse instead of
+                     * writing into the wrong local (raises when the block runs). */
+                    if (lvar_index(tc, t, cid) != i) { pop_frame(tc); return kp_unsupported(tc, t, "repeated name in a destructuring block parameter"); }
                 }
                 bparams = 1;
                 destructure_n = (uint32_t)mt->lefts.size;
@@ -1163,8 +1167,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         }
                         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
                         if (lvar_index(tc, p, cid) != i && kp_cid_cstr(tc, cid)[0] != '_') {   /* `_`-repeat: legal, binds positionally */
-                            kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]",
-                                     kp_cid_cstr(tc, cid), i);
+                            pop_frame(tc);
+                            return kp_unsupported(tc, p, "repeated block parameter name");
                         }
                     }
                 } else {
@@ -1179,8 +1183,10 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
                             spec[i] = 0;
                             pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_')
-                                kp_failf(tc, p, "koruby_precise: block param '%s' is not locals[%u]", kp_cid_cstr(tc, cid), loc);
+                            if (lvar_index(tc, p, cid) != loc && kp_cid_cstr(tc, cid)[0] != '_') {
+                                free(spec); pop_frame(tc);
+                                return kp_unsupported(tc, p, "repeated block parameter name");
+                            }
                             loc++;
                         } else if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
                             const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
@@ -1200,8 +1206,10 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                                     free(spec); pop_frame(tc);
                                     return kp_unsupported(tc, t, "nested destructuring block parameter");
                                 }
-                                if (lvar_index(tc, t, cid) != loc)
-                                    kp_failf(tc, t, "koruby_precise: destructure target '%s' is not locals[%u]", kp_cid_cstr(tc, cid), loc);
+                                if (lvar_index(tc, t, cid) != loc) {
+                                    free(spec); pop_frame(tc);
+                                    return kp_unsupported(tc, t, "repeated name in a destructuring block parameter");
+                                }
                                 loc++;
                             }
                         } else {
@@ -1848,15 +1856,17 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     /* prism orders def locals with the parameters first (required, then optional);
      * the staged-args window doubles as the parameter slots.  Verify the layout. */
     struct Node **opt_defaults = NULL;
+    bool has_destructured = false;         /* a `(a, b)` parameter shifts the later params' locals */
     if (dn->parameters) {
         for (uint32_t i = 0; i < req_cnt; i++) {
             const pm_node_t *p = dn->parameters->requireds.nodes[i];
+            if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { has_destructured = true; continue; }   /* `def m(a, (b, c))` — destructured below */
             if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
                 pop_frame(tc);
                 return kp_unsupported(tc, p, "non-plain required parameter");
             }
             pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
-            if (lvar_index(tc, p, cid) != i) {   /* name resolves to an earlier slot: a repeated param */
+            if (lvar_index(tc, p, cid) != i && !has_destructured) {   /* name resolves to another slot: a repeated param */
                 /* Ruby permits repeated `_`-prefixed params (`def m(_, _)`); each occupies
                  * its own positional slot (frame has them), name reads hit the first. */
                 if (kp_cid_cstr(tc, cid)[0] != '_') { pop_frame(tc); return kp_unsupported(tc, p, "repeated parameter name"); }
@@ -1910,6 +1920,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     if (post_cnt) { tc->frame->method_post_base = (int32_t)post_base; tc->frame->method_post_cnt = post_cnt; }  /* for forwarding super */
     for (uint32_t i = 0; i < post_cnt; i++) {
         const pm_node_t *p = ps->posts.nodes[i];
+        if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) continue;      /* destructured below */
         if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "non-plain post parameter"); }
         pm_constant_id_t cid = ((const pm_required_parameter_node_t *)p)->name;
         if (lvar_index(tc, p, cid) != post_base + i
@@ -1966,6 +1977,37 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         /* def-body rescue/ensure — the body is an (implicit) begin node, handled
          * by the PM_BEGIN_NODE transducer (node_begin). */
         body = transduce(tc, dn->body);
+    }
+
+    /* `def m(a, (b, c), d)` — a destructuring parameter takes one positional slot
+     * but its names occupy several locals, so every later parameter's local sits
+     * one or more slots past where the caller staged its argument.  At body entry,
+     * move each plain parameter down to its own local (rightmost first, so a
+     * destructure never clobbers an argument still to be moved), then unpack the
+     * destructuring ones through the multi-assign machinery (#to_ary, nesting and
+     * nil padding included).  Statements are prepended, so building them
+     * left-to-right yields right-to-left execution. */
+    if (has_destructured) {
+        for (uint32_t i = 0; i < req_cnt; i++) {
+            const pm_node_t *p = dn->parameters->requireds.nodes[i];
+            if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
+                const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
+                NODE *const un = massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, i));
+                if (!un) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring parameter"); }
+                body = ALLOC_node_seq(un, body);
+            } else {
+                const uint32_t L = lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name);
+                if (L != i) body = ALLOC_node_seq(bake_lset(tc, L, bake_lget(tc, i)), body);
+            }
+        }
+    }
+    for (uint32_t i = 0; i < post_cnt; i++) {
+        const pm_node_t *p = ps->posts.nodes[i];
+        if (!PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) continue;
+        const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)p;
+        NODE *const un = massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, post_base + i));
+        if (!un) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring parameter"); }
+        body = ALLOC_node_seq(un, body);
     }
 
     if (blk_param_name) {                  /* `&blk` → materialize the block into the local at body entry */
@@ -2127,6 +2169,8 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
         const pm_local_variable_target_node_t *lt = (const pm_local_variable_target_node_t *)t;
         return lvar_write(tc, t, lt->name, lt->depth, bake_lget(tc, src_local));
     }
+    if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE))     /* a name inside a destructuring parameter */
+        return lvar_write(tc, t, ((const pm_required_parameter_node_t *)t)->name, 0, bake_lget(tc, src_local));
     if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE))
         return bake_ivar_set(tc, kp_intern_cid(tc, ((const pm_instance_variable_target_node_t *)t)->name),
                                   bake_lget(tc, src_local));
