@@ -2720,6 +2720,10 @@ void korb_re_sync_floor(CTX *c) {
     if (fn && fn != (void *)(intptr_t)-1)
         ((void (*)(const void *))fn)(c->cstack_limit);
 }
+/* The engine's message for the last failed compile (NULL if unavailable). */
+static const char *korb_re_error(struct korb_vm *vm) {
+    return vm->re_err_fn ? ((const char *(*)(void))vm->re_err_fn)() : NULL;
+}
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
         void *h = dlopen(KORUBY_SRC_DIR "/koruby_regex.so", RTLD_NOW | RTLD_LOCAL);
@@ -2727,6 +2731,7 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
         vm->re_named_fn = h ? dlsym(h, "koruby_re_named") : NULL;
         vm->re_valid_fn = h ? dlsym(h, "koruby_re_valid") : NULL;
         vm->re_floor_fn = h ? dlsym(h, "koruby_re_set_stack_floor") : NULL;
+        vm->re_err_fn   = h ? dlsym(h, "koruby_re_error") : NULL;
         if (vm->re_fn == NULL) vm->re_fn = (void *)(intptr_t)-1;   /* mark load failure */
     }
     return vm->re_fn == (void *)(intptr_t)-1 ? NULL : (korb_re_exec_fn_t)vm->re_fn;

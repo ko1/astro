@@ -2039,6 +2039,13 @@ re_parser_free_names(re_parser_t *q)
 /* Public entry points                                                 */
 /* ------------------------------------------------------------------ */
 
+/* Message from the most recent failed astrogre_parse.  The library does not
+ * print it: `are` reports it to the user, and an embedder (koruby's Regexp)
+ * turns it into its own exception message. */
+static char astrogre_errmsg[256];
+const char *astrogre_last_error(void) { return astrogre_errmsg[0] ? astrogre_errmsg : NULL; }
+static void astrogre_set_error(const char *msg) { snprintf(astrogre_errmsg, sizeof astrogre_errmsg, "%s", msg); }
+
 NODE *astrogre_rep_cont_singleton(void);  /* defined in match.c */
 
 astrogre_pattern *
@@ -2059,13 +2066,13 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
 
     ire_node_t *ir = parse_alt(&q);
     if (q.error) {
-        fprintf(stderr, "%s\n", q.errbuf);
+        astrogre_set_error(q.errbuf);
         ire_free(ir);
         free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
     }
     if (q.p != q.end) {
-        fprintf(stderr, "regex parse: trailing input at offset %ld\n", (long)(q.p - (const uint8_t *)pat));
+        { char tb[128]; snprintf(tb, sizeof tb, "regex parse: trailing input at offset %ld", (long)(q.p - (const uint8_t *)pat)); astrogre_set_error(tb); }
         ire_free(ir);
         free(q.groups_by_idx); re_parser_free_names(&q);
         return NULL;
@@ -2101,7 +2108,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
      * fallback, undefined subroutine target).  Bail before building
      * the prefilter so the caller sees a clean parse failure. */
     if (q.error) {
-        fprintf(stderr, "%s\n", q.errbuf);
+        astrogre_set_error(q.errbuf);
         ire_free(ir);
         free(L.sub_needed);
         astrogre_g_building = NULL; free(q.groups_by_idx); re_parser_free_names(&q);
@@ -2138,7 +2145,7 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
             }
         }
         if (q.error) {
-            fprintf(stderr, "%s\n", q.errbuf);
+            astrogre_set_error(q.errbuf);
             free(sub_chains);
             free(L.sub_needed);
             ire_free(ir);

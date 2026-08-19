@@ -113,6 +113,11 @@ int koruby_re_valid(const char *pat, size_t patlen, unsigned flags) {
     return kre_get(pat, patlen, flags) != NULL ? 1 : 0;
 }
 
+/* Why the last koruby_re_valid/koruby_re_exec compile failed, so the caller can
+ * put it in the RegexpError instead of a fixed "invalid regular expression". */
+__attribute__((visibility("default")))
+const char *koruby_re_error(void) { return astrogre_last_error(); }
+
 /* ---- legacy whole-match entry (kept for any un-migrated caller) ----------- */
 __attribute__((visibility("default")))
 int koruby_re_search(const char *pat, size_t patlen, const char *str, size_t slen,

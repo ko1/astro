@@ -115,6 +115,9 @@ void astrogre_set_stack_floor(uintptr_t floor);
  * stderr).  Caller frees the returned pattern with
  * astrogre_pattern_free. */
 astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t flags);
+/* Why the last astrogre_parse returned NULL (NULL if none).  astrogre_parse does
+ * not print: the caller decides (are prints it; koruby raises RegexpError). */
+const char *astrogre_last_error(void);
 
 /* Hash of the compiled pattern AST root — same value `astro_cs_load`
  * keys on, exposed for diagnostics (`-d`, `--cs-status`). */

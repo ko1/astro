@@ -25,7 +25,10 @@ static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t sta
     if (KORB_ENC_IS_SINGLE_BYTE(KORB_STR_ENC(subj))) eff_flags |= 128u;
     const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
-    if (UNLIKELY(rc < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid regular expression");
+    if (UNLIKELY(rc < 0)) {
+        const char *const m = korb_re_error(c->vm);
+        return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", m ? m : "invalid regular expression");
+    }
     return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
 
@@ -1022,7 +1025,17 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     (void)korb_re_load(c->vm);
     korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
-    if (vf) { const KorbString *ps = VAL2STR(slots[0]); if (!vf(korb_strbuf_data(ps->buf), ps->len, flags)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid regular expression"); }
+    if (vf) {
+        const KorbString *ps = VAL2STR(slots[0]);
+        if (!vf(korb_strbuf_data(ps->buf), ps->len, flags)) {
+            /* the engine's own reason, quoted like CRuby ("<why>: /<pattern>/") */
+            char why[288]; const char *const m = korb_re_error(c->vm);
+            const KorbString *const ps2 = VAL2STR(slots[0]);
+            snprintf(why, sizeof why, "%s: /%.*s/", m ? m : "invalid regular expression",
+                     (int)ps2->len, korb_strbuf_data(ps2->buf));
+            return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", why);
+        }
+    }
     return korb_regexp_new(c, slots + 1, slots[0], flags);
 }
 static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

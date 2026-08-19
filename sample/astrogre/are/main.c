@@ -467,7 +467,8 @@ compile_pattern(grep_opt_t *go, const char *pat)
     }
     backend_pattern_t *bp = go->backend->compile(use_pat, strlen(use_pat), f);
     if (!bp) {
-        fprintf(stderr, "are: failed to compile pattern: %s\n", pat);
+        const char *const why = astrogre_last_error();   /* the library no longer prints it */
+        fprintf(stderr, "are: failed to compile pattern: %s%s%s\n", pat, why ? " - " : "", why ? why : "");
         if (wrapped) free(wrapped);
         return NULL;
     }
