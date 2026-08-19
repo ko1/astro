@@ -235,6 +235,14 @@ module Marshal
     out << "U"; _symdump(name.to_sym, out, st); _dump(d, out, st)
   end
 
+  # A Time built with a timezone OBJECT carries that object as #zone; CRuby
+  # marshals its #name (and lets the NoMethodError through when it has none).
+  def self._time_zone_name(z)
+    return z.dup.force_encoding("US-ASCII") if z.is_a?(String)
+    return nil if z.nil?
+    z.name.to_s.dup.force_encoding("US-ASCII")
+  end
+
   def self._dump_udump(o, out, st)
     name = _class_name(o.class)
     raise TypeError, "can't dump anonymous class #{o.class}" if name.nil?
@@ -249,7 +257,7 @@ module Marshal
     # to #instance_variables).
     extra = if Time === o
               o.utc? ? [[:zone, "UTC".dup.force_encoding("US-ASCII")]]   # UTC: the zone alone, no offset
-                     : [[:offset, o.utc_offset], [:zone, o.zone.dup.force_encoding("US-ASCII")]]
+                     : [[:offset, o.utc_offset], [:zone, _time_zone_name(o.zone)]]
             else []
             end
     if Time === o && (sub = o.nsec % 1000) != 0
