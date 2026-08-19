@@ -771,10 +771,30 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
     char *const src = malloc(sn ? sn : 1); memcpy(src, korb_strbuf_data(s0->buf), sn);
     char *rep = NULL; uint32_t rn = 0; VALUE hashrep = KORB_NIL;
     if (block == NULL) {
-        if (VALUE_SLICE_LEN(a) < 2) {   /* sub → ArgumentError; gsub(pat) → Enumerator (unsupported) */
+        if (VALUE_SLICE_LEN(a) < 2) {   /* sub → ArgumentError; gsub(pat) → Enumerator over the matches */
+            if (!global) { free(src); return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 1, expected 2)"); }
+            slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 0));
+            VALUE_REF acc = VALUE_REF_AT(&slots[2]);
+            long eoff = 0;
+            while (eoff <= (long)sn) {
+                korb_re_match_t em; RESULT er = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)eoff, &em);
+                if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); return er; }
+                if (er.value != KORB_TRUE) break;
+                slots[3] = UNWRAP(korb_re_slice(c, slots + 3, &slots[0], em.starts[0], em.ends[0]));
+                RESULT pr = korb_ary_push_val(c, slots + 4, acc, slots[3]);
+                if (UNLIKELY(pr.state != KORB_NORMAL)) { free(src); return pr; }
+                if (em.ends[0] > em.starts[0]) eoff = em.ends[0];
+                else {                                  /* zero-width match: step one character */
+                    uint32_t cl = (em.starts[0] < (long)sn) ? korb_utf8_seq_len((const unsigned char *)src, (uint32_t)em.starts[0], sn) : 1;
+                    eoff = em.starts[0] + (cl ? cl : 1);
+                }
+            }
             free(src);
-            if (!global) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 1, expected 2)");
-            return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "String#gsub without a replacement (Enumerator) is not supported");
+            slots[3] = UNWRAP(korb_enum_desc(c, slots + 3, VALUE_REF_GET(self), "gsub"));
+            RESULT nr = korb_enum_new(c, slots + 4, VALUE_REF_GET(acc), slots[3]);
+            if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
+            VAL2ENUM(nr.value)->size_unknown = 1;       /* CRuby's gsub enumerator reports no size */
+            return nr;
         }
         VALUE rv = VALUE_SLICE_GET(a, 1);
         if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn); }

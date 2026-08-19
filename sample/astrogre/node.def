@@ -1300,7 +1300,9 @@ NODE_DEF
 node_re_bol(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     if (c->pos == 0) return EVAL_ARG(c, next);
-    if (c->str[c->pos - 1] == '\n') return EVAL_ARG(c, next);
+    /* after a newline — but not the one that ends the subject: Ruby has no empty
+     * last line, so `"a\n".gsub(/^/, "|")` inserts once, not twice. */
+    if (c->str[c->pos - 1] == '\n' && c->pos != c->str_len) return EVAL_ARG(c, next);
     return MR_FAIL;
 }
 

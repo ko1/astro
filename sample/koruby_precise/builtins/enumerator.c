@@ -562,7 +562,7 @@ static RESULT korb_m_enum_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (FIXNUM_P(e->size) || KORB_FLOAT_P(e->size)) return RESULT_OK(e->size);   /* explicit size (Enumerator.new(size)/to_enum) or Infinity */
     /* generator (mode 3) / lazy / cycle have no materialized `values`; CRuby
      * returns nil when the size is unknown (no size given to Enumerator.new). */
-    if (e->mode != 0 || !KORB_ARRAY_P(e->values)) return RESULT_OK(KORB_NIL);
+    if (e->mode != 0 || e->size_unknown || !KORB_ARRAY_P(e->values)) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX(VAL2ARY(e->values)->len));
 }
 static RESULT korb_m_enum_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
