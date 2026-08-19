@@ -2621,3 +2621,13 @@ node_binding は per-process ポインタ (name_syms) を持つため bake で�
 binding 引数を実行時に組み立てる別ノードにする。ブロック内の binding が
 外側スコープのローカルを含まない件 ([[project_koruby_eval_binding]]) も
 同時に直す必要がある (`[1].each { eval("c += 1") }`)。
+
+## ブロック内の `super` が未実装 (2026-08-19)
+
+`def foo; [1].map { super }; end` / `define_method(:foo) { super() }` が
+"M0 unsupported: super outside a method body" になる。parse.c の
+PM_SUPER_NODE / PM_FORWARDING_SUPER_NODE は `tc->frame->method_mid` が 0
+(ブロックフレーム) のとき諦めている。block_given? と同じようにメソッド
+フレームまで遡り、self / entry cell を env リンク経由 (depth) で読む必要がある。
+`defined?(super)` も同じ理由でブロック内では nil (CRuby は "super")。
+language/defined_spec の残り fail のうち 6 件がこれ。
