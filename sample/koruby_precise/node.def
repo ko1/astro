@@ -1175,16 +1175,7 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
         /* A baked enclosing chain (bare lexical read) resolves owner-scoped to the
          * UNIQUE innermost cref class, so a same-named class in another namespace
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
-        VALUE cref = KORB_NIL;
-        if (cache->owner_chain != NULL) {
-            const uint32_t j0 = korb_const_index_owned(vm, cache->owner_chain[0], KORB_NIL);   /* outermost = top-level */
-            cref = (j0 != UINT32_MAX) ? vm->const_vals[j0] : KORB_NIL;
-            for (uint32_t i = 1; KORB_CLASS_P(cref) && i < cache->chain_len; i++) {
-                const uint32_t j = korb_const_index_owned(vm, cache->owner_chain[i], cref);
-                cref = (j != UINT32_MAX) ? vm->const_vals[j] : KORB_NIL;
-            }
-        }
-        if (!KORB_CLASS_P(cref)) cref = korb_const_get(vm, owner_name);   /* no chain / unresolved → flat seed (prior behaviour) */
+        const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
         for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
             idx = korb_const_index_owned(vm, name_sym, o);
             if (idx != UINT32_MAX) break;
@@ -1349,13 +1340,14 @@ node_defined_yield(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
 // root-scanned), returns the value.
 NODE_DEF
-node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, VALUE val@child)
+node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, struct korb_constcache *cache@ref, VALUE val@child)
 {
     (void)n; (void)slots;
     /* owner_name = the lexically-enclosing module's const name, baked at parse
-     * time (0 = top-level / global var).  Resolve it to the live module for
-     * Module#constants; only real classes/modules count as an owner. */
-    const VALUE owner = owner_name ? korb_const_get(c->vm, owner_name) : KORB_NIL;
+     * time (0 = top-level / global var); the baked chain pins WHICH module of
+     * that name, so a write inside `M2::A` never lands in an earlier `M1::A`.
+     * Only real classes/modules count as an owner. */
+    const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
     const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
     korb_const_define_owned(c, name_sym, val, ownc);
     if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */

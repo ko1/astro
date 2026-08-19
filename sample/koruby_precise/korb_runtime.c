@@ -3039,6 +3039,29 @@ static uint32_t korb_const_mro_seg(const struct korb_vm *vm, VALUE klass, uint32
     }
     return UINT32_MAX;
 }
+/* The lexically-enclosing module of a constant node: walk the parse-baked name
+ * chain from the outermost link inward, each step scoped to the previous owner,
+ * so `M::Inner::A` is never confused with another `A` that merely happens to
+ * come first in the flat table.  The outermost link falls back to a by-name
+ * lookup because a `module M::Inner` header bakes only `Inner`.  KORB_NIL when
+ * there is no usable chain and `owner_name` names nothing. */
+VALUE
+korb_cref_resolve(struct korb_vm *vm, const uint32_t *chain, uint32_t chain_len, uint32_t owner_name)
+{
+    VALUE cref = KORB_NIL;
+    if (chain != NULL && chain_len > 0) {
+        uint32_t j = korb_const_index_owned(vm, chain[0], KORB_NIL);
+        if (j == UINT32_MAX) j = korb_const_index(vm, chain[0]);
+        cref = (j != UINT32_MAX) ? vm->const_vals[j] : KORB_NIL;
+        for (uint32_t i = 1; KORB_CLASS_P(cref) && i < chain_len; i++) {
+            const uint32_t k = korb_const_index_owned(vm, chain[i], cref);
+            cref = (k != UINT32_MAX) ? vm->const_vals[k] : KORB_NIL;
+        }
+    }
+    if (!KORB_CLASS_P(cref) && owner_name != 0) cref = korb_const_get(vm, owner_name);
+    return cref;
+}
+
 /* Search a constant through `cref`'s ancestry (self + modules, then up the
  * superclass chain) in Ruby's constant-lookup order.  UINT32_MAX if absent. */
 uint32_t

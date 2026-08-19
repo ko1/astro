@@ -92,6 +92,7 @@ kp_src_enc(const pm_parser_t *parser)
 })
 
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
+static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
 
 /* node_send takes a parse-time NODE* array [recv, args...]; these build the
  * common small-arity synthetic sends used throughout the parser (op-assign,
@@ -2114,12 +2115,12 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
     if (PM_NODE_TYPE_P(t, PM_CONSTANT_TARGET_NODE)) {
         uint32_t name = kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
+        return build_const_set(tc, name, v);
     }
     if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name));
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, v);
+        return build_const_set(tc, name, v);
     }
     if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE)) {
         const pm_call_target_node_t *ct = (const pm_call_target_node_t *)t;
@@ -2339,6 +2340,25 @@ build_dstr(struct kp_ctx *tc, struct pm_node **parts, size_t n)
     return ALLOC_node_dstr_concat(acc, part);
 }
 
+/* Bake the lexically-enclosing class/module names (outermost→innermost) into a
+ * constant node's cache, so the node resolves its cref by walking the chain
+ * owner-scoped instead of picking the first same-named module in the table. */
+static void
+bake_cref_chain(struct kp_ctx *tc, struct korb_constcache *cache)
+{
+    uint32_t depth = 0;
+    for (struct kp_frame *f = tc->frame; f; f = f->prev)
+        if (f->class_name_sym != 0) depth++;
+    if (depth == 0) return;
+    uint32_t *const chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
+    if (chain == NULL) return;
+    uint32_t i = depth;                                         /* fill innermost→outermost; store outermost at [0] */
+    for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
+        if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
+    cache->owner_chain = chain;
+    cache->chain_len = depth;
+}
+
 /* Build a bare constant read (`NAME`) node, resolving via the cref owner + the
  * baked lexical enclosing chain — same as the PM_CONSTANT_READ_NODE case.  Used
  * to synthesize the read side of `NAME op= v` op-assignments. */
@@ -2346,19 +2366,18 @@ static NODE *
 build_const_read(struct kp_ctx *tc, uint32_t name_cid)
 {
     NODE *cn = ALLOC_node_const(name_cid, kp_cref_owner(tc));
-    uint32_t depth = 0;
-    for (struct kp_frame *f = tc->frame; f; f = f->prev)
-        if (f->class_name_sym != 0) depth++;
-    if (depth > 0) {
-        uint32_t *chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
-        if (chain) {
-            uint32_t i = depth;
-            for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
-                if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
-            cn->u.node_const.cache.owner_chain = chain;
-            cn->u.node_const.cache.chain_len = depth;
-        }
-    }
+    bake_cref_chain(tc, &cn->u.node_const.cache);
+    return cn;
+}
+
+/* Build a bare constant write (`NAME = v`) node with the same baked chain: the
+ * owner must be the lexical module, not whichever module of that name happens
+ * to come first in the table. */
+static NODE *
+build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
+{
+    NODE *cn = ALLOC_node_const_set(name_cid, tc->frame->class_name_sym, val);
+    bake_cref_chain(tc, &cn->u.node_const_set.cache);
     return cn;
 }
 
@@ -3522,19 +3541,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         /* Bake the full enclosing chain (outermost→innermost) so the read
          * resolves the UNIQUE lexical cref class, not a same-named one picked by
          * a flat lookup (e.g. M::C vs M::Inner::C). */
-        uint32_t depth = 0;
-        for (struct kp_frame *f = tc->frame; f; f = f->prev)
-            if (f->class_name_sym != 0) depth++;
-        if (depth > 0) {
-            uint32_t *chain = malloc(sizeof(uint32_t) * depth);   /* immortal (compile-time) */
-            if (chain) {
-                uint32_t i = depth;                                /* fill innermost→outermost; store outermost at [0] */
-                for (struct kp_frame *f = tc->frame; f && i > 0; f = f->prev)
-                    if (f->class_name_sym != 0) chain[--i] = f->class_name_sym;
-                cn->u.node_const.cache.owner_chain = chain;
-                cn->u.node_const.cache.chain_len = depth;
-            }
-        }
+        bake_cref_chain(tc, &cn->u.node_const.cache);
         return cn;
       }
       case PM_CONSTANT_PATH_NODE: {       /* `A::B` — resolve B owned by the parent
@@ -3590,7 +3597,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        return build_const_set(tc, name, val);
       }
       case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {     /* `$x op= v` */
         const pm_global_variable_operator_write_node_t *gw =
@@ -3604,21 +3611,21 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                        (lhs = ALLOC_node_const(name, 0), rhs = transduce(tc, gw->value)));
             alloc_binop(op, lhs, rhs, line);
         }));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, binop);
+        return build_const_set(tc, name, binop);
       }
       case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {          /* `$x ||= v` (globals live in the const table) */
         const pm_global_variable_or_write_node_t *gw = (const pm_global_variable_or_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_or(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
+        return ALLOC_node_or(ALLOC_node_const(name, 0), build_const_set(tc, name, val));
       }
       case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: {         /* `$x &&= v` */
         const pm_global_variable_and_write_node_t *gw = (const pm_global_variable_and_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, gw->value)));
-        return ALLOC_node_and(ALLOC_node_const(name, 0), ALLOC_node_const_set(name, tc->frame->class_name_sym, val));
+        return ALLOC_node_and(ALLOC_node_const(name, 0), build_const_set(tc, name, val));
       }
 
       case PM_CONSTANT_WRITE_NODE: {     /* `FOO = expr` → VM const table */
@@ -3627,14 +3634,14 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cw->value)));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        return build_const_set(tc, name, val);
       }
       case PM_CONSTANT_OR_WRITE_NODE: {  /* `X ||= v` — assign when undefined or falsy (the read never raises) */
         const pm_constant_or_write_node_t *ow = (const pm_constant_or_write_node_t *)node;
         uint32_t name = kp_intern_cid(tc, ow->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
-        NODE *set = ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        NODE *set = build_const_set(tc, name, val);
         /* `defined?(X) && X || (X = v)`: the `&&` short-circuits before the read
          * when X is undefined (no NameError); a truthy X is kept, else assign. */
         NODE *guarded = ALLOC_node_and(ALLOC_node_defined(1, name, 0), build_const_read(tc, name));
@@ -3645,7 +3652,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t name = kp_intern_cid(tc, aw->name);
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, aw->value)));
-        NODE *set = ALLOC_node_const_set(name, tc->frame->class_name_sym, val);
+        NODE *set = build_const_set(tc, name, val);
         return ALLOC_node_and(build_const_read(tc, name), set);
       }
       case PM_CONSTANT_OPERATOR_WRITE_NODE: {  /* `X op= v` → X = X op v (read raises if undefined) */
@@ -3659,7 +3666,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                        (lhs = build_const_read(tc, name), rhs = transduce(tc, ow->value)));
             (op != KP_BINOP_NONE) ? alloc_binop(op, lhs, rhs, line) : kp_send1(opmid, line, lhs, rhs);
         }));
-        return ALLOC_node_const_set(name, tc->frame->class_name_sym, binop);
+        return build_const_set(tc, name, binop);
       }
       case PM_CONSTANT_PATH_WRITE_NODE: {   /* `A::B = expr` — flat const table → rightmost name,
                                              * owner = the path's parent (`A`) so B nests under A. */
