@@ -444,12 +444,21 @@ module Marshal
     inner
   end
 
+  # Object#freeze itself, so a user-defined #freeze is not called (CRuby freezes
+  # internally).
+  FREEZE = Kernel.instance_method(:freeze)
+
   def self._read(st)
     v = _read0(st)
+    was_link = st[:link]; st[:link] = false   # consume: a nested read has already cleared its own
     # `freeze: true` hands out frozen objects — freeze on the way out, once the
-    # container has been filled, and before the caller's proc sees it.
-    v.freeze if st[:freeze]
-    (p = st[:proc]) ? p.call(v) : v
+    # container has been filled, and before the caller's proc sees it.  Classes
+    # and modules are left alone (CRuby does not freeze them).
+    FREEZE.bind_call(v) if st[:freeze] && !v.is_a?(Module)
+    # The proc sees each object as it is BUILT (a back-reference to one already
+    # built does not fire it again) and its return value replaces the object.
+    p = st[:proc]
+    (p && !was_link) ? p.call(v) : v
   end
 
   def self._read0(st)
@@ -459,7 +468,7 @@ module Marshal
     when 0x54 then true                                 # 'T'
     when 0x46 then false                                # 'F'
     when 0x69 then _rlong(st)                            # 'i' Fixnum
-    when 0x40 then st[:objs][_rlong(st)]                # '@' object link
+    when 0x40 then st[:link] = true; st[:objs][_rlong(st)]   # '@' object link (no proc callback)
     when 0x6c                                            # 'l' Bignum
       sign = _byte(st)
       nwords = _rlong(st)
