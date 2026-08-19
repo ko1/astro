@@ -3388,12 +3388,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
                 }
                 NODE *recv = transduce(tc, cn->receiver);
-                return ALLOC_node_defined_call(recv, kp_intern_cid(tc, cn->name));
+                NODE *_dc = ALLOC_node_defined_call(recv, kp_intern_cid(tc, cn->name), self_off);
+                bake_add(tc, &_dc->u.node_defined_call.self_off);   /* the caller's self decides protected visibility */
+                return _dc;
             }
             /* bareword (possibly with args): "method" iff self responds to it. */
             NODE *_d = ALLOC_node_defined(0, kp_intern_cid(tc, cn->name), self_off); bake_add(tc, &_d->u.node_defined.self_off); return _d;
         }
         if (PM_NODE_TYPE_P(v, PM_YIELD_NODE)) { tc->frame->uses_block = true; return ALLOC_node_defined_yield(-4 - tc->chain); }   /* "yield" iff block present */
+        if (PM_NODE_TYPE_P(v, PM_CLASS_VARIABLE_READ_NODE)) {            /* "class variable" iff present */
+            NODE *_d = ALLOC_node_defined_cvar(-1 - tc->chain, -1 - tc->chain,
+                                               kp_intern_cid(tc, ((const pm_class_variable_read_node_t *)v)->name));
+            bake_add(tc, &_d->u.node_defined_cvar.self_off);
+            return _d;
+        }
         if (PM_NODE_TYPE_P(v, PM_SUPER_NODE) || PM_NODE_TYPE_P(v, PM_FORWARDING_SUPER_NODE)) {
             /* "super" iff the enclosing method has an MRO successor.  The frame's
              * self and entry cell are read at the same offsets node_super_fwd uses. */

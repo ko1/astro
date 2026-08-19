@@ -1883,7 +1883,7 @@ static RESULT korb_register_subclass(CTX *c, VALUE *slots, VALUE super_cls, VALU
 
 /* `entry_cell` is the frame's fs-2 cell: a tagged-odd method-entry pointer in an
  * instance method (def_class = entry->owner), as korb_super reads it. */
-static VALUE
+VALUE
 korb_cvar_cref(VALUE self, VALUE entry_cell)
 {
     if (KORB_CLASS_P(self)) return self;              /* class body / class method: self */
@@ -1896,7 +1896,7 @@ korb_cvar_cref(VALUE self, VALUE entry_cell)
 
 /* the ancestor (cref-and-up) that defines class var `sym`, with *idx set to its
  * hash slot; KORB_NIL if undefined anywhere on the chain. */
-static VALUE
+VALUE
 korb_cvar_owner(VALUE cref, VALUE sym, int32_t *idx_out)
 {
     for (VALUE k = cref; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) {
@@ -4389,6 +4389,33 @@ korb_responds_to_public(CTX *c, VALUE self, uint32_t mid)
     if (!KORB_CLASS_P(start)) return false;
     const struct korb_method *const m = korb_class_find_method(start, mid, NULL);
     return m != NULL && m->visibility == 0;
+}
+
+/* defined?(recv.meth) — can the CALLER (slots[self_off]) call it?  Public always;
+ * protected when the caller is an instance of the defining class; otherwise the
+ * object still answers if it claims the name via #respond_to_missing?. */
+bool
+korb_defined_call_p(CTX *c, VALUE *slots, uint32_t mid, int32_t self_off)
+{
+    const VALUE recv = slots[0];
+    if (korb_responds_to_public(c, recv, mid)) return true;
+    const VALUE start = korb_dispatch_class(c, recv);
+    if (KORB_CLASS_P(start)) {
+        VALUE owner = KORB_NIL;
+        const struct korb_method *const m = korb_class_find_method(start, mid, &owner);
+        if (m != NULL) {
+            if (m->visibility != 2) return false;             /* private → not defined? for an explicit receiver */
+            const VALUE caller = slots[self_off];             /* protected: only from inside the family */
+            return KORB_CLASS_P(owner) && korb_class_has_ancestor(korb_dispatch_class(c, caller), owner);
+        }
+    }
+    const uint32_t rtm = korb_intern(c->vm, "respond_to_missing?", 19);
+    if (!korb_responds_to(c, recv, rtm)) return false;
+    slots[1] = recv;                                          /* recv + args just below the cursor */
+    slots[2] = ID2SYM(mid);
+    slots[3] = KORB_FALSE;
+    const RESULT r = korb_send(c, slots + 4, rtm, 0, 2);
+    return r.state == KORB_NORMAL && KORB_TRUTHY(r.value);
 }
 
 /* Comparable mixin methods (defined in builtins/set.c, included later). */
