@@ -234,6 +234,10 @@ static bool korb_as_rat_v(VALUE v, VALUE *num, VALUE *den) {
  * staged in slots[0..] so each Bignum alloc keeps the operands rooted. */
 RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) return korb_num_arith(c, slots, l, r, op, 0);
+    /* Rational ⊗ Complex is Complex arithmetic (korb_cpx_parts takes a Rational
+     * component as-is) — decided before the Rational conversion, which a Complex
+     * operand would otherwise fail with a coercion TypeError. */
+    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(r)) return korb_cpx_arith(c, slots, l, r, op);
     if (UNLIKELY(!korb_as_rat_v(l, &slots[0], &slots[1]) || !korb_as_rat_v(r, &slots[2], &slots[3]))) {
         if (KORB_RATIONAL_P(l) && KORB_OBJECT_P(r)) {     /* a, b = r.coerce(l); a OP b */
             static const char *const ratop[] = { "+", "-", "*", "/", "%" };
@@ -244,9 +248,6 @@ RESULT korb_rat_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     /* Modulo is not a variant of division: it needs the floored quotient, which
      * korb_int_rat_divmod computes (it only ever calls back with ops 1/2/3). */
     if (op == 4) return korb_int_rat_divmod(c, slots, l, r, 1);
-    /* Rational ⊗ Complex is Complex arithmetic (korb_cpx_parts takes a Rational
-     * component as-is), not a coercion failure. */
-    if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(r)) return korb_cpx_arith(c, slots, l, r, op);
     /* slots[0..3] = ln, ld, rn, rd (rooted); compute num→slots[6], den→slots[7]. */
     if (op == 0 || op == 1) {                                  /* (ln*rd ± rn*ld) / (ld*rd) */
         slots[4] = UNWRAP(korb_int_arith(c, slots + 4, slots[0], slots[3], 2, 0));   /* ln*rd */
@@ -730,8 +731,15 @@ static bool korb_cpx_parts(VALUE v, VALUE *re, VALUE *im) {
     if (FIXNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v) || KORB_BIGNUM_P(v)) { *re = v; *im = LONG2FIX(0); return true; }
     return false;
 }
-/* Complex arithmetic (op 0+ 1- 2*); returns a Complex. Components combined via
- * korb_num_binop (Int/Float/Rational-aware). Division (op 3) is unsupported. */
+/* Complex division produces exact components, and CRuby reports a whole one as
+ * an Integer (`Complex(4,2)/2` → `(2+1i)`) — note a directly built
+ * `Complex(Rational(2,1), 0)` keeps its Rational, so this is a property of the
+ * division result, not of Complex construction. */
+static VALUE korb_cpx_whole(VALUE v) {
+    return (KORB_RATIONAL_P(v) && VAL2RAT(v)->den == LONG2FIX(1)) ? VAL2RAT(v)->num : v;
+}
+/* Complex arithmetic (op 0+ 1- 2* 3/); returns a Complex. Components combined
+ * via korb_num_binop (Int/Float/Rational-aware); division is exact. */
 RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
     VALUE lre, lim, rre, rim;
     if (UNLIKELY(op == 4))                                /* Complex defines no #% (CRuby) */
@@ -759,9 +767,9 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         RESULT m4 = korb_num_binop(c, slots + 8, slots[1], slots[2], 2); if (UNLIKELY(m4.state != KORB_NORMAL)) return m4; slots[8] = m4.value;
         RESULT im = korb_num_binop(c, slots + 9, slots[7], slots[8], 0); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[9] = im.value;
         res_re = slots[6]; res_im = slots[9];
-    } else if (!KORB_COMPLEX_P(r)) {   /* div by a real: divide each component with `/` (Integer-exact, Float, or Rational) */
-        RESULT re = korb_num_binop(c, slots + 4, slots[0], slots[2], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[4] = re.value;
-        RESULT im = korb_num_binop(c, slots + 5, slots[1], slots[2], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[5] = im.value;
+    } else if (!KORB_COMPLEX_P(r)) {   /* div by a real: exact (#quo) per component, not Integer floor division */
+        RESULT re = korb_rat_arith(c, slots + 4, slots[0], slots[2], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[4] = korb_cpx_whole(re.value);
+        RESULT im = korb_rat_arith(c, slots + 5, slots[1], slots[2], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[5] = korb_cpx_whole(im.value);
         res_re = slots[4]; res_im = slots[5];
     } else {   /* div by complex: ((lre*rre+lim*rim) + (lim*rre-lre*rim)i) / (rre²+rim²) */
         RESULT c2 = korb_num_binop(c, slots + 4, slots[2], slots[2], 2); if (UNLIKELY(c2.state != KORB_NORMAL)) return c2; slots[4] = c2.value;
@@ -773,8 +781,8 @@ RESULT korb_cpx_arith(CTX *c, VALUE *slots, VALUE l, VALUE r, int op) {
         RESULT bc = korb_num_binop(c, slots + 10, slots[1], slots[2], 2); if (UNLIKELY(bc.state != KORB_NORMAL)) return bc; slots[10] = bc.value;
         RESULT ad = korb_num_binop(c, slots + 11, slots[0], slots[3], 2); if (UNLIKELY(ad.state != KORB_NORMAL)) return ad; slots[11] = ad.value;
         RESULT in = korb_num_binop(c, slots + 12, slots[10], slots[11], 1); if (UNLIKELY(in.state != KORB_NORMAL)) return in; slots[12] = in.value;  /* im numerator */
-        RESULT re = korb_rat_arith(c, slots + 13, slots[9], slots[6], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[13] = re.value;
-        RESULT im = korb_rat_arith(c, slots + 14, slots[12], slots[6], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[14] = im.value;
+        RESULT re = korb_rat_arith(c, slots + 13, slots[9], slots[6], 3); if (UNLIKELY(re.state != KORB_NORMAL)) return re; slots[13] = korb_cpx_whole(re.value);
+        RESULT im = korb_rat_arith(c, slots + 14, slots[12], slots[6], 3); if (UNLIKELY(im.state != KORB_NORMAL)) return im; slots[14] = korb_cpx_whole(im.value);
         res_re = slots[13]; res_im = slots[14];
     }
     slots[15] = res_re; slots[16] = res_im;
