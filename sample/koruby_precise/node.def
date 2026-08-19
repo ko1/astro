@@ -137,6 +137,15 @@ node_unsupported(CTX *c, NODE *n, VALUE *slots, const char *what, uint32_t line)
     return korb_raise(c, slots, KORB_E_NOTIMPL, line, "M0 unsupported: %s", what);
 }
 
+// A read-only global (`$&`, `$1`, `$!`, … or an alias of one) on the left of an
+// assignment: CRuby reports it as a NameError naming the variable as written.
+NODE_DEF
+node_readonly_gvar(CTX *c, NODE *n, VALUE *slots, const char *name, uint32_t line)
+{
+    (void)n;
+    return korb_raise(c, slots, KORB_E_NAME, line, "%s is a read-only variable", name);
+}
+
 // ---- sequencing ------------------------------------------------------------
 
 NODE_DEF
@@ -1471,6 +1480,12 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * Only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
     const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
+    /* $stdout / $stderr must stay writable objects (CRuby checks on assignment) */
+    { const char *const gn = korb_sym_name(c->vm, name_sym);
+      if (UNLIKELY(gn[0] == '$') && (strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) &&
+          !korb_responds_to(c, val, korb_intern(c->vm, "write", 5)))
+          return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
+                            gn, korb_type_name(val)); }
     /* reassigning an existing constant warns (the name table doubles as the
      * global-variable table — `$x = 1` is a plain assignment, never a warning) */
     if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&

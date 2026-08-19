@@ -250,6 +250,26 @@ kp_cid_cstr(struct kp_ctx *tc, pm_constant_id_t cid)
     return korb_sym_name(tc->c->vm, kp_intern_cid(tc, cid));
 }
 
+/* `$& = 1` and friends (incl. via an alias): CRuby raises NameError naming the
+ * variable AS WRITTEN, so the check happens here where that name is known.
+ * Returns the raising node, or NULL when the target is writable. */
+static NODE *
+kp_gvar_readonly_write(struct kp_ctx *tc, const pm_node_t *at, pm_constant_id_t cid)
+{
+    const uint32_t resolved = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, cid));
+    const char *const r = korb_sym_name(tc->c->vm, resolved);
+    const bool ro = (r[0] == '$' && r[1] != '\0' && r[2] == '\0' &&
+                     (r[1] == '&' || r[1] == '`' || r[1] == '\'' || r[1] == '+' || r[1] == '!' ||
+                      (r[1] >= '1' && r[1] <= '9')));
+    if (!ro) return NULL;
+    const char *const written = kp_cid_cstr(tc, cid);
+    char *msgname = malloc(strlen(written) + 1);         /* immortal (baked into the node) */
+    if (!msgname) abort();
+    strcpy(msgname, written);
+    return ALLOC_node_readonly_gvar(msgname, kp_line(tc, at));
+}
+
+
 
 /* ---- frames + lvar offset bake ---------------------------------------- */
 
@@ -3673,6 +3693,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         return ALLOC_node_backref(kind);
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
+        { NODE *ro = kp_gvar_readonly_write(tc, node, ((const pm_global_variable_write_node_t *)node)->name); if (ro) return ro; }
         const pm_global_variable_write_node_t *gw = (const pm_global_variable_write_node_t *)node;
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, gw->name));
         NODE *val;
