@@ -1037,7 +1037,11 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         else if (ch == '\n') fputs("\\n", ms); else if (ch == '\r') fputs("\\r", ms);
         else if (ch == '\t') fputs("\\t", ms); else if (ch == '\f') fputs("\\f", ms);
         else if (ch == ' ') fputs("\\ ", ms); else fputc(ch, ms); }
-    fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf ? buf : "", (uint32_t)z); free(buf); return r;
+    fclose(ms);
+    const uint32_t senc = KORB_STR_ENC(slots[0]);      /* the escape keeps the source's encoding */
+    RESULT r = korb_str_new(c, slots + 1, buf ? buf : "", (uint32_t)z); free(buf);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, senc);
+    return r;
 }
 static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
