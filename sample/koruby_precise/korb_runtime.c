@@ -2909,6 +2909,9 @@ korb_rescue_splat_list(CTX *c, VALUE *slots, VALUE *listslot)
     return RESULT_OK(slots[1]);
 }
 
+/* node_eval.c-visible wrapper: #to_int coercion (string.c's is static). */
+RESULT korb_coerce_to_int_pub(CTX *c, VALUE *slots, VALUE *v) { return korb_coerce_to_int(c, slots, v); }
+
 RESULT korb_make_binding(CTX *c, VALUE *slots, VALUE *frame_base, const uint32_t *name_syms, uint32_t name_cnt, VALUE self_val) {
     slots[0] = self_val;                                  /* root self across allocs */
     const VALUE pv = korb_ep_get(frame_base);                      /* original outer link (preserve into e->prev) */

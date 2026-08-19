@@ -1480,12 +1480,26 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * Only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
     const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
-    /* $stdout / $stderr must stay writable objects (CRuby checks on assignment) */
+    /* the typed predefined globals are checked on assignment (CRuby) */
     { const char *const gn = korb_sym_name(c->vm, name_sym);
-      if (UNLIKELY(gn[0] == '$') && (strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) &&
-          !korb_responds_to(c, val, korb_intern(c->vm, "write", 5)))
-          return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
-                            gn, korb_type_name(val)); }
+      if (UNLIKELY(gn[0] == '$')) {
+          if ((strcmp(gn, "$stdout") == 0 || strcmp(gn, "$stderr") == 0) &&
+              !korb_responds_to(c, val, korb_intern(c->vm, "write", 5)))
+              return korb_raise(c, slots, KORB_E_TYPE, 0, "%s must have write method, %s given",
+                                gn, korb_type_name(val));
+          if (strcmp(gn, "$~") == 0 && val != KORB_NIL && !KORB_MATCHDATA_P(val))
+              return korb_raise(c, slots, KORB_E_TYPE, 0, "wrong argument type %s (expected MatchData)",
+                                korb_coerce_name(c, val));
+          if (strcmp(gn, "$.") == 0 && !FIXNUM_P(val)) {   /* the line counter takes any #to_int */
+              VALUE iv = val;
+              const char *const on = korb_coerce_name(c, iv);
+              RESULT ir = korb_coerce_to_int_pub(c, slots, &iv);
+              if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+              if (ir.value == KORB_FALSE)
+                  return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", on);
+              val = iv;
+          }
+      } }
     /* reassigning an existing constant warns (the name table doubles as the
      * global-variable table — `$x = 1` is a plain assignment, never a warning) */
     if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&
