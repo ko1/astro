@@ -544,15 +544,56 @@ static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     return RESULT_OK(LONG2FIX((intptr_t)nb));
 }
 /* IO#print(*args) → nil. */
+/* Is the receiver's #write something other than the builtin?  CRuby routes
+ * IO#puts through #write, which is what lets `def io.write` (or a subclass)
+ * capture the output; the builtin case writes straight to the descriptor. */
+static bool korb_io_write_redefined(CTX *c, VALUE io) {
+    VALUE def = KORB_NIL;
+    const struct korb_method *const m =
+        korb_class_find_method(korb_dispatch_class(c, io), korb_intern(c->vm, "write", 5), &def);
+    return m != NULL && !(m->kind == KORB_METHOD_CFUNC && m->rfn == korb_m_io_write);
+}
+/* The String value of a global ($, / $\), or NULL when unset. */
+static VALUE korb_io_sep_global(CTX *c, const char *name, uint32_t len) {
+    const VALUE v = korb_const_get(c->vm, korb_intern(c->vm, name, len));
+    return KORB_STRING_P(v) ? v : KORB_NIL;
+}
 static RESULT korb_m_io_print(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
-    KORB_IO_NEED_WRITE(c, slots, self);
-    size_t nb = 0;
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
-        const RESULT r = korb_io_emit(c, slots, VALUE_SLICE_GET(a, i), rep, &nb);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    const bool via_write = korb_io_write_redefined(c, VALUE_REF_GET(self));
+    if (!via_write) {
+        if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+        KORB_IO_NEED_WRITE(c, slots, self);
     }
+    KorbIORep mem = KORB_IO_MEM_SINK;
+    KorbIORep *const out = via_write ? &mem : rep;
+    size_t nb = 0;
+    RESULT r = RESULT_OK(KORB_NIL);
+    if (VALUE_SLICE_LEN(a) == 0) {                     /* no args → the last line read ($_) */
+        slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "$_", 2));
+        if (slots[0] != KORB_NIL) r = korb_io_emit(c, slots + 1, slots[0], out, &nb);
+    }
+    for (uint32_t i = 0; r.state == KORB_NORMAL && i < VALUE_SLICE_LEN(a); i++) {
+        if (i > 0) {                                   /* $, separates the fields */
+            slots[0] = korb_io_sep_global(c, "$,", 2);
+            if (slots[0] != KORB_NIL) { r = korb_io_emit(c, slots + 1, slots[0], out, &nb); if (r.state != KORB_NORMAL) break; }
+        }
+        r = korb_io_emit(c, slots, VALUE_SLICE_GET(a, i), out, &nb);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
+    }
+    if (r.state == KORB_NORMAL) {                      /* $\ terminates the record */
+        slots[0] = korb_io_sep_global(c, "$\\", 2);
+        if (slots[0] != KORB_NIL) r = korb_io_emit(c, slots + 1, slots[0], out, &nb);
+    }
+    if (!via_write) return r.state == KORB_NORMAL ? RESULT_OK(KORB_NIL) : r;
+    if (UNLIKELY(r.state != KORB_NORMAL)) { free(mem.wbuf); return r; }
+    if (mem.wlen == 0) { free(mem.wbuf); return RESULT_OK(KORB_NIL); }
+    slots[0] = VALUE_REF_GET(self);                    /* recv */
+    RESULT sr = korb_str_new(c, slots + 1, mem.wbuf, (uint32_t)mem.wlen);
+    free(mem.wbuf);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+    slots[1] = sr.value;
+    CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1));
     return RESULT_OK(KORB_NIL);
 }
 /* IO#<<(obj) → self. */
@@ -568,10 +609,27 @@ static RESULT korb_m_io_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 /* IO#puts(*args) → nil. */
 static RESULT korb_m_io_puts(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
+    const uint32_t n = VALUE_SLICE_LEN(a);
+    if (korb_io_write_redefined(c, VALUE_REF_GET(self))) {   /* render into memory, hand the text to #write */
+        KorbIORep mem = KORB_IO_MEM_SINK;
+        if (n == 0) (void)korb_io_wr(&mem, "\n", 1);
+        else for (uint32_t i = 0; i < n; i++) {
+            RESULT pr = korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), &mem);
+            if (UNLIKELY(pr.state != KORB_NORMAL)) { free(mem.wbuf); return pr; }
+        }
+        if (mem.wlen == 0) { free(mem.wbuf); return RESULT_OK(KORB_NIL); }   /* e.g. puts([]) writes nothing at all */
+        slots[0] = VALUE_REF_GET(self);                      /* recv */
+        RESULT sr = korb_str_new(c, slots + 1, mem.wbuf ? mem.wbuf : "", (uint32_t)mem.wlen);
+        free(mem.wbuf);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        slots[1] = sr.value;
+        CHECK(korb_send(c, slots + 2, korb_intern(c->vm, "write", 5), 0, 1));
+        return RESULT_OK(KORB_NIL);
+    }
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_WRITE(c, slots, self);
-    if (VALUE_SLICE_LEN(a) == 0) { KORB_IO_WR(c, slots, rep, "\n", 1); return RESULT_OK(KORB_NIL); }
-    for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++)
+    if (n == 0) { KORB_IO_WR(c, slots, rep, "\n", 1); return RESULT_OK(KORB_NIL); }
+    for (uint32_t i = 0; i < n; i++)
         CHECK(korb_puts_one_to(c, slots, VALUE_SLICE_GET(a, i), rep));
     return RESULT_OK(KORB_NIL);
 }

@@ -2467,7 +2467,8 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
      * korb_class_def_cfn interns the name → may GC → re-read the class from the
      * rooted `cls` slot each call (never hold it in a bare C-local across them). */
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_a", korb_m_struct_to_a, 0);
-    korb_class_def_cfn(c, VALUE_REF_GET(cls), "to_ary", korb_m_struct_to_a, 0);
+    /* no #to_ary: a Struct is not implicitly an Array in CRuby (it must not
+     * splat in massign / block params / puts) */
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "values", korb_m_struct_to_a, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "size", korb_m_struct_size, 0);
     korb_class_def_cfn(c, VALUE_REF_GET(cls), "length", korb_m_struct_size, 0);
@@ -9961,10 +9962,22 @@ korb_puts_one_to(CTX *c, VALUE *slots, VALUE v, struct KorbIORep *rep)
         VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-deref: source may have moved */
         return r;
     }
-    if (KORB_OBJECT_P(v)) {                             /* user object → its to_s (user or default) */
+    if (KORB_OBJECT_P(v) && !KORB_STRING_P(v)) {
+        /* CRuby asks a non-String for #to_ary first (printing the elements one
+         * per line) and only then falls back to #to_s. */
+        VALUE av = v;
+        slots[0] = v;                                   /* root across the coercion dispatch */
+        RESULT ar = korb_coerce_to_ary(c, slots + 1, &av);
+        if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+        if (ar.value == KORB_TRUE) return korb_puts_one_to(c, slots + 1, av, rep);
         slots[0] = v;
         RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!KORB_STRING_P(r.value)) {                  /* a #to_s that is not a String → the default "#<Class:0x…>" */
+            char b[160];
+            const int bn = snprintf(b, sizeof b, "#<%s:0x%016lx>\n", korb_coerce_name(c, slots[0]), (unsigned long)(uintptr_t)slots[0]);
+            return korb_io_wr_checked(c, slots + 1, rep, b, (size_t)bn);
+        }
         v = r.value;                                    /* fall through to print the string */
     }
     if (KORB_STRING_P(v)) {
