@@ -1209,14 +1209,26 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * UNIQUE innermost cref class, so a same-named class in another namespace
          * (M::C vs M::Inner::C) doesn't shadow it via a flat name lookup. */
         const VALUE cref = korb_cref_resolve(vm, cache->owner_chain, cache->chain_len, owner_name);
-        for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
-            idx = korb_const_index_owned(vm, name_sym, o);
-            if (idx != UINT32_MAX) break;
+        const bool bare = !cache->is_path;
+        if (bare) {
+            for (VALUE o = cref; KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {   /* lexical scope (Module.nesting) */
+                idx = korb_const_index_owned(vm, name_sym, o);
+                if (idx != UINT32_MAX) break;
+            }
+        } else {
+            /* explicit `X::C` looks in X and its ancestors ONLY — never in X's
+             * lexical surroundings, or an unrelated `Outer::C` would answer it
+             * (and a pending autoload on X would never fire). */
+            idx = korb_const_index_owned(vm, name_sym, cref);
         }
         if (idx == UINT32_MAX)                                                  /* then the innermost class's ancestry (MRO order) */
             idx = korb_const_in_ancestry(vm, cref, name_sym);
         if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);   /* then top-level / builtin (owner nil) */
-        if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);            /* finally any namespace (koruby's flat fallback) */
+        /* The by-name fallback is for BARE reads only (a baked chain marks them):
+         * an explicit `A::B::C` must resolve inside B, or miss — otherwise a
+         * same-named constant elsewhere answers it, and a pending autoload on B
+         * never gets its chance. */
+        if (idx == UINT32_MAX && bare) idx = korb_const_index(vm, name_sym);
     } else {                                          /* top-level bare read */
         /* A real top-level constant wins over a same-named nested one.  The
          * table is flat, so a plain first-match would let a prelude-defined
@@ -1364,6 +1376,28 @@ node_defined_super(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, int32_t self
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
     return dr;
+}
+
+// `A::B` — evaluate the parent namespace expression, then look B up in it and
+// its ancestors (never in the parent's lexical surroundings, and never by bare
+// name).  A miss goes through const_missing, which is what fires an autoload.
+NODE_DEF @noinline
+node_const_path(CTX *c, NODE *n, VALUE *slots, uint32_t name@sym, NODE *parent)
+{
+    (void)n;
+    const RESULT pr = EVAL_ARG(c, parent);
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    slots[0] = pr.value;                                  /* the namespace (rooted for const_missing) */
+    struct korb_vm *const vm = c->vm;
+    if (UNLIKELY(!KORB_CLASS_P(slots[0])))
+        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a class/module", korb_coerce_name(c, slots[0]));
+    uint32_t idx = korb_const_index_owned(vm, name, slots[0]);
+    if (idx == UINT32_MAX) idx = korb_const_in_ancestry(vm, slots[0], name);
+    if (idx == UINT32_MAX)                                /* then top-level / builtin constants (owner nil) */
+        idx = korb_const_index_owned(vm, name, KORB_NIL);
+    if (LIKELY(idx != UINT32_MAX)) return RESULT_OK(vm->const_vals[idx]);
+    slots[1] = ID2SYM(name);                              /* <owner>.const_missing(:name) — autoload's entry point */
+    return korb_send(c, slots + 2, korb_intern(vm, "const_missing", 13), 0, 1);
 }
 
 // defined?(A::B::C) — a nested (or otherwise non-bare) parent: evaluate the parent

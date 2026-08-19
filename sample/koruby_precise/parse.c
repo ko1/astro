@@ -3653,12 +3653,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                                          k = ALLOC_node_lit(ID2SYM(kp_intern_cid(tc, cp->name)))));
             return kp_send1(cg, kp_line(tc, node), r, k);
         }
-        uint32_t path_owner = 0;
-        if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_read_node_t *)cp->parent)->name);
-        else if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_PATH_NODE))
-            path_owner = kp_intern_cid(tc, ((const pm_constant_path_node_t *)cp->parent)->name);
-        return ALLOC_node_const(kp_intern_cid(tc, cp->name), path_owner);
+        if (cp->parent != NULL) {                    /* `A::B` — resolve the parent as an expression */
+            NODE *par = transduce(tc, cp->parent);
+            return ALLOC_node_const_path(kp_intern_cid(tc, cp->name), par);
+        }
+        return ALLOC_node_const(kp_intern_cid(tc, cp->name), 0);   /* `::TOP` */
       }
 
       /* Global variables `$x` reuse the flat const table — the `$` in the name
