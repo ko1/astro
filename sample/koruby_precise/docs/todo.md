@@ -2599,3 +2599,25 @@ String ヘッダのエンコーディング tag は 3bit で、UTF-8 / US-ASCII 
 (bit15 は KORB_FL_HAS_IVARS) ので、増やすには tag の置き場所ごと設計変更が要る。
 実プログラムで 5 種を超えることは稀なので現状維持。core/encoding/* の残り
 fail の一部はこれ。
+
+## eval(str) が呼び出し元のローカルを見ない (2026-08-19 試作 → 撤回)
+
+CRuby の `eval(str)` は呼び出し元のスコープで走る (ローカルの読み書きができる)。
+koruby は binding 引数がある場合だけそのスコープを使い、引数無しでは新しい
+スコープで評価するので `def m; a=1; eval("a"); end` が NameError になる。
+
+**試作**: parse.c で引数 1 個の `eval(str)` を `eval(str, <binding ノード>)` に
+書き換える (bare `binding` と同じ node_binding を第 2 引数として staging)。
+core/kernel/eval_spec は 17 fail/16 err → 14/12 になり make test も退行なし。
+
+**撤回した理由**: `make optcarrot-aot` が
+"AOT compile-miss — interpreter dispatch reached for body '(program root)'"
+で落ちる。optcarrot は CPU/PPU コアを `eval(生成コード)` で作っており、
+node_binding は per-process ポインタ (name_syms) を持つため bake できない。
+差し戻し済み。パッチは残していないが、必要なら transduce_func_call に
+`eval` の分岐を足すだけで再現できる。
+
+**やるなら**: node_binding を bake 可能にする (名前表を @sym 化する) か、
+binding 引数を実行時に組み立てる別ノードにする。ブロック内の binding が
+外側スコープのローカルを含まない件 ([[project_koruby_eval_binding]]) も
+同時に直す必要がある (`[1].each { eval("c += 1") }`)。
