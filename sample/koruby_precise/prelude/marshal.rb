@@ -70,7 +70,7 @@ module Marshal
     when Module
       n = _class_name(o)
       raise TypeError, "can't dump anonymous module #{o}" if n.nil?
-      out << "m"; _long(n.bytesize, out); out << n
+      _dump_named(o, "m", n, out, st)
       return
     end
     case o
@@ -214,7 +214,18 @@ module Marshal
     n = _class_name(o)
     raise TypeError, "can't dump anonymous class #{o}" if n.nil?
     raise TypeError, "singleton can't be dumped" if o.inspect.start_with?("#<Class:")
-    out << "c"; _long(n.bytesize, out); out << n
+    _dump_named(o, "c", n, out, st)
+  end
+
+  # 'c'/'m' record whose payload is the class/module NAME.  A non-ASCII name
+  # carries the name's encoding, like any other String (CRuby wraps it in 'I').
+  def self._dump_named(o, tag, n, out, st)
+    if n.ascii_only?
+      out << tag; _long(n.bytesize, out); out << n
+    else
+      out << "I" << tag; _long(n.bytesize, out); out << n
+      _long(1, out); _write_enc(_str_enc_marker(n), out, st)
+    end
   end
 
   def self._dump_umarshal(o, out, st)
