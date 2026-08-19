@@ -991,7 +991,7 @@ static RESULT korb_m_re_escape(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     fclose(ms); RESULT r = korb_str_new(c, slots + 1, buf ? buf : "", (uint32_t)z); free(buf); return r;
 }
 static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
+    VALUE src = VALUE_SLICE_GET(a, 0); uint32_t flags = 0;
     bool from_regexp = false;
     if (KORB_REGEXP_P(src)) { slots[0] = VAL2RE(src)->source; flags = VAL2RE(src)->flags; from_regexp = true; }
     else if (KORB_STRING_P(src)) slots[0] = src;
@@ -1036,7 +1036,19 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", why);
         }
     }
-    return korb_regexp_new(c, slots + 1, slots[0], flags);
+    const RESULT rr = korb_regexp_new(c, slots + 1, slots[0], flags);
+    if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+    /* Regexp subclass: tag the instance with the receiver class (the same
+     * side-table route Range/String/Array subclasses take). */
+    if (KORB_CLASS_P(VALUE_REF_GET(self)) &&
+        VALUE_REF_GET(self) != korb_builtin_class_obj(c->vm, KORB_C_REGEXP)) {
+        slots[1] = rr.value;
+        slots[2] = VALUE_REF_GET(self);
+        ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_HAS_KLASS;
+        korb_klass_override_set(c, slots[1], slots[2]);   /* both rooted; set does not GC */
+        return RESULT_OK(slots[1]);
+    }
+    return rr;
 }
 static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; slots[0] = KORB_NIL;
