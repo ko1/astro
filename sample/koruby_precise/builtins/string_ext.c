@@ -541,6 +541,8 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
     if (shared) vm->fmt_busy = false; else free(buf);
+    /* the result carries the FORMAT string's encoding (CRuby) */
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));
     return r;
 }
 
