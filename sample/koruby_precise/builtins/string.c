@@ -53,6 +53,10 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     }
     return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
 }
+/* Register (or look up) an encoding name → its header index.  Exported for
+ * parse.c, which needs the file's `# encoding:` name as a tag. */
+uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name) { return korb_enc_index_for_name(vm, name); }
+
 /* String#__encoding_tag → the header encoding index (0..7). */
 static RESULT korb_m_str_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c; (void)slots; (void)a;

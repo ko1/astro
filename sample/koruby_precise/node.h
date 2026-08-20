@@ -213,7 +213,8 @@ RESULT korb_cvar_set(CTX *c, VALUE *slots, VALUE self, VALUE entry_cell, uint32_
 void   korb_const_define(CTX *c, uint32_t name_sym, VALUE val);
 void   korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner);
 bool   korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid);
-const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);            /* encoding index → name */
+const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);
+uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name);   /* encoding name → header index (registers) */            /* encoding index → name */
 bool   korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx);        /* ASCII-compatible encoding? */
 bool   korb_str_enc_combine(const struct korb_vm *vm, VALUE a, VALUE b, uint32_t *out);   /* shared encoding */
 RESULT korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb);    /* Encoding::CompatibilityError */   /* module overrides a Module hook (const_added) */   /* owner = defining module (nil = top-level) — for Module#constants */

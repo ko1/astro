@@ -75,16 +75,14 @@ struct kp_ctx {
 };
 
 /* The file's `# encoding:` magic comment, as prism resolved it, mapped onto the
- * 3-bit string encoding tag.  Anything koruby has no tag for stays UTF-8 (the
- * literal's bytes are unaffected either way). */
+ * string encoding tag (a name koruby has no tag for is registered on the spot;
+ * the literal's bytes are unaffected either way). */
 static uint8_t
-kp_src_enc(const pm_parser_t *parser)
+kp_src_enc(CTX *c, const pm_parser_t *parser)
 {
     const char *const name = parser->encoding ? parser->encoding->name : NULL;
     if (name == NULL) return KORB_ENC_UTF8;
-    if (!strcmp(name, "US-ASCII")) return KORB_ENC_USASCII;
-    if (!strcmp(name, "ASCII-8BIT") || !strcmp(name, "BINARY")) return KORB_ENC_BINARY;
-    return KORB_ENC_UTF8;
+    return (uint8_t)korb_enc_index_pub(c->vm, name);
 }
 
 /* Evaluate BODY (allocations / transduction of the children of a node
@@ -2765,8 +2763,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
       case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
-        const char *nm = tc->src_enc == KORB_ENC_USASCII ? "US-ASCII"
-                       : tc->src_enc == KORB_ENC_BINARY  ? "ASCII-8BIT" : "UTF-8";
+        const char *const nm = korb_enc_name_of(tc->c->vm, tc->src_enc);
         NODE *recv, *arg;
         WITH_CHAIN(tc, KP_SEND1_SC, (recv = ALLOC_node_const(korb_intern(tc->c->vm, "Encoding", 8), 0, INT32_MIN, INT32_MIN),
                                      arg = ALLOC_node_str(nm, (uint32_t)strlen(nm))));
@@ -4067,7 +4064,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .parser = &parser,
         .c = c,
         .fname = fname,
-        .src_enc = kp_src_enc(&parser),
+        .src_enc = kp_src_enc(c, &parser),
     };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
@@ -4123,7 +4120,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
-    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(&parser) };
+    struct kp_ctx tc = { .parser = &parser, .c = c, .fname = fname, .src_enc = kp_src_enc(c, &parser) };
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     free(tc.bake_list);
