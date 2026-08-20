@@ -95,6 +95,7 @@ kp_src_enc(const pm_parser_t *parser)
 
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
 static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
+static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node);
 
 /* node_send takes a parse-time NODE* array [recv, args...]; these build the
  * common small-arity synthetic sends used throughout the parser (op-assign,
@@ -2257,6 +2258,49 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
     return NULL;
 }
 
+/* `recv[*args] op= v` — the index arguments include a splat, so they are built
+ * ONCE into an Array and both sends go through the dynamic (splat) form.  The
+ * value is appended to that same Array for the `[]=` call, which keeps the
+ * single-evaluation guarantee (`#to_a` must run only once). */
+static NODE *
+index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node)
+{
+    const uint32_t argc = (uint32_t)iw->arguments->arguments.size;
+    const uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
+    const uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
+    const enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
+    const uint32_t opmid = kp_intern_cid(tc, iw->binary_operator);
+    const uint32_t line = kp_line(tc, node);
+    const uint32_t t0 = alloc_synth_local(tc);           /* receiver */
+    const uint32_t ta = alloc_synth_local(tc);           /* the index Array */
+    const uint32_t tn = alloc_synth_local(tc);           /* the computed value */
+    NODE *stores = bake_lset(tc, t0, transduce(tc, iw->receiver));
+    NODE *const arr = build_array(tc, iw->arguments->arguments.nodes, argc, argc);
+    stores = ALLOC_node_seq(stores, bake_lset(tc, ta, arr));
+    NODE *newval;
+    const uint32_t bsc = (op != KP_BINOP_NONE) ? kind_node_plus.slot_count : KP_SEND1_SC;
+    WITH_CHAIN(tc, bsc, ({
+        NODE *g_recv, *g_arr, *get, *val;
+        { const int32_t _s = tc->chain; tc->chain = _s + 2;
+          g_recv = bake_lget(tc, t0); g_arr = bake_lget(tc, ta);
+          tc->chain = _s; }
+        get = ALLOC_node_send_splat(aref, line, g_recv, g_arr);
+        val = transduce(tc, iw->value);
+        newval = (op != KP_BINOP_NONE) ? alloc_binop(op, get, val, line) : kp_send1(opmid, line, get, val);
+        newval;
+    }));
+    NODE *seq = ALLOC_node_seq(stores, bake_lset(tc, tn, newval));
+    NODE *s_recv, *s_arr;
+    { const int32_t _s = tc->chain; tc->chain = _s + 2;
+      s_recv = bake_lget(tc, t0);
+      NODE *acc, *elem;
+      WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc = bake_lget(tc, ta), elem = bake_lget(tc, tn)));
+      s_arr = ALLOC_node_ary_push(acc, elem);            /* [indices..., value] */
+      tc->chain = _s; }
+    seq = ALLOC_node_seq(seq, ALLOC_node_send_splat(aset, line, s_recv, s_arr));
+    return ALLOC_node_seq(seq, bake_lget(tc, tn));       /* the expression yields the assigned value */
+}
+
 /* Emit a `super`/`super(args)` that forwards the current method's incoming block.
  * `arr` (built at chain+1, staged as the node's array child) supplies the args;
  * the block trio is read from the method frame (self_off is bottom-header →
@@ -3075,6 +3119,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         size_t argc = iw->arguments ? iw->arguments->arguments.size : 0;
         if (iw->block || argc < 1)                       /* argc>=1: single OR multi index (grid[y,x] += 1) */
             return kp_unsupported(tc, node, "index op= with block or zero index args");
+        { bool spl = false;
+          for (size_t i = 0; i < argc; i++) if (PM_NODE_TYPE_P(iw->arguments->arguments.nodes[i], PM_SPLAT_NODE)) { spl = true; break; }
+          if (spl) return index_opassign_splat(tc, iw, node); }
         uint32_t aref = korb_intern(tc->c->vm, "[]", 2);
         uint32_t aset = korb_intern(tc->c->vm, "[]=", 3);
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, iw->binary_operator));
