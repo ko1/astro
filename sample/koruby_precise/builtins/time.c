@@ -28,7 +28,7 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out, bool *utcish) {
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
         const char *const p = korb_strbuf_data(s->buf); const uint32_t n = s->len;
-        if ((n == 1 && p[0] == 'Z') || (n == 3 && !memcmp(p, "UTC", 3))) { *out = 0; if (utcish) *utcish = true; return true; }
+        if ((n == 1 && p[0] == 'Z') || (n == 3 && !strncasecmp(p, "UTC", 3))) { *out = 0; if (utcish) *utcish = true; return true; }
         if (n == 1) {   /* military zone letters: A..I = +1..+9, K..M = +10..+12,
                          * N..Y = -1..-12 (J is deliberately unassigned) */
             const char z = p[0];
@@ -54,6 +54,17 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out, bool *utcish) {
         }
     }
     return false;
+}
+
+/* ASCII-compatible = one byte per ASCII character.  Only the UTF-16/32, UTF-7
+ * and the stateful ISO-2022 / CP502xx families are not. */
+static bool korb_str_ascii_compat(const struct korb_vm *vm, VALUE sv) {
+    const uint32_t idx = KORB_STR_ENC(sv);
+    if (idx < KORB_ENC_OTHER_MIN || idx >= 8 || vm->str_enc_names[idx] == 0) return true;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[idx]);
+    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
+             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
+             strncasecmp(nm, "CP502", 5) == 0);
 }
 
 /* CRuby's utc_offset ArgumentError, which quotes the offending value. */
@@ -141,26 +152,44 @@ korb_tz_offset_of_rational(CTX *c, VALUE *slots, VALUE_REF r, intptr_t *off, VAL
  * its Time from slots+2 and hand those two slots to korb_time_set_zone.
  * *utcish is set for the "UTC"/"Z"/"-00:00" forms, which mark the Time as UTC. */
 static RESULT
-korb_time_zone_arg(CTX *c, VALUE *slots, VALUE zv, double base, bool to_utc, intptr_t *off, bool *utcish)
+korb_time_zone_arg(CTX *c, VALUE *slots, VALUE zv, VALUE recv, double base, bool to_utc, intptr_t *off, bool *utcish)
 {
     slots[0] = KORB_NIL;                                   /* timezone object */
     slots[1] = KORB_NIL;                                   /* exact offset     */
     *utcish = false;
+    if (KORB_STRING_P(zv) && !korb_str_ascii_compat(c->vm, zv))
+        return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "string should have ASCII compatible encoding");
     if (korb_parse_tz_offset(zv, off, utcish)) goto range;
     /* a String offset has to match the format outright — no coercion (and in
-     * particular not String#to_r, which happily turns "J" into 0) */
-    if (KORB_STRING_P(zv)) return korb_raise_bad_utc_offset(c, slots + 2, zv);
+     * particular not String#to_r, which happily turns "J" into 0).  A name that
+     * is not an offset is handed to Time.find_timezone when the program defines
+     * it (CRuby's timezone-name hook), else it is an error. */
+    if (KORB_STRING_P(zv)) {
+        const VALUE timec = KORB_CLASS_P(recv) ? recv : korb_class_obj_of(c, recv);
+        const uint32_t ftz = korb_intern(c->vm, "find_timezone", 13);
+        if (KORB_CLASS_P(timec) && korb_responds_to(c, timec, ftz)) {
+            slots[2] = timec; slots[3] = zv;
+            const RESULT tr = korb_send(c, slots + 4, ftz, 0, 1);
+            if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
+            if (tr.value != KORB_NIL && tr.value != KORB_FALSE) {
+                slots[2] = tr.value;                        /* the timezone object */
+                bool handled = false;
+                CHECK(korb_tz_convert(c, slots + 3, slots[2], base, to_utc, off, &handled));
+                if (handled) { slots[0] = slots[2]; return RESULT_OK(KORB_NIL); }
+            }
+        }
+        return korb_raise_bad_utc_offset(c, slots + 2, zv);
+    }
     {
         slots[2] = zv;                                     /* park: every path below dispatches (a GC point) */
         const VALUE_REF zr = VALUE_REF_AT(&slots[2]);
-        static const struct { const char *nm; uint32_t len; } conv[] = { { "to_int", 6 }, { "to_str", 6 }, { "to_r", 4 } };
+        static const struct { const char *nm; uint32_t len; } conv[] = { { "to_r", 4 }, { "to_int", 6 }, { "to_str", 6 } };
         bool got = false;
         if (KORB_RATIONAL_P(zv)) CHECK(korb_tz_offset_of_rational(c, slots + 3, zr, off, &slots[1], &got));
         for (size_t ci = 0; ci < sizeof conv / sizeof conv[0] && !got; ci++) {
             const uint32_t mid = korb_intern(c->vm, conv[ci].nm, conv[ci].len);
-            /* #to_r is only honoured from a Numeric (CRuby); a bare object with
-             * #to_r is a TypeError like any other non-offset */
-            if (conv[ci].len == 4 && !korb_obj_is_numeric(c, VALUE_REF_GET(zr))) continue;
+            /* CRuby's num_exact: #to_r wins, except on a String-ish object */
+            if (conv[ci].len == 4 && korb_responds_to(c, VALUE_REF_GET(zr), korb_intern(c->vm, "to_str", 6))) continue;
             if (!korb_responds_to(c, VALUE_REF_GET(zr), mid)) continue;
             slots[3] = VALUE_REF_GET(zr);
             const RESULT ir = korb_send(c, slots + 4, mid, 0, 0);
@@ -274,7 +303,7 @@ static RESULT korb_m_time_now(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     double sec; long ns; korb_time_now_parts(&sec, &ns);
     if (in_zv == KORB_NIL) return korb_time_make_ns(c, slots, VALUE_REF_GET(self), sec, ns, false);
     intptr_t in_off; bool utcish;                            /* slots[0]=zone obj, slots[1]=exact offset */
-    CHECK(korb_time_zone_arg(c, slots, in_zv, sec, false, &in_off, &utcish));
+    CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), sec, false, &in_off, &utcish));
     slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), sec, ns, utcish));
     return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), in_off,
                               VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
@@ -375,7 +404,7 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (in_zv == KORB_NIL)
         return korb_time_make_ns(c, slots, VALUE_REF_GET(self), (double)sec, nsec, src_utc);
     intptr_t off; bool utcish;                                   /* Time.at(x, in: zone) */
-    CHECK(korb_time_zone_arg(c, slots, in_zv, (double)sec, false, &off, &utcish));
+    CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), (double)sec, false, &off, &utcish));
     slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), (double)sec, nsec, utcish));
     return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), off,
                               VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
@@ -469,76 +498,121 @@ static RESULT korb_m_time_utc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 static RESULT korb_m_time_local(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     return korb_time_from_parts(c, slots, VALUE_REF_GET(self), a, false);
 }
-/* Parse a Ruby 3.2+ Time.new(String) ISO-8601-like value.  Accepts
- *   YYYY[-MM[-DD[ T](hh:mm[:ss[.frac]])]] [offset]
- * where offset is Z, UTC, or +/-HH[:]MM[[:]SS].  Returns 0 on success,
- * 1 when a date is present but the time part is missing ("no time
- * information"), 2 on any malformed input.  comp[6] = Y,Mon,D,H,Min,S;
- * *nsec = fractional seconds truncated to nanoseconds; *off / *has_off
- * carry an explicit zone offset when the string supplies one. */
-static int korb_time_iso_parse(const char *s, uint32_t len,
-                               intptr_t comp[6], long *nsec, intptr_t *off, bool *has_off) {
+/* `can't parse: <inspect>` — the catch-all for a string that is not a timestamp. */
+static int kiso_cant(char *emsg, size_t emax, const char *s, uint32_t len) {
+    size_t o = (size_t)snprintf(emsg, emax, "can't parse: \"");
+    for (uint32_t i = 0; i < len && o + 5 < emax; i++) {
+        const char ch = s[i];
+        const char *esc = (ch == '\n') ? "\\n" : (ch == '\t') ? "\\t" : (ch == '\r') ? "\\r"
+                        : (ch == '"') ? "\\\"" : (ch == '\\') ? "\\\\" : NULL;
+        if (esc) { emsg[o++] = esc[0]; emsg[o++] = esc[1]; }
+        else emsg[o++] = ch;
+    }
+    if (o + 2 < emax) { emsg[o++] = '"'; emsg[o] = '\0'; } else emsg[emax - 1] = '\0';
+    return 2;
+}
+
+/* exactly two digits, CRuby's two_digits() including its error wording */
+static bool kiso_two(const char *s, uint32_t len, uint32_t *ip, intptr_t *dst,
+                     const char *name, char *emsg, size_t emax) {
+    const uint32_t i = *ip, rem = len - i;
+    if (rem < 2 || !isdigit((unsigned char)s[i]) || !isdigit((unsigned char)s[i+1]) ||
+        (rem > 2 && isdigit((unsigned char)s[i+2]))) {
+        char sep[16] = "";
+        if (i > 0 && (s[i-1] == '-' || s[i-1] == ':')) snprintf(sep, sizeof sep, " after '%c'", s[i-1]);
+        snprintf(emsg, emax, "two digits %s is expected%s: %.*s", name, sep,
+                 (int)((rem > 10 ? 10 : rem) + 1), s + i - 1);
+        return false;
+    }
+    *dst = (s[i] - '0') * 10 + (s[i+1] - '0'); *ip = i + 2; return true;
+}
+
+/* Parse a Ruby 3.2+ Time.new(String) ISO-8601-like value, following CRuby's
+ * time_init_parse: once a separator is missing the rest of the string is the
+ * zone token, which the caller resolves (offset / name / timezone object).
+ * Returns 0 on success, 1 when there is no time part and no zone ("no time
+ * information"), 2 with emsg filled on malformed input.  comp[6] = Y,Mon,D,H,
+ * Min,S; *nsec = the fraction truncated to nanoseconds (at most `prec` digits
+ * are read when prec >= 0); zoff and zlen delimit the zone token. */
+static int korb_time_iso_parse(const char *s, uint32_t len, intptr_t comp[6], long *nsec,
+                               uint32_t *zoff, uint32_t *zlen, long prec, char *emsg, size_t emax) {
     comp[0] = 1970; comp[1] = 1; comp[2] = 1; comp[3] = 0; comp[4] = 0; comp[5] = 0;
-    *nsec = 0; *off = 0; *has_off = false;
+    *nsec = 0; *zoff = 0; *zlen = 0;
+    if (len > 0 && (isspace((unsigned char)s[0]) || isspace((unsigned char)s[len-1])))
+        return kiso_cant(emsg, emax, s, len);
     uint32_t i = 0;
-    #define KISO_SP() do { while (i < len && (s[i] == ' ' || s[i] == '\t')) i++; } while (0)
-    #define KISO_NUM(dst) do { uint32_t z0 = i; long zv = 0; \
-        while (i < len && isdigit((unsigned char)s[i])) { zv = zv * 10 + (s[i] - '0'); i++; } \
-        if (i == z0) { return 2; } (dst) = zv; } while (0)
-    KISO_NUM(comp[0]);                                   /* year (required) */
-    bool date_more = false;
-    if (i < len && s[i] == '-') { date_more = true; i++; KISO_NUM(comp[1]);
-        if (i < len && s[i] == '-') { i++; KISO_NUM(comp[2]); } }
+    intptr_t ysign = 1;
+    if (i < len && (s[i] == '+' || s[i] == '-')) { if (s[i] == '-') ysign = -1; i++; }
+    const uint32_t d0 = i;
+    intptr_t y = 0;
+    while (i < len && isdigit((unsigned char)s[i])) { y = y * 10 + (s[i] - '0'); i++; }
+    if (i == d0) return kiso_cant(emsg, emax, s, len);
+    if (i - d0 < 4) { snprintf(emsg, emax, "year must be 4 or more digits: %.*s", (int)(i - d0), s + d0); return 2; }
+    comp[0] = ysign * y;
+    if (i == len) return 0;                              /* a bare year is a valid time */
     bool have_time = false;
-    if (i < len && (s[i] == 'T' || s[i] == 't')) { i++; have_time = true; }
-    else if (i < len && s[i] == ' ') {                   /* space may precede time OR offset */
-        uint32_t j = i; while (j < len && s[j] == ' ') j++;
-        uint32_t k = j; while (k < len && isdigit((unsigned char)s[k])) k++;
-        if (k > j && k < len && s[k] == ':') { i = j; have_time = true; }
-    }
-    if (have_time) {
-        KISO_NUM(comp[3]); if (i >= len || s[i] != ':') return 2; i++;
-        KISO_NUM(comp[4]);
-        if (i < len && s[i] == ':') { i++; KISO_NUM(comp[5]);
-            if (i < len && s[i] == '.') { i++; uint32_t f0 = i; long ns = 0; int cnt = 0;
-                while (i < len && isdigit((unsigned char)s[i])) { if (cnt < 9) { ns = ns * 10 + (s[i] - '0'); cnt++; } i++; }
-                if (i == f0) { return 2; } while (cnt < 9) { ns *= 10; cnt++; } *nsec = ns; } }
-    } else if (date_more) {
-        return 1;                                        /* date given but no time */
-    }
-    KISO_SP();
-    if (i < len) {
-        if (s[i] == 'Z' || s[i] == 'z') { *has_off = true; *off = 0; i++; }
-        else if (i + 3 <= len && !memcmp(s + i, "UTC", 3)) { *has_off = true; *off = 0; i += 3; }
-        else if (s[i] == '+' || s[i] == '-') {
-            const int sign = (s[i] == '-') ? -1 : 1; i++;
-            if (i + 2 > len || !isdigit((unsigned char)s[i]) || !isdigit((unsigned char)s[i+1])) return 2;
-            int hh = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; int mm = 0, ss = 0;
-            if (i < len && s[i] == ':') i++;
-            if (i + 2 <= len && isdigit((unsigned char)s[i]) && isdigit((unsigned char)s[i+1])) { mm = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; }
-            if (i < len && s[i] == ':') i++;
-            if (i + 2 <= len && isdigit((unsigned char)s[i]) && isdigit((unsigned char)s[i+1])) { ss = (s[i]-'0')*10 + (s[i+1]-'0'); i += 2; }
-            *has_off = true; *off = sign * (hh * 3600 + mm * 60 + ss);
-        } else return 2;
-    }
-    KISO_SP();
-    if (i != len) return 2;                              /* trailing garbage */
+    do {
+        if (i >= len || s[i] != '-') break;
+        i++; if (!kiso_two(s, len, &i, &comp[1], "mon", emsg, emax)) return 2;
+        if (i >= len || s[i] != '-') break;
+        i++; if (!kiso_two(s, len, &i, &comp[2], "mday", emsg, emax)) return 2;
+        if (i >= len || (s[i] != ' ' && s[i] != 'T')) break;
+        const uint32_t tp = i + 1;                       /* start of the time part, for messages */
+        if (tp >= len || !isdigit((unsigned char)s[tp])) break;
+        i = tp;
+        #define KISO_NOFRAC(nm) do { if (i < len && s[i] == '.') { \
+            snprintf(emsg, emax, "fraction " nm " is not supported: %.*s", (int)(i + 1 - tp), s + tp); return 2; } } while (0)
+        #define KISO_COLON(nm) do { if (i >= len || s[i] != ':') { \
+            snprintf(emsg, emax, "missing " nm " part: %.*s", (int)((i < len ? i + 1 : len) - tp), s + tp); return 2; } i++; } while (0)
+        if (!kiso_two(s, len, &i, &comp[3], "hour", emsg, emax)) return 2;
+        KISO_NOFRAC("hour"); KISO_COLON("min");
+        if (!kiso_two(s, len, &i, &comp[4], "min", emsg, emax)) return 2;
+        KISO_NOFRAC("min"); KISO_COLON("sec");
+        if (!kiso_two(s, len, &i, &comp[5], "sec", emsg, emax)) return 2;
+        have_time = true;
+        if (i < len && s[i] == '.') {
+            i++;
+            const uint32_t cap = (prec < 0 || prec > 9) ? 9u : (uint32_t)prec;
+            uint32_t nd = 0; long ns = 0;
+            while (nd < cap && i + nd < len && isdigit((unsigned char)s[i + nd])) { ns = ns * 10 + (s[i + nd] - '0'); nd++; }
+            if (nd == 0) {
+                snprintf(emsg, emax, "subsecond expected after dot: %.*s", (int)(i - tp + (i < len ? 1 : 0)), s + tp);
+                return 2;
+            }
+            for (uint32_t k = nd; k < 9; k++) ns *= 10;
+            *nsec = ns; i += nd;
+            while (i < len && isdigit((unsigned char)s[i])) i++;   /* digits past the precision */
+        }
+        #undef KISO_NOFRAC
+        #undef KISO_COLON
+    } while (0);
+    while (i < len && isspace((unsigned char)s[i])) i++;
+    const uint32_t zs = i;
+    while (i < len && !isspace((unsigned char)s[i])) i++;
+    const uint32_t ze = i;
+    while (i < len && isspace((unsigned char)s[i])) i++;
+    if (i < len) { snprintf(emsg, emax, "can't parse at: %.*s", (int)(len - i), s + i); return 2; }
+    if (ze > zs) { *zoff = zs; *zlen = ze - zs; }
+    else if (!have_time) return 1;
     return 0;
-    #undef KISO_SP
-    #undef KISO_NUM
 }
 
 static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     uint32_t n = VALUE_SLICE_LEN(a);
+    VALUE prec_v = KORB_NIL;
     /* A trailing Hash is keyword arguments (in:, precision:); Time.new never
      * takes a positional Hash.  Extract `in:` (a fixed zone offset) and drop the
      * hash from the positional count. */
     VALUE in_zv = KORB_NIL;
     if (n >= 1 && KORB_HASH_P(VALUE_SLICE_GET(a, n - 1))) {
+        /* the ABI cannot tell kwargs from a trailing positional Hash, so only a
+         * hash that carries a keyword we know is treated as one */
         const KorbHash *const h = VAL2HASH(VALUE_SLICE_GET(a, n - 1));
         const int32_t ix = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "in", 2)));
         if (ix >= 0) in_zv = korb_items_data(h->items)[2 * ix + 1];
-        n--;
+        const int32_t px = korb_hash_find(h, ID2SYM(korb_intern(c->vm, "precision", 9)));
+        if (px >= 0) prec_v = korb_items_data(h->items)[2 * px + 1];
+        if (ix >= 0 || px >= 0) n--;
     }
     const bool has_in = (in_zv != KORB_NIL);
     if (n == 0 && !has_in) {
@@ -548,32 +622,56 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (n == 0) {                                            /* Time.new(in: zone) → now in that zone */
         double sec; long ns; korb_time_now_parts(&sec, &ns);
         intptr_t in_off; bool utcish;
-        CHECK(korb_time_zone_arg(c, slots, in_zv, sec, false, &in_off, &utcish));
+        CHECK(korb_time_zone_arg(c, slots, in_zv, VALUE_REF_GET(self), sec, false, &in_off, &utcish));
         slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), sec, ns, utcish));
         return korb_time_set_zone(c, slots + 3, VALUE_REF_AT(&slots[2]), in_off,
                                   VALUE_REF_AT(&slots[0]), VALUE_REF_AT(&slots[1]));
     }
     /* Time.new(String): a single String argument is an ISO-8601-like timestamp. */
     if (n == 1 && KORB_STRING_P(VALUE_SLICE_GET(a, 0))) {
-        const KorbString *const str = VAL2STR(VALUE_SLICE_GET(a, 0));
-        intptr_t comp[6]; long nsec; intptr_t off; bool has_off;
-        const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec, &off, &has_off);
-        if (pr == 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no time information in %.*s", (int)str->len, korb_strbuf_data(str->buf));
-        if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
-        /* An offset in the string wins over `in:` (CRuby); otherwise `in:` applies. */
-        const bool eff_has = has_off || has_in;
-        if (comp[1] < 1 || comp[1] > 12 || comp[2] < 1 || comp[2] > 31 ||
-            comp[3] < 0 || comp[3] > 24 || comp[4] < 0 || comp[4] > 59 || comp[5] < 0 || comp[5] > 60 ||
-            (has_off && (off <= -86400 || off >= 86400)))
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "argument out of range");
+        slots[4] = VALUE_SLICE_GET(a, 0);                  /* park: the coercion below dispatches */
+        if (!korb_str_ascii_compat(c->vm, slots[4]))
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "time string should have ASCII compatible encoding");
+        long prec = -1;                                    /* sub-second digits to keep; -1 = all */
+        if (prec_v != KORB_NIL) {
+            slots[5] = prec_v;
+            if (!FIXNUM_P(slots[5])) {                     /* Integer only — #to_int, not #to_i */
+                const uint32_t toi = korb_intern(c->vm, "to_int", 6);
+                if (!korb_responds_to(c, slots[5], toi))
+                    return korb_raise(c, slots + 6, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer",
+                                      korb_coerce_name(c, slots[5]));
+                slots[6] = slots[5];
+                slots[5] = UNWRAP(korb_send(c, slots + 7, toi, 0, 0));
+            }
+            prec = FIXNUM_P(slots[5]) ? (long)FIX2LONG(slots[5]) : 9;
+            if (prec < 0) prec = 0;
+        }
+        intptr_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];
+        {
+            const KorbString *const str = VAL2STR(slots[4]);
+            const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec,
+                                               &zs, &zl, prec, emsg, sizeof emsg);
+            if (pr == 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no time information");
+            if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", emsg);
+        }
+        static const char *const cname[6] = { "year", "mon", "mday", "hour", "min", "sec" };
+        static const intptr_t clo[6] = { 0, 1, 1, 0, 0, 0 }, chi[6] = { 0, 12, 31, 24, 59, 60 };
+        for (uint32_t k = 1; k < 6; k++)
+            if (comp[k] < clo[k] || comp[k] > chi[k])
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s out of range", cname[k]);
         struct tm tm; memset(&tm, 0, sizeof tm);
         tm.tm_year = (int)comp[0] - 1900; tm.tm_mon = (int)comp[1] - 1; tm.tm_mday = (int)comp[2];
         tm.tm_hour = (int)comp[3]; tm.tm_min = (int)comp[4]; tm.tm_sec = (int)comp[5]; tm.tm_isdst = -1;
-        intptr_t eff_off = off; bool utcish = false;
+        /* a zone token in the string wins over `in:` (CRuby); both go through the
+         * regular zone resolution (offset / military letter / timezone object). */
         slots[0] = slots[1] = KORB_NIL;                    /* zone obj / exact offset */
-        if (!has_off && has_in) {
+        if (zl > 0) slots[5] = UNWRAP(korb_str_slice_new(c, slots + 6, VALUE_REF_AT(&slots[4]), zs, zl));
+        else slots[5] = in_zv;
+        const bool eff_has = (slots[5] != KORB_NIL);
+        intptr_t eff_off = 0; bool utcish = false;
+        if (eff_has) {
             struct tm tmw = tm;                            /* timegm normalizes in place */
-            CHECK(korb_time_zone_arg(c, slots, in_zv, (double)timegm(&tmw), true, &eff_off, &utcish));
+            CHECK(korb_time_zone_arg(c, slots, slots[5], VALUE_REF_GET(self), (double)timegm(&tmw), true, &eff_off, &utcish));
         }
         const double e = eff_has ? (double)timegm(&tm) - (double)eff_off : (double)mktime(&tm);
         slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, VALUE_REF_GET(self), e, nsec, utcish));
@@ -604,7 +702,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         struct tm tmw = tm;                                  /* timegm normalizes in place */
         const double wall = (double)timegm(&tmw);
         intptr_t off; bool utcish;
-        CHECK(korb_time_zone_arg(c, slots, pos_off ? VALUE_SLICE_GET(a, 6) : in_zv, wall, true, &off, &utcish));
+        CHECK(korb_time_zone_arg(c, slots, pos_off ? VALUE_SLICE_GET(a, 6) : in_zv, VALUE_REF_GET(self), wall, true, &off, &utcish));
         double offd = (double)off;
         if (slots[1] != KORB_NIL) korb_num_to_d(slots[1], &offd);      /* exact fractional offset */
         slots[2] = UNWRAP(korb_time_make(c, slots + 2, VALUE_REF_GET(self), wall - offd, utcish));
@@ -682,7 +780,7 @@ static RESULT korb_m_time_getlocal(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     const VALUE cls = korb_class_obj_of(c, t);
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {
         intptr_t off; bool utcish;
-        CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), e, false, &off, &utcish));
+        CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self), e, false, &off, &utcish));
         /* re-read the class: resolving the zone dispatches, i.e. it can move objects */
         slots[2] = UNWRAP(korb_time_make(c, slots + 2, korb_class_obj_of(c, VALUE_REF_GET(self)), e, utcish));
         CHECK(korb_time_copy_nsec(c, slots + 3, VALUE_REF_GET(self), VALUE_REF_AT(&slots[2])));
@@ -726,7 +824,7 @@ static RESULT korb_m_time_localtime_bang(CTX *c, VALUE *slots, VALUE_REF self, V
     intptr_t off = 0; bool utcish = false;
     if (have_arg) {
         const double e = korb_time_epoch(c, VALUE_REF_GET(self));
-        CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), e, false, &off, &utcish));
+        CHECK(korb_time_zone_arg(c, slots, VALUE_SLICE_GET(a, 0), VALUE_REF_GET(self), e, false, &off, &utcish));
     }
     /* already in that zone → no change, so a frozen receiver is fine */
     intptr_t cur; const bool had = korb_time_fixed_off(c, VALUE_REF_GET(self), &cur);
@@ -799,6 +897,27 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     const bool is_utc = korb_time_is_utc(c, VALUE_REF_GET(self));
     if (is_utc) tm.tm_zone = "UTC";                          /* CRuby reports "UTC" (%Z), not libc's "GMT" */
+    /* A Time built from a timezone object names itself through #abbr (a String
+     * zone is its own name); %Z prints that instead of libc's abbreviation. */
+    char zbuf[64]; bool has_zname = false;
+    slots[0] = korb_ivar_get(c, VALUE_REF_GET(self), korb_time_tz_sym(c->vm));
+    if (slots[0] != KORB_NIL) {
+        if (!KORB_STRING_P(slots[0])) {
+            const uint32_t ab = korb_intern(c->vm, "abbr", 4);
+            if (korb_responds_to(c, slots[0], ab)) {
+                slots[1] = slots[0]; slots[2] = VALUE_REF_GET(self);
+                const RESULT zr = korb_send(c, slots + 3, ab, 0, 1);
+                if (UNLIKELY(zr.state != KORB_NORMAL)) return zr;
+                slots[0] = zr.value;
+            } else slots[0] = KORB_NIL;
+        }
+        if (KORB_STRING_P(slots[0])) {
+            uint32_t zl = VAL2STR(slots[0])->len;
+            if (zl >= sizeof zbuf) zl = sizeof zbuf - 1;
+            memcpy(zbuf, korb_strbuf_data(VAL2STR(slots[0])->buf), zl); zbuf[zl] = 0;
+            has_zname = true;
+        }
+    }
     /* Nanosecond part, for the Ruby-only %L / %N sub-second directives. */
     const long nsec = korb_time_nsec_of(c, VALUE_REF_GET(self));
     const long gmtoff = tm.tm_gmtoff;
@@ -823,6 +942,8 @@ static RESULT korb_m_time_strftime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (ncolon >= 2) snprintf(zb, sizeof zb, "%c%02d:%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm, ss);
             else             snprintf(zb, sizeof zb, "%c%02d:%02d", gmtoff < 0 ? '-' : '+', hh, mm);
             for (const char *p = zb; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
+        } else if (spec == 'Z' && has_zname) {               /* the timezone object's own name */
+            for (const char *p = zbuf; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
         } else if (spec == 'v') {                            /* VMS date: " 3-FEB-2001" */
             for (const char *p = "%e-%^b-%Y"; *p && o + 1 < sizeof efmt; p++) efmt[o++] = *p;
         } else {                                             /* copy the whole directive verbatim for strftime */
@@ -843,11 +964,34 @@ static RESULT korb_m_time_asctime(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const size_t n = strftime(out, sizeof out, "%a %b %e %H:%M:%S %Y", &tm);
     return korb_str_new(c, slots, out, (uint32_t)n);
 }
+/* Time#inspect — like #to_s but with the sub-second part (trailing zeros
+ * stripped), which is how CRuby distinguishes the two. */
+static RESULT korb_m_time_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
+    const bool utc = korb_time_is_utc(c, VALUE_REF_GET(self));
+    long ns = korb_time_nsec_of(c, VALUE_REF_GET(self));
+    char out[96];
+    size_t n = strftime(out, sizeof out, "%Y-%m-%d %H:%M:%S", &tm);
+    if (ns != 0) {
+        char frac[12];
+        snprintf(frac, sizeof frac, "%09ld", ns);
+        size_t fl = 9;
+        while (fl > 1 && frac[fl - 1] == '0') fl--;
+        n += (size_t)snprintf(out + n, sizeof out - n, ".%.*s", (int)fl, frac);
+    }
+    n += strftime(out + n, sizeof out - n, utc ? " UTC" : " %z", &tm);
+    const RESULT r = korb_str_new(c, slots, out, (uint32_t)n);
+    if (r.state == KORB_NORMAL) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
+    return r;
+}
+
 static RESULT korb_m_time_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; struct tm tm; korb_time_tm(c, VALUE_REF_GET(self), &tm);
     char out[64];
     const size_t n = strftime(out, sizeof out, korb_time_is_utc(c, VALUE_REF_GET(self)) ? "%Y-%m-%d %H:%M:%S UTC" : "%Y-%m-%d %H:%M:%S %z", &tm);
-    return korb_str_new(c, slots, out, (uint32_t)n);
+    const RESULT r = korb_str_new(c, slots, out, (uint32_t)n);
+    if (r.state == KORB_NORMAL) KORB_STR_ENC_SET(r.value, KORB_ENC_USASCII);
+    return r;
 }
 
 /* day-of-week predicates. */
@@ -969,7 +1113,7 @@ void korb_init_time(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, t, "asctime",  korb_m_time_asctime, 0);
     korb_class_def_cfn(c, t, "ctime",    korb_m_time_asctime, 0);
     korb_class_def_cfn(c, t, "to_s",     korb_m_time_to_s, 0);
-    korb_class_def_cfn(c, t, "inspect",  korb_m_time_to_s, 0);
+    korb_class_def_cfn(c, t, "inspect",  korb_m_time_inspect, 0);
     /* Comparable derives < <= > >= between/clamp from Time#<=>. */
     const VALUE comp = korb_const_get(vm, korb_intern(vm, "Comparable", 10));
     if (KORB_CLASS_P(comp)) { slots[1] = comp; (void)korb_do_include(c, slots + 2, slots[0], VALUE_SLICE_MAKE(&slots[1], 1)); }

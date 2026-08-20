@@ -31,8 +31,7 @@ class File
   end
 end
 module Process
-  CLOCK_MONOTONIC = 1
-  def self.clock_gettime(clk) = __clock_gettime
+  def self.clock_gettime(clk) = __clock_gettime   # CLOCK_MONOTONIC comes from the prelude
 end
 SHIM
   # require-order: opt.rb (CodeOptimizationHelper) before cpu/ppu; mappers after

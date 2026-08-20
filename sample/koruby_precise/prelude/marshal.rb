@@ -538,12 +538,13 @@ module Marshal
         idx = st[:objs].size; st[:objs] << nil
         cls = _read0(st)
         data = _bytes(st, _rlong(st))
-        offset = nil; submicro = nil
+        offset = nil; submicro = nil; zname = nil
         _rlong(st).times do
           name = _read0(st); val = _read(st)
           next if name == :E || name == :encoding
           offset = val if name == :offset
           submicro = val if name == :submicro
+          zname = val if name == :zone
           data.instance_variable_set(name, val) rescue nil   # :offset / :zone have no '@'
         end
         obj = _const(cls)._load(data)
@@ -560,6 +561,18 @@ module Marshal
         # shift is done on the integer seconds so the nanoseconds stay exact
         # (Time#- goes through a Float).
         obj = Time.at(obj.to_i - offset, Rational(obj.nsec, 1000)).getlocal(offset) if Time === obj && offset
+        # A zone name rides along as the pseudo-ivar :zone.  CRuby rebuilds the
+        # timezone OBJECT from it through the class's .find_timezone hook; with no
+        # hook the name itself becomes #zone.
+        if Time === obj && String === zname && !obj.utc?
+          k = _const(cls)
+          tz = (k.respond_to?(:find_timezone) ? (k.find_timezone(zname) rescue nil) : nil)
+          if tz
+            obj = Time.at(obj.to_i, Rational(obj.nsec, 1000)).getlocal(tz)
+          else
+            obj.instance_variable_set(:@__tz, zname)
+          end
+        end
         st[:objs][idx] = obj
         return obj
       end
