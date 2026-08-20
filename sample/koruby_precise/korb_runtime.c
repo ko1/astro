@@ -3336,6 +3336,8 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
         *dst = *src;                                     /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
+        /* the copy takes the DEFINING frame's visibility, not the source's */
+        dst->visibility = (VAL2CLASS(slots[0])->cur_visibility == 3) ? 1 : VAL2CLASS(slots[0])->cur_visibility;
         c->vm->method_serial++;
         return RESULT_OK(ID2SYM(mid));
     } else if (VALUE_SLICE_LEN(a) >= 2) {                /* a 2nd arg that isn't a Proc/Method/UnboundMethod */
