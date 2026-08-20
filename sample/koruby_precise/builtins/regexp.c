@@ -1136,22 +1136,143 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     }
     return rr;
 }
+/* the name of a header encoding index, for the union's error message */
+static const char *korb_enc_idx_name(const struct korb_vm *vm, uint32_t idx) {
+    if (idx == KORB_ENC_UTF8) return "UTF-8";
+    if (idx == KORB_ENC_USASCII) return "US-ASCII";
+    if (idx == KORB_ENC_BINARY) return "ASCII-8BIT";
+    return (idx < KORB_STR_ENC_MAX && vm->str_enc_names[idx]) ? korb_sym_name(vm, vm->str_enc_names[idx]) : "unknown";
+}
+/* the UTF-16/32, UTF-7 and stateful families are not ASCII-compatible */
+static bool korb_re_enc_ascii_compat(const struct korb_vm *vm, uint32_t idx) {
+    if (idx < KORB_ENC_OTHER_MIN || idx >= KORB_STR_ENC_MAX || vm->str_enc_names[idx] == 0) return true;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[idx]);
+    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
+             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
+             strncasecmp(nm, "CP502", 5) == 0);
+}
+/* a Regexp part's encoding index, via its own #encoding (the prelude knows the
+ * /n /u /e /s rules).  false when it cannot be determined. */
+static bool korb_re_part_enc(CTX *c, VALUE *slots, VALUE_REF reref, uint32_t *idx, bool *fixed) {
+    /* the Regexp is read from the caller's scanned slot each time: the dispatches
+     * below allocate, and a raw VALUE would go stale under the moving GC */
+    slots[0] = VALUE_REF_GET(reref);
+    const RESULT er = korb_send(c, slots + 1, korb_intern(c->vm, "encoding", 8), 0, 0);
+    if (er.state != KORB_NORMAL || er.value == KORB_NIL) return false;
+    slots[0] = er.value;
+    const RESULT nr = korb_send(c, slots + 1, korb_intern(c->vm, "name", 4), 0, 0);
+    if (nr.state != KORB_NORMAL || !KORB_STRING_P(nr.value)) return false;
+    slots[0] = nr.value;
+    char nb[64];                                   /* the registry takes a NUL-terminated name */
+    const KorbString *const ns = VAL2STR(slots[0]);
+    uint32_t n = ns->len < sizeof nb - 1 ? ns->len : (uint32_t)(sizeof nb - 1);
+    memcpy(nb, korb_strbuf_data(ns->buf), n); nb[n] = '\0';
+    *idx = korb_enc_index_for_name(c->vm, nb);
+    slots[0] = VALUE_REF_GET(reref);
+    const RESULT fr = korb_send(c, slots + 1, korb_intern(c->vm, "fixed_encoding?", 15), 0, 0);
+    *fixed = (fr.state == KORB_NORMAL) && KORB_TRUTHY(fr.value);
+    return true;
+}
 static RESULT korb_m_re_union(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    (void)self; slots[0] = KORB_NIL;
+    (void)self;
+    slots[0] = KORB_NIL;
+    slots[3] = KORB_NIL;                                 /* the Array form's element list (parked) */
+    slots[4] = KORB_NIL;                                 /* the part being appended (parked: we dispatch) */
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
-    uint32_t n = VALUE_SLICE_LEN(a); VALUE items = KORB_NIL;
-    if (n == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0))) { items = VALUE_SLICE_GET(a, 0); n = VAL2ARY(items)->len; }
+    uint32_t n = VALUE_SLICE_LEN(a);
+    if (n == 1 && KORB_ARRAY_P(VALUE_SLICE_GET(a, 0))) { slots[3] = VALUE_SLICE_GET(a, 0); n = VAL2ARY(slots[3])->len; }
+    #define KORB_UNION_ITEM(i) (slots[3] != KORB_NIL ? korb_items_data(VAL2ARY(slots[3])->items)[(i)] : VALUE_SLICE_GET(a, (i)))
     if (n == 0) fputs("(?!)", ms);
-    for (uint32_t i = 0; i < n; i++) {
-        VALUE it = (items != KORB_NIL) ? korb_items_data(VAL2ARY(items)->items)[i] : VALUE_SLICE_GET(a, i);
-        if (i) fputc('|', ms);
-        if (KORB_REGEXP_P(it)) korb_re_write_to_s(ms, it);   /* keep each part's own options */
-        else if (KORB_STRING_P(it)) { const KorbString *s = VAL2STR(it);
-            for (uint32_t j = 0; j < s->len; j++) { unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[j]; if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms); fputc(ch, ms); } }
-        else { fclose(ms); free(buf); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(it)); }
+    if (n == 1) {                                       /* a single Regexp argument IS the union (CRuby) */
+        slots[4] = KORB_UNION_ITEM(0);
+        if (KORB_REGEXP_P(slots[4])) { fclose(ms); free(buf); return RESULT_OK(slots[4]); }
+        if (!KORB_STRING_P(slots[4]) && korb_responds_to(c, slots[4], korb_intern(c->vm, "to_regexp", 9))) {
+            const RESULT rr = korb_send(c, slots + 5, korb_intern(c->vm, "to_regexp", 9), 0, 0);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) { fclose(ms); free(buf); return rr; }
+            if (KORB_REGEXP_P(rr.value)) { fclose(ms); free(buf); return RESULT_OK(rr.value); }
+        }
     }
+    /* rb_reg_s_union's three buckets: an ASCII-incompatible part, an
+     * ASCII-compatible part that pins its encoding, and plain ASCII-only parts. */
+    uint32_t incompat = UINT32_MAX, cfixed = UINT32_MAX;
+    bool asciionly = false;
+    #define KORB_UNION_FAIL(...) do { fclose(ms); free(buf); \
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, __VA_ARGS__); } while (0)
+    for (uint32_t i = 0; i < n; i++) {
+        slots[4] = KORB_UNION_ITEM(i);
+        if (i) fputc('|', ms);
+        uint32_t e = UINT32_MAX; bool part_fixed = false, part_asciionly = false;
+        if (!KORB_REGEXP_P(slots[4]) && !KORB_STRING_P(slots[4]) && !SYMBOL_P(slots[4]) &&
+            korb_responds_to(c, slots[4], korb_intern(c->vm, "to_regexp", 9))) {
+            const RESULT rr = korb_send(c, slots + 5, korb_intern(c->vm, "to_regexp", 9), 0, 0);   /* rb_check_regexp_type */
+            if (UNLIKELY(rr.state != KORB_NORMAL)) { fclose(ms); free(buf); return rr; }
+            if (UNLIKELY(!KORB_REGEXP_P(rr.value))) {
+                fclose(ms); free(buf);
+                return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Regexp", korb_re_arg_type(slots[4]));
+            }
+            slots[4] = rr.value;
+        }
+        if (KORB_REGEXP_P(slots[4])) {
+            if (!korb_re_part_enc(c, slots + 5, VALUE_REF_AT(&slots[4]), &e, &part_fixed)) e = KORB_ENC_USASCII;
+            korb_re_write_to_s(ms, slots[4]);            /* after the dispatches: slots[4] is re-read */
+            part_asciionly = !part_fixed;
+        } else if (KORB_STRING_P(slots[4]) || SYMBOL_P(slots[4]) ||
+                   korb_responds_to(c, slots[4], korb_intern(c->vm, "to_str", 6))) {
+            if (SYMBOL_P(slots[4])) {                    /* a Symbol unions as its name */
+                const char *const sn = korb_sym_name(c->vm, SYM2ID(slots[4]));
+                const RESULT sr = korb_str_new(c, slots + 5, sn, (uint32_t)strlen(sn));
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { fclose(ms); free(buf); return sr; }
+                slots[4] = sr.value;
+            } else if (!KORB_STRING_P(slots[4])) {       /* #to_str coercion (CRuby's StringValue) */
+                const RESULT sr = korb_send(c, slots + 5, korb_intern(c->vm, "to_str", 6), 0, 0);
+                if (UNLIKELY(sr.state != KORB_NORMAL)) { fclose(ms); free(buf); return sr; }
+                if (UNLIKELY(!KORB_STRING_P(sr.value))) {
+                    fclose(ms); free(buf);
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                                      korb_re_arg_type(slots[4]));
+                }
+                slots[4] = sr.value;
+            }
+            const KorbString *const s2 = VAL2STR(slots[4]);   /* no dispatch below: the borrow is safe */
+            bool nonascii = false;
+            for (uint32_t j = 0; j < s2->len; j++) {
+                const unsigned char ch = (unsigned char)korb_strbuf_data(s2->buf)[j];
+                if (ch >= 0x80) nonascii = true;
+                if (strchr("\\.*+?()[]{}|-^$", ch)) fputc('\\', ms);
+                fputc(ch, ms);
+            }
+            e = KORB_STR_ENC(slots[4]);
+            part_fixed = nonascii;                       /* a non-ASCII String pins its encoding */
+            part_asciionly = !nonascii;
+        } else {
+            fclose(ms); free(buf);
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
+                              korb_re_arg_type(slots[4]));
+        }
+        if (!korb_re_enc_ascii_compat(c->vm, e)) {
+            if (incompat == UINT32_MAX) incompat = e;
+            else if (incompat != e)
+                KORB_UNION_FAIL("incompatible encodings: %s and %s",
+                                korb_enc_idx_name(c->vm, incompat), korb_enc_idx_name(c->vm, e));
+        } else if (part_fixed) {
+            if (cfixed == UINT32_MAX) cfixed = e;
+            else if (cfixed != e)
+                KORB_UNION_FAIL("incompatible encodings: %s and %s",
+                                korb_enc_idx_name(c->vm, cfixed), korb_enc_idx_name(c->vm, e));
+        } else if (part_asciionly) asciionly = true;
+        if (incompat != UINT32_MAX) {
+            if (asciionly) KORB_UNION_FAIL("ASCII incompatible encoding: %s", korb_enc_idx_name(c->vm, incompat));
+            if (cfixed != UINT32_MAX)
+                KORB_UNION_FAIL("incompatible encodings: %s and %s",
+                                korb_enc_idx_name(c->vm, incompat), korb_enc_idx_name(c->vm, cfixed));
+        }
+    }
+    #undef KORB_UNION_FAIL
+    #undef KORB_UNION_ITEM
     fclose(ms); slots[0] = UNWRAP(korb_str_new(c, slots, buf ? buf : "", (uint32_t)z)); free(buf);
-    return korb_regexp_new(c, slots + 1, slots[0], 0);
+    const uint32_t renc = (incompat != UINT32_MAX) ? incompat : cfixed;
+    if (renc != UINT32_MAX) KORB_STR_ENC_SET(slots[0], renc);   /* the union carries the imposed encoding */
+    return korb_regexp_new(c, slots + 1, slots[0], 0);   /* CRuby builds it from the source alone */
 }
 static RESULT korb_m_re_last_match(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)self; VALUE md = korb_re_get_lastmatch(c);

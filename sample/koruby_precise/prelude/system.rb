@@ -1399,9 +1399,15 @@ class Fiber
 end
 
 class Regexp
-  # fixed_encoding? — /u /e /s /n のような encoding 指定が付いた正規表現か。
-  # koruby は source の encoding タグで判定する (UTF-8 でない = 明示指定)。
+  # fixed_encoding? — /u /e /s のような encoding 指定が付いているか、あるいは
+  # パターン自体が 7bit ASCII に収まらない (非 ASCII バイト・\xNN >= 0x80 の
+  # エスケープ・ASCII 非互換の source encoding) 場合。CRuby はこの場合も
+  # エンコーディングを固定する。
   def fixed_encoding?
-    (options & Regexp::FIXEDENCODING) != 0
+    return true if (options & Regexp::FIXEDENCODING) != 0
+    src = source
+    return true unless src.encoding.ascii_compatible?
+    return true unless src.ascii_only?
+    src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
   end
 end

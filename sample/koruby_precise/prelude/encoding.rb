@@ -413,13 +413,19 @@ class Regexp
       (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
     end
     o = options
-    return Encoding::ASCII_8BIT if (o & 32) != 0   # /n (NOENCODING)
+    if (o & 32) != 0                               # /n (NOENCODING)
+      # a \xNN escape above 0x7f makes the pattern binary; otherwise it is
+      # plain 7-bit and CRuby reports US-ASCII
+      bin = src.scan(/\\x([0-9a-fA-F]{1,2})/).any? { |h| h[0].to_i(16) > 0x7f }
+      return (bin || !src.ascii_only?) ? Encoding::ASCII_8BIT : Encoding::US_ASCII
+    end
     # /e and /s fix the pattern to EUC-JP / Windows-31J; koruby does not
     # transcode, so only the reported encoding follows the modifier.
     h = __enc_hint
     return Encoding.find(h) if h
+    return src.encoding unless src.encoding.ascii_compatible?   # UTF-16/32 … pin themselves
     return Encoding::UTF_8 if utf8
-    return src.encoding if (o & 16) != 0          # FIXEDENCODING: the source's own encoding
+    return src.encoding if fixed_encoding?        # pinned: the source's own encoding
     src.ascii_only? ? Encoding::US_ASCII : src.encoding
   end
 end
