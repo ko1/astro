@@ -43,6 +43,9 @@ struct kp_frame {
     bool anon_cref_method;    /* a method defined in such a body: its cref is that unnamed class, which only
                                * the frame's method-entry cell can name at runtime */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
+    bool depth_shift;         /* END { } body: prism resolved its locals against the ENCLOSING scope
+                               * (depth 0), but the body runs as a closure, so every reference is one
+                               * level out. */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
     int32_t  fwd_blk_slot;    /* `def m(...)` → synth local holding the caller's block as a Proc (-1 = none) */
     int32_t  anon_rest_slot;  /* `def m(*)` → synth local holding the anonymous rest; bare `*` forwards it (-1 = none) */
@@ -67,6 +70,7 @@ struct kp_ctx {
     int32_t **bake_list;      /* lvar-offset cells awaiting locals_cnt fixup */
     uint32_t bake_cnt, bake_capa;
     bool syntax_error;        /* transduce-time SyntaxError (e.g. binding in alternative pattern) */
+    bool pending_depth_shift; /* the next pushed frame is an END { } body (see kp_frame.depth_shift) */
     uint8_t src_enc;          /* KORB_ENC_* for this file's string literals (from the magic comment) */
 };
 
@@ -292,6 +296,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->module_function_mode = false;
     f->method_mid = 0;
     f->method_params = 0;
+    f->depth_shift = tc->pending_depth_shift;
     f->fwd_slot = -1;
     f->fwd_blk_slot = -1;
     f->anon_rest_slot = -1;
@@ -497,6 +502,7 @@ static void kp_note_depth(struct kp_ctx *tc, uint32_t depth) {
 static NODE *
 lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
 {
+    if (tc->frame->depth_shift) depth++;
     if (depth == 0) return bake_lget(tc, lvar_index(tc, node, cid));
     kp_note_depth(tc, depth);
     return bake_eget(tc, depth, lvar_index_at(tc, node, cid, depth));
@@ -505,6 +511,7 @@ lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32
 static NODE *
 lvar_write(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth, NODE *rval)
 {
+    if (tc->frame->depth_shift) depth++;
     if (depth == 0) return bake_lset(tc, lvar_index(tc, node, cid), rval);
     kp_note_depth(tc, depth);
     return bake_eset(tc, depth, lvar_index_at(tc, node, cid, depth), rval);
@@ -1285,6 +1292,19 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
      * AOT entry, body inlined into its SD. */
     code_repo_add("block", entry, true);
     return entry;
+}
+
+/* END { } body: a block whose own scope is empty and whose every local
+ * reference is one level out (see kp_frame.depth_shift). */
+static NODE *
+transduce_block_parts_shifted(struct kp_ctx *tc, const pm_constant_id_list_t *locals, const pm_node_t *body)
+{
+    struct kp_frame *const outer = tc->frame;
+    (void)outer;
+    tc->pending_depth_shift = true;
+    NODE *e = transduce_block_parts(tc, locals, NULL, body);
+    tc->pending_depth_shift = false;
+    return e;
 }
 
 static NODE *
@@ -2721,6 +2741,20 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
       case PM_SOURCE_FILE_NODE: return ALLOC_node_str(tc->fname, (uint32_t)strlen(tc->fname));   /* __FILE__ */
+      case PM_POST_EXECUTION_NODE: {     /* END { } — an at_exit handler over the current scope */
+        const pm_post_execution_node_t *const pe = (const pm_post_execution_node_t *)node;
+        if (tc->frame->method_mid != 0)
+            fprintf(stderr, "%s:%u: warning: END in method; use at_exit\n", tc->fname, kp_line(tc, node));
+        /* END shares the enclosing scope (prism resolves its locals at depth 0),
+         * so the block is built over that same locals table. */
+        static const pm_constant_id_list_t no_locals = { 0 };
+        NODE *entry = transduce_block_parts_shifted(tc, &no_locals, (const pm_node_t *)pe->statements);
+        if (entry->head.kind != &kind_node_entry) return entry;
+        NODE *en = ALLOC_node_end_block(entry, -tc->chain, -1 - tc->chain);   /* the once cell lives in the node */
+        bake_add(tc, &en->u.node_end_block.def_env_off);
+        bake_add(tc, &en->u.node_end_block.self_off);
+        return en;
+      }
       case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
       case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
         const char *nm = tc->src_enc == KORB_ENC_USASCII ? "US-ASCII"

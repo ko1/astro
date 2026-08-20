@@ -10560,7 +10560,7 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
 /* Kernel#exit([status]) / exit! — terminate the process (true/nil → 0, false → 1,
  * Integer → that code).  Runs the registered at_exit blocks first (reverse order),
  * matching CRuby's exit (exit! skips them). */
-void korb_drain_at_exit(CTX *c, VALUE *slots);   /* fwd (defined below; called from main.c) */
+int korb_drain_at_exit(CTX *c, VALUE *slots);   /* fwd (defined below; called from main.c) */
 /* If `exc` is a SystemExit, its status (>= 0); otherwise -1.  main.c uses this
  * to end the program quietly with the requested code. */
 int
@@ -10679,23 +10679,37 @@ korb_bi_abort(CTX *c, VALUE *slots, VALUE_SLICE args)
     return r;
 }
 /* Run at_exit blocks (reverse order); guarded so an at_exit block calling exit
- * doesn't re-enter.  Shared by main.c's post-run drain and Kernel#exit. */
-void
+ * doesn't re-enter.  Shared by main.c's post-run drain and Kernel#exit.
+ * Returns the exit status a handler asked for (-1 = none): a SystemExit raised
+ * in a handler decides the process status, and any other exception is reported
+ * and makes it 1 — the remaining handlers still run, seeing it as $!. */
+int
 korb_drain_at_exit(CTX *c, VALUE *slots)
 {
     static bool draining = false;
-    if (draining) return;
+    if (draining) return -1;
     draining = true;
+    int status = -1;
     const VALUE ax = korb_const_get(c->vm, korb_intern(c->vm, "$__at_exit", 10));
-    if (!KORB_ARRAY_P(ax)) { draining = false; return; }
+    if (!KORB_ARRAY_P(ax)) { draining = false; return -1; }
     slots[0] = ax;
-    for (int32_t i = (int32_t)VAL2ARY(slots[0])->len - 1; i >= 0; i--) {
-        if ((uint32_t)i >= VAL2ARY(slots[0])->len) continue;
-        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[i];
+    /* pop from the end: reverse registration order, and a handler registering
+     * another runs it right after itself (CRuby's nesting order) */
+    while (VAL2ARY(slots[0])->len > 0) {
+        const uint32_t last = VAL2ARY(slots[0])->len - 1;
+        slots[1] = korb_items_data(VAL2ARY(slots[0])->items)[last];
+        VAL2ARY(slots[0])->len = last;
         RESULT er = korb_send(c, slots + 2, korb_intern(c->vm, "call", 4), 0, 0);
-        if (er.state == KORB_RAISE) korb_report_uncaught(c, er.value);
+        if (er.state == KORB_RAISE) {
+            const int st = korb_system_exit_status(c, er.value);
+            if (st >= 0) { status = st; continue; }        /* `exit` in a handler: status only */
+            korb_report_uncaught(c, er.value);
+            korb_errinfo_push(c, er.value);                /* later handlers see it as $! */
+            status = 1;
+        }
     }
     draining = false;
+    return status;
 }
 
 /* Kernel#warn(*msgs) — write each message + newline to stderr (a trailing

@@ -2161,6 +2161,23 @@ node_make_proc(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, 
     return korb_make_proc(c, slots, block, &slots[def_env_off], slots[self_off], is_lambda);
 }
 
+// `END { }` — register the block as an at_exit handler.  CRuby registers each
+// END site once however often it is reached, so the node carries a done flag.
+NODE_DEF @noinline
+node_end_block(CTX *c, NODE *n, VALUE *slots, NODE *block, int32_t def_env_off, int32_t self_off, struct korb_oncecell *once@ref)
+{
+    (void)n; (void)block_dispatcher;
+    if (once->done) return RESULT_OK(KORB_NIL);
+    once->done = 1;
+    slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "$__at_exit", 10));
+    if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) return RESULT_OK(KORB_NIL);
+    const RESULT pr = korb_make_proc(c, slots + 1, block, &slots[def_env_off], slots[self_off], 0);
+    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+    slots[1] = pr.value;
+    CHECK(korb_ary_push_val(c, slots + 2, VALUE_REF_AT(&slots[0]), slots[1]));
+    return RESULT_OK(KORB_NIL);
+}
+
 // `binding` — capture the current frame's local scope into a Binding object.
 // def_env_off = frame base (locals at base[0..name_cnt)), self_off = lexical self,
 // name_syms = immortal sym table (a const char* runtime-ref so the SD stays shared).

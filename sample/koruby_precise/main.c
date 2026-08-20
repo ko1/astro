@@ -531,15 +531,24 @@ main(int argc, char *argv[])
          * really is ending — take its status and stay quiet (CRuby prints no
          * message for SystemExit).  at_exit still runs, as it does for any exit. */
         int exit_status = -1;
-        if (r.state == KORB_RAISE) exit_status = korb_system_exit_status(c, r.value);
-        korb_drain_at_exit(c, toplevel_cursor);
+        bool uncaught = false;
+        if (r.state == KORB_RAISE) {
+            exit_status = korb_system_exit_status(c, r.value);
+            if (exit_status < 0) {                        /* a real error: report it first, then
+                                                           * let the handlers see it as $! */
+                korb_report_uncaught(c, r.value);
+                korb_errinfo_push(c, r.value);
+                uncaught = true;
+            }
+        }
+        const int handler_status = korb_drain_at_exit(c, toplevel_cursor);
+        if (handler_status >= 0) exit_status = handler_status;   /* a handler's exit wins */
         fflush(stdout);
         if (exit_status >= 0) {
             korb_io_flush_std(c->vm);
             return exit_status;
         }
-        if (r.state == KORB_RAISE) {
-            korb_report_uncaught(c, r.value);
+        if (uncaught) {
             korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
             return 1;
         }

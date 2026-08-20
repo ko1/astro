@@ -928,9 +928,13 @@ end
 # at_exit: register a block to run (in reverse order) when the program ends.  The
 # C main loop drains $__at_exit after the top-level program returns.
 $__at_exit = []
-def at_exit(&block)
-  $__at_exit << block if block
-  block
+module Kernel
+  def at_exit(&block)
+    raise ArgumentError, "called without a block" unless block
+    $__at_exit << block
+    block
+  end
+  module_function :at_exit   # private Kernel#at_exit and public Kernel.at_exit, as in CRuby
 end
 
 # pp / pretty_inspect — mspec's failure formatter calls #pretty_inspect; without

@@ -99,6 +99,9 @@ struct korb_constcache {
  * deliberately does NOT match it, so the call always routes through
  * korb_send_cached which runs the visibility guard on the cached entry. */
 enum korb_ic_kind { KORB_IC_INSTANCE = 0, KORB_IC_SMETHOD = 1, KORB_IC_NEW = 2, KORB_IC_INSTANCE_VIS = 3 };
+/* one-shot flag for a node that must act only the first time it runs (END { }). */
+struct korb_oncecell { uint8_t done; };
+
 struct korb_inlcache {
     uint64_t serial;
     VALUE    klass;
@@ -389,7 +392,7 @@ RESULT korb_raise(CTX *c, VALUE *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, VALUE exc);
 int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its status, else -1 */
-void   korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c) */
+int    korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c); >=0 = exit status a handler asked for */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */
 
 enum korb_etype {

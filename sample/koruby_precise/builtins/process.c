@@ -242,8 +242,16 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
         if (ar->len == 0) return false;
         const VALUE first = korb_items_data(ar->items)[0];
         if (SYMBOL_P(first) && (uint32_t)SYM2ID(first) == korb_intern(c->vm, "child", 5)) {
-            if (ar->len < 2 || !FIXNUM_P(korb_items_data(ar->items)[1])) return false;
-            r->to = (int)FIX2LONG(korb_items_data(ar->items)[1]);
+            if (ar->len < 2) return false;
+            const VALUE tv = korb_items_data(ar->items)[1];
+            if (FIXNUM_P(tv)) r->to = (int)FIX2LONG(tv);
+            else if (SYMBOL_P(tv)) {                 /* [:child, :out] — the standard streams by name */
+                const uint32_t tid = (uint32_t)SYM2ID(tv);
+                if      (tid == korb_intern(c->vm, "in", 2))  r->to = 0;
+                else if (tid == korb_intern(c->vm, "out", 3)) r->to = 1;
+                else if (tid == korb_intern(c->vm, "err", 3)) r->to = 2;
+                else return false;
+            } else return false;
             p->nredir++;
             return true;
         }
@@ -699,14 +707,23 @@ static RESULT korb_m_io_s_popen(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     /* The child gets the raw end it needs; ours stays close-on-exec. */
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    /* The pipe redirect is applied BEFORE the option ones, so `err: [:child, :out]`
+     * (mspec's 2>&1) sees the pipe as the child's stdout, not our terminal. */
+    const uint32_t pipe_n = duplex ? 2u : 1u;
+    if (plan.nredir + pipe_n > sizeof plan.redir / sizeof plan.redir[0]) {
+        close(fds[0]); close(fds[1]);
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too many redirects");
+    }
+    memmove(&plan.redir[pipe_n], &plan.redir[0], plan.nredir * sizeof plan.redir[0]);
+    plan.nredir += pipe_n;
     if (duplex) {
-        struct korb_redir *r0 = &plan.redir[plan.nredir++];
+        struct korb_redir *const r0 = &plan.redir[0];
         r0->from = 0; r0->to = fds[1]; r0->path[0] = '\0'; r0->oflags = 0;
-        struct korb_redir *r1 = &plan.redir[plan.nredir++];
+        struct korb_redir *const r1 = &plan.redir[1];
         r1->from = 1; r1->to = fds[1]; r1->path[0] = '\0'; r1->oflags = 0;
     } else {
         (void)fcntl(fds[reading ? 0 : 1], F_SETFD, FD_CLOEXEC);
-        struct korb_redir *r = &plan.redir[plan.nredir++];
+        struct korb_redir *const r = &plan.redir[0];
         r->from = reading ? 1 : 0;
         r->to = fds[reading ? 1 : 0];
         r->path[0] = '\0'; r->oflags = 0;
