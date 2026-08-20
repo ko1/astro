@@ -68,6 +68,22 @@ class IO
     __enc_pair(ext, int, @__ext_enc0 || Encoding.default_external, @__int_enc0)
   end
 
+  # A leading byte-order mark decides the external encoding (and is consumed).
+  # CRuby refuses when the stream is not in binary mode or already carries an
+  # encoding of its own.
+  def set_encoding_by_bom
+    raise ArgumentError, "ASCII incompatible encoding needs binmode" unless binmode?
+    __resolve_enc
+    raise ArgumentError, "encoding conversion is set" if @__enc2
+    if @__enc && @__enc != Encoding::BINARY
+      raise ArgumentError, "encoding is set to #{@__enc.name} already"
+    end
+    name = __io_bom_encoding
+    return nil unless name
+    set_encoding(name)
+    external_encoding
+  end
+
   def set_encoding(*args, **opts)
     if args.empty? || args.length > 2
       raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 1..2)"
@@ -104,9 +120,6 @@ class IO
     raise ArgumentError, "unexpected value for newline option"
   end
 
-  def set_encoding_by_bom
-    nil
-  end
 
   # IO.new / IO.open / File.open の options Hash のうち、ストリーム生成後に
   # 効くもの (encoding 系・autoclose) を適用する。C 側は :mode / :binmode

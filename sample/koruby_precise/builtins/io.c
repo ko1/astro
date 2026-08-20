@@ -1171,6 +1171,36 @@ static RESULT korb_m_io_each_char(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(VALUE_REF_GET(self));
 }
 
+/* A leading byte-order mark, if the buffered bytes hold one: returns its
+ * encoding name and length, else NULL.  `n` is how many bytes are readable. */
+static const char *korb_io_bom_at(const char *p, uint32_t n, uint32_t *blen) {
+    if (n >= 4 && !memcmp(p, "\xFF\xFE\x00\x00", 4)) { *blen = 4; return "UTF-32LE"; }
+    if (n >= 4 && !memcmp(p, "\x00\x00\xFE\xFF", 4)) { *blen = 4; return "UTF-32BE"; }
+    if (n >= 3 && !memcmp(p, "\xEF\xBB\xBF", 3))      { *blen = 3; return "UTF-8"; }
+    if (n >= 2 && !memcmp(p, "\xFF\xFE", 2))           { *blen = 2; return "UTF-16LE"; }
+    if (n >= 2 && !memcmp(p, "\xFE\xFF", 2))           { *blen = 2; return "UTF-16BE"; }
+    return NULL;
+}
+
+/* IO#__io_bom_encoding — consume a leading BOM and return its encoding NAME
+ * (nil when there is none, or the stream cannot be read).  A partial BOM is left
+ * in the buffer untouched.  The prelude wraps this with CRuby's guard checks. */
+static RESULT korb_m_io_set_enc_by_bom(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a;
+    KorbIORep *rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (!korb_io_open_p(rep) || !(korb_io_rw(c, VALUE_REF_GET(self)) & 1)) return RESULT_OK(KORB_NIL);
+    RESULT err = RESULT_OK(KORB_NIL);
+    const uint32_t avail = korb_io_fill_p(c, slots, rep, &err);   /* may GC */
+    if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+    rep = korb_io_rep(c, VALUE_REF_GET(self));
+    if (avail == 0) return RESULT_OK(KORB_NIL);
+    uint32_t blen = 0;
+    const char *const name = korb_io_bom_at(rep->rbuf + rep->rpos, avail, &blen);
+    if (name == NULL) return RESULT_OK(KORB_NIL);
+    rep->rpos += blen;                                            /* the BOM is consumed */
+    return korb_str_new(c, slots, name, (uint32_t)strlen(name));
+}
+
 /* IO#binmode? — the prelude's encoding accessors need to see the 'b' flag,
  * which lives in a non-@ internal ivar. */
 static RESULT korb_m_io_binmode_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -1984,6 +2014,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("fdatasync", fsync, 0);       IOM("advise", advise, -1);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     IOM("binmode?", binmode_p, 0);
+    IOM("__io_bom_encoding", set_enc_by_bom, 0);
     IOM("__io_writable?", writable_p, 0);
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
     IOM("dup", dup, 0);              IOM("clone", dup, 0);

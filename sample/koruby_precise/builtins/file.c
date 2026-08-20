@@ -572,7 +572,8 @@ static size_t korb_fd_write_all(int fd, const char *p, size_t n) {
  * `open_args:` (an Array of literal arguments to `open`, which supersedes every
  * other option).  An `open_args:` without a mode leaves the default "r" in
  * place — that is exactly why `IO.write(f, s, open_args: [{…}])` is an IOError. */
-struct korb_open_args { char mode[32]; int enc; };
+static const char *korb_io_bom_at(const char *p, uint32_t n, uint32_t *blen);   /* fwd (builtins/io.c) */
+struct korb_open_args { char mode[32]; int enc; bool bom; };   /* bom: a "BOM|enc" mode prefix */
 
 /* the encoding name of an `encoding:` value (an Encoding or a String) */
 static RESULT korb_open_enc_name(CTX *c, VALUE *slots, VALUE v, char *out, size_t cap) {
@@ -609,6 +610,7 @@ static RESULT
 korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct korb_open_args *o) {
     snprintf(o->mode, sizeof o->mode, "%s", defmode);
     o->enc = -1;
+    o->bom = false;
     if (!KORB_HASH_P(opts)) return RESULT_OK(KORB_NIL);
     const int32_t ox = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "open_args", 9)));
     if (ox >= 0 && KORB_ARRAY_P(korb_items_data(VAL2HASH(opts)->items)[2 * ox + 1])) {
@@ -623,9 +625,15 @@ korb_io_open_args(CTX *c, VALUE *slots, VALUE opts, const char *defmode, struct 
     } else {
         CHECK(korb_open_args_hash(c, slots, opts, o));
     }
-    /* a "r:UTF-8" style mode carries the external encoding */
+    /* a "r:UTF-8" style mode carries the external encoding; a "BOM|" prefix on it
+     * asks that a byte-order mark decide (and be stripped) instead */
     char *const colon = strchr(o->mode, ':');
-    if (colon) { *colon = '\0'; if (colon[1]) o->enc = (int)korb_enc_index_for_name(c->vm, colon + 1); }
+    if (colon) {
+        *colon = '\0';
+        char *ename = colon + 1;
+        if (strncasecmp(ename, "BOM|", 4) == 0) { o->bom = true; ename += 4; }
+        if (*ename) o->enc = (int)korb_enc_index_for_name(c->vm, ename);
+    }
     return RESULT_OK(KORB_NIL);
 }
 
@@ -688,9 +696,16 @@ static RESULT korb_m_file_read(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     char *const buf = korb_fd_slurp(fd, &len);
     close(fd);
     if (!buf) return korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "out of memory reading %s", path);
-    r = korb_str_new(c, slots + 1, buf, (uint32_t)len);
+    const char *data = buf;
+    int enc = oa.enc;
+    if (oa.bom) {                                        /* "r:BOM|enc": the mark decides and is dropped */
+        uint32_t blen = 0;
+        const char *const bname = korb_io_bom_at(buf, (uint32_t)len, &blen);
+        if (bname) { data += blen; len -= blen; enc = (int)korb_enc_index_for_name(c->vm, bname); }
+    }
+    r = korb_str_new(c, slots + 1, data, (uint32_t)len);
     free(buf);
-    if (LIKELY(r.state == KORB_NORMAL) && oa.enc >= 0) KORB_STR_ENC_SET(r.value, (uint32_t)oa.enc);
+    if (LIKELY(r.state == KORB_NORMAL) && enc >= 0) KORB_STR_ENC_SET(r.value, (uint32_t)enc);
     return r;
 }
 
