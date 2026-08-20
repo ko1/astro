@@ -5822,13 +5822,13 @@ korb_capture_backtrace(CTX *c, VALUE *slots)
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n - start + 1));
     char buf[600];
     for (uint32_t i = start; i < n; i++) {
-        const int len = snprintf(buf, sizeof buf, "%s:%u:in '%s'",
-                                 file, vm->bt[i].line, vm->bt[i].name);
+        const int len = snprintf(buf, sizeof buf, "%s:%d:in '%s'",
+                                 file, (int32_t)vm->bt[i].line, vm->bt[i].name);
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
         UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
     }
-    const int mlen = snprintf(buf, sizeof buf, "%s:%u:in '<main>'",
-                              file, VAL2EXC(slots[0])->line);
+    const int mlen = snprintf(buf, sizeof buf, "%s:%d:in '<main>'",
+                              file, (int32_t)VAL2EXC(slots[0])->line);
     slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)mlen));
     UNWRAP(korb_ary_push_val(c, slots, VALUE_REF_AT(&slots[1]), slots[2]));
     KorbException *const e = VAL2EXC(slots[0]);
@@ -5944,8 +5944,14 @@ RESULT
 korb_raise_frozen(CTX *c, VALUE *slots, VALUE v)
 {
     /* name the object's real class and let it inspect itself: a user instance is
-     * not "Object", and a Time renders as a Time */
+     * not "Object", and a Time renders as a Time.  nil/true/false are named by
+     * their class here (NilClass), not by the value as in a TypeError. */
     slots[0] = v;
+    if (v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE) {
+        const char *const cn = (v == KORB_NIL) ? "NilClass" : (v == KORB_TRUE) ? "TrueClass" : "FalseClass";
+        const char *const iv = (v == KORB_NIL) ? "nil" : (v == KORB_TRUE) ? "true" : "false";
+        return korb_raise(c, slots + 1, KORB_E_FROZEN, 0, "can't modify frozen %s: %s", cn, iv);
+    }
     if (KORB_OBJECT_P(slots[0])) {                     /* an object renders through its own #inspect */
         const RESULT ir = korb_send(c, slots + 1, korb_intern(c->vm, "inspect", 7), 0, 0);
         if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
@@ -6018,23 +6024,23 @@ korb_report_uncaught(CTX *c, VALUE exc)
     const char *msg = (e->msg != KORB_NIL) ? korb_strbuf_data(VAL2STR(e->msg)->buf) : cls;
 
     if (vm->bt_cnt > 0) {
-        fprintf(stderr, "%s:%u:in '%s': %s (%s)\n", file, vm->bt[0].line, vm->bt[0].name, msg, cls);
+        fprintf(stderr, "%s:%d:in '%s': %s (%s)\n", file, (int32_t)vm->bt[0].line, vm->bt[0].name, msg, cls);
         /* elide the middle of very deep unwinds (SystemStackError) */
         uint32_t head = vm->bt_cnt, tail = 0;
         if (vm->bt_cnt > 20) { head = 12; tail = 4; }
         for (uint32_t i = 1; i < head; i++) {
-            fprintf(stderr, "\tfrom %s:%u:in '%s'\n", file, vm->bt[i].line, vm->bt[i].name);
+            fprintf(stderr, "\tfrom %s:%d:in '%s'\n", file, (int32_t)vm->bt[i].line, vm->bt[i].name);
         }
         if (tail) {
             fprintf(stderr, "\t ... %u levels...\n", vm->bt_cnt - head - tail);
             for (uint32_t i = vm->bt_cnt - tail; i < vm->bt_cnt; i++) {
-                fprintf(stderr, "\tfrom %s:%u:in '%s'\n", file, vm->bt[i].line, vm->bt[i].name);
+                fprintf(stderr, "\tfrom %s:%d:in '%s'\n", file, (int32_t)vm->bt[i].line, vm->bt[i].name);
             }
         }
-        fprintf(stderr, "\tfrom %s:%u:in '<main>'\n", file, e->line);
+        fprintf(stderr, "\tfrom %s:%d:in '<main>'\n", file, (int32_t)e->line);
     }
     else {
-        fprintf(stderr, "%s:%u:in '<main>': %s (%s)\n", file, e->line, msg, cls);
+        fprintf(stderr, "%s:%d:in '<main>': %s (%s)\n", file, (int32_t)e->line, msg, cls);
     }
 }
 

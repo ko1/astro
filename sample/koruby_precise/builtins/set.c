@@ -494,6 +494,13 @@ static RESULT korb_m_class_subclasses(CTX *c, VALUE *slots, VALUE_REF self, VALU
     }
     return RESULT_OK(VALUE_REF_GET(dst));
 }
+/* Can this value take a singleton class?  nil/true/false borrow their own class;
+ * numerics and Symbols cannot (CRuby raises), heap or not. */
+static bool korb_singleton_able(VALUE v) {
+    if (!AROH_IS_GC_OBJECT(v)) return v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE;
+    return !(KORB_BIGNUM_P(v) || KORB_FLOAT_P(v) || KORB_RATIONAL_P(v) || KORB_COMPLEX_P(v));
+}
+
 /* Object#extend(*mods) — mix the modules into the object's singleton class. */
 static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE sv = VALUE_REF_GET(self);
@@ -1811,9 +1818,13 @@ static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     /* same default definee as instance_eval: `def` lands on the singleton */
     const VALUE saved_definee = c->def_definee;
     if (singleton_definee) {
-        const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
-        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        c->def_definee = sr.value;
+        /* a value with no singleton is left as the definee itself: `def` inside
+         * raises then, not on entry (CRuby only fails at the definition) */
+        if (korb_singleton_able(slots[0])) {
+            const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            c->def_definee = sr.value;
+        } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];              /* class_exec/module_exec: the class itself */
     RESULT r;
     if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
@@ -1837,8 +1848,9 @@ static RESULT korb_m_mod_class_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
 static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     (void)cself;
     if (UNLIKELY(block == NULL)) {
-        if (VALUE_SLICE_LEN(a) == 0)                          /* no block and no string → ArgumentError (CRuby) */
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..3)");
+        if (VALUE_SLICE_LEN(a) == 0 || VALUE_SLICE_LEN(a) > 3)   /* no block: 1..3 args (CRuby) */
+            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..3)",
+                              VALUE_SLICE_LEN(a));
         /* String form: eval the source with self = the receiver, so `def` in
          * class_eval/module_eval attaches to the class (self is a Class there),
          * and instance_eval's code sees the receiver as self.  2nd/3rd args
@@ -1877,8 +1889,10 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             fname = korb_sym_name(c->vm, korb_intern(c->vm, fbuf, n));   /* interned → outlives this frame, like the AST */
         }
         if (VALUE_SLICE_LEN(a) >= 3) {
+            slots[0] = VALUE_SLICE_GET(a, 2);
+            CHECK(korb_coerce_to_int_pub(c, slots + 1, &slots[0]));   /* #to_int is honoured */
             intptr_t l = 1;
-            if (!korb_to_index(VALUE_SLICE_GET(a, 2), &l))
+            if (!korb_to_index(slots[0], &l))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 2)));
             line = (int32_t)l;
         }
@@ -1892,9 +1906,11 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
      * (a plain instance method).  Restored on the way out. */
     const VALUE saved_definee = c->def_definee;
     if (singleton_definee) {
-        const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
-        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-        c->def_definee = sr.value;
+        if (korb_singleton_able(slots[0])) {       /* see korb_obj_exec_impl: `def` fails lazily */
+            const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+            c->def_definee = sr.value;
+        } else c->def_definee = slots[0];
     } else c->def_definee = slots[0];
     RESULT r;
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */

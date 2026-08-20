@@ -190,8 +190,9 @@ static RESULT korb_m_obj_ivar_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, 0)));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, VALUE_REF_GET(self), VALUE_SLICE_GET(a, 0), SYM2ID(sym));
-    if (UNLIKELY(!AROH_IS_GC_OBJECT(VALUE_REF_GET(self))))   /* immediates (Integer/Symbol/nil/...) carry no ivars */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't set instance variable on %s", korb_type_name(VALUE_REF_GET(self)));
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(VALUE_REF_GET(self)) || KORB_BIGNUM_P(VALUE_REF_GET(self)) ||
+                 KORB_FLOAT_P(VALUE_REF_GET(self))))                 /* numerics/Symbol/nil/... are frozen */
+        return korb_raise_frozen(c, slots, VALUE_REF_GET(self));
     KORB_CHECK_FROZEN(c, slots, VALUE_REF_GET(self));
     CHECK(korb_ivar_set(c, slots, self, sym, VALUE_SLICE_GET(a, 1)));   /* class/exc/user-object/container all handled */
     return RESULT_OK(VALUE_SLICE_GET(a, 1));

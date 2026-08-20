@@ -143,10 +143,10 @@ static NODE *kp_send_n(uint32_t mid, uint32_t line, NODE *recv, NODE *const *arg
 static uint32_t
 kp_line(struct kp_ctx *tc, const pm_node_t *node)
 {
-    int32_t line = pm_newline_list_line(&tc->parser->newline_list,
-                                        node->location.start,
-                                        tc->parser->start_line);
-    return line < 0 ? 0 : (uint32_t)line;
+    const int32_t line = pm_newline_list_line(&tc->parser->newline_list,
+                                             node->location.start,
+                                             tc->parser->start_line);
+    return (uint32_t)line;                  /* eval can set a negative first line: kept as-is, printed signed */
 }
 
 static __attribute__((noreturn)) void
@@ -2721,7 +2721,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_TRUE_NODE:  return ALLOC_node_lit(KORB_TRUE);
       case PM_FALSE_NODE: return ALLOC_node_lit(KORB_FALSE);
       case PM_SOURCE_FILE_NODE: return ALLOC_node_str(tc->fname, (uint32_t)strlen(tc->fname));   /* __FILE__ */
-      case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)kp_line(tc, node)));    /* __LINE__ */
+      case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((intptr_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
       case PM_SOURCE_ENCODING_NODE: {   /* __ENCODING__ → Encoding.find(<file encoding>) */
         const char *nm = tc->src_enc == KORB_ENC_USASCII ? "US-ASCII"
                        : tc->src_enc == KORB_ENC_BINARY  ? "ASCII-8BIT" : "UTF-8";

@@ -1043,6 +1043,8 @@ node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t p
 {
     (void)body_dispatcher;
     VALUE definee = (c->def_definee != KORB_NIL) ? c->def_definee : slots[self_off];   /* instance_eval → singleton */
+    if (UNLIKELY(!KORB_CLASS_P(definee) && c->def_definee != KORB_NIL))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");   /* instance_eval on a value with no singleton */
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
         korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);
@@ -2361,7 +2363,7 @@ node_ivar_set(CTX *c, NODE *n, VALUE *slots, int32_t self_off, uint32_t name@sym
     }
     if (AROH_IS_GC_OBJECT(slots[self_off]))   /* class / exception / container / heap object → side storage (cold) */
         return korb_ivar_set(c, slots, VALUE_REF_AT(&slots[self_off]), ID2SYM(name), val);
-    return korb_raise(c, slots, KORB_E_RUNTIME, 0, "instance variable set on a non-object self");
+    return korb_raise_frozen(c, slots, slots[self_off]);   /* immediates are frozen (CRuby's FrozenError) */
 }
 
 // ---- class variables (`@@x`) -----------------------------------------------
