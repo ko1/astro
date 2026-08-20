@@ -2516,7 +2516,10 @@ static RESULT korb_struct_define(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *bloc
     korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);                       /* root the class as the block's self/cref */
+        const VALUE saved_definee = c->def_definee;   /* a class body: `def` lands on the class */
+        c->def_definee = KORB_NIL;
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        c->def_definee = saved_definee;
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
@@ -2702,7 +2705,10 @@ static RESULT korb_data_define(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* D[...] == D.new(...) */
     if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
         slots[2] = VALUE_REF_GET(cls);
+        const VALUE saved_definee = c->def_definee;   /* a class body: `def` lands on the class */
+        c->def_definee = KORB_NIL;
         RESULT br = korb_block_yield(c, slots + 3, block, def_env, NULL, 0, &slots[2]);
+        c->def_definee = saved_definee;
         if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;   /* someone else's break passes through */
         if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
     }
