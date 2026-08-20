@@ -3981,12 +3981,13 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
  * SyntaxError the eval path raises — "syntax error in eval string" alone tells
  * the program nothing. */
 static void
-kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser)
+kp_stash_syntax_msg(CTX *c, const pm_parser_t *parser, const char *fname)
 {
     const pm_diagnostic_t *const d = (const pm_diagnostic_t *)parser->error_list.head;
     if (d == NULL) return;
-    static char buf[192];
-    snprintf(buf, sizeof buf, "%s", d->message);
+    static char buf[256];
+    const int32_t line = pm_newline_list_line(&parser->newline_list, d->location.start, parser->start_line);
+    snprintf(buf, sizeof buf, "%s:%d: %s", fname ? fname : "(eval)", line, d->message);
     c->vm->last_syntax_msg = buf;
 }
 
@@ -4003,7 +4004,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
 
     if (parser.error_list.size > 0) {
         if (!exit_on_error) {                        /* eval(str): return NULL so the caller raises SyntaxError */
-            kp_stash_syntax_msg(c, &parser);         /* hand the parser's own wording to the SyntaxError */
+            kp_stash_syntax_msg(c, &parser, fname);         /* hand the parser's own wording to the SyntaxError */
             pm_node_destroy(&parser, root);
             pm_parser_free(&parser);
             pm_options_free(&options);
@@ -4076,7 +4077,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
     if (parser.error_list.size > 0) {
-        kp_stash_syntax_msg(c, &parser);
+        kp_stash_syntax_msg(c, &parser, fname);
         pm_node_destroy(&parser, root); pm_parser_free(&parser); pm_options_free(&options);
         return NULL;
     }
