@@ -2673,7 +2673,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         const pm_string_node_t *sn = (const pm_string_node_t *)node;
         uint32_t len;
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
-        if (tc->src_enc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, tc->src_enc);
+        /* a \u escape makes the literal UTF-8 whatever the file's encoding is (CRuby) */
+        uint8_t lenc = tc->src_enc;
+        if (lenc != KORB_ENC_UTF8) {
+            const char *const src = (const char *)sn->base.location.start;
+            const size_t slen = (size_t)(sn->base.location.end - sn->base.location.start);
+            for (size_t i = 0; i + 1 < slen; i++)
+                if (src[i] == '\\' && src[i + 1] == 'u') { lenc = KORB_ENC_UTF8; break; }
+        }
+        if (lenc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, lenc);
         if (sn->base.flags & PM_STRING_FLAGS_FROZEN) return ALLOC_node_str_frozen(bytes, len);   /* # frozen_string_literal: true */
         return ALLOC_node_str(bytes, len);
       }
