@@ -1155,6 +1155,15 @@ class Interrupt < SignalException
 end
 
 module Kernel
+  # The default #respond_to_missing? — always false.  Defining it (rather than
+  # leaving the name unbound) is what makes `Kernel.private_instance_methods`
+  # list it and lets a mock replace it; the C fast paths skip a dispatch when the
+  # definition they find is this one.
+  def respond_to_missing?(name, include_private = false)
+    false
+  end
+  private :respond_to_missing?
+
   def trap(sig, command = nil, &blk) = Signal.trap(sig, command, &blk)
   module_function :trap
 

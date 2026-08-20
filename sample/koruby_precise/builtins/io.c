@@ -1157,6 +1157,13 @@ static RESULT korb_m_io_binmode_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     return RESULT_OK(korb_io_is_binary(c, VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* IO#__io_writable? — the encoding accessors need the write permission bit,
+ * which lives in the same non-@ internal ivar as the mode. */
+static RESULT korb_m_io_writable_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)slots; (void)a;
+    return RESULT_OK((korb_io_rw(c, VALUE_REF_GET(self)) & 2) ? KORB_TRUE : KORB_FALSE);
+}
+
 /* A Ruby mode string ("r", "w+", "ab", …) → open(2) flags.  false = not a mode
  * string koruby understands. */
 static bool korb_io_mode_to_flags(const char *mode, int *out) {
@@ -1480,15 +1487,22 @@ static RESULT korb_m_io_close_on_exec_set(CTX *c, VALUE *slots, VALUE_REF self, 
     return RESULT_OK(VALUE_SLICE_GET(a, 0));
 }
 
-/* Encoding.default_internal is captured when the stream is created: changing it
- * afterwards must not affect an already-open IO. */
+/* Encoding.default_external / default_internal are captured when the stream is
+ * created: changing them afterwards must not affect an already-open IO (the
+ * prelude resolves the pair from these). */
 static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF io) {
     slots[0] = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
     if (!KORB_CLASS_P(slots[0])) return RESULT_OK(KORB_NIL);
-    const RESULT r = korb_send(c, slots + 1, korb_intern(c->vm, "default_internal", 16), 0, 0);
+    slots[1] = slots[0];
+    const RESULT r = korb_send(c, slots + 2, korb_intern(c->vm, "default_internal", 16), 0, 0);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    slots[0] = r.value;
-    return korb_ivar_set(c, slots + 1, io, ID2SYM(korb_intern(c->vm, "@__int_enc0", 11)), slots[0]);
+    slots[2] = r.value;
+    CHECK(korb_ivar_set(c, slots + 3, io, ID2SYM(korb_intern(c->vm, "@__int_enc0", 11)), slots[2]));
+    slots[2] = slots[1];
+    const RESULT er = korb_send(c, slots + 3, korb_intern(c->vm, "default_external", 16), 0, 0);
+    if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+    slots[2] = er.value;
+    return korb_ivar_set(c, slots + 3, io, ID2SYM(korb_intern(c->vm, "@__ext_enc0", 11)), slots[2]);
 }
 
 /* Hand back up to `want` bytes already sitting in the read buffer as a String,
@@ -1949,6 +1963,7 @@ void korb_init_io(CTX *c, VALUE *slots) {
     IOM("fdatasync", fsync, 0);       IOM("advise", advise, -1);
     IOM("readline", readline, -1);    IOM("readchar", readchar, 0);
     IOM("binmode?", binmode_p, 0);
+    IOM("__io_writable?", writable_p, 0);
     IOM("reopen", reopen, -1);       IOM("pid", pid, 0);
     IOM("dup", dup, 0);              IOM("clone", dup, 0);
     IOM("__init_fd", init_fd, -1);

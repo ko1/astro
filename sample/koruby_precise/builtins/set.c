@@ -392,7 +392,9 @@ static RESULT korb_m_obj_respond_to(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         slots[0] = sv;
         slots[1] = ID2SYM(mid);
         slots[2] = (VALUE_SLICE_LEN(a) >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_FALSE;
-        return korb_send_impl(c, slots + 3, rtm, 0, 2, NULL, NULL, NULL);
+        const RESULT r = korb_send_impl(c, slots + 3, rtm, 0, 2, NULL, NULL, NULL);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);   /* #respond_to? answers a boolean */
     }
     return RESULT_OK(KORB_FALSE);
 }

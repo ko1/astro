@@ -2,42 +2,104 @@ class IO
   # External/internal encodings.  koruby reads produce UTF-8 (ASCII-8BIT in
   # binary mode); these record what was requested so the accessors round-trip
   # and #set_encoding is not a hard error.
+  #
+  # The pair is modelled exactly as CRuby's rb_io_ext_int_to_encs: @__enc is the
+  # stream's encoding and @__enc2 the external one when a transcoding pair was
+  # requested.  A nil @__enc means "follow Encoding.default_external", which is
+  # what makes an unqualified read stream track later changes to the default.
+  # An encoding argument: Encoding / nil pass through, "-" means "not given",
+  # anything else converts with #to_str (CRuby).
+  private def __enc_arg(v)
+    return nil if v.nil?
+    return v if v.is_a?(Encoding)
+    v = v.to_str if !v.is_a?(String) && v.respond_to?(:to_str)
+    v == "-" ? nil : v
+  end
+
   def external_encoding
     __resolve_enc
-    return @__ext_enc if @__ext_enc
-    return Encoding::BINARY if binmode?
-    Encoding.default_external
+    return @__enc2 if @__enc2
+    return @__enc if __io_writable?          # a write stream reports nothing when unset
+    @__enc || Encoding.default_external
   end
 
   def internal_encoding
     __resolve_enc
-    @__int_enc
+    return nil unless @__enc2
+    @__enc || Encoding.default_external
   end
 
-  # A mode string may carry "…:external[:internal]"; if it does not, the
-  # Encoding.default_internal captured when the stream was opened applies.
+  # ext/int as requested (nil = not given) and the defaults in effect →
+  # the (@__enc, @__enc2) pair.  CRuby's rb_io_ext_int_to_encs, verbatim.
+  private def __enc_pair(ext, intern, dext, dint)
+    default_ext = ext.nil?
+    ext = dext if ext.nil?
+    if ext == Encoding::BINARY
+      intern = nil                            # ASCII-8BIT external: no transcoding
+    elsif intern.nil?
+      intern = dint
+    end
+    if intern.nil? || intern == ext
+      @__enc = (default_ext && intern != ext) ? nil : ext
+      @__enc2 = nil
+    else
+      @__enc = intern
+      @__enc2 = ext
+    end
+  end
+
+  # A mode string may carry "…:external[:internal]"; the encodings are resolved
+  # once, on first use, against the defaults as they were when the stream opened.
   private def __resolve_enc
     return if @__enc_done
     @__enc_done = true
+    ext = nil
+    int = nil
     spec = @__io_modestr
     if spec && (i = spec.index(":"))
-      ext, int = spec[(i + 1)..-1].split(":", 2)
-      @__ext_enc ||= Encoding.find(ext) if ext && !ext.empty? && ext != "-"
-      @__int_enc ||= Encoding.find(int) if int && !int.empty? && int != "-"
+      e, n = spec[(i + 1)..-1].split(":", 2)
+      ext = Encoding.find(e) if e && !e.empty? && e != "-"
+      int = Encoding.find(n) if n && !n.empty? && n != "-"
     end
-    @__int_enc ||= @__int_enc0
-    @__int_enc = nil if @__int_enc && @__int_enc == (@__ext_enc || Encoding.default_external)
+    ext = Encoding::BINARY if ext.nil? && binmode?
+    # the defaults as they were when the stream was created (captured in C)
+    __enc_pair(ext, int, @__ext_enc0 || Encoding.default_external, @__int_enc0)
   end
 
-  def set_encoding(ext = nil, int = nil, **opts)
+  def set_encoding(*args, **opts)
+    if args.empty? || args.length > 2
+      raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 1..2)"
+    end
+    ext, int = args
+    raise TypeError, "no implicit conversion of nil into String" if ext.nil? && !int.nil?
+    if ext.is_a?(String) && !ext.encoding.ascii_compatible?
+      raise ArgumentError, "invalid encoding name (non ASCII)"
+    end
+    __check_newline_opt(opts[:newline]) if opts.key?(:newline)
+    ext = __enc_arg(ext)
+    # "-" (or a "ext:-" pair) means "explicitly no internal encoding", which is
+    # not the same as leaving it out (that one falls back to the default).
+    int_none = (args.length >= 2 && int.is_a?(String) && int == "-")
+    int = __enc_arg(int)
     if int.nil? && ext.is_a?(String) && ext.include?(":")
       ext, int = ext.split(":", 2)
+      if int == "-" then int = nil; int_none = true end
     end
-    @__ext_enc = ext.nil? ? nil : (ext.is_a?(Encoding) ? ext : Encoding.find(ext))
-    @__int_enc = int.nil? ? nil : (int.is_a?(Encoding) ? int : Encoding.find(int))
-    @__int_enc = nil if @__int_enc && @__int_enc == @__ext_enc
+    ext = Encoding.find(ext) if ext.is_a?(String)
+    int = Encoding.find(int) if int.is_a?(String)
+    if ext.is_a?(Encoding) && !ext.ascii_compatible? && !binmode? && int.nil? && !__io_writable?
+      raise ArgumentError, "ASCII incompatible encoding needs binmode"
+    end
     @__enc_done = true          # an explicit set_encoding wins over the mode string
+    __enc_pair(ext, int, Encoding.default_external, int_none ? nil : Encoding.default_internal)
     self
+  end
+
+  private def __check_newline_opt(v)
+    raise ArgumentError, "newline decorator with binary mode" if binmode?
+    return if %i[lf crlf cr universal].include?(v)
+    raise ArgumentError, "unexpected value for newline option: #{v}" if v.is_a?(Symbol)
+    raise ArgumentError, "unexpected value for newline option"
   end
 
   def set_encoding_by_bom
@@ -72,7 +134,14 @@ class IO
         ext = enc
       end
     end
-    set_encoding(ext, int) if ext || int
+    if ext || int
+      # the open path is CRuby's rb_io_ext_int_to_encs directly: an internal
+      # encoding alone still leaves the external one "not given"
+      @__enc_done = true
+      __enc_pair(ext.is_a?(String) ? Encoding.find(ext) : ext,
+                 int.is_a?(String) ? Encoding.find(int) : int,
+                 Encoding.default_external, Encoding.default_internal)
+    end
     self
   end
 end
