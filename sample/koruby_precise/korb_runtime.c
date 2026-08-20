@@ -3627,8 +3627,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     VALUE kwhash = KORB_NIL;
     /* Only a Hash the call site wrote as keywords binds to keyword params; a plain
      * trailing Hash argument is positional (Ruby 3).  `**nil` (-3): never. */
-    if (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(base[argc - 1]) &&
-        (((const AroObjectHeader *)(uintptr_t)base[argc - 1])->flags & KORB_FL_KWARGS))
+    if (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(base[argc - 1]))
         { kwhash = base[argc - 1]; pos_argc = argc - 1; }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
@@ -6752,8 +6751,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
     const uint32_t orig_argc = argc;
     /* `**nil` (kwrest_slot -3) forbids keywords: a trailing Hash stays positional. */
-    const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(argv[argc - 1]) &&
-                              (((const AroObjectHeader *)(uintptr_t)argv[argc - 1])->flags & KORB_FL_KWARGS));
+    const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && korb_kwargs_hash_p(argv[argc - 1]));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
      * block/proc) and never auto-splats a single Array.  The proc is reachable via
@@ -7582,25 +7580,37 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     return RESULT_OK(slots[0]);            /* members set by the override's super(...) → korb_m_struct_initialize */
                 }
             }
-            if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {   /* normalize String keyword keys → Symbols (dup String/Symbol → last wins) */
+            if (is_data && argc == 1 && korb_kwargs_hash_p(slots[-(intptr_t)argc])) {   /* normalize String keyword keys → Symbols (dup String/Symbol → last wins) */
                 const KorbHash *const h0 = VAL2HASH(slots[-(intptr_t)argc]);
                 bool has_str = false;
-                for (uint32_t j = 0; j < h0->len; j++) if (KORB_STRING_P(korb_items_data(h0->items)[2 * j])) { has_str = true; break; }
+                for (uint32_t j = 0; j < h0->len; j++)
+                    if (!SYMBOL_P(korb_items_data(h0->items)[2 * j])) { has_str = true; break; }
                 if (has_str) {
                     slots[0] = slots[-(intptr_t)argc];
                     slots[1] = UNWRAP(korb_hash_new(c, slots + 1, VAL2HASH(slots[0])->len));
                     for (uint32_t j = 0; j < VAL2HASH(slots[0])->len; j++) {
-                        const VALUE k = korb_items_data(VAL2HASH(slots[0])->items)[2 * j];
+                        VALUE k = korb_items_data(VAL2HASH(slots[0])->items)[2 * j];
+                        if (!SYMBOL_P(k) && !KORB_STRING_P(k)) {      /* a key names a member via #to_str (CRuby) */
+                            slots[4] = k;
+                            if (UNLIKELY(!korb_responds_to(c, k, korb_intern(vm, "to_str", 6))))
+                                return korb_raise(c, slots, KORB_E_TYPE, line, "%s is not a symbol nor a string", korb_type_name(k));
+                            const RESULT kr = korb_send(c, slots + 5, korb_intern(vm, "to_str", 6), 0, 0);
+                            if (UNLIKELY(kr.state != KORB_NORMAL)) return kr;
+                            if (UNLIKELY(!KORB_STRING_P(kr.value)))
+                                return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s to String", korb_type_name(slots[4]));
+                            k = kr.value;
+                        }
                         slots[2] = KORB_STRING_P(k) ? ID2SYM(korb_intern(vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len)) : k;
                         slots[3] = korb_items_data(VAL2HASH(slots[0])->items)[2 * j + 1];
-                        CHECK(korb_hash_set(c, slots + 4, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
+                        CHECK(korb_hash_set(c, slots + 5, VALUE_REF_AT(&slots[1]), VALUE_REF_AT(&slots[2]), slots[3]));
                     }
+                    ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_KWARGS;   /* still keywords */
                     slots[-(intptr_t)argc] = slots[1];
                 }
             }
             /* Data kwargs: a single Hash of all-symbol keys is taken as keyword form,
              * so validate it against the members (unknown / missing keyword). */
-            if (is_data && argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc])) {
+            if (is_data && argc == 1 && korb_kwargs_hash_p(slots[-(intptr_t)argc])) {
                 const KorbHash *const h = VAL2HASH(slots[-(intptr_t)argc]);
                 bool all_sym = h->len > 0;
                 for (uint32_t j = 0; j < h->len; j++) if (!SYMBOL_P(korb_items_data(h->items)[2 * j])) { all_sym = false; break; }
@@ -7616,10 +7626,9 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                             return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, SYM2ID(korb_items_data(mm->items)[k2])));
                 }
             }
-            /* Data.new accepts positional OR keyword; detect keyword form as a single
-             * Hash arg whose keys all name members (no kwargs flag exists to test). */
-            if (is_data && !(argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
-                             korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc]))) &&
+            /* Data.new accepts positional OR keyword; the keyword form is a single
+             * Hash the call site tagged as keywords (KORB_FL_KWARGS). */
+            if (is_data && !(argc == 1 && korb_kwargs_hash_p(slots[-(intptr_t)argc])) &&
                 argc != VAL2ARY(VAL2CLASS(*recv_slot)->members)->len) {
                 const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 if (argc < mm->len) {                          /* positional shortfall → the unfilled members are missing keywords */
@@ -7632,29 +7641,36 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
             }
             if (!is_data) {                                /* too many positional values → ArgumentError */
                 const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
-                const bool kw = VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]);
+                const bool kw = VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]);   /* keyword_init accepts a plain Hash too */
                 if (UNLIKELY(!kw && argc > mm->len))
                     return korb_raise(c, slots, KORB_E_ARGUMENT, line, "struct size differs");
             }
             VALUE obj = UNWRAP(korb_obj_new(c, slots, *recv_slot));
             slots[0] = obj;
             const bool kwinit = is_data
-                ? (argc == 1 && KORB_HASH_P(slots[-(intptr_t)argc]) &&
-                   korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(intptr_t)argc])))
+                ? (argc == 1 && korb_kwargs_hash_p(slots[-(intptr_t)argc]))
                 : (VAL2CLASS(*recv_slot)->struct_kwinit == 1 && argc >= 1 && KORB_HASH_P(slots[-(intptr_t)argc]));
             if (kwinit) {                                  /* reject keyword arguments that aren't members */
                 const KorbHash *const kh = VAL2HASH(slots[-(intptr_t)argc]);
                 const KorbArray *const mem0 = VAL2ARY(VAL2CLASS(*recv_slot)->members);
                 char ukbuf[256]; int uklen = 0, ukn = 0;
+                ukbuf[0] = '\0';
                 for (uint32_t hi = 0; hi < kh->len; hi++) {
                     const VALUE key = korb_items_data(kh->items)[2 * hi];
                     bool found = false;
                     for (uint32_t mi = 0; mi < mem0->len; mi++) if (korb_items_data(mem0->items)[mi] == key) { found = true; break; }
-                    if (!found && SYMBOL_P(key) && uklen < (int)sizeof(ukbuf) - 64)
-                        uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s%s", ukn++ ? ", " : "", korb_sym_name(vm, SYM2ID(key)));
-                    else if (!found) ukn++;
+                    if (found || uklen >= (int)sizeof(ukbuf) - 64) { if (!found) ukn++; continue; }
+                    if (SYMBOL_P(key))                      /* Struct names them bare, Data with the colon */
+                        uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s%s%s", ukn++ ? ", " : "",
+                                          is_data ? ":" : "", korb_sym_name(vm, SYM2ID(key)));
+                    else if (KORB_STRING_P(key))            /* a String key is reported quoted (CRuby) */
+                        uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s\"%.*s\"", ukn++ ? ", " : "",
+                                          (int)VAL2STR(key)->len, korb_strbuf_data(VAL2STR(key)->buf));
+                    else
+                        uklen += snprintf(ukbuf + uklen, sizeof(ukbuf) - (size_t)uklen, "%s%s", ukn++ ? ", " : "", korb_type_name(key));
                 }
-                if (ukn > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keywords: %s", ukbuf);
+                if (ukn > 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword%s: %s",
+                                               (!is_data || ukn > 1) ? "s" : "", ukbuf);
             }
             for (uint32_t i = 0; ; i++) {
                 const KorbArray *mem = VAL2ARY(VAL2CLASS(*recv_slot)->members);

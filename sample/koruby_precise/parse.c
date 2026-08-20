@@ -2368,7 +2368,7 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
         NODE *acc, *kwh;
         WITH_CHAIN(tc, sc, (acc = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1),
                             kwh = build_fwd_kwargs(tc, kw, kw->count)));
-        return ALLOC_node_ary_push(acc, kwh);
+        return ALLOC_node_ary_push(acc, ALLOC_node_kwargs_mark(kwh));   /* forwarded as keywords */
     }
     bool is_rest = false; int32_t slot;
     if (bi < np)                          slot = (int32_t)bi;                          /* positional */

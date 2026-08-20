@@ -401,6 +401,11 @@ int    korb_system_exit_status(CTX *c, VALUE exc);   /* SystemExit → its statu
 int    korb_drain_at_exit(CTX *c, VALUE *slots);   /* run at_exit blocks (main.c); >=0 = exit status a handler asked for */
 void   korb_io_flush_std(struct korb_vm *vm);     /* flush stdout/stderr (no stdio to do it at exit) */
 
+/* a Hash the call site wrote as keyword arguments (KORB_FL_KWARGS) */
+static inline bool korb_kwargs_hash_p(VALUE v) {
+    return KORB_HASH_P(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_KWARGS) != 0;
+}
+
 enum korb_etype {
     KORB_E_RUNTIME = 0,
     KORB_E_TYPE,
