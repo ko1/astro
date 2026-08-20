@@ -373,6 +373,7 @@ static RESULT korb_m_rat_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_rat_ceil(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)a; return korb_rat_intdiv(c, slots, SELF_RAT->num, SELF_RAT->den, 1); }
 static RESULT korb_m_rat_zero(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_RAT->num == LONG2FIX(0) ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)self;(void)a; return RESULT_OK(KORB_FALSE); }
+static void korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz);   /* defined below */
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
@@ -3331,8 +3332,12 @@ static RESULT korb_m_define_method(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method '%s'", korb_sym_name(c->vm, mo->mid));
         /* a module-owned method (e.g. a Kernel UnboundMethod) binds to any class;
          * only a class owner requires the defining class to be a descendant. */
-        if (UNLIKELY(KORB_CLASS_P(owner) && !owner_mod && !korb_class_has_ancestor(slots[0], owner)))
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", korb_type_name(owner));
+        if (UNLIKELY(KORB_CLASS_P(owner) && VAL2CLASS(owner)->is_singleton && owner != slots[0]))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't bind singleton method to a different class");
+        if (UNLIKELY(KORB_CLASS_P(owner) && !owner_mod && !korb_class_has_ancestor(slots[0], owner))) {
+            char onm[192]; korb_class_qname_into(c, owner, onm, sizeof onm);   /* name the CLASS, not "Class" */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", onm);
+        }
         struct korb_method *dst = korb_class_method_slot(VAL2CLASS(slots[0]), mid);
         *dst = *src;                                     /* copy the definition */
         dst->mid = mid; dst->owner = slots[0];           /* rename + re-own */
