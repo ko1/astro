@@ -2591,6 +2591,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t len;
         const char *bytes = kp_strdup_pm(&sn->unescaped, &len);
         if (tc->src_enc != KORB_ENC_UTF8) return ALLOC_node_str_enc(bytes, len, tc->src_enc);
+        if (sn->base.flags & PM_STRING_FLAGS_FROZEN) return ALLOC_node_str_frozen(bytes, len);   /* # frozen_string_literal: true */
         return ALLOC_node_str(bytes, len);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */

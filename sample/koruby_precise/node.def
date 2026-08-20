@@ -32,6 +32,18 @@ node_str(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
     return korb_str_new(c, slots, bytes, len);
 }
 
+// `# frozen_string_literal: true` — the literal yields a frozen String.  Each
+// evaluation still builds one (CRuby also deduplicates; identity is the only
+// difference), so mutation attempts raise exactly as they should.
+NODE_DEF
+node_str_frozen(CTX *c, NODE *n, VALUE *slots, const char *bytes, uint32_t len)
+{
+    (void)n;
+    const RESULT r = korb_str_new(c, slots, bytes, len);
+    if (LIKELY(r.state == KORB_NORMAL)) ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;
+    return r;
+}
+
 // Same, for a source file whose `# encoding:` magic comment is not UTF-8: the
 // literal carries the file's encoding tag (`enc` is a KORB_ENC_* index).
 NODE_DEF
