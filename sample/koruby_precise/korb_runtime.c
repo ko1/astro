@@ -995,6 +995,27 @@ korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
     return korb_float_new(c, slots, r);
 }
 
+/* CRuby names every unbound required keyword at once: "missing keywords: :a, :b". */
+static RESULT
+korb_raise_missing_kw(CTX *c, VALUE *slots, uint32_t line, const struct korb_kw_info *kw, uint64_t present)
+{
+    char buf[512];
+    uint32_t n = 0;
+    for (uint32_t j = 0; j < kw->count; j++) {
+        if ((j < 64 && (present & (1ull << j))) || kw->entries[j].deflt) continue;
+        n++;
+    }
+    int off = snprintf(buf, sizeof buf, "missing keyword%s:", n > 1 ? "s" : "");
+    bool first = true;
+    for (uint32_t j = 0; j < kw->count && off > 0 && (size_t)off < sizeof buf; j++) {
+        if ((j < 64 && (present & (1ull << j))) || kw->entries[j].deflt) continue;
+        off += snprintf(buf + off, sizeof buf - (size_t)off, "%s :%s", first ? "" : ",",
+                        korb_sym_name(c->vm, kw->entries[j].mid));
+        first = false;
+    }
+    return korb_raise(c, slots, KORB_E_ARGUMENT, line, "%s", buf);
+}
+
 /* ---- string encoding negotiation ---------------------------------------- */
 
 /* the canonical name of a header encoding index */
@@ -3696,7 +3717,7 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 base[kw->entries[j].slot] = dr.value;
             } else {
-                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, kw->entries[j].mid));
+                return korb_raise_missing_kw(c, slots, line, kw, present);
             }
         }
         if (kw->kwrest_slot >= 0) {                                 /* collect undeclared keys into **rest */
@@ -3827,7 +3848,7 @@ korb_invoke_kw_simple(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos_
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             base[kw->entries[j].slot] = dr.value;
         } else {
-            return korb_raise(c, slots, KORB_E_ARGUMENT, line, "missing keyword: :%s", korb_sym_name(vm, kw->entries[j].mid));
+            return korb_raise_missing_kw(c, slots, line, kw, present);
         }
     }
   run_body:;
@@ -6866,7 +6887,7 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
                 if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
                 bf[1 + kw->entries[j].slot] = dr.value;
             } else {
-                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "missing keyword: :%s", korb_sym_name(c->vm, kw->entries[j].mid));
+                return korb_raise_missing_kw(c, slots, 0, kw, present);
             }
         }
         if (kw->kwrest_slot >= 0) {                      /* collect undeclared keys into **rest (like korb_invoke_method) */
