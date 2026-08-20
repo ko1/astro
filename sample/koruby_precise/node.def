@@ -1535,8 +1535,13 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * that name, so a write inside `M2::A` never lands in an earlier `M1::A`.
      * Only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
-    /* an unnamed cref (`class << obj`) can only be named by the running self */
-    const VALUE ownc = KORB_CLASS_P(owner) ? owner
+    /* an unnamed cref (`class << obj`) can only be named by the running self;
+     * inside an eval'd string the cref the eval was given wins (CRuby) */
+    /* a global ($x) shares this table but is never owned by a module */
+    const bool is_gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
+    const VALUE ownc = is_gvar ? KORB_NIL
+                     : KORB_CLASS_P(owner) ? owner
+                     : KORB_CLASS_P(c->eval_cref) ? c->eval_cref
                      : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
     /* the typed predefined globals are checked on assignment (CRuby) */
     { const char *const gn = korb_sym_name(c->vm, name_sym);
@@ -1587,7 +1592,7 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
       if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
     if (UNLIKELY(ownc != KORB_NIL)) {                     /* fire const_added(name) if the module defines the hook */
         const uint32_t ca = korb_intern(c->vm, "const_added", 11);
-        if (UNLIKELY(korb_responds_to(c, ownc, ca))) {
+        if (UNLIKELY(korb_mod_hook_custom(c, ownc, ca))) {
             slots[0] = val;                              /* root val across the hook's GC */
             slots[1] = ownc; slots[2] = ID2SYM(name_sym);
             RESULT hr = korb_send(c, slots + 3, ca, 0, 1);

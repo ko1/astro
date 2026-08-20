@@ -1026,6 +1026,11 @@ struct CTX_struct {
      * SINGLETON class, not to self's class — the "default definee" CRuby tracks
      * per frame.  KORB_NIL means "use self", which is every other case. */
     VALUE     def_definee;
+    /* The cref an eval'd STRING runs under (instance_eval → the receiver's
+     * singleton class, class_eval/module_eval → the module itself).  KORB_NIL
+     * outside such an eval; a constant assignment with no parse-time cref uses
+     * it as the owner, which is how `mod.module_eval("X = 1")` lands in mod. */
+    VALUE     eval_cref;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
@@ -1084,6 +1089,10 @@ struct CTX_struct {
     }                                                                        \
     if ((c)->throw_tag != KORB_NIL)                                          \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->throw_tag);              \
+    if ((c)->def_definee != KORB_NIL)                                        \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->def_definee);            \
+    if ((c)->eval_cref != KORB_NIL)                                          \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->eval_cref);              \
     for (uint32_t _ti = 0; _ti < (c)->catch_n; _ti++) {                     \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->catch_tags[_ti]);         \
     }                                                                        \

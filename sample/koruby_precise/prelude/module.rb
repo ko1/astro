@@ -1,6 +1,14 @@
 # Module/Class introspection layered on the C core (ancestors/instance_method/
 # attached_object).
 class Module
+  # The default #const_added hook: nil.  Defining it makes the name show up in
+  # Module.private_instance_methods; the C side only dispatches when a module
+  # overrides it (korb_mod_hook_custom).
+  def const_added(name)
+    nil
+  end
+  private :const_added
+
   # The modules in the ancestor chain that are not classes.
   def included_modules
     ancestors.select { |m| m.instance_of?(Module) }

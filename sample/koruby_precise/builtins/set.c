@@ -886,7 +886,9 @@ static RESULT korb_m_mod_constants(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     for (uint32_t i = 0; i < vm->const_cnt; i++) {
         const VALUE owner = vm->const_owners[i];                    /* owners are root-updated across the push GC */
         const VALUE selfv = VALUE_REF_GET(self);
-        bool match = (owner == selfv);
+        /* top-level constants (and the builtin classes) carry no owner; they are
+         * Object's, which is what `Object.constants` must list. */
+        bool match = (owner == selfv) || (owner == KORB_NIL && selfv == objc);
         /* inherit (default): own + included + prepended + ancestors (excl. Object).
          * non-inherit: only constants defined directly in self (owner == self). */
         if (!match && inherit && KORB_CLASS_P(selfv) && KORB_CLASS_P(owner) && owner != objc)
@@ -1330,6 +1332,13 @@ static RESULT korb_m_class_const_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     const VALUE owner = VALUE_REF_GET(self);    /* nest the const under the receiver module (→ its #constants) */
     { RESULT fr = korb_check_def_frozen(c, slots, owner); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* const_set on a frozen module → FrozenError */
     korb_const_define_owned(c, id, val, KORB_CLASS_P(owner) ? owner : KORB_NIL);   /* libc realloc only → no GC move of val */
+    if (UNLIKELY(KORB_CLASS_P(owner) && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
+        slots[0] = val;                                   /* root across the hook's GC */
+        slots[1] = owner; slots[2] = ID2SYM(id);
+        const RESULT hr = korb_send(c, slots + 3, korb_intern(c->vm, "const_added", 11), 0, 1);
+        if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
+        return RESULT_OK(slots[0]);
+    }
     return RESULT_OK(val);
 }
 /* A class variable name must be @@-prefixed; otherwise NameError (CRuby), with
@@ -1898,7 +1907,18 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, VALUE_SLICE_GET(a, 2)));
             line = (int32_t)l;
         }
-        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line);
+        /* the eval'd string runs under a cref: instance_eval → the receiver's
+         * singleton class, class_eval/module_eval → the module itself */
+        VALUE cref = KORB_NIL;
+        if (singleton_definee) {
+            if (korb_singleton_able(VALUE_REF_GET(self))) {
+                slots[0] = src;                            /* park across the singleton's alloc */
+                const RESULT sr = korb_obj_singleton(c, slots + 1, VALUE_REF_GET(self));
+                if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+                cref = sr.value; src = slots[0];
+            }
+        } else if (KORB_CLASS_P(VALUE_REF_GET(self))) cref = VALUE_REF_GET(self);
+        return korb_eval_str_self(c, slots, src, VALUE_REF_GET(self), fname, line, cref);
     }
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));

@@ -380,8 +380,8 @@ static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, 
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
 static RESULT korb_m_str_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a);   /* string.c — for String.new(non-String source) */
-static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname);   /* defined below */
-static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line);   /* defined below — for instance/class_eval(String) in set.c */
+static RESULT korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref);   /* defined below */
+static RESULT korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref);   /* defined below — for instance/class_eval(String) in set.c */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
 static RESULT korb_raise_syntax(CTX *c, VALUE *slots, const char *generic);
@@ -3842,6 +3842,11 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
         if (owner != KORB_NIL)                         /* lexical enclosing module/class → M::C names */
             ARO_STORE(c, VAL2CLASS(slots[1]), (VALUE *)(uintptr_t)&VAL2CLASS(slots[1])->enclosing, owner);
         korb_const_define_owned(c, name_sym, slots[1], owner);   /* owner = lexical module (nil top-level) → Module#constants + reopen */
+        if (UNLIKELY(owner != KORB_NIL && korb_mod_hook_custom(c, owner, korb_intern(c->vm, "const_added", 11)))) {
+            slots[2] = owner; slots[3] = ID2SYM(name_sym);   /* const_added runs before inherited (CRuby) */
+            RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "const_added", 11), 0, 1, NULL, NULL, KORB_NIL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+        }
         if (!is_module && slots[0] != KORB_NIL) {    /* fire superclass.inherited(cls) for a new subclass */
             CHECK(korb_register_subclass(c, slots + 2, slots[0], slots[1]));   /* record in super's subclass list */
             const uint32_t inh = korb_intern(c->vm, "inherited", 9);
@@ -4392,6 +4397,18 @@ korb_responds_to(CTX *c, VALUE self, uint32_t mid)
     const VALUE start = korb_dispatch_class(c, self);
     return KORB_CLASS_P(start) && korb_class_find_method(start, mid, NULL) != NULL;
 }
+/* true when `mod` overrides a Module hook (const_added).  Module's own default
+ * answers nil, so firing it would cost a dispatch per constant for nothing. */
+bool
+korb_mod_hook_custom(CTX *c, VALUE mod, uint32_t mid)
+{
+    const VALUE dcls = korb_dispatch_class(c, mod);
+    if (!KORB_CLASS_P(dcls)) return false;
+    VALUE owner = KORB_NIL;
+    if (korb_class_find_method(dcls, mid, &owner) == NULL) return false;
+    return owner != korb_const_get(c->vm, korb_intern(c->vm, "Module", 6));
+}
+
 /* like korb_responds_to but also honors a user-defined #respond_to_missing?
  * (the type-conversion protocols — #to_str/#to_ary/#to_int/#to_hash — check
  * respond_to? before dispatching, so a proxy/delegator/mock that answers via
@@ -11142,7 +11159,7 @@ korb_bi_p(CTX *c, VALUE *slots, VALUE_SLICE args)
  * String form (self = the receiver, so `def` in class_eval attaches to the class).
  * The eval'd code sees its own locals only (no caller binding). */
 static RESULT
-korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line)
+korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *fname, int32_t line, VALUE cref)
 {
     const KorbString *const s = VAL2STR(str);
     NODE *ast = koruby_parse_source_at(c, korb_strbuf_data(s->buf), s->len, fname, line, false);   /* immortal AST; no GC */
@@ -11153,7 +11170,7 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
     VALUE *const cur = fb + locals;                     /* the eval program's body cursor */
     memset(fb, 0, (size_t)locals * sizeof(VALUE));      /* zero its locals */
     fb[-1] = self_val;                                  /* self cell (base[-1]) */
-    return korb_eval_run(c, slots, ast, cur, fname);   /* raises report the caller's filename */
+    return korb_eval_run(c, slots, ast, cur, fname, cref);   /* raises report the caller's filename */
 }
 
 /* Kernel#eval(string) — parse + run the string as a program in a fresh frame
@@ -11164,14 +11181,17 @@ korb_eval_str_self(CTX *c, VALUE *slots, VALUE str, VALUE self_val, const char *
  * is reported against that file (the backtrace is snapshotted before the name is
  * restored).  `slots` is scratch for the snapshot; `cur` is the program cursor. */
 static RESULT
-korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname)
+korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname, VALUE cref)
 {
     const char *const saved = c->vm->script_name;
     const VALUE saved_definee = c->def_definee;
-    c->def_definee = KORB_NIL;                          /* the eval'd program defines via its own self */
+    const VALUE saved_cref = c->eval_cref;
+    c->def_definee = cref;                              /* instance_eval/class_eval(String): `def` lands here */
+    c->eval_cref = cref;                                /* … and so do constants */
     c->vm->script_name = fname;
     RESULT r = EVAL(c, ast, cur);
     c->def_definee = saved_definee;
+    c->eval_cref = saved_cref;
     if (UNLIKELY(r.state == KORB_RAISE)) {
         slots[0] = r.value;                             /* park: capture allocates */
         (void)korb_capture_backtrace(c, slots);
@@ -11293,7 +11313,7 @@ korb_bi_eval(CTX *c, VALUE *slots, VALUE_SLICE args)
     RESULT mr = korb_obj_new(c, cur, KORB_NIL);         /* fresh `main` self */
     if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
     fb[-1] = mr.value;                          /* self cell (base[-1]) */
-    return korb_eval_run(c, slots, ast, cur, fname);
+    return korb_eval_run(c, slots, ast, cur, fname, KORB_NIL);
 }
 
 /* strict string→integer parse for Integer():  optional surrounding whitespace,
