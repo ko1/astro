@@ -2203,6 +2203,15 @@ assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_loc
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
         return build_const_set(tc, name, v);
     }
+    if (PM_NODE_TYPE_P(t, PM_CONSTANT_PATH_TARGET_NODE)) {   /* `a, M::X = ...` → M.const_set(:X, v) */
+        const pm_constant_path_target_node_t *cpt = (const pm_constant_path_target_node_t *)t;
+        if (cpt->parent == NULL) return NULL;                /* `::X` — no runtime namespace to send to */
+        NODE *r, *k, *v;
+        WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, cpt->parent),
+                                     k = ALLOC_node_lit(ID2SYM(kp_intern_cid(tc, cpt->name))),
+                                     v = bake_lget(tc, src_local)));
+        return kp_send2(korb_intern(tc->c->vm, "const_set", 9), line, r, k, v);
+    }
     if (PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
         uint32_t name = (kp_gvar_alias_seed(tc), kp_gvar_resolve)(kp_intern_cid(tc, ((const pm_global_variable_target_node_t *)t)->name));
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
@@ -2886,7 +2895,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 } else if (PM_NODE_TYPE_P(t, PM_CALL_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_INDEX_TARGET_NODE) ||
                            PM_NODE_TYPE_P(t, PM_GLOBAL_VARIABLE_TARGET_NODE) ||
-                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / recv.x= / recv[k]= → general desugar */
+                           PM_NODE_TYPE_P(t, PM_CONSTANT_PATH_TARGET_NODE) ||
+                           PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {   /* nested `(a,b)` / $g / M::X / recv.x= / recv[k]= → general desugar */
                     all_local = false; needs_general = true;
                 } else {
                     return kp_unsupported(tc, t, "non-local multi-assign target");
