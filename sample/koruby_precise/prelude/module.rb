@@ -133,8 +133,24 @@ class Module
   private def const_added(name); end
 
   # ruby2_keywords marks methods to pass a bare kwargs hash through *args.  koruby
-  # already threads a trailing kwargs Hash through splat, so accept + no-op.
-  def ruby2_keywords(*names); nil; end
+  # tags every keyword Hash at the call site and the tag rides through splat, so
+  # the delegation already works; this only validates the names.
+  def ruby2_keywords(*names)
+    names.each do |n|
+      unless method_defined?(n) || private_method_defined?(n) || respond_to?(n, true)
+        raise NameError.new("undefined method '#{n}' for class '#{self}'", n)
+      end
+      # the flag only means anything on a `*rest`-only signature
+      params = (instance_method(n).parameters rescue [])
+      ok = params.any? { |t, _| t == :rest } &&
+           params.none? { |t, _| t == :key || t == :keyreq || t == :keyrest }
+      unless ok
+        warn "Skipping set of ruby2_keywords flag for #{n} (method accepts keywords " \
+             "or method does not accept argument splat)", uplevel: 1
+      end
+    end
+    nil
+  end
 
   # The primitive behind Object#extend (private): mix self into obj's singleton class.
   private def extend_object(obj)

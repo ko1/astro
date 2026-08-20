@@ -8810,6 +8810,8 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod_blk(c, KORB_C_ARRAY, "filter!", korb_m_ary_select_bang, 0);
 
     /* Hash */
+    korb_def_cmethod(c, KORB_C_HASH, "__kwargs_marked?", korb_m_hash_kwmarked, 0);
+    korb_def_cmethod(c, KORB_C_HASH, "__kwargs_mark!", korb_m_hash_kwmark, 0);
     korb_def_cmethod(c, KORB_C_HASH, "[]", korb_m_hash_aref, 1);
     korb_def_cmethod(c, KORB_C_HASH, "[]=", korb_m_hash_aset, 2);
     korb_def_cmethod(c, KORB_C_HASH, "store", korb_m_hash_aset, 2);

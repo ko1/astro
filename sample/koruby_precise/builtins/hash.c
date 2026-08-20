@@ -80,6 +80,17 @@ static RESULT korb_m_obj_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
 
 /* ---- Hash methods -------------------------------------------------------- */
 
+/* Hash#__kwargs_marked? / #__kwargs_mark! — the keyword-argument mark that
+ * Hash.ruby2_keywords_hash?/ruby2_keywords_hash expose. */
+static RESULT korb_m_hash_kwmarked(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    return RESULT_OK(korb_kwargs_hash_p(VALUE_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
+}
+static RESULT korb_m_hash_kwmark(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)c; (void)slots; (void)a;
+    ((AroObjectHeader *)(uintptr_t)VALUE_REF_GET(self))->flags |= KORB_FL_KWARGS;
+    return RESULT_OK(VALUE_REF_GET(self));
+}
 static RESULT korb_m_hash_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(SELF_HASH->len)); }
 static RESULT korb_m_hash_empty(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(SELF_HASH->len == 0 ? KORB_TRUE : KORB_FALSE); }
 static RESULT korb_m_hash_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
