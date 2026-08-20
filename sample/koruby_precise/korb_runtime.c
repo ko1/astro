@@ -3132,7 +3132,11 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, VALUE val, VALUE owner)
          * is named by the bare constant ("X"), not "Object::X".  Only a genuine
          * nested namespace becomes the enclosing scope. */
         const VALUE objc = korb_builtin_class_obj(vm, KORB_C_OBJECT);
-        if (KORB_CLASS_P(owner) && owner != objc && VAL2CLASS(val)->enclosing == KORB_NIL)
+        bool cyclic = (owner == val);                 /* `X = X`-shaped nesting would loop the qname walk */
+        for (VALUE o = KORB_CLASS_P(owner) ? VAL2CLASS(owner)->enclosing : KORB_NIL;
+             !cyclic && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing)
+            if (o == val) cyclic = true;
+        if (KORB_CLASS_P(owner) && owner != objc && !cyclic && VAL2CLASS(val)->enclosing == KORB_NIL)
             ARO_STORE(c, VAL2CLASS(val), (VALUE *)(uintptr_t)&VAL2CLASS(val)->enclosing, owner);
     }
     /* keyed by (name, owner): reassigning the same constant in the same namespace
@@ -3853,12 +3857,13 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv)
  * anonymous class (name_sym 0); an anonymous link in the chain ends qualification.
  * No GC (only reads interned names + writes fp). */
 static bool
-korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls)
+korb_fprint_class_qname_d(CTX *c, FILE *fp, VALUE cls, int depth)
 {
     const KorbClass *const k = VAL2CLASS(cls);
     if (k->name_sym == 0) return false;
+    if (depth > 32) { fputs("...", fp); return true; }   /* a cyclic `enclosing` must not hang the printer */
     if (k->enclosing != KORB_NIL && KORB_CLASS_P(k->enclosing)) {
-        if (korb_fprint_class_qname(c, fp, k->enclosing))
+        if (korb_fprint_class_qname_d(c, fp, k->enclosing, depth + 1))
             fputs("::", fp);
         else {   /* named class under an ANONYMOUS namespace → CRuby shows #<Module:0x…>::Name */
             const KorbClass *const e = VAL2CLASS(k->enclosing);
@@ -3868,6 +3873,7 @@ korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls)
     fputs(korb_sym_name(c->vm, k->name_sym), fp);
     return true;
 }
+static bool korb_fprint_class_qname(CTX *c, FILE *fp, VALUE cls) { return korb_fprint_class_qname_d(c, fp, cls, 0); }
 /* Build the qualified name as a fresh String (nil for anonymous).  For Class#name. */
 static RESULT
 korb_class_qname_str(CTX *c, VALUE *slots, VALUE cls)

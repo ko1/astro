@@ -1232,7 +1232,7 @@ node_errinfo(CTX *c, NODE *n, VALUE *slots)
 // is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
 // re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
 NODE_DEF
-node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, struct korb_constcache *cache@ref)
+node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, struct korb_constcache *cache@ref)
 {
     (void)n;
     struct korb_vm *const vm = c->vm;
@@ -1263,12 +1263,16 @@ node_const(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_
          * never gets its chance. */
         if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);            /* finally any namespace (koruby's flat fallback) */
     } else {                                          /* top-level bare read */
+        /* Inside `class << obj` the cref has no name, so the running self is the
+         * only handle on it — look there first. */
+        idx = (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off]))
+                ? korb_const_index_owned(vm, name_sym, slots[self_off]) : UINT32_MAX;
         /* A real top-level constant wins over a same-named nested one.  The
          * table is flat, so a plain first-match would let a prelude-defined
          * `Enumerator::Chain` answer a user's bare `Chain` just because it was
          * registered first.  The flat fallback stays: koruby still exposes
          * nested constants unqualified. */
-        idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
+        if (idx == UINT32_MAX) idx = korb_const_index_owned(vm, name_sym, KORB_NIL);
         if (idx == UINT32_MAX) idx = korb_const_index(vm, name_sym);
     }
     if (UNLIKELY(idx == UINT32_MAX)) {
@@ -1496,7 +1500,7 @@ node_defined_yield(CTX *c, NODE *n, VALUE *slots, int32_t biseq_off)
 // constant write (`FOO = expr`) — stores into the VM const table (libc-backed,
 // root-scanned), returns the value.
 NODE_DEF
-node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, struct korb_constcache *cache@ref, VALUE val@child)
+node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, struct korb_constcache *cache@ref, VALUE val@child)
 {
     (void)n; (void)slots;
     /* owner_name = the lexically-enclosing module's const name, baked at parse
@@ -1504,7 +1508,9 @@ node_const_set(CTX *c, NODE *n, VALUE *slots, uint32_t name_sym@sym, uint32_t ow
      * that name, so a write inside `M2::A` never lands in an earlier `M1::A`.
      * Only real classes/modules count as an owner. */
     const VALUE owner = owner_name ? korb_cref_resolve(c->vm, cache->owner_chain, cache->chain_len, owner_name) : KORB_NIL;
-    const VALUE ownc = KORB_CLASS_P(owner) ? owner : KORB_NIL;
+    /* an unnamed cref (`class << obj`) can only be named by the running self */
+    const VALUE ownc = KORB_CLASS_P(owner) ? owner
+                     : (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
     /* the typed predefined globals are checked on assignment (CRuby) */
     { const char *const gn = korb_sym_name(c->vm, name_sym);
       if (UNLIKELY(gn[0] == '$')) {
