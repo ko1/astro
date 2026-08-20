@@ -1568,10 +1568,30 @@ static RESULT korb_m_mod_const_source_location(CTX *c, VALUE *slots, VALUE_REF s
     const char *nm; uint32_t nlen;
     if (SYMBOL_P(name)) { nm = korb_sym_name(vm, SYM2ID(name)); nlen = (uint32_t)strlen(nm); }
     else { const KorbString *const ns = VAL2STR(name); nm = korb_strbuf_data(ns->buf); nlen = ns->len; }
+    /* a String name may be scoped ("A::B" / "::Top"): walk to the owner of the
+     * final segment and answer for that one */
+    VALUE scope = VALUE_REF_GET(self);
+    if (!SYMBOL_P(name)) {
+        if (nlen >= 2 && nm[0] == ':' && nm[1] == ':') { nm += 2; nlen -= 2; scope = KORB_NIL; }
+        for (;;) {
+            uint32_t sep = 0;
+            while (sep + 1 < nlen && !(nm[sep] == ':' && nm[sep + 1] == ':')) sep++;
+            if (sep + 1 >= nlen) break;                    /* last segment */
+            if (UNLIKELY(!korb_valid_const_name(nm, sep)))
+                return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)sep, nm);
+            const uint32_t ssym = korb_intern(vm, nm, sep);
+            uint32_t six = KORB_CLASS_P(scope) ? korb_const_index_owned(vm, ssym, scope) : UINT32_MAX;
+            if (six == UINT32_MAX && KORB_CLASS_P(scope)) six = korb_const_in_ancestry(vm, scope, ssym);
+            if (six == UINT32_MAX) six = korb_const_index_owned(vm, ssym, KORB_NIL);
+            if (six == UINT32_MAX) return RESULT_OK(KORB_NIL);
+            scope = vm->const_vals[six];
+            nm += sep + 2; nlen -= sep + 2;
+        }
+    }
     if (UNLIKELY(!korb_valid_const_name(nm, nlen)))
         return korb_raise(c, slots, KORB_E_NAME, 0, "wrong constant name %.*s", (int)nlen, nm);
     const uint32_t sym = korb_intern(vm, nm, nlen);
-    const VALUE owner = VALUE_REF_GET(self);
+    const VALUE owner = scope;
     uint32_t idx = korb_const_index_owned(vm, sym, owner);
     VALUE loc_owner = owner;
     if (idx == UINT32_MAX && inherit) {
