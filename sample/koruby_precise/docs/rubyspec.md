@@ -376,3 +376,30 @@ enumerator 54  [encoding 50]  thread 45  process 35  regexp 34
 ```
 `[...]` = 除外域。単一ファイル最大は tracepoint/enable 32（棚上げ）、time/new 29、
 objectspace/each_object 19、kernel/eval 16。
+
+## 2026-08-20 core sweep (実 mspec)
+
+```
+files=2144 clean=1068  whole-file-fail=6
+examples=22468 pass=19075 fail=2281 err=1112
+example pass-rate = 84.9%
+```
+起点 (同日朝) pass=18740 / 83.4% → **19075 / 84.9% (+335)**。計測は
+`DUMP=<path> ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`。
+
+この日の効いた修正 (大きい順):
+- **String のエンコーディング枠 5 → 29** (ヘッダ索引を 3bit → 5bit)。
+  core/encoding/compatible_spec 109F → 6F。
+- **IO.popen の `err: [:child, :out]`** を実装。mspec の `ruby_exe(..., args: "2>&1")`
+  が空文字列を返していたため、stderr を見る spec が全て落ちていた。
+- **IO の external/internal encoding** を CRuby の rb_io_ext_int_to_encs と同型に
+  (set_encoding 49F→3F、external 16F→0、internal 18F→0)。
+- **Regexp.union のエンコーディング交渉** (21F3E → 0)、Regexp#fixed_encoding?。
+- **Time.new(String)** を time_init_parse と同型に (22 → 2)。
+- **END { } / at_exit の終了処理** (END_spec 0/14 → 13/14、at_exit_spec 3 → 12/13)。
+- Marshal の深さ制限・特異クラス ivar・非 ASCII ivar 名、Module#const_added、
+  eval 文字列の cref、respond_to_missing? の既定、IO.pipe のエンコーディング引数。
+
+残りの上位 (in-scope): io/write_spec と string/encode_spec は **実 transcoding** 待ち、
+module/refine と refinement/* は refinement 未実装、kernel/caller は
+フレームに現在行を持たせる設計変更待ち (docs/todo.md)。
