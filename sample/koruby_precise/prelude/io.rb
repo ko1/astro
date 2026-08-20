@@ -13,6 +13,8 @@ class IO
     return nil if v.nil?
     return v if v.is_a?(Encoding)
     v = v.to_str if !v.is_a?(String) && v.respond_to?(:to_str)
+    # "bom|utf-8" — the BOM prefix only asks that a BOM be honoured on read
+    v = v[4..-1] if v.is_a?(String) && v.downcase.start_with?("bom|")
     v == "-" ? nil : v
   end
 

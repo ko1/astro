@@ -502,12 +502,12 @@ static RESULT korb_m_io_printf(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_strbuf_data(s->buf), s->len); }
     return RESULT_OK(KORB_NIL);
 }
+static RESULT korb_io_capture_default_internal(CTX *c, VALUE *slots, VALUE_REF io);   /* fwd (defined below) */
 /* IO.pipe → [r, w]  (block form: yield r, w; ensure both closed).
  * 書き込み側は sync (buffer に溜めない) にして「write → 相手が即 read できる」
  * という pipe の期待通りに振る舞わせる。 */
 static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
                                NODE *block, VALUE *def_env, VALUE *cself) {
-    (void)a;
     int fds[2];
     if (pipe(fds) != 0) return korb_raise_errno(c, slots, errno, "pipe", "");
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
@@ -519,6 +519,27 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
       KorbIORep *const wr = korb_io_rep(c, slots[2]);
       if (wr) wr->sync = 1;                              /* write → the peer can read it now */
       korb_io_set_nonblock(rd); korb_io_set_nonblock(wr); }
+    /* the encoding arguments (and any options Hash) apply to the read end */
+    CHECK(korb_io_capture_default_internal(c, slots + 3, VALUE_REF_AT(&slots[1])));
+    {
+        const uint32_t an = VALUE_SLICE_LEN(a);
+        uint32_t pos = an;                                /* positional encoding args */
+        bool has_opts = false;
+        if (pos > 0 && KORB_HASH_P(VALUE_SLICE_GET(a, pos - 1))) { pos--; has_opts = true; }
+        if (pos > 2) pos = 2;
+        if (pos > 0) {
+            slots[3] = slots[1];                          /* recv */
+            for (uint32_t i = 0; i < pos; i++) slots[4 + i] = VALUE_SLICE_GET(a, i);
+            const RESULT sr = korb_send(c, slots + 4 + pos, korb_intern(c->vm, "set_encoding", 12), 0, pos);
+            if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        }
+        if (has_opts) {
+            slots[3] = slots[1];
+            slots[4] = VALUE_SLICE_GET(a, an - 1);
+            const RESULT or_ = korb_send(c, slots + 5, korb_intern(c->vm, "__apply_open_opts", 17), 0, 1);
+            if (UNLIKELY(or_.state != KORB_NORMAL)) return or_;
+        }
+    }
     slots[3] = UNWRAP(korb_ary_new(c, slots + 3, 2));
     { VALUE_REF pr = VALUE_REF_AT(&slots[3]);
       CHECK(korb_ary_push_val(c, slots + 4, pr, slots[1]));
