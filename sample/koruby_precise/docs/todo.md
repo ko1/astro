@@ -2590,15 +2590,16 @@ file-clean 869、whole-file-fail 56、**SEGV=0 / TIMEOUT=0 / KILL=0**(全 hang/c
 `reach` の再帰が爆発する)。gate に入れるには種を絞る必要がある
 (例: 自分で `slots[]` に書く関数の引数だけ、など)。詳細は codeql/README.md。
 
-## エンコーディング枠は 5 個しかない (2026-08-19)
+## エンコーディング枠は 5 個しかない (2026-08-19) → **解決済み (2026-08-20)**
 
-String ヘッダのエンコーディング tag は 3bit で、UTF-8 / US-ASCII / ASCII-8BIT
-以外は 3..7 の 5 枠を名前で共有する。6 種類目以降は最後の枠を再利用するため、
-**別のエンコーディングとして報告される** (spec のように多数のエンコーディングを
-使うと Shift_JIS の枠に UTF-16LE が乗る、等)。ヘッダの空きビットが無い
-(bit15 は KORB_FL_HAS_IVARS) ので、増やすには tag の置き場所ごと設計変更が要る。
-実プログラムで 5 種を超えることは稀なので現状維持。core/encoding/* の残り
-fail の一部はこれ。
+String ヘッダのエンコーディング tag が 3bit しかなく、名前付きエンコーディングは
+3..7 の 5 枠を共有していた。6 種類目以降が別のエンコーディングとして報告され、
+core/encoding/compatible_spec が 109 例落ちていた。
+
+**解決**: Hash 専用の KORB_FL_CMP_BY_ID (bit 7) と IO 専用の KORB_FL_DEFAULT_IO
+(bit 8) は String では使われないので、この 2bit を索引の上位に足して 5bit
+(other 枠 29 個) にした。compatible_spec 109F → 6F。
+残る fail は実 transcoding (encode の実バイト変換) が必要なもの。
 
 ## eval(str) が呼び出し元のローカルを見ない (2026-08-19 試作 → 撤回)
 
