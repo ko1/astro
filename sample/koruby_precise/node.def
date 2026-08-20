@@ -1042,7 +1042,7 @@ NODE_DEF @noinline
 node_def(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, NODE *body, uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt, uint32_t uses_block, void *opt_defaults, void *kw_info, void *param_info, int32_t self_off)
 {
     (void)body_dispatcher;
-    VALUE definee = slots[self_off];
+    VALUE definee = (c->def_definee != KORB_NIL) ? c->def_definee : slots[self_off];   /* instance_eval → singleton */
     if (KORB_CLASS_P(definee)) {
         { RESULT fr = korb_check_def_frozen(c, slots, definee); if (UNLIKELY(fr.state != KORB_NORMAL)) return fr; }   /* frozen class / metaclass-of-frozen → FrozenError */
         korb_class_def_method(c, definee, mid, body, params_cnt, req_cnt, post_cnt, rest_slot, locals_cnt, uses_block, (struct Node **)opt_defaults, kw_info, param_info);

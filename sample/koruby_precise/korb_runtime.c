@@ -3647,7 +3647,12 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
         }
     }
     NODE *const body = m->body;
+    /* a method body has its own default definee (its class), so an enclosing
+     * instance_eval's must not leak into it */
+    const VALUE saved_definee = c->def_definee;
+    if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = KORB_NIL;
     RESULT r = (*body->head.dispatcher)(c, body, base + locals_cnt);
+    if (UNLIKELY(saved_definee != KORB_NIL)) c->def_definee = saved_definee;
     if (r.state == KORB_RETURN) {
         /* Consume only a return targeted at this method (NULL = nearest-method,
          * the common case) — a block's `return` aimed at an outer method passes
@@ -3837,7 +3842,13 @@ korb_class_body(CTX *c, VALUE *slots, uint32_t name_sym, NODE *body_entry, VALUE
     }
     slots[0] = cls;                              /* root for the body run + capture */
     VAL2CLASS(cls)->cur_visibility = 0;          /* each (re)opened body starts public */
-    return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    /* a class body's default definee is the class itself — an enclosing
+     * instance_eval's definee must not reach into it */
+    const VALUE saved_definee = c->def_definee;
+    c->def_definee = KORB_NIL;
+    const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    c->def_definee = saved_definee;
+    return br;
 }
 
 /* `class << recv; body; end` — run the body with self = recv's singleton class,
@@ -3849,7 +3860,11 @@ korb_sclass_body(CTX *c, VALUE *slots, NODE *body_entry, VALUE recv)
     slots[0] = recv;                             /* root recv across the singleton alloc */
     const VALUE sing = UNWRAP(korb_obj_singleton(c, slots + 1, slots[0]));
     slots[0] = sing;                             /* self for the body = the singleton class */
-    return korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    const VALUE saved_definee = c->def_definee;  /* the body defines on the singleton, via self */
+    c->def_definee = KORB_NIL;
+    const RESULT br = korb_block_yield(c, slots + 1, body_entry, NULL, NULL, 0, &slots[0]);
+    c->def_definee = saved_definee;
+    return br;
 }
 
 /* Write the fully-qualified class name ("M::Inner::E") to fp, walking the lexical
@@ -7368,7 +7383,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 }
             }
             if (block != NULL) {                            /* body block: def's land on the new class/module */
+                const VALUE saved_definee = c->def_definee;   /* a class body, not an instance_eval */
+                c->def_definee = KORB_NIL;
                 RESULT br = korb_block_yield(c, slots + 2, block, def_env, NULL, 0, &slots[1]);
+                c->def_definee = saved_definee;
                 if (br.state == KORB_BREAK && !korb_break_owned(c, block, def_env)) return br;
                 if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
             }
@@ -9011,10 +9029,10 @@ korb_register_core_methods(CTX *c)
     /* class_eval/module_eval (block) rebind self=class, so `def` inside targets the
      * class as an instance method (node_def uses self); class_exec/module_exec also
      * forward block args.  Same self-rebind logic as instance_eval/instance_exec. */
-    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_eval", korb_m_obj_instance_eval, -1);
-    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_eval", korb_m_obj_instance_eval, -1);
-    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_exec", korb_m_obj_instance_exec, -1);
-    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_exec", korb_m_obj_instance_exec, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_eval", korb_m_mod_class_eval, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_eval", korb_m_mod_class_eval, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "class_exec", korb_m_mod_class_exec, -1);
+    korb_def_cmethod_blk(c, KORB_C_CLASS, "module_exec", korb_m_mod_class_exec, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "alias_method", korb_m_class_alias_method, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "superclass", korb_m_class_superclass, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "allocate", korb_m_class_allocate, 0);
@@ -9197,10 +9215,10 @@ korb_register_core_methods(CTX *c)
     MOD_CFN_BLK("define_method", korb_m_define_method, -1);
     MOD_CFN("private_class_method", korb_m_private_class_method, -1);
     MOD_CFN("public_class_method", korb_m_public_class_method, -1);
-    MOD_CFN_BLK("class_eval", korb_m_obj_instance_eval, -1);
-    MOD_CFN_BLK("module_eval", korb_m_obj_instance_eval, -1);
-    MOD_CFN_BLK("class_exec", korb_m_obj_instance_exec, -1);
-    MOD_CFN_BLK("module_exec", korb_m_obj_instance_exec, -1);
+    MOD_CFN_BLK("class_eval", korb_m_mod_class_eval, -1);
+    MOD_CFN_BLK("module_eval", korb_m_mod_class_eval, -1);
+    MOD_CFN_BLK("class_exec", korb_m_mod_class_exec, -1);
+    MOD_CFN_BLK("module_exec", korb_m_mod_class_exec, -1);
     #undef MOD_CFN
     #undef MOD_CFN_BLK
     korb_def_cmethod_blk(c, KORB_C_OBJECT, "then", korb_m_obj_then, 0);
@@ -11109,8 +11127,11 @@ static RESULT
 korb_eval_run(CTX *c, VALUE *slots, NODE *ast, VALUE *cur, const char *fname)
 {
     const char *const saved = c->vm->script_name;
+    const VALUE saved_definee = c->def_definee;
+    c->def_definee = KORB_NIL;                          /* the eval'd program defines via its own self */
     c->vm->script_name = fname;
     RESULT r = EVAL(c, ast, cur);
+    c->def_definee = saved_definee;
     if (UNLIKELY(r.state == KORB_RAISE)) {
         slots[0] = r.value;                             /* park: capture allocates */
         (void)korb_capture_backtrace(c, slots);

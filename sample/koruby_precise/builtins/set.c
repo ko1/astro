@@ -1800,7 +1800,7 @@ static RESULT korb_m_kernel_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 /* instance_exec(*args) { |*args| ... } — run the block with self rebound to the
  * receiver; the block's lexical env (def_env) is preserved so closures still work.
  * Method definitions inside (singleton def) are NOT redirected to the receiver. */
-static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+static RESULT korb_obj_exec_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     if (UNLIKELY(block == NULL)) return korb_raise(c, slots, KORB_E_LOCALJUMP, 0, "no block given (yield)");
     const uint32_t argc = VALUE_SLICE_LEN(a);
     if (block == KORB_BLK_CPROC) {                       /* forwarded Symbol/Method#to_proc: fixed binding, self-rebind is moot */
@@ -1809,15 +1809,33 @@ static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VAL
     }
     slots[0] = VALUE_REF_GET(self);                      /* new self = receiver (rooted self cell) */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = VALUE_SLICE_GET(a, i);
+    /* same default definee as instance_eval: `def` lands on the singleton */
+    const VALUE saved_definee = c->def_definee;
+    if (singleton_definee) {
+        const RESULT sr = korb_obj_singleton(c, slots + 1 + argc, slots[0]);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        c->def_definee = sr.value;
+    } else c->def_definee = slots[0];              /* class_exec/module_exec: the class itself */
+    RESULT r;
     if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
         slots[1 + argc] = VAL2PROC(*cself)->env;          /* proc's captured env (used as def_env below, not FWD) */
-        return korb_block_yield(c, slots + 2 + argc, block, (VALUE *)(uintptr_t)slots[1 + argc], &slots[1], argc, &slots[0]);
+        r = korb_block_yield(c, slots + 2 + argc, block, (VALUE *)(uintptr_t)slots[1 + argc], &slots[1], argc, &slots[0]);
+    } else {
+        r = korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
     }
-    return korb_block_yield(c, slots + 1 + argc, block, def_env, &slots[1], argc, &slots[0]);
+    c->def_definee = saved_definee;
+    return r;
 }
+static RESULT korb_m_obj_instance_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_obj_exec_impl(c, slots, self, a, block, def_env, cself, true);
+}
+static RESULT korb_m_mod_class_exec(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_obj_exec_impl(c, slots, self, a, block, def_env, cself, false);
+}
+
 /* instance_eval { |obj| ... } — like instance_exec but with the receiver as the
  * sole block argument (CRuby passes self).  The String form is not supported. */
-static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself, bool singleton_definee) {
     (void)cself;
     if (UNLIKELY(block == NULL)) {
         if (VALUE_SLICE_LEN(a) == 0)                          /* no block and no string → ArgumentError (CRuby) */
@@ -1870,14 +1888,36 @@ static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VAL
     if (UNLIKELY(VALUE_SLICE_LEN(a) > 0))                     /* a block AND positional args → ArgumentError (CRuby) */
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0)", VALUE_SLICE_LEN(a));
     slots[0] = VALUE_REF_GET(self);
+    /* default definee: instance_eval → the receiver's SINGLETON class (a `def`
+     * there is a singleton method); class_eval/module_eval → the class itself
+     * (a plain instance method).  Restored on the way out. */
+    const VALUE saved_definee = c->def_definee;
+    if (singleton_definee) {
+        const RESULT sr = korb_obj_singleton(c, slots + 1, slots[0]);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        c->def_definee = sr.value;
+    } else c->def_definee = slots[0];
+    RESULT r;
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
-        return korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
-    slots[1] = slots[0];                                 /* arg0 = receiver */
-    if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
-        slots[2] = VAL2PROC(*cself)->env;
-        return korb_block_yield(c, slots + 3, block, (VALUE *)(uintptr_t)slots[2], &slots[1], 1, &slots[0]);
+        r = korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);
+    else {
+        slots[1] = slots[0];                             /* arg0 = receiver */
+        if (def_env == KORB_BLK_FWD) {                    /* forwarded Proc: keep ITS closure env, rebind self only */
+            slots[2] = VAL2PROC(*cself)->env;
+            r = korb_block_yield(c, slots + 3, block, (VALUE *)(uintptr_t)slots[2], &slots[1], 1, &slots[0]);
+        } else {
+            r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
+        }
     }
-    return korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, &slots[0]);
+    c->def_definee = saved_definee;
+    return r;
+}
+
+static RESULT korb_m_obj_instance_eval(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_obj_eval_impl(c, slots, self, a, block, def_env, cself, true);
+}
+static RESULT korb_m_mod_class_eval(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
+    return korb_obj_eval_impl(c, slots, self, a, block, def_env, cself, false);
 }
 
 /* Exception#message / to_s — the stored message, or the class name if none. */

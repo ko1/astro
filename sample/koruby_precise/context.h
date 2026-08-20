@@ -1022,6 +1022,10 @@ struct CTX_struct {
      * pushed per active rescue body (top == `$!`).  GC-visited as a root by
      * AROH_VISIT_ROOTS, so parked exceptions survive the body's GC; nesting and
      * restore-on-exit fall out of push/pop. */
+    /* `def` inside instance_eval/instance_exec attaches to the receiver's
+     * SINGLETON class, not to self's class — the "default definee" CRuby tracks
+     * per frame.  KORB_NIL means "use self", which is every other case. */
+    VALUE     def_definee;
     VALUE    *errinfo;
     uint32_t  errinfo_n, errinfo_cap;
     VALUE     throw_tag;     /* active `throw` tag while a KORB_THROW unwinds (GC-visited) */
