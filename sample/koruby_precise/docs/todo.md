@@ -2649,3 +2649,24 @@ language/constants_spec が **fixture のロードで死ぬ**:
 **やるなら**: node_const の cref を「名前 chain」ではなく実行時の cref
 オブジェクトで渡す設計に変える必要がある (AOT の bake キーは名前ベースなので、
 そこも一緒に考える)。fallback はそれまで残す。
+
+## 定数解決を「実行時 cref」に寄せる案 (2026-08-19 追記)
+
+現状は parse 時に焼いた**名前 chain** で cref を再現している。これが破れるのは
+名前を持たない cref (`class << obj`、`Class.new` の body) のときで、そこを
+flat fallback が救っている。
+
+2026-08-19 に `class << obj` の body だけ self を owner に使うようにして
+一段改善した (singleton_class_spec / constants_spec / const_get_spec)。
+それでも **`class << obj` の中で `class X` と入れ子にすると X の外側
+(ConstantSpecs 等) が辿れない**: X の enclosing は特異クラスで、特異クラスの
+enclosing はレキシカルな外側を指していないため。language/constants_spec の
+fixture (constants_sclass.rb) がこれで落ちる。
+
+**本筋の案**: node_const / node_const_set に (self_off, dc_off) を渡し、
+`korb_cvar_cref(self, entry_cell)` と同じ方法で実行時 cref を得る
+(クラス body なら self、メソッド本体なら entry->owner)。レキシカルな外側は
+cref->enclosing を辿る。名前 chain は不要になり、flat fallback も外せる
+見込み。ただし特異クラスの enclosing をレキシカル位置に設定する必要があり
+(同じ特異クラスを別の場所で開いたときの扱いを決める必要がある)、そこが
+未解決。
