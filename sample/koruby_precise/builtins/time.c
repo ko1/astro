@@ -60,7 +60,7 @@ static bool korb_parse_tz_offset(VALUE v, intptr_t *out, bool *utcish) {
  * and the stateful ISO-2022 / CP502xx families are not. */
 static bool korb_str_ascii_compat(const struct korb_vm *vm, VALUE sv) {
     const uint32_t idx = KORB_STR_ENC(sv);
-    if (idx < KORB_ENC_OTHER_MIN || idx >= 8 || vm->str_enc_names[idx] == 0) return true;
+    if (idx < KORB_ENC_OTHER_MIN || idx >= KORB_STR_ENC_MAX || vm->str_enc_names[idx] == 0) return true;
     const char *const nm = korb_sym_name(vm, vm->str_enc_names[idx]);
     return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
              strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||

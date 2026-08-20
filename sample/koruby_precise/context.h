@@ -237,13 +237,20 @@ enum korb_obj_type {
  * on it raise NotImplementedError until per-encoding hooks are filled in. */
 #define KORB_STR_ENC_MASK   0x7000u
 #define KORB_STR_ENC_SHIFT  12u
+/* String only: bits 7-8 (KORB_FL_CMP_BY_ID / KORB_FL_DEFAULT_IO, which belong to
+ * Hash and IO) extend the index to 5 bits, so 29 named encodings fit. */
+#define KORB_STR_ENC_HI_MASK 0x0180u
+#define KORB_STR_ENC_MAX    32u
 #define KORB_ENC_UTF8       0u
 #define KORB_ENC_USASCII    1u
 #define KORB_ENC_BINARY     2u
 #define KORB_ENC_OTHER_MIN  3u
-#define KORB_STR_ENC(v)     ((uint32_t)((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT))
+#define KORB_STR_ENC(v)     ((uint32_t)(((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_MASK) >> KORB_STR_ENC_SHIFT) | \
+                             ((((const AroObjectHeader *)(uintptr_t)(v))->flags & KORB_STR_ENC_HI_MASK) >> 4)))
 #define KORB_STR_ENC_SET(v, idx) do { AroObjectHeader *h__ = (AroObjectHeader *)(uintptr_t)(v); \
-    h__->flags = (uint16_t)((h__->flags & ~KORB_STR_ENC_MASK) | (((uint16_t)(idx) << KORB_STR_ENC_SHIFT) & KORB_STR_ENC_MASK)); } while (0)
+    h__->flags = (uint16_t)((h__->flags & ~(KORB_STR_ENC_MASK | KORB_STR_ENC_HI_MASK)) | \
+                            (((uint16_t)(idx) << KORB_STR_ENC_SHIFT) & KORB_STR_ENC_MASK) | \
+                            (((uint16_t)(idx) << 4) & KORB_STR_ENC_HI_MASK)); } while (0)
 /* single-byte encodings: 1 byte = 1 character.  US-ASCII / ASCII-8BIT always,
  * plus any "other" slot holding a single-byte encoding (Latin-1 family, KOI8,
  * Windows-125x, 8-bit code pages) — vm->str_enc_sb_mask records which. */
@@ -976,8 +983,8 @@ struct korb_vm {
     /* Module#const_source_location: where each (name, owner) constant was assigned. */
     struct korb_constloc { uint32_t name; VALUE owner; uint32_t file_sym; uint32_t line; } *constlocs;
     uint32_t constloc_cnt, constloc_capa;
-    uint32_t str_enc_names[8];
-    uint8_t  str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
+    uint32_t str_enc_names[KORB_STR_ENC_MAX];
+    uint32_t str_enc_sb_mask;        /* bit i: index i is a single-byte encoding (byte == character) */
     /* source_location: def/block body NODE → (file symbol, line), populated at
      * parse time.  Node ptrs are immortal (AST); no GC. */
     struct korb_srcloc { struct Node *node; uint32_t file_sym; uint32_t line; } *srclocs;

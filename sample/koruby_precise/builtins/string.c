@@ -43,12 +43,12 @@ static uint32_t korb_enc_index_for_name(struct korb_vm *vm, const char *name) {
     if (strcasecmp(name, "US-ASCII") == 0 || strcasecmp(name, "ASCII") == 0 || strcasecmp(name, "ANSI_X3.4-1968") == 0) return KORB_ENC_USASCII;
     if (strcasecmp(name, "UTF-8") == 0 || strcasecmp(name, "UTF8") == 0) return KORB_ENC_UTF8;
     const uint32_t sym = korb_intern(vm, name, (uint32_t)strlen(name));
-    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++)
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++)
         if (vm->str_enc_names[i] != 0 &&
             (vm->str_enc_names[i] == sym || strcasecmp(korb_sym_name(vm, vm->str_enc_names[i]), name) == 0)) return i;
-    for (uint32_t i = KORB_ENC_OTHER_MIN; i < 8; i++) if (vm->str_enc_names[i] == 0) {
+    for (uint32_t i = KORB_ENC_OTHER_MIN; i < KORB_STR_ENC_MAX; i++) if (vm->str_enc_names[i] == 0) {
         vm->str_enc_names[i] = sym;
-        if (korb_enc_name_single_byte(name)) vm->str_enc_sb_mask |= (uint8_t)(1u << i);   /* byte == character */
+        if (korb_enc_name_single_byte(name)) vm->str_enc_sb_mask |= (1u << i);   /* byte == character */
         return i;
     }
     return 7;   /* registry full (>5 distinct "other" encodings): reuse the last slot */
@@ -63,7 +63,7 @@ static RESULT korb_m_str_enc_tag(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_str_enc_name(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     const uint32_t idx = KORB_STR_ENC(VALUE_REF_GET(self));
-    if (idx < KORB_ENC_OTHER_MIN || idx >= 8 || c->vm->str_enc_names[idx] == 0) return RESULT_OK(KORB_NIL);
+    if (idx < KORB_ENC_OTHER_MIN || idx >= KORB_STR_ENC_MAX || c->vm->str_enc_names[idx] == 0) return RESULT_OK(KORB_NIL);
     const char *nm = korb_sym_name(c->vm, c->vm->str_enc_names[idx]);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
@@ -354,7 +354,7 @@ korb_utf8_count(const char *b, uint32_t nbytes)
  * encoding (the per-encoding hooks are future work). */
 static RESULT korb_str_enc_notimpl(CTX *c, VALUE *slots, VALUE v) {
     const uint32_t idx = KORB_STR_ENC(v);
-    const char *nm = (idx >= KORB_ENC_OTHER_MIN && idx < 8 && c->vm->str_enc_names[idx])
+    const char *nm = (idx >= KORB_ENC_OTHER_MIN && idx < KORB_STR_ENC_MAX && c->vm->str_enc_names[idx])
                        ? korb_sym_name(c->vm, c->vm->str_enc_names[idx]) : "this";
     return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "character operations on %s strings are not yet supported", nm);
 }
@@ -1266,7 +1266,7 @@ static RESULT korb_m_str_sub_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_str_ascii_only(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots;(void)a;
     const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));   /* a non-ASCII-compatible encoding is never ASCII-only */
-    if (enc >= KORB_ENC_OTHER_MIN && enc < 8 && c->vm->str_enc_names[enc]) {
+    if (enc >= KORB_ENC_OTHER_MIN && enc < KORB_STR_ENC_MAX && c->vm->str_enc_names[enc]) {
         const char *const nm = korb_sym_name(c->vm, c->vm->str_enc_names[enc]);
         if (strncmp(nm, "UTF-16", 6) == 0 || strncmp(nm, "UTF-32", 6) == 0 || strcmp(nm, "UTF-7") == 0)
             return RESULT_OK(KORB_FALSE);
