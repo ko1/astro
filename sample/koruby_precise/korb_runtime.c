@@ -1016,7 +1016,10 @@ korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx)
              strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
              strncasecmp(nm, "CP502", 5) == 0);
 }
-static bool korb_str_ascii_only_p(VALUE sv) {
+/* "ASCII-only" the way CRuby means it: 7-bit *and* in an ASCII-compatible
+ * encoding (a UTF-16 string of ASCII bytes is not ASCII-only). */
+static bool korb_str_ascii_only_p(const struct korb_vm *vm, VALUE sv) {
+    if (!korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(sv))) return false;
     const KorbString *const s = VAL2STR(sv);
     for (uint32_t i = 0; i < s->len; i++)
         if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
@@ -1030,9 +1033,9 @@ korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out
     const uint32_t ea = KORB_STR_ENC(av), eb = KORB_STR_ENC(bv);
     if (ea == eb) { *out = ea; return true; }
     const bool ca = korb_enc_ascii_compat_idx(vm, ea), cb = korb_enc_ascii_compat_idx(vm, eb);
-    const bool aa = korb_str_ascii_only_p(av), ab = korb_str_ascii_only_p(bv);
+    const bool aa = korb_str_ascii_only_p(vm, av), ab = korb_str_ascii_only_p(vm, bv);
     if (VAL2STR(bv)->len == 0) { *out = ea; return true; }                 /* an empty side yields (CRuby) */
-    if (VAL2STR(av)->len == 0) { *out = (ca && ab) ? ea : eb; return true; }
+    if (VAL2STR(av)->len == 0) { *out = (ca && ab) ? ea : eb; return true; }   /* CRuby: enc1 only if str2 is 7-bit */
     if (!ca || !cb) return false;
     if (aa && ab) { *out = (ea == KORB_ENC_USASCII) ? eb : ea; return true; }
     if (ab) { *out = ea; return true; }

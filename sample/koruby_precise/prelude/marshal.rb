@@ -15,8 +15,9 @@ module Marshal
     end
     raise TypeError, "instance of IO needed" if an_io && !an_io.respond_to?(:write)
     st = { syms: {}, objs: {}.compare_by_identity, limit: limit, depth: 0 }
-    out = +"\x04\x08"
+    out = (+"\x04\x08").force_encoding("ASCII-8BIT")   # a byte stream, not text
     _dump(obj, out, st)
+    # an append of non-ASCII text may have retagged the buffer; it is bytes
     out.force_encoding("ASCII-8BIT") if out.respond_to?(:force_encoding)
     if an_io
       an_io.write(out); an_io
@@ -80,7 +81,7 @@ module Marshal
     when String  then _dump_string(o, out, st)
     when Float
       s = _float_str(o)
-      out << "f"; _long(s.bytesize, out); out << s
+      out << "f"; _long(s.bytesize, out); out << s.b
     when Regexp  then _dump_regexp(o, out, st)
     when Array   then _dump_array(o, out, st)
     when Hash    then _dump_hash(o, out, st)
@@ -168,7 +169,7 @@ module Marshal
     uiv = o.instance_variables
     out << "I" if enc || !uiv.empty?
     _wrap_prefix(o, Regexp, out, st)
-    out << "/"; _long(src.bytesize, out); out << src
+    out << "/"; _long(src.bytesize, out); out << src.b
     out << (o.options & 0xff).chr
     return if !enc && uiv.empty?
     _long((enc ? 1 : 0) + uiv.length, out)
@@ -278,13 +279,13 @@ module Marshal
     end
     if enc || !ivars.empty? || !extra.empty?
       out << "I"
-      out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
+      out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d.b
       _long((enc ? 1 : 0) + ivars.length + extra.length, out)
       _write_enc(enc, out, st) if enc
       extra.each { |nm, v| _symdump(nm, out, st); _dump(v, out, st) }
       ivars.each { |iv| _symdump(iv, out, st); _dump(d.instance_variable_get(iv), out, st) }
     else
-      out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d
+      out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d.b
     end
   end
 
@@ -316,12 +317,12 @@ module Marshal
     enc = _str_enc_marker(o)
     uiv = o.instance_variables
     if enc.nil? && uiv.empty? && o.class == String
-      out << "\""; _long(o.bytesize, out); out << o
+      out << "\""; _long(o.bytesize, out); out << o.b
       return
     end
     out << "I" if enc || !uiv.empty?
     _wrap_prefix(o, String, out, st)
-    out << "\""; _long(o.bytesize, out); out << o
+    out << "\""; _long(o.bytesize, out); out << o.b
     if enc || !uiv.empty?
       _long((enc ? 1 : 0) + uiv.length, out)
       _write_enc(enc, out, st) if enc
@@ -363,9 +364,9 @@ module Marshal
     st[:syms][sym] = st[:syms].size
     s = sym.to_s
     if s.ascii_only?
-      out << ":"; _long(s.bytesize, out); out << s     # ASCII symbol → bare
+      out << ":"; _long(s.bytesize, out); out << s.b     # ASCII symbol → bare
     else
-      out << "I"; out << ":"; _long(s.bytesize, out); out << s
+      out << "I"; out << ":"; _long(s.bytesize, out); out << s.b
       _long(1, out); _write_enc(_str_enc_marker(s), out, st)
     end
   end
