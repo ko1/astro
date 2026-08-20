@@ -157,13 +157,17 @@ module Marshal
 
   def self._dump_regexp(o, out, st)
     src = o.source
-    out << "I"
+    # A Regexp's encoding rides in the same :E / :encoding ivar as a String's;
+    # an ASCII-8BIT Regexp with no ivars needs no wrapper at all.
+    enc = _enc_marker(o.encoding.name)
+    uiv = o.instance_variables
+    out << "I" if enc || !uiv.empty?
     _wrap_prefix(o, Regexp, out, st)
     out << "/"; _long(src.bytesize, out); out << src
     out << (o.options & 0xff).chr
-    uiv = o.instance_variables
-    _long(1 + uiv.length, out)
-    _symdump(:E, out, st); _dump(false, out, st)      # ascii regexp encoding
+    return if !enc && uiv.empty?
+    _long((enc ? 1 : 0) + uiv.length, out)
+    _write_enc(enc, out, st) if enc
     uiv.each { |iv| _symdump(iv, out, st); _dump(o.instance_variable_get(iv), out, st) }
   end
 
@@ -323,13 +327,17 @@ module Marshal
   # Encoding marker for a String, or nil for ASCII-8BIT (dumped bare).
   #   [:E, true]  → UTF-8      [:E, false] → US-ASCII
   #   [:encoding, name] → any other (transcoding domain)
-  def self._str_enc_marker(s)
-    case s.encoding.name
+  def self._enc_marker(name)
+    case name
     when "UTF-8"      then [:E, true]
     when "US-ASCII"   then [:E, false]
     when "ASCII-8BIT" then nil
-    else [:encoding, s.encoding.name]
+    else [:encoding, name]
     end
+  end
+
+  def self._str_enc_marker(s)
+    _enc_marker(s.encoding.name)
   end
 
   def self._write_enc(enc, out, st)
@@ -580,12 +588,13 @@ module Marshal
       ni = _rlong(st)
       ni.times do
         name = _read0(st); val = _read(st)              # ivar name is structural; value is data
+        tgt = (Regexp === v) ? v.source : v             # a Regexp keeps its encoding on its source
         if name == :E                                   # encoding marker, not a user ivar
-          v.force_encoding(val ? "UTF-8" : "US-ASCII") if v.respond_to?(:force_encoding)
+          (tgt.force_encoding(val ? "UTF-8" : "US-ASCII") rescue nil) if tgt.respond_to?(:force_encoding)
           next
         end
         if name == :encoding
-          (v.force_encoding(val) rescue nil) if v.respond_to?(:force_encoding)
+          (tgt.force_encoding(val) rescue nil) if tgt.respond_to?(:force_encoding)
           next
         end
         v.instance_variable_set(name, val) rescue nil

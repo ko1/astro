@@ -9087,6 +9087,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_REGEXP, "===", korb_m_re_case_eq, 1);
     korb_def_cmethod_blk(c, KORB_C_REGEXP, "match", korb_m_re_match, -1);
     korb_def_cmethod(c, KORB_C_REGEXP, "source", korb_m_re_source, 0);
+    korb_def_cmethod(c, KORB_C_REGEXP, "__enc_hint", korb_m_re_enc_hint, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "to_s", korb_m_re_to_s, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "inspect", korb_m_re_inspect, 0);
     korb_def_cmethod(c, KORB_C_REGEXP, "options", korb_m_re_options, 0);

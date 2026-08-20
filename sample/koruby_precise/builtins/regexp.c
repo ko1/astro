@@ -525,6 +525,10 @@ static RESULT korb_m_re_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2RE(VALUE_REF_GET(self))->source); }
+/* Regexp::FIXEDENCODING passed to Regexp.new: no prism flag says "fixed to the
+ * source's own encoding", so koruby carries it in a private bit. */
+#define KORB_RE_FIXENC 0x10000u
+
 /* prism flag bits → Ruby's Regexp option bits.  The encoding flags (/u /e /s /n)
  * all mean "the pattern's encoding is fixed": Ruby reports FIXEDENCODING (16)
  * for /u /e /s and NOENCODING (32) for /n. */
@@ -533,11 +537,18 @@ static int korb_re_ruby_opts(uint32_t flags) {
     if (flags & 4u)  o |= 1;    /* IGNORECASE */
     if (flags & 8u)  o |= 2;    /* EXTENDED */
     if (flags & 16u) o |= 4;    /* MULTILINE */
-    if (flags & (64u | 256u | 512u)) o |= 16;   /* EUC-JP / Windows-31J / UTF-8 → FIXEDENCODING */
+    if (flags & (64u | 256u | 512u | KORB_RE_FIXENC)) o |= 16;   /* /u /e /s and Regexp::FIXEDENCODING */
     if (flags & 128u) o |= 32;                  /* ASCII-8BIT (/n) → NOENCODING */
     return o;
 }
 static RESULT korb_m_re_options(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(LONG2FIX(korb_re_ruby_opts(VAL2RE(VALUE_REF_GET(self))->flags))); }
+/* /e and /s name an encoding no Ruby-visible option bit distinguishes; #encoding
+ * asks for it here. */
+static RESULT korb_m_re_enc_hint(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)a; const uint32_t f = VAL2RE(VALUE_REF_GET(self))->flags;
+    const char *const nm = (f & 64u) ? "EUC-JP" : (f & 256u) ? "Windows-31J" : NULL;
+    return nm ? korb_str_new(c, slots, nm, (uint32_t)strlen(nm)) : RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_re_casefold(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK((VAL2RE(VALUE_REF_GET(self))->flags & 4u) ? KORB_TRUE : KORB_FALSE); }
 /* `(?mix-mix:source)` — a Regexp's own options travel with its source, which is
  * what makes an embedded copy (Regexp#to_s, Regexp.union) keep them. */
@@ -1069,7 +1080,13 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (!from_regexp && VALUE_SLICE_LEN(a) >= 2) {
         VALUE opt = VALUE_SLICE_GET(a, 1);
         if (opt == KORB_NIL || opt == KORB_FALSE) {}
-        else if (FIXNUM_P(opt)) { long o = FIX2LONG(opt); if (o & 1) flags |= 4u; if (o & 2) flags |= 8u; if (o & 4) flags |= 16u; }
+        else if (FIXNUM_P(opt)) { const long o = FIX2LONG(opt);
+            if (o & 1)  flags |= 4u;
+            if (o & 2)  flags |= 8u;
+            if (o & 4)  flags |= 16u;
+            if (o & 16) flags |= KORB_RE_FIXENC;
+            if (o & 32) flags |= 128u;
+        }
         else if (KORB_STRING_P(opt)) {                    /* a String of flag chars: i/m/x */
             const KorbString *fs = VAL2STR(opt);
             for (uint32_t k = 0; k < fs->len; k++) {

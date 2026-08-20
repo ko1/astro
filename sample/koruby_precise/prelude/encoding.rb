@@ -412,7 +412,14 @@ class Regexp
     utf8 = src.scan(/\\u(?:\{([0-9a-fA-F][0-9a-fA-F ]*)\}|([0-9a-fA-F]{4}))/).any? do |brace, plain|
       (brace ? brace.split : [plain]).any? { |h| h.to_i(16) > 0x7f }
     end
+    o = options
+    return Encoding::ASCII_8BIT if (o & 32) != 0   # /n (NOENCODING)
+    # /e and /s fix the pattern to EUC-JP / Windows-31J; koruby does not
+    # transcode, so only the reported encoding follows the modifier.
+    h = __enc_hint
+    return Encoding.find(h) if h
     return Encoding::UTF_8 if utf8
+    return src.encoding if (o & 16) != 0          # FIXEDENCODING: the source's own encoding
     src.ascii_only? ? Encoding::US_ASCII : src.encoding
   end
 end
