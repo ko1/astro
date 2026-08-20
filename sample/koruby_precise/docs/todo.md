@@ -2670,3 +2670,16 @@ cref->enclosing を辿る。名前 chain は不要になり、flat fallback も�
 見込み。ただし特異クラスの enclosing をレキシカル位置に設定する必要があり
 (同じ特異クラスを別の場所で開いたときの扱いを決める必要がある)、そこが
 未解決。
+
+## トップレベル `def` は Object の private インスタンスメソッドではない (2026-08-20 実験)
+
+koruby はトップレベル def をグローバル関数表に入れており、
+`Object.private_instance_methods.include?(:foo)` が false になる (CRuby は true)。
+
+**試作**: korb_method_define で Object にも private インスタンスメソッドとして
+登録してみたところ、`make test` は不変だったが **language/def_spec が 17 → 22 に
+悪化**した (mspec 自身のトップレベルメソッドが Object の private に現れ、
+メソッド一覧を見る例が壊れる)。差し戻し済み。
+
+**やるなら**: グローバル関数表を廃して Object の private メソッドに一本化する
+(dispatch の fast path をどう保つかが論点)。中途半端に両方に置くと一覧系が壊れる。
