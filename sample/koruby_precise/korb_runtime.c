@@ -3625,7 +3625,11 @@ korb_invoke_method(CTX *c, VALUE *slots, struct korb_method *m, uint32_t argc,
     /* a method with keyword params consumes a trailing Hash arg as kwargs. */
     uint32_t pos_argc = argc;
     VALUE kwhash = KORB_NIL;
-    if (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(base[argc - 1])) { kwhash = base[argc - 1]; pos_argc = argc - 1; }   /* `**nil` (-3): a trailing Hash stays positional */
+    /* Only a Hash the call site wrote as keywords binds to keyword params; a plain
+     * trailing Hash argument is positional (Ruby 3).  `**nil` (-3): never. */
+    if (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(base[argc - 1]) &&
+        (((const AroObjectHeader *)(uintptr_t)base[argc - 1])->flags & KORB_FL_KWARGS))
+        { kwhash = base[argc - 1]; pos_argc = argc - 1; }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
     if (UNLIKELY(pos_argc < min_pos || (m->rest_slot < 0 && pos_argc > max_pos))) {
@@ -3880,6 +3884,7 @@ korb_invoke_kw_viahash(CTX *c, VALUE *slots, struct korb_method *m, uint32_t pos
         CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
     }
     base[pos_argc] = VALUE_REF_GET(h);                    /* trailing hash replaces the kw region head */
+    ((AroObjectHeader *)(uintptr_t)base[pos_argc])->flags |= KORB_FL_KWARGS;   /* written as keywords */
     return korb_invoke_method(c, base + pos_argc + 1, m, pos_argc + 1, line, mid, self, def_class, NULL, NULL, KORB_NIL);
 }
 
@@ -6547,6 +6552,7 @@ korb_call_kw(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, struct korb_call
         CHECK(korb_hash_set(c, cur + 3, h, VALUE_REF_AT(&cur[1]), cur[2]));
     }
     base[pos_argc] = VALUE_REF_GET(h);
+    ((AroObjectHeader *)(uintptr_t)base[pos_argc])->flags |= KORB_FL_KWARGS;   /* written as keywords */
     /* `self` (the by-value param) may have moved during the Hash build above — it
      * is staged at base[-1] (a scanned slot), so re-read the forwarded receiver. */
     return korb_call(c, base + pos_argc + 1, mid, line, cc, pos_argc + 1, base[-1]);
@@ -6746,7 +6752,8 @@ korb_block_yield_full(CTX *c, VALUE *slots, NODE *block, VALUE *def_env,
     const struct korb_kw_info *const kw = korb_entry_kw_info(block);
     const uint32_t orig_argc = argc;
     /* `**nil` (kwrest_slot -3) forbids keywords: a trailing Hash stays positional. */
-    const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(argv[argc - 1]));
+    const bool has_kw_hash = (kw && kw->kwrest_slot != -3 && argc >= 1 && KORB_HASH_P(argv[argc - 1]) &&
+                              (((const AroObjectHeader *)(uintptr_t)argv[argc - 1])->flags & KORB_FL_KWARGS));
     if (has_kw_hash) argc--;   /* positional binding below sees only positionals */
     /* A lambda forwarded as a block enforces its positional arity (unlike a plain
      * block/proc) and never auto-splats a single Array.  The proc is reachable via

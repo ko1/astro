@@ -220,6 +220,11 @@ enum korb_obj_type {
 #define KORB_FL_HAS_IVARS  0x8000u
 /* bit 9 (Hash only): the lookup index is permanently disabled because a key
  * with ambiguous hash/equality (Float / heap object) was inserted — stay linear. */
+/* bit 12 (Hash only — the 0x7000 field is the String encoding, which a Hash has
+ * no use for): this Hash was written as keyword arguments at a call site, so the
+ * callee binds it to keyword parameters.  A plain trailing Hash argument is
+ * positional (Ruby 3 semantics). */
+#define KORB_FL_KWARGS     0x1000u
 #define KORB_FL_HASH_NOINDEX 0x200u
 
 /* bit 10 (Array, transient): array is on the current Array#join recursion path.

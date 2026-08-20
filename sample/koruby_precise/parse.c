@@ -2887,7 +2887,8 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` / `**h` args → a Hash (becomes kwargs) */
         const pm_keyword_hash_node_t *hn = (const pm_keyword_hash_node_t *)node;
         size_t cnt = hn->elements.size;
-        return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
+        NODE *const h = build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
+        return ALLOC_node_kwargs_mark(h);   /* the callee binds a tagged Hash to keywords */
       }
 
       case PM_X_STRING_NODE: {          /* `cmd` → self.`("cmd") */
