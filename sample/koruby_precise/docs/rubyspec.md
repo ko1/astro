@@ -380,11 +380,12 @@ objectspace/each_object 19、kernel/eval 16。
 ## 2026-08-20 core sweep (実 mspec)
 
 ```
-files=2144 clean=1068  whole-file-fail=6
-examples=22468 pass=19075 fail=2281 err=1112
-example pass-rate = 84.9%
+files=2144 clean=1071  whole-file-fail=6
+examples=22468 pass=19145 fail=2215 err=1108
+example pass-rate = 85.2%
 ```
-起点 (同日朝) pass=18740 / 83.4% → **19075 / 84.9% (+335)**。計測は
+起点 (同日朝) pass=18740 / 83.4% → **19145 / 85.2% (+405)**。language も
+2134 / 75.9% → 2225 / 79.2%。計測は
 `DUMP=<path> ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`。
 
 この日の効いた修正 (大きい順):
@@ -399,6 +400,14 @@ example pass-rate = 84.9%
 - **END { } / at_exit の終了処理** (END_spec 0/14 → 13/14、at_exit_spec 3 → 12/13)。
 - Marshal の深さ制限・特異クラス ivar・非 ASCII ivar 名、Module#const_added、
   eval 文字列の cref、respond_to_missing? の既定、IO.pipe のエンコーディング引数。
+
+- **キーワード引数を Hash ヘッダの印 (KORB_FL_KWARGS) で判定**するようにし、
+  Ruby 3 の「末尾の Hash は位置引数」を実装。keyword_arguments_spec 15 → 4F、
+  ruby2_keywords_spec 14 → 3F、hash/ruby2_keywords_hash_spec 6 → 1F。
+- 文字列連結 (+ / << / []=) のエンコーディング交渉と Encoding::CompatibilityError、
+  \u エスケープを含むリテラルは UTF-8、ソースの magic comment のエンコーディングを
+  実際に使う (magic_comment_spec 30 → 0F)。
+- BOM (IO#set_encoding_by_bom と "rb:BOM|enc")。
 
 残りの上位 (in-scope): io/write_spec と string/encode_spec は **実 transcoding** 待ち、
 module/refine と refinement/* は refinement 未実装、kernel/caller は
