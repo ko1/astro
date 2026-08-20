@@ -411,13 +411,31 @@ static RESULT korb_str_append_str(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* append one element (String or Integer codepoint) onto self */
+/* self << other (String): both must share an encoding, which self then adopts. */
+static RESULT korb_str_append_negotiated(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF other) {
+    uint32_t renc;
+    if (!korb_str_enc_combine(c->vm, VALUE_REF_GET(self), VALUE_REF_GET(other), &renc))
+        return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)),
+                                     KORB_STR_ENC(VALUE_REF_GET(other)));
+    const RESULT r = korb_str_append_str(c, slots, self, other);
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(VALUE_REF_GET(self), renc);
+    return r;
+}
+/* append one element (String or Integer codepoint) onto self */
 static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_REF oref) {
     VALUE o = VALUE_REF_GET(oref);
-    if (KORB_STRING_P(o)) return korb_str_append_str(c, slots, self, oref);
+    if (KORB_STRING_P(o)) return korb_str_append_negotiated(c, slots, self, oref);
     if (FIXNUM_P(o)) {
         intptr_t cp = FIX2LONG(o);
         const uint32_t enc = KORB_STR_ENC(VALUE_REF_GET(self));
         if (KORB_ENC_SB(c->vm, enc)) {          /* ASCII-8BIT / US-ASCII: append ONE byte, no UTF-8 encoding */
+            /* a US-ASCII string that takes a high byte becomes BINARY (CRuby) */
+            if (enc == KORB_ENC_USASCII && cp >= 128 && cp <= 255) {
+                const char b = (char)(uint8_t)cp;
+                const RESULT r = korb_str_cat(c, slots, self, &b, 1);
+                if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(VALUE_REF_GET(self), KORB_ENC_BINARY);
+                return r;
+            }
             const intptr_t hi = (enc == KORB_ENC_BINARY) ? 255 : 127;
             if (cp < 0 || cp > hi) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of char range", (long)cp);
             char b = (char)(uint8_t)cp;
@@ -436,7 +454,7 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
           if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
           if (LIKELY(KORB_STRING_P(sr.value))) {
               VALUE_REF sref = SLOTS_PUSH(slots, sr.value);      /* coerced String (self stays rooted) */
-              return korb_str_append_str(c, slots, self, sref);
+              return korb_str_append_negotiated(c, slots, self, sref);
           }
       }
     }
@@ -563,6 +581,10 @@ static RESULT korb_m_str_reverse_b(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
 
 /* Replace self bytes [bs,be) with replref (a rooted String); do_repl=false deletes. */
 static RESULT korb_str_splice(CTX *c, VALUE *slots, VALUE_REF self, uint32_t bs, uint32_t be, VALUE_REF replref, bool do_repl) {
+    uint32_t renc = KORB_STR_ENC(VALUE_REF_GET(self));
+    if (do_repl && !korb_str_enc_combine(c->vm, VALUE_REF_GET(self), VALUE_REF_GET(replref), &renc))
+        return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(self)),
+                                     KORB_STR_ENC(VALUE_REF_GET(replref)));   /* the splice adopts a shared encoding */
     uint32_t rn = do_repl ? VAL2STR(VALUE_REF_GET(replref))->len : 0;
     uint32_t slen = VAL2STR(VALUE_REF_GET(self))->len;
     uint32_t newlen = slen - (be - bs) + rn;
@@ -571,6 +593,7 @@ static RESULT korb_str_splice(CTX *c, VALUE *slots, VALUE_REF self, uint32_t bs,
     memmove(korb_strbuf_data(s->buf) + bs + rn, korb_strbuf_data(s->buf) + be, slen - be);
     if (rn) { const KorbString *r = VAL2STR(VALUE_REF_GET(replref)); memcpy(korb_strbuf_data(s->buf) + bs, korb_strbuf_data(r->buf), rn); }
     s->len = newlen; korb_strbuf_data(s->buf)[newlen] = '\0';
+    KORB_STR_ENC_SET(VALUE_REF_GET(self), renc);
     return RESULT_OK(VALUE_REF_GET(self));
 }
 /* Compute byte span [*bs,*be) for a string index target. idx + optional len arg

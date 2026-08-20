@@ -995,6 +995,70 @@ korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line)
     return korb_float_new(c, slots, r);
 }
 
+/* ---- string encoding negotiation ---------------------------------------- */
+
+/* the canonical name of a header encoding index */
+const char *
+korb_enc_name_of(const struct korb_vm *vm, uint32_t idx)
+{
+    if (idx == KORB_ENC_UTF8) return "UTF-8";
+    if (idx == KORB_ENC_USASCII) return "US-ASCII";
+    if (idx == KORB_ENC_BINARY) return "ASCII-8BIT";
+    return (idx < KORB_STR_ENC_MAX && vm->str_enc_names[idx]) ? korb_sym_name(vm, vm->str_enc_names[idx]) : "unknown";
+}
+/* the UTF-16/32, UTF-7 and stateful families are not ASCII-compatible */
+bool
+korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx)
+{
+    if (idx < KORB_ENC_OTHER_MIN || idx >= KORB_STR_ENC_MAX || vm->str_enc_names[idx] == 0) return true;
+    const char *const nm = korb_sym_name(vm, vm->str_enc_names[idx]);
+    return !(strncasecmp(nm, "UTF-16", 6) == 0 || strncasecmp(nm, "UTF-32", 6) == 0 ||
+             strcasecmp(nm, "UTF-7") == 0 || strncasecmp(nm, "ISO-2022", 8) == 0 ||
+             strncasecmp(nm, "CP502", 5) == 0);
+}
+static bool korb_str_ascii_only_p(VALUE sv) {
+    const KorbString *const s = VAL2STR(sv);
+    for (uint32_t i = 0; i < s->len; i++)
+        if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
+    return true;
+}
+/* The encoding two Strings can share (CRuby's rb_enc_compatible): same one, or
+ * the side that is not plain 7-bit ASCII; false when there is none. */
+bool
+korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out)
+{
+    const uint32_t ea = KORB_STR_ENC(av), eb = KORB_STR_ENC(bv);
+    if (ea == eb) { *out = ea; return true; }
+    const bool ca = korb_enc_ascii_compat_idx(vm, ea), cb = korb_enc_ascii_compat_idx(vm, eb);
+    const bool aa = korb_str_ascii_only_p(av), ab = korb_str_ascii_only_p(bv);
+    if (VAL2STR(bv)->len == 0) { *out = ea; return true; }                 /* an empty side yields (CRuby) */
+    if (VAL2STR(av)->len == 0) { *out = (ca && ab) ? ea : eb; return true; }
+    if (!ca || !cb) return false;
+    if (aa && ab) { *out = (ea == KORB_ENC_USASCII) ? eb : ea; return true; }
+    if (ab) { *out = ea; return true; }
+    if (aa) { *out = eb; return true; }
+    return false;
+}
+/* Encoding::CompatibilityError, which lives in the prelude (nested in Encoding). */
+RESULT
+korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb)
+{
+    char msg[160];
+    snprintf(msg, sizeof msg, "incompatible character encodings: %s and %s",
+             korb_enc_name_of(c->vm, ea), korb_enc_name_of(c->vm, eb));
+    const VALUE encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
+    VALUE cls = KORB_NIL;
+    if (KORB_CLASS_P(encm)) {
+        const uint32_t ix = korb_const_index_owned(c->vm, korb_intern(c->vm, "CompatibilityError", 18), encm);
+        if (ix != UINT32_MAX) cls = c->vm->const_vals[ix];
+    }
+    slots[0] = KORB_CLASS_P(cls) ? cls : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
+    if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
+        ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    return r;
+}
+
 /* a + b — alloc first, then copy through refs (fixup-safe; v2_design §4.3). */
 static RESULT
 korb_str_plus_ref(CTX *c, VALUE *slots, VALUE_REF a, VALUE_REF b)
@@ -1006,18 +1070,11 @@ korb_str_plus_ref(CTX *c, VALUE *slots, VALUE_REF a, VALUE_REF b)
     const KorbString *bs = VAL2STR(VALUE_REF_GET(b));
     memcpy(korb_strbuf_data(s->buf), korb_strbuf_data(as->buf), alen);
     memcpy(korb_strbuf_data(s->buf) + alen, korb_strbuf_data(bs->buf), blen);
-    /* result encoding: same enc → that; else the non-ASCII-only side's (US-ASCII yields). */
-    const uint32_t ea = KORB_STR_ENC(VALUE_REF_GET(a)), eb = KORB_STR_ENC(VALUE_REF_GET(b));
-    uint32_t renc = ea;
-    if (ea != eb) {
-        bool aa = true, ab = true;
-        for (uint32_t i = 0; i < alen; i++) if ((unsigned char)korb_strbuf_data(as->buf)[i] >= 0x80) { aa = false; break; }
-        for (uint32_t i = 0; i < blen; i++) if ((unsigned char)korb_strbuf_data(bs->buf)[i] >= 0x80) { ab = false; break; }
-        if (aa && ab) renc = (ea == KORB_ENC_USASCII) ? eb : ea;
-        else if (ab)  renc = ea;
-        else if (aa)  renc = eb;
-        /* else incompatible → keep ea (proper Encoding::CompatibilityError TODO) */
-    }
+    /* result encoding: same enc → that; else the non-ASCII-only side's (US-ASCII
+     * yields).  No shared encoding → Encoding::CompatibilityError. */
+    uint32_t renc;
+    if (!korb_str_enc_combine(c->vm, VALUE_REF_GET(a), VALUE_REF_GET(b), &renc))
+        return korb_raise_enc_compat(c, slots, KORB_STR_ENC(VALUE_REF_GET(a)), KORB_STR_ENC(VALUE_REF_GET(b)));
     KORB_STR_ENC_SET((VALUE)s, renc);
     return RESULT_OK((VALUE)s);
 }
