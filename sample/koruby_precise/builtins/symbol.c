@@ -764,8 +764,19 @@ static RESULT korb_m_meth_bind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     if (UNLIKELY(!m->unbound)) return korb_raise(c, slots, KORB_E_NOMETHOD, 0, "undefined method 'bind' for a Method");
     slots[0] = m->recv;                                             /* owner class (rooted across dispatch/alloc) */
     const uint32_t mid = m->mid;
-    if (UNLIKELY(!korb_case_eq(c, slots[0], VALUE_SLICE_GET(a, 0))))  /* owner === obj  ⇔  obj.is_a?(owner) */
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", korb_type_name(slots[0]));
+    bool ok = korb_case_eq(c, slots[0], VALUE_SLICE_GET(a, 0));      /* owner === obj  ⇔  obj.is_a?(owner) */
+    if (!ok && KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_module)
+        ok = true;                                                   /* a module's method binds to any object (Ruby 3.0+) */
+    if (!ok && KORB_CLASS_P(slots[0]) && VAL2CLASS(slots[0])->is_singleton && KORB_CLASS_P(VALUE_SLICE_GET(a, 0))) {
+        slots[1] = VALUE_SLICE_GET(a, 0);                            /* a class method binds to a subclass */
+        const RESULT sr = korb_obj_singleton(c, slots + 2, slots[1]);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        ok = korb_class_has_ancestor(sr.value, slots[0]);
+    }
+    if (UNLIKELY(!ok)) {
+        char onm[192]; korb_class_qname_into(c, slots[0], onm, sizeof onm);   /* the owner's NAME, not "Class" */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be an instance of %s", onm);
+    }
     slots[1] = VALUE_SLICE_GET(a, 0);                              /* obj (re-read after dispatch) */
     RESULT r = korb_method_new(c, slots + 2, slots[1], mid);       /* bound: recv = obj */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
