@@ -2683,3 +2683,33 @@ koruby はトップレベル def をグローバル関数表に入れており�
 
 **やるなら**: グローバル関数表を廃して Object の private メソッドに一本化する
 (dispatch の fast path をどう保つかが論点)。中途半端に両方に置くと一覧系が壊れる。
+
+## eval の `(eval at FILE:LINE)` と caller/caller_locations (2026-08-20)
+
+`eval("__FILE__")` は CRuby だと `"(eval at spec.rb:228)"` になるが、koruby は
+`"(eval)"` のまま。呼び出し元の **現在行** を知る手段が無いのが理由で、行番号は
+例外オブジェクト (`KorbException.line`) に unwind 中だけ載る設計になっている。
+`caller` / `caller_locations` が空なのも同じ根っこ。
+
+**やるなら**: フレームに現在行を持たせる (send ノードが持つ line を frame に
+書く) 必要がある。fast path のコストとの兼ね合いを測ってから。
+
+## instance_eval(String) の定数・クラス変数スコープ (2026-08-20)
+
+`recv.instance_eval("@@cvar")` は CRuby では **呼び出し元の cref** で解決し、
+定数は receiver の特異クラス → receiver のクラス → 呼び出し元 cref …の順で
+探す。koruby は eval フレームに cref が無いので "class variable access from
+toplevel" になる (core/basicobject/instance_eval_spec で 6 例)。
+
+**やるなら**: 呼び出し元 cref を builtin から辿れる必要がある (フレームに
+呼び出し元へのリンクが無い)。上の「現在行」と同じくフレーム設計の話。
+
+## at_exit は「本体の構文エラー」では走らない (2026-08-20)
+
+CRuby は `ruby -rハンドラ '{'` で構文エラーでも -r 側の at_exit が走る。
+koruby は main.c が「本体を parse → -r を require」の順なので、parse 時点で
+exit(1) してしまう (END_spec / at_exit_spec で各 1 例)。
+
+**やるなら**: -r の require を本体 parse より前に出し、parse 失敗時も
+korb_drain_at_exit を通ってから終了する。prelude 実行・toplevel フレーム構築の
+順序を組み替える必要がある。
