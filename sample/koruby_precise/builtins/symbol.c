@@ -139,15 +139,18 @@ static bool korb_name_to_sym(CTX *c, VALUE name, VALUE *out) {
     if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(s->buf), s->len)); return true; }
     return false;
 }
-/* valid instance-variable name: '@' + (letter|'_') + (alnum|'_')*; not '@@x'. */
+/* valid instance-variable name: '@' + (letter|'_'|non-ASCII) + (alnum|'_'|
+ * non-ASCII)*; not '@@x'.  A byte >= 0x80 is part of a multibyte identifier
+ * character, which Ruby allows. */
 static bool korb_valid_ivar_name(struct korb_vm *vm, uint32_t sym) {
     const char *const nm = korb_sym_name(vm, sym);
-    const char f = nm[1];
+    const unsigned char f = (unsigned char)nm[1];
     if (nm[0] != '@' || f == '\0' || f == '@') return false;
-    if (!((f >= 'a' && f <= 'z') || (f >= 'A' && f <= 'Z') || f == '_')) return false;
+    if (!((f >= 'a' && f <= 'z') || (f >= 'A' && f <= 'Z') || f == '_' || f >= 0x80)) return false;
     for (const char *p = nm + 2; *p; p++) {
-        const char ch = *p;
-        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+        const unsigned char ch = (unsigned char)*p;
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+              ch == '_' || ch >= 0x80)) return false;
     }
     return true;
 }
@@ -239,13 +242,18 @@ static RESULT korb_m_obj_ivars(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(VAL2EXC(VALUE_REF_GET(self))->ivars)->items)[2 * i]));
         return RESULT_OK(VALUE_REF_GET(dst));
     }
-    if (!KORB_OBJECT_P(sv)) {                                   /* container/heap object → generic-ivar side hash keys */
-        const VALUE h0 = AROH_IS_GC_OBJECT(sv) ? korb_objivar_hash_of(c->vm, sv) : KORB_NIL;
+    if (!KORB_OBJECT_P(sv)) {                                   /* class / container / heap object → side-hash keys */
+        const VALUE h0 = KORB_CLASS_P(sv) ? VAL2CLASS(sv)->class_ivars
+                       : AROH_IS_GC_OBJECT(sv) ? korb_objivar_hash_of(c->vm, sv) : KORB_NIL;
         if (h0 == KORB_NIL) return korb_ary_new(c, slots, 0);
         slots[0] = UNWRAP(korb_ary_new(c, slots + 1, VAL2HASH(h0)->len));   /* alloc may GC → re-read via self below */
         VALUE_REF dst = VALUE_REF_AT(&slots[0]);
-        for (uint32_t i = 0; i < VAL2HASH(korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))->len; i++)
-            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))->items)[2 * i]));
+        /* re-read the hash after every push: the allocation may move it */
+        #define KORB_IVH() (KORB_CLASS_P(VALUE_REF_GET(self)) ? VAL2CLASS(VALUE_REF_GET(self))->class_ivars \
+                                                             : korb_objivar_hash_of(c->vm, VALUE_REF_GET(self)))
+        for (uint32_t i = 0; i < VAL2HASH(KORB_IVH())->len; i++)
+            CHECK(korb_ary_push_val(c, slots + 1, dst, korb_items_data(VAL2HASH(KORB_IVH())->items)[2 * i]));
+        #undef KORB_IVH
         return RESULT_OK(VALUE_REF_GET(dst));
     }
     const uint32_t sid0 = VAL2OBJ(sv)->shape_id;                /* read shape BEFORE any alloc */

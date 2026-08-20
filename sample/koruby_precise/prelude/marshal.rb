@@ -32,7 +32,21 @@ module Marshal
   MODULE_NAME = Module.instance_method(:name)
   def self._class_name(k) = MODULE_NAME.bind_call(k)
 
+  # Marshal.dump(obj, limit): each nested value costs one level; a negative
+  # limit means unlimited (CRuby).
   def self._dump(o, out, st)
+    lim = st[:limit]
+    return _dump0(o, out, st) if lim.nil? || lim < 0
+    st[:depth] += 1
+    raise ArgumentError, "exceed depth limit" if st[:depth] > lim
+    begin
+      _dump0(o, out, st)
+    ensure
+      st[:depth] -= 1
+    end
+  end
+
+  def self._dump0(o, out, st)
     case o
     when nil   then out << "0"; return
     when true  then out << "T"; return
@@ -49,19 +63,7 @@ module Marshal
       out << "@"; _long(id, out); return
     end
     st[:objs][o] = st[:objs].size                      # assign link id (pre-order)
-    # A negative limit means unlimited; otherwise each nesting level costs one.
-    lim = st[:limit]
-    if lim && lim >= 0
-      raise ArgumentError, "exceed depth limit" if st[:depth] > lim
-      st[:depth] += 1
-      begin
-        _dump_val(o, out, st)
-      ensure
-        st[:depth] -= 1
-      end
-    else
-      _dump_val(o, out, st)
-    end
+    _dump_val(o, out, st)                              # depth is counted in _dump
   end
 
   def self._dump_val(o, out, st)
@@ -82,9 +84,11 @@ module Marshal
     when Regexp  then _dump_regexp(o, out, st)
     when Array   then _dump_array(o, out, st)
     when Hash    then _dump_hash(o, out, st)
-    when Range                                         # generic object: class :Range + 3 ivars
+    when Range                                         # generic object: class name + 3 ivars
+      rnm = _class_name(o.class)
+      raise TypeError, "can't dump anonymous class #{o.class}" if rnm.nil?
       out << "o"
-      _symdump(:Range, out, st); _long(3, out)
+      _symdump(rnm.to_sym, out, st); _long(3, out)
       _symdump(:excl, out, st);  _dump(o.exclude_end?, out, st)
       _symdump(:begin, out, st); _dump(o.begin, out, st)
       _symdump(:end, out, st);   _dump(o.end, out, st)
@@ -112,13 +116,14 @@ module Marshal
   # 'e' (extend module) and 'C' (subclass) prefixes, outermost after any 'I'.
   # Also enforces the TypeErrors CRuby raises for un-dumpable singletons.
   def self._wrap_prefix(o, base, out, st)
-    unless (o.singleton_methods(false) rescue []).empty?
+    unless (o.singleton_methods(false) rescue []).empty? &&
+           (o.singleton_class.instance_variables rescue []).empty?
       raise TypeError, "singleton can't be dumped"
     end
     exts = (o.singleton_class.included_modules - o.class.included_modules rescue [])
     exts.each do |m|
       nm = m.name
-      raise TypeError, "can't dump anonymous module #{m}" if nm.nil?
+      raise TypeError, "can't dump anonymous class #{m}" if nm.nil?
       out << "e"; _symdump(nm.to_sym, out, st)
     end
     if o.class != base
