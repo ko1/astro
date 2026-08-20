@@ -1739,15 +1739,14 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
     const bool inherit = (VALUE_SLICE_LEN(a) < 2) || KORB_TRUTHY(VALUE_SLICE_GET(a, 1));   /* coerce the inherit flag to a boolean (nil/false → no inherit) */
     const VALUE owner = VALUE_REF_GET(self);
     if (KORB_CLASS_P(owner)) {
-        for (VALUE o = owner; KORB_CLASS_P(o); o = VAL2CLASS(o)->superclass) {
-            if (korb_const_index_owned(vm, id, o) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
-            if (!inherit) break;
-        }
+        if (korb_const_index_owned(vm, id, owner) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
         if (!inherit) return RESULT_OK(KORB_FALSE);
+        /* the whole ancestry (superclasses AND included/prepended modules) */
+        if (korb_const_in_ancestry(vm, owner, id) != UINT32_MAX) return RESULT_OK(KORB_TRUE);
     }
-    for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == id) return RESULT_OK(KORB_TRUE);
-    return RESULT_OK(KORB_FALSE);
+    /* then the top-level constants (owner nil), which every class inherits from
+     * Object — but NOT constants owned by some unrelated namespace. */
+    return RESULT_OK(korb_const_index_owned(vm, id, KORB_NIL) != UINT32_MAX ? KORB_TRUE : KORB_FALSE);
 }
 /* Object#then / yield_self — yield self, return the block's value (no block → self). */
 static RESULT korb_m_obj_then(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
