@@ -921,7 +921,7 @@ static RESULT korb_ancestors_seg(CTX *c, VALUE *slots, VALUE_REF out, VALUE klas
         for (uint32_t j = VAL2ARY(slots[1])->len; j-- > 0; )
             CHECK(korb_ancestors_seg(c, slots + 2, out, korb_items_data(VAL2ARY(slots[1])->items)[j], depth + 1));
     }
-    if (!VAL2CLASS(slots[0])->is_singleton) {
+    {   /* a singleton class is part of its own ancestry (CRuby lists it first) */
         bool dup = false;
         const KorbArray *const d = VAL2ARY(VALUE_REF_GET(out));
         for (uint32_t i = 0; i < d->len; i++) if (korb_items_data(d->items)[i] == slots[0]) { dup = true; break; }

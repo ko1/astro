@@ -9852,7 +9852,7 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
         return;
       }
       case KORB_OBJ_CLASS:
-        if (!korb_fprint_class_qname(c, fp, v)) fputs("#<Class>", fp);   /* qualified name (M::C); anonymous → placeholder */
+        korb_fprint_class_tostr(c, fp, v);   /* qualified name (M::C), `#<Class:obj>` for a singleton, else `#<Class:0x…>` */
         return;
       case KORB_OBJ_FLOAT: {
         char fb[40];
