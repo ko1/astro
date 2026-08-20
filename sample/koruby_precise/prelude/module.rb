@@ -101,6 +101,7 @@ class Module
     path = path.respond_to?(:to_path) ? path.to_path : (path.is_a?(String) ? path : path.to_str)
     raise ArgumentError, "empty feature name" if path.empty?
     __autoload_table[n] = path
+    const_added(n) if respond_to?(:const_added, true)   # an autoload defines the constant (CRuby)
     nil
   end
 
