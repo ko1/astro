@@ -936,6 +936,8 @@ static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         korb_io_rep(c, VALUE_REF_GET(self))->lineno++;
         { const uint32_t re = korb_io_read_enc(c, slots + 2, self, korb_io_rep(c, VALUE_REF_GET(self)));
           KORB_STR_ENC_SET(slots[1], re); }              /* resolve BEFORE taking the header pointer */
+        korb_const_define(c, korb_intern(c->vm, "$.", 2),   /* $. follows #each_line too */
+                          LONG2FIX((intptr_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
         rr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (rr.state != KORB_NORMAL) break;
     }

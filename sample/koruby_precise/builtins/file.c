@@ -927,16 +927,19 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     }
     RESULT r = RESULT_OK(KORB_NIL);
     size_t pos = 0, rs, re;
+    uint32_t lineno = 0;
     while (korb_line_next(buf, len, &pos,
                           la.slurp ? "" : korb_strbuf_data(VAL2STR(VALUE_REF_GET(sepref))->buf),
                           la.slurp ? 0 : VAL2STR(VALUE_REF_GET(sepref))->len, &la, &rs, &re)) {
         slots[3] = UNWRAP(korb_str_new(c, slots + 3, buf + rs, (uint32_t)(re - rs)));
+        if (block) korb_const_define(c, korb_intern(c->vm, "$.", 2), LONG2FIX((intptr_t)++lineno));   /* CRuby updates $. per yield */
         r = block ? korb_block_yield(c, slots + 4, block, def_env, &slots[3], 1, captured_self)
                   : korb_ary_push_val(c, slots + 4, arr, slots[3]);
         if (UNLIKELY(r.state != KORB_NORMAL)) break;
     }
     free(buf);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    if (block) korb_const_define(c, korb_intern(c->vm, "$_", 2), KORB_NIL);   /* foreach leaves $_ nil */
     if (block == NULL) return korb_enum_new(c, slots + 3, VALUE_REF_GET(arr), KORB_NIL);
     return RESULT_OK(KORB_NIL);
 }
