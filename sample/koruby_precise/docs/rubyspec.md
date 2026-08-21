@@ -441,3 +441,20 @@ Kernel#Complex は組込み以外の Numeric を #real? 経由で扱い、String
 Kernel#load が $LOAD_PATH (と #to_path) を探す、定数再定義警告を
 "file:line: warning:" の形に、Module#autoload? が祖先の登録を見る、
 Marshal.dump の String が extend を落とさない。
+
+## 2026-08-21 最終 (sweep_0821d)
+
+```
+files=2144 clean=1079  whole-file-fail=7
+examples=22444 pass=19242 fail=2129 err=1073
+example pass-rate = 85.7%
+```
+このダンプは 12 並列のゆらぎを踏んでいる。単体で流し直すと
+core/process/exec_spec (24 例, 並列時 WFAIL)、core/process/status/wait_spec (10 例)、
+core/io/buffer/map_spec (25 例) はいずれも全通し。それを戻すと 19269 / 85.9% で、
+0821c (19254) から実質の退行は無い。subprocess と mmap を使うファイルは
+並列度 12 だと 20 秒のタイムアウトに触れることがある、と覚えておく。
+
+0821c からの差分: sprintf/format の結果エンコーディングは 7bit でない引数だけが
+決める + $VERBOSE 時のみ "too many arguments for format string" (%{} と %<> は
+名前付きとして数える)、IO#write は空文字列だけなら書き込み可否を見ない。
