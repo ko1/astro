@@ -612,6 +612,9 @@ static RESULT korb_m_module_function(CTX *c, VALUE *slots, VALUE_REF self, VALUE
         { RESULT mr = korb_arg_to_mid(c, slots + 3, VALUE_SLICE_GET(a, i), &mid); if (UNLIKELY(mr.state != KORB_NORMAL)) return mr; }   /* #to_str coercion; slots[0]/[1] preserved */
         VALUE mdef = KORB_NIL;
         const struct korb_method *src = korb_class_find_method(slots[0], mid, &mdef);
+        if (src == NULL)                                      /* a Kernel-private builtin (puts/require/…)
+                                                               * lives in the global function table */
+            src = korb_method_lookup(c->vm, mid);
         if (UNLIKELY(src == NULL))
             return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for module '%s'",
                               korb_sym_name(c->vm, mid), korb_type_name(slots[0]));
