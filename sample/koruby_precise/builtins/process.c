@@ -190,6 +190,16 @@ static bool korb_spawn_push_unset(struct korb_spawn_plan *p, const char *k, uint
 static bool korb_cmd_needs_shell(const char *s, uint32_t n) {
     for (uint32_t i = 0; i < n; i++)
         if (strchr("*?{}[]<>()~&|\\$;'`\"\n", s[i]) != NULL) return true;
+    /* a shell built-in as the command word is no file to exec, so CRuby keeps a
+       table of them and hands those to the shell too */
+    static const char *const builtins[] = {           /* CRuby's posix_sh_cmds */
+        "!", ".", ":", "break", "case", "continue", "do", "done", "elif", "else", "esac",
+        "eval", "exec", "exit", "export", "fi", "for", "if", "in", "readonly", "return",
+        "set", "shift", "then", "times", "trap", "unset", "until", "while", NULL };
+    uint32_t w = 0;
+    while (w < n && s[w] != ' ' && s[w] != '\t') w++;
+    for (uint32_t i = 0; builtins[i] != NULL; i++)
+        if (strlen(builtins[i]) == w && memcmp(s, builtins[i], w) == 0) return true;
     return false;
 }
 

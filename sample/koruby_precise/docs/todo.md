@@ -2740,3 +2740,15 @@ CRuby は `class C < A` の後に `class C < B` と書くと TypeError
 
 **やるなら**: まず C 側で作る組込みクラスの superclass を prelude の宣言と
 揃える (Enumerator::Lazy 以外にもある可能性)。検査自体は数行。
+
+## `$?` がスレッドローカルでない (2026-08-21)
+
+CRuby の `$?` (Process.last_status) はスレッドごとに独立している。koruby は
+グローバル 1 個なので、別スレッドから見ても親スレッドが最後に待った子の
+ステータスが見える。core/process/last_status_spec の
+"returns nil if no child process has been ever executed in the current thread" が
+これで落ちる (1 例)。
+
+直すには `$?` の読み書きを現在スレッドの tvars 経由にする必要があり、
+グローバル変数の読み出し経路に `$?` の特別扱いを足すことになる。
+影響 1 例に対して hot path を触るので保留。
