@@ -416,10 +416,12 @@ module/refine と refinement/* は refinement 未実装、kernel/caller は
 ## 2026-08-21 core sweep (実 mspec)
 
 ```
-files=2144 clean=1073  whole-file-fail=6
-examples=22468 pass=19172 fail=2193 err=1103
-example pass-rate = 85.3%
+files=2144 clean=1081  whole-file-fail=6
+examples=22468 pass=19238 fail=2152 err=1078
+example pass-rate = 85.6%
 ```
+(同日の途中経過は 19172 / 85.3%。以降 IO の読み取りエンコーディング・
+lineno/$. ・Kernel#Complex・Process::Status.wait を入れて 19238。)
 language は 2243 / 2810 = 79.8% (clean 17)。
 
 08-20 の 19145 から: キーワード引数の印の穴埋め (super 転送 / Data / Struct)、
@@ -427,3 +429,10 @@ ruby2_keywords、組込みサブクラスの #allocate (Marshal の 'C' ラッ�
 Float の step を ruby_float_step と同じ数え方に、sprintf の結果エンコーディングと
 %s の文字単位の精度/幅、Fiber storage 一式、const_source_location のスコープ付き名、
 Process::Status.wait が $? を変えない。
+
+IO 系のまとめ (08-21 後半): 読み取り結果に **ストリームのエンコーディング** を付ける
+(internal || external、rep に memo して set_encoding で無効化)、gets のバイト上限が
+文字を割らない、#lineno を readlines/rewind と噛み合わせる、each_line/foreach の
+$. と $_、ブロック無し each_line/foreach の Enumerator は #size が nil。
+Kernel#Complex は組込み以外の Numeric を #real? 経由で扱い、String 引数を
+解析前に検査する (これで complex/to_r・to_i・to_f 等の fixture も通るようになった)。
