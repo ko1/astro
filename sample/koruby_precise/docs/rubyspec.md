@@ -458,3 +458,17 @@ core/io/buffer/map_spec (25 例) はいずれも全通し。それを戻すと 1
 0821c からの差分: sprintf/format の結果エンコーディングは 7bit でない引数だけが
 決める + $VERBOSE 時のみ "too many arguments for format string" (%{} と %<> は
 名前付きとして数える)、IO#write は空文字列だけなら書き込み可否を見ない。
+
+### プロセス起動まわり (0821d の後)
+
+sweep_0821d で退行に見えた 2 件は本物だった (単体実行を CRuby で流していて
+気付くのが遅れた。単体は `./koruby_precise tools/mspec_launch.rb <spec>`)。
+- io/buffer/map_spec: 書き込み可否を `file.write("")` で探っていたのを、
+  直前に入れた「空文字列の write は権限を見ない」が無効化していた。
+- process/status/wait_spec: `pgroup: true` を無視していたため、
+  グループを分けた子と分けない子の終了順の競争になっていた (3 回に 2 回落ちる)。
+
+そこから spawn/exec/system を CRuby の規約に揃えた (commit af41bbef)。
+単体実行で spawn_spec 62→91/93、exec_spec 18→23/24、system_spec 7→14/15、
+kernel/spawn_spec 1→3/3。残りは spawn の close_others 系 1F1E と
+system の「shebang の無い実行可能ファイルを sh にフォールバック」1F。
