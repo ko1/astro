@@ -2714,3 +2714,17 @@ exit(1) してしまう (END_spec / at_exit_spec で各 1 例)。
 **やるなら**: -r の require を本体 parse より前に出し、parse 失敗時も
 korb_drain_at_exit を通ってから終了する。prelude 実行・toplevel フレーム構築の
 順序を組み替える必要がある。
+
+## 2026-08-21 に見送った項目
+
+- **Marshal.load の `freeze: true` / proc の呼ばれ方** (core/marshal/load_spec 18F4E の主要部分)。
+  deep-freeze と「凍結文字列の重複排除」、proc がリンク ('@') でも呼ばれる CRuby の順序。
+  proc をリンクでも呼ぶように変えたら別の例が壊れたので撤回した (読み出し順の設計から見る必要がある)。
+- **Exception#full_message の整形** (11F1E)。backtrace の 1 行目にクラス名を付ける形、
+  cause の連結、highlight のエスケープ。実バックトレース (フレームの現在行) が要る。
+- **Thread#raise の cause: / backtrace_locations:** (thread/raise_spec)。同上。
+- **ObjectSpace.each_object** (5F19E) はヒープ走査そのものが未実装。
+- **Struct のサブクラスで initialize を上書きした場合のキーワード** (struct/new_spec の
+  "on subclasses accepts keyword arguments to initialize")。
+- `Module#module_function` を Class で呼ぶと CRuby は NoMethodError だが、TypeError に
+  すると make test が 3 件退行する (自前コーパスが Class で呼んでいる)。要調査。
