@@ -778,6 +778,28 @@ korb_io_read_sep(CTX *c, VALUE *slots, KorbIORep *rep, VALUE_REF sepref, const s
         }
         if (la->limit >= 0 && len >= (uint32_t)la->limit) break;
     }
+    if (la->limit >= 0 && len == (uint32_t)la->limit) {
+        /* a byte limit must not split a character: take the continuation bytes of
+         * a truncated UTF-8 sequence as well (CRuby) */
+        const char *d = korb_strbuf_data(VAL2STR(VALUE_REF_GET(sref))->buf);
+        uint32_t st = len;                              /* start of the last sequence */
+        while (st > 0 && ((unsigned char)d[st - 1] & 0xC0) == 0x80) st--;
+        if (st > 0) {
+            const unsigned char lead = (unsigned char)d[st - 1];
+            const uint32_t need = (lead >= 0xF0) ? 4 : (lead >= 0xE0) ? 3 : (lead >= 0xC0) ? 2 : 1;
+            uint32_t have = len - (st - 1);
+            while (have < need) {
+                const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);
+                if (UNLIKELY(err.state != KORB_NORMAL)) return err;
+                if (avail == 0) break;
+                uint32_t take = need - have;
+                if (take > avail) take = avail;
+                KorbString *const s2 = korb_str_ensure(c, slots + 1, sref, len + take);
+                memcpy(korb_strbuf_data(s2->buf) + len, rep->rbuf + rep->rpos, take);
+                rep->rpos += take; len += take; have += take; s2->len = len;
+            }
+        }
+    }
     if (hit_sep && la->paragraph) {                    /* swallow the blank lines after the record */
         for (;;) {
             const uint32_t avail = korb_io_fill_p(c, slots + 1, rep, &err);
