@@ -559,6 +559,14 @@ static RESULT korb_m_io_s_pipe(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 static RESULT korb_m_io_write(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    {   /* writing nothing never checks writability (CRuby) */
+        bool empty = true;
+        for (uint32_t i = 0; i < VALUE_SLICE_LEN(a) && empty; i++) {
+            const VALUE v = VALUE_SLICE_GET(a, i);
+            if (!KORB_STRING_P(v) || VAL2STR(v)->len != 0) empty = false;
+        }
+        if (empty) return RESULT_OK(LONG2FIX(0));
+    }
     KORB_IO_NEED_WRITE(c, slots, self);
     size_t nb = 0;
     for (uint32_t i = 0; i < VALUE_SLICE_LEN(a); i++) {
