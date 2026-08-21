@@ -482,6 +482,8 @@ RESULT korb_coerce_to_int_pub(CTX *c, VALUE *slots, VALUE *v);
 RESULT korb_str_dup_pub(CTX *c, VALUE *slots, VALUE *src);
 void korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v);
 void korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner);
+void korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
+                              const char *file, uint32_t line0);   /* with the assignment's position */
 void korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t file_sym, uint32_t line);
 bool korb_const_get_loc(const struct korb_vm *vm, uint32_t name_sym, VALUE owner, uint32_t *file_sym, uint32_t *line);
 const char *korb_sym_name(const struct korb_vm *vm, uint32_t id);

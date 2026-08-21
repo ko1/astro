@@ -376,6 +376,7 @@ static RESULT korb_m_rat_integerp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
 static void korb_class_qname_into(CTX *c, VALUE cls, char *out, size_t outsz);   /* defined below */
 int32_t korb_hash_find(const KorbHash *h, VALUE key);   /* defined below; non-static so node_eval.c's Hash#[] fast path can call it (LTO still inlines) */
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...);                /* defined below; builtins emit rb_warn-style warnings */
+void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...);   /* with a source position */
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);   /* defined below */
 static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);   /* array.c — for builtin Array subclass .new */
@@ -10302,7 +10303,8 @@ korb_eval_toplevel(CTX *c, VALUE *slots, const char *src, size_t len, const char
 /* CRuby warns on every constant reassignment, naming where the previous one was
  * (which is exactly what the const-location table records). */
 void
-korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
+korb_warn_const_redef_at(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner,
+                         const char *file, uint32_t line0)
 {
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     const char *const nm = korb_sym_name(c->vm, name_sym);
@@ -10311,10 +10313,16 @@ korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
         char obuf[192]; korb_class_qname_into(c, owner, obuf, sizeof obuf);
         snprintf(qual, sizeof qual, "%s::%s", obuf, nm);
     } else snprintf(qual, sizeof qual, "%s", nm);
-    korb_warn(c, slots, "already initialized constant %s", qual);
+    /* CRuby prefixes both lines with the position they happen at */
+    korb_warn_at(c, slots, file, line0, "already initialized constant %s", qual);
     uint32_t fsym = 0, line = 0;
     if (korb_const_get_loc(c->vm, name_sym, owner, &fsym, &line))
-        korb_warn(c, slots, "previous definition of %s was here (%s:%u)", nm, korb_sym_name(c->vm, fsym), line);
+        korb_warn_at(c, slots, korb_sym_name(c->vm, fsym), line, "previous definition of %s was here", nm);
+}
+void
+korb_warn_const_redef(CTX *c, VALUE *slots, uint32_t name_sym, VALUE owner)
+{
+    korb_warn_const_redef_at(c, slots, name_sym, owner, NULL, 0);
 }
 
 /* Where a constant was assigned, for Module#const_source_location.  Keyed by
@@ -10693,7 +10701,30 @@ korb_bi_load(CTX *c, VALUE *slots, VALUE_SLICE args)
     char abspath[4096];
     /* load() takes a path verbatim (no .rb auto-append); try relative to CWD. */
     if (namebuf[0] == '/') snprintf(abspath, sizeof abspath, "%s", namebuf);
-    else if (!realpath(namebuf, abspath)) snprintf(abspath, sizeof abspath, "%s", namebuf);
+    else if (!realpath(namebuf, abspath)) {
+        /* not under the working directory: a relative name is looked up in
+         * $LOAD_PATH too (CRuby), including entries with #to_path */
+        bool found = false;
+        const VALUE lp = korb_const_get(c->vm, korb_intern(c->vm, "$LOAD_PATH", 10));
+        if (namebuf[0] != '.' && KORB_ARRAY_P(lp)) {
+            slots[1] = lp;                                 /* park: #to_path dispatches */
+            for (uint32_t i = 0; i < VAL2ARY(slots[1])->len && !found; i++) {
+                slots[2] = korb_items_data(VAL2ARY(slots[1])->items)[i];
+                if (!KORB_STRING_P(slots[2])) {
+                    if (!korb_responds_to(c, slots[2], korb_intern(c->vm, "to_path", 7))) continue;
+                    const RESULT pr = korb_send(c, slots + 3, korb_intern(c->vm, "to_path", 7), 0, 0);
+                    if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
+                    if (!KORB_STRING_P(pr.value)) continue;
+                    slots[2] = pr.value;
+                }
+                char cand[4096];
+                snprintf(cand, sizeof cand, "%.*s/%s", (int)VAL2STR(slots[2])->len,
+                         korb_strbuf_data(VAL2STR(slots[2])->buf), namebuf);
+                if (realpath(cand, abspath)) found = true;
+            }
+        }
+        if (!found) snprintf(abspath, sizeof abspath, "%s", namebuf);
+    }
     VALUE out; return korb_load_abspath(c, slots, abspath, false, &out);
 }
 
@@ -10924,6 +10955,21 @@ static RESULT korb_out_emit(CTX *c, VALUE *slots, VALUE out, uint32_t stdidx, co
 /* Emit `warning: ...\n` to $stderr, suppressed only when $VERBOSE is nil (-W0);
  * routed through $stderr so mspec's `complain` matcher (which reassigns $stderr)
  * captures it.  Fire-and-forget: any write error from the sink is ignored. */
+/* rb_warn with a source position: "file:line: warning: msg" (CRuby's shape). */
+void korb_warn_at(CTX *c, VALUE *slots, const char *file, uint32_t line, const char *fmt, ...) {
+    if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    char body[240];
+    va_list ap; va_start(ap, fmt);
+    const int bl = vsnprintf(body, sizeof body, fmt, ap);
+    va_end(ap);
+    if (bl < 0) return;
+    char msg[512];
+    const int ml = file ? snprintf(msg, sizeof msg, "%s:%u: warning: %s\n", file, line, body)
+                        : snprintf(msg, sizeof msg, "warning: %s\n", body);
+    if (ml < 0) return;
+    bool def; const VALUE out = korb_out_target(c, "$stderr", 7, &def);
+    (void)korb_out_emit(c, slots, out, 2, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+}
 void korb_warn(CTX *c, VALUE *slots, const char *fmt, ...) {
     if (korb_const_get(c->vm, korb_intern(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
     char body[240];
