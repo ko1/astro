@@ -412,3 +412,18 @@ example pass-rate = 85.2%
 残りの上位 (in-scope): io/write_spec と string/encode_spec は **実 transcoding** 待ち、
 module/refine と refinement/* は refinement 未実装、kernel/caller は
 フレームに現在行を持たせる設計変更待ち (docs/todo.md)。
+
+## 2026-08-21 core sweep (実 mspec)
+
+```
+files=2144 clean=1073  whole-file-fail=6
+examples=22468 pass=19172 fail=2193 err=1103
+example pass-rate = 85.3%
+```
+language は 2243 / 2810 = 79.8% (clean 17)。
+
+08-20 の 19145 から: キーワード引数の印の穴埋め (super 転送 / Data / Struct)、
+ruby2_keywords、組込みサブクラスの #allocate (Marshal の 'C' ラッパもこれ経由に)、
+Float の step を ruby_float_step と同じ数え方に、sprintf の結果エンコーディングと
+%s の文字単位の精度/幅、Fiber storage 一式、const_source_location のスコープ付き名、
+Process::Status.wait が $? を変えない。
