@@ -6167,6 +6167,7 @@ static RESULT korb_set_from_array(CTX *c, VALUE *slots, VALUE_REF src);
 static RESULT korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                              NODE *block, VALUE *def_env, VALUE *captured_self);
 static RESULT korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *captured_self);
+RESULT korb_fiber_check_storage(CTX *c, VALUE *slots, VALUE h);   /* fwd (builtins/fiber.c) */
 static RESULT korb_thread_s_new(CTX *c, VALUE *slots, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *captured_self);   /* thread.c */
 static RESULT korb_mutex_s_new(CTX *c, VALUE *slots);      /* thread.c */
 static RESULT korb_thread_alloc_handle(CTX *c, VALUE *slots);   /* thread.c: 未初期化 thread */
@@ -7482,9 +7483,10 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                     const int32_t si = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(vm, "storage", 7)));
                     if (si >= 0) {
                         const VALUE sv = korb_items_data(VAL2HASH(opts)->items)[2 * si + 1];
-                        if (UNLIKELY(sv != KORB_NIL && !KORB_HASH_P(sv)))
-                            return korb_raise(c, slots, KORB_E_TYPE, line, "storage must be a hash");
-                        VAL2FIBER(fr.value)->rep->storage = sv;
+                        slots[0] = fr.value;                 /* park across the checks' allocs */
+                        CHECK(korb_fiber_check_storage(c, slots + 1, sv));
+                        if (sv != KORB_NIL) VAL2FIBER(slots[0])->rep->storage = sv;   /* nil → keep the inherited copy */
+                        return RESULT_OK(slots[0]);
                     }
                 }
             }

@@ -53,7 +53,7 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     rep->captured_self = KORB_CSELF_VAL(captured_self);
     rep->transfer = KORB_NIL;
     rep->transferred = 0; rep->killing = 0;
-    rep->storage = KORB_NIL;                           /* Fiber#storage (lazily inherited on first read) */
+    rep->storage = KORB_NIL;                           /* set below: a copy of the creator's */
     rep->fibobj = (VALUE)fb;                           /* Fiber.current (root; no GC between alloc and here) */
     rep->fstate = 0;
     void *vs = mmap(NULL, KORB_FIBER_VSLOTS_BYTES, PROT_READ | PROT_WRITE,
@@ -71,6 +71,19 @@ korb_fiber_new(CTX *c, VALUE *slots, NODE *block, VALUE *def_env, VALUE *capture
     if (!rep->uctx) abort();
     rep->link = c->vm->fiber_list;                    /* register for GC scanning */
     c->vm->fiber_list = rep;
+    /* a new fiber starts with a COPY of its creator's storage (CRuby), so writes
+     * never leak back; Fiber.new(storage:) overwrites it at the call site */
+    {
+        const KorbFiberRep *const cur = c->vm->running_fiber ? c->vm->running_fiber : c->vm->root_fiber;
+        if (cur != NULL && cur->storage != KORB_NIL && VAL2HASH(cur->storage)->len > 0) {
+            slots[0] = (VALUE)fb;                      /* park the fiber across the copy's allocs */
+            slots[2] = cur->storage;                   /* receiver for #dup (cursor slots+3) */
+            const RESULT dr = korb_send(c, slots + 3, korb_intern(c->vm, "dup", 3), 0, 0);   /* slots[2] = recv */
+            if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+            VAL2FIBER(slots[0])->rep->storage = dr.value;
+            return RESULT_OK(slots[0]);
+        }
+    }
     return RESULT_OK((VALUE)fb);
 }
 
@@ -277,21 +290,43 @@ static RESULT korb_fiber_storage_of(CTX *c, VALUE *slots, KorbFiberRep *rep, boo
     }
     return RESULT_OK(rep->storage);
 }
+/* A storage Hash must be a non-frozen Hash with Symbol keys (CRuby). */
+RESULT korb_fiber_check_storage(CTX *c, VALUE *slots, VALUE h) {
+    if (h == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (UNLIKELY(!KORB_HASH_P(h)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "storage must be a hash");
+    if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)h)->flags & KORB_FL_FROZEN))
+        return korb_raise_frozen(c, slots, h);
+    const KorbHash *const hh = VAL2HASH(h);
+    for (uint32_t i = 0; i < hh->len; i++)
+        if (UNLIKELY(!SYMBOL_P(korb_items_data(hh->items)[2 * i])))
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "storage keys must be symbols");
+    return RESULT_OK(KORB_NIL);
+}
 /* Fiber#storage / #storage= */
 static RESULT korb_m_fiber_storage(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
-    return korb_fiber_storage_of(c, slots, VAL2FIBER(VALUE_REF_GET(self))->rep, false);
+    KorbFiberRep *const rep = VAL2FIBER(VALUE_REF_GET(self))->rep;
+    if (UNLIKELY(rep != korb_fiber_cur_rep(c, slots)))      /* only its own fiber may read it (CRuby) */
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0,
+                          "Fiber storage can only be accessed from the Fiber it belongs to");
+    return korb_fiber_storage_of(c, slots, rep, false);
 }
 static RESULT korb_m_fiber_storage_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     const VALUE h = VALUE_SLICE_GET(a, 0);
-    if (UNLIKELY(h != KORB_NIL && !KORB_HASH_P(h)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "storage must be a hash");
+    CHECK(korb_fiber_check_storage(c, slots, h));
     VAL2FIBER(VALUE_REF_GET(self))->rep->storage = h;
     return RESULT_OK(h);
 }
 /* Fiber[key] / Fiber[key] = value — the RUNNING fiber's storage. */
 static RESULT korb_fiber_storage_key(CTX *c, VALUE *slots, VALUE k, VALUE *out) {
     if (SYMBOL_P(k)) { *out = k; return RESULT_OK(KORB_TRUE); }
+    if (!KORB_STRING_P(k) && korb_responds_to(c, k, korb_intern(c->vm, "to_str", 6))) {
+        slots[0] = k;                                   /* #to_str-able key (CRuby coerces) */
+        const RESULT sr = korb_send(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0);
+        if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
+        if (KORB_STRING_P(sr.value)) k = sr.value;
+    }
     if (KORB_STRING_P(k)) {
         *out = ID2SYM(korb_intern(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len));
         return RESULT_OK(KORB_TRUE);
@@ -321,6 +356,23 @@ static RESULT korb_m_fiber_s_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     const RESULT sr = korb_fiber_storage_of(c, slots + 2, rep, true);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     slots[2] = sr.value;
+    if (slots[1] == KORB_NIL) {                         /* assigning nil deletes the key (CRuby) */
+        KorbHash *const h = VAL2HASH(slots[2]);
+        const int32_t di = korb_hash_find(h, slots[0]);
+        if (di >= 0) {                                  /* shift the pairs down (no alloc → no GC) */
+            KorbArrayItems *const it = h->items;
+            for (uint32_t i = (uint32_t)di; i + 1 < h->len; i++) {
+                ARO_STORE(c, it, &korb_items_data(it)[2 * i],     korb_items_data(it)[2 * (i + 1)]);
+                ARO_STORE(c, it, &korb_items_data(it)[2 * i + 1], korb_items_data(it)[2 * (i + 1) + 1]);
+            }
+            h->len--;
+            ARO_STORE(c, it, &korb_items_data(it)[2 * h->len], KORB_NIL);
+            ARO_STORE(c, it, &korb_items_data(it)[2 * h->len + 1], KORB_NIL);
+            KORB_HASH_DROP_INDEX(h);
+        }
+        rep->storage = slots[2];
+        return RESULT_OK(KORB_NIL);
+    }
     CHECK(korb_hash_set(c, slots + 3, VALUE_REF_AT(&slots[2]), VALUE_REF_AT(&slots[0]), slots[1]));
     rep->storage = slots[2];                            /* re-read: the set may have moved it */
     return RESULT_OK(slots[1]);
