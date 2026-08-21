@@ -795,6 +795,26 @@ static RESULT korb_m_class_allocate(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         e->mode = 0;                                 /* uninitialized-but-safe: empty eager enumerator */
         return RESULT_OK((VALUE)e);
     }
+    /* A subclass of a constructible builtin needs that builtin's payload, tagged
+     * with the subclass — `SubHash.allocate` must answer a real Hash (Marshal and
+     * other libraries build instances this way, bypassing #initialize). */
+    if (KORB_CLASS_P(VALUE_REF_GET(self))) {
+        slots[0] = VALUE_REF_GET(self);                  /* root the class across the alloc */
+        const enum korb_class base = korb_builtin_base_class(c->vm, slots[0]);
+        RESULT inst = RESULT_OK(KORB_NIL);
+        switch (base) {
+          case KORB_C_STRING: inst = korb_str_new(c, slots + 1, "", 0); break;
+          case KORB_C_ARRAY:  inst = korb_ary_new(c, slots + 1, 0); break;
+          case KORB_C_HASH:   inst = korb_hash_new(c, slots + 1, 0); break;
+          default: break;
+        }
+        if (inst.value != KORB_NIL) {
+            if (UNLIKELY(inst.state != KORB_NORMAL)) return inst;
+            slots[1] = inst.value;
+            korb_klass_override_set(c, slots[1], slots[0]);
+            return RESULT_OK(slots[1]);
+        }
+    }
     return korb_obj_new(c, slots, VALUE_REF_GET(self));
 }
 /* Module#set_temporary_name(name|nil) — assign/clear a temporary name on an

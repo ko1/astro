@@ -467,18 +467,20 @@ module Marshal
     obj
   end
 
-  def self._reclass(cls, inner)                        # rebuild inner as an instance of cls
+  # Rebuild `inner` as an instance of cls.  #allocate (not .new) because the
+  # subclass's #initialize may take arguments Marshal knows nothing about.
+  def self._reclass(cls, inner)
     case inner
     when String
-      cls.new(inner)
+      s = (cls.allocate rescue cls.new); s.replace(inner); s
     when Array
-      a = cls.new; a.replace(inner); a
+      a = (cls.allocate rescue cls.new); a.replace(inner); a
     when Hash
-      if cls == Hash                                     # 'C:Hash' marks compare_by_identity
-        inner.compare_by_identity
-      else
-        h = cls.new; inner.each { |k, v| h[k] = v }; h
-      end
+      return inner.compare_by_identity if cls == Hash    # 'C:Hash' marks compare_by_identity
+      h = (cls.allocate rescue cls.new)
+      inner.each { |k, v| h[k] = v }
+      h.compare_by_identity if inner.compare_by_identity?   # nested 'C:SubHash' + 'C:Hash'
+      h
     when Regexp
       cls.new(inner.source, inner.options)
     else inner
