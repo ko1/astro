@@ -417,8 +417,8 @@ module/refine と refinement/* は refinement 未実装、kernel/caller は
 
 ```
 files=2144 clean=1081  whole-file-fail=6
-examples=22468 pass=19238 fail=2152 err=1078
-example pass-rate = 85.6%
+examples=22468 pass=19254 fail=2140 err=1074
+example pass-rate = 85.7%
 ```
 (同日の途中経過は 19172 / 85.3%。以降 IO の読み取りエンコーディング・
 lineno/$. ・Kernel#Complex・Process::Status.wait を入れて 19238。)
@@ -436,3 +436,8 @@ IO 系のまとめ (08-21 後半): 読み取り結果に **ストリームのエ
 $. と $_、ブロック無し each_line/foreach の Enumerator は #size が nil。
 Kernel#Complex は組込み以外の Numeric を #real? 経由で扱い、String 引数を
 解析前に検査する (これで complex/to_r・to_i・to_f 等の fixture も通るようになった)。
+
+さらに: IO.new/IO.open のモード・エンコーディング二重指定を ArgumentError に、
+Kernel#load が $LOAD_PATH (と #to_path) を探す、定数再定義警告を
+"file:line: warning:" の形に、Module#autoload? が祖先の登録を見る、
+Marshal.dump の String が extend を落とさない。
