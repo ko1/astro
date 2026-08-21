@@ -924,7 +924,9 @@ static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             if (slots[2] == KORB_NIL) break;
             CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
         }
-        return korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), KORB_NIL);
+        const RESULT er = korb_enum_new(c, slots + 2, VALUE_REF_GET(arr), KORB_NIL);
+        if (LIKELY(er.state == KORB_NORMAL)) VAL2ENUM(er.value)->size_unknown = 1;   /* CRuby: #size is nil */
+        return er;
     }
     RESULT rr = RESULT_OK(KORB_NIL);
     for (;;) {

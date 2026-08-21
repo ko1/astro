@@ -940,7 +940,11 @@ static RESULT korb_m_file_foreach(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     free(buf);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (block) korb_const_define(c, korb_intern(c->vm, "$_", 2), KORB_NIL);   /* foreach leaves $_ nil */
-    if (block == NULL) return korb_enum_new(c, slots + 3, VALUE_REF_GET(arr), KORB_NIL);
+    if (block == NULL) {
+        const RESULT er = korb_enum_new(c, slots + 3, VALUE_REF_GET(arr), KORB_NIL);
+        if (LIKELY(er.state == KORB_NORMAL)) VAL2ENUM(er.value)->size_unknown = 1;   /* CRuby: #size is nil */
+        return er;
+    }
     return RESULT_OK(KORB_NIL);
 }
 
