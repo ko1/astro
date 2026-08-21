@@ -215,6 +215,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             } \
         } while (0)
         if (i < flen && fmt[i] == '{') {                   /* %{name}: to_s, no type/width/precision */
+            saw_named = true;                              /* named: the Hash argument is not "unused" */
             i++; const uint32_t nstart = i;
             while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
@@ -317,6 +318,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (i >= flen) { err = true; errmsg = "incomplete format specifier; use %% (double %) instead"; break; }
         char conv;
         if (fmt[i] == '{') {                               /* %[flags][width][.prec]{name}: named value to_s (implicit 's') */
+            saw_named = true;
             i++; const uint32_t nstart = i;
             while (i < flen && fmt[i] != '}') i++;
             const VALUE nh = (argn >= 1) ? args[0] : KORB_NIL;
@@ -433,14 +435,14 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           case 's': {
             spec[si++] = 's'; spec[si] = '\0';
             if (KORB_STRING_P(arg)) {
-                uint32_t ne;                              /* the argument widens the result's encoding */
-                if (UNLIKELY(!korb_str_enc_combine(c->vm, enc_src, arg, &ne))) {
-                    enc_a = KORB_STR_ENC(enc_src); enc_b = KORB_STR_ENC(arg);
-                    enc_err = true; err = true; break;
+                if (!korb_str_ascii_only_p(c->vm, arg)) {   /* only a non-7-bit argument decides */
+                    uint32_t ne;
+                    if (UNLIKELY(!korb_str_enc_combine(c->vm, enc_src, arg, &ne))) {
+                        enc_a = KORB_STR_ENC(enc_src); enc_b = KORB_STR_ENC(arg);
+                        enc_err = true; err = true; break;
+                    }
+                    renc = ne; enc_src = arg;              /* later arguments check against it */
                 }
-                /* a non-7-bit argument becomes the one that decides (a later
-                 * argument is checked against it, not against the format) */
-                if (ne != renc || !korb_str_ascii_only_p(c->vm, arg)) { renc = ne; enc_src = arg; }
                 /* a precision counts CHARACTERS (CRuby); fprintf would count
                  * bytes, so a multi-byte argument is pre-truncated and the
                  * precision dropped from the spec. */
@@ -590,6 +592,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (enc_err) return korb_raise_enc_compat(c, slots, enc_a, enc_b);
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error");
     }
+    if (UNLIKELY(!saw_numbered && !saw_named && ai < argn &&
+                 korb_const_get(vm, korb_intern(vm, "$VERBOSE", 8)) == KORB_TRUE))   /* only in verbose mode (CRuby) */
+        korb_warn(c, slots, "too many arguments for format string");
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
     if (shared) vm->fmt_busy = false; else free(buf);
     /* the result carries the format's encoding, widened by the arguments (CRuby) */
