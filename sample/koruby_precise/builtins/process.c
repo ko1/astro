@@ -501,6 +501,14 @@ static RESULT korb_status_make(CTX *c, VALUE *slots, pid_t pid, int raw) {
     return RESULT_OK(slots[0]);
 }
 
+/* Process.__set_last_status(st) — write $? directly (Process::Status.wait must
+ * leave the caller's $? untouched, so the prelude restores it). */
+static RESULT korb_m_process_set_last_status(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
+    (void)self; (void)slots;
+    korb_const_define(c, korb_intern(c->vm, "$?", 2), VALUE_SLICE_GET(a, 0));
+    return RESULT_OK(VALUE_SLICE_GET(a, 0));
+}
+
 /* ---- Ruby entry points ---------------------------------------------------- */
 
 /* Process.exec / Kernel#exec — spawn's arguments, but this process is replaced.
@@ -1047,6 +1055,7 @@ void korb_init_process(CTX *c, VALUE *slots) {
     korb_class_def_cfn(c, obj, "__exec",     korb_m_process_exec,    -1);
     korb_class_def_cfn(c, obj, "__waitpid",  korb_m_process_wait,    -1);
     korb_class_def_cfn(c, obj, "__waitpid2", korb_m_process_wait2,   -1);
+    korb_class_def_cfn(c, obj, "__set_last_status", korb_m_process_set_last_status, 1);
     korb_class_def_cfn(c, obj, "__kill",     korb_m_process_kill,    -1);
     korb_class_def_cfn(c, obj, "__getpgid",  korb_m_process_getpgid, -1);
     korb_class_def_cfn(c, obj, "__setpgid",  korb_m_process_setpgid,  2);

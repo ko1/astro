@@ -959,11 +959,19 @@ module Process
   # The wait(2) status word behind $?.  `@raw` is the value waitpid filled in.
   class Status
     # Process::Status.wait(pid, flags = 0) — wait2 の Status だけを返す形。
+    # CRuby と違い $? は変えない (呼び出し前の値を戻す)、子が居なければ
+    # pid -1 の Status を返す。
     def self.wait(pid = -1, flags = 0)
-      _, st = Process.wait2(pid, flags)
-      st
-    rescue Errno::ECHILD
-      nil
+      pid = pid.to_int if !pid.is_a?(Integer) && pid.respond_to?(:to_int)
+      saved = $?
+      begin
+        _, st = Process.wait2(pid, flags)
+        st
+      rescue Errno::ECHILD
+        Process.__mkstatus(-1, 0)
+      ensure
+        Process.__set_last_status(saved)
+      end
     end
     def initialize(pid, raw)
       @pid = pid
