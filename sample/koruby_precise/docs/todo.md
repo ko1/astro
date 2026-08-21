@@ -2752,3 +2752,14 @@ CRuby の `$?` (Process.last_status) はスレッドごとに独立している�
 直すには `$?` の読み書きを現在スレッドの tvars 経由にする必要があり、
 グローバル変数の読み出し経路に `$?` の特別扱いを足すことになる。
 影響 1 例に対して hot path を触るので保留。
+
+## Symbol の同一性にエンコーディングが入っていない (2026-08-21)
+
+CRuby では `"→".b.to_sym` と `"→".to_sym` は**別のシンボル**で、`Symbol#encoding`
+もそれぞれ BINARY / UTF-8 を返す。koruby のシンボル表はバイト列だけを鍵にして
+いるので両者が同一になり、`Symbol#encoding` はバイト列から導いた値 (7bit なら
+US-ASCII、それ以外は UTF-8) しか返せない。
+
+core/marshal/load_spec の "loads an encoded Symbol" (UTF-16 のシンボル) と
+"loads a binary encoded Symbol" がこれで落ちる。Marshal 側だけでは直せない
+(シンボル表の鍵を バイト列+エンコーディング にする話)。

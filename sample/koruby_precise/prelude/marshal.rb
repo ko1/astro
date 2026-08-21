@@ -622,9 +622,20 @@ module Marshal
       (obj.extend(_const(msym)) rescue nil)
       obj
     when 0x63                                            # 'c' Class
-      _reg(st, _const(_bytes(st, _rlong(st))))
+      name = _bytes(st, _rlong(st))
+      k = _const(name)
+      raise ArgumentError, "#{name} does not refer to class" unless k.is_a?(Class)
+      _reg(st, k)
     when 0x6d                                            # 'm' Module
-      _reg(st, _const(_bytes(st, _rlong(st))))
+      name = _bytes(st, _rlong(st))
+      k = _const(name)
+      raise ArgumentError, "#{name} does not refer to module" if k.is_a?(Class) || !k.is_a?(Module)
+      _reg(st, k)
+    when 0x4d                                            # 'M' 古い形式: Class でも Module でも良い
+      name = _bytes(st, _rlong(st))
+      k = _const(name)
+      raise ArgumentError, "#{name} does not refer to module" unless k.is_a?(Module)
+      _reg(st, k)
     when 0x6f                                            # 'o' generic object
       idx = st[:objs].size; st[:objs] << nil
       cls = _read0(st)
