@@ -316,10 +316,8 @@ module Marshal
   def self._dump_string(o, out, st)
     enc = _str_enc_marker(o)
     uiv = o.instance_variables
-    if enc.nil? && uiv.empty? && o.class == String
-      out << "\""; _long(o.bytesize, out); out << o.b
-      return
-    end
+    # no fast path that skips _wrap_prefix: a String extended with a module still
+    # has o.class == String but needs the 'e' marker.
     out << "I" if enc || !uiv.empty?
     _wrap_prefix(o, String, out, st)
     out << "\""; _long(o.bytesize, out); out << o.b
