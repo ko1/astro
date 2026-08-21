@@ -2728,3 +2728,15 @@ korb_drain_at_exit を通ってから終了する。prelude 実行・toplevel �
   "on subclasses accepts keyword arguments to initialize")。
 - `Module#module_function` を Class で呼ぶと CRuby は NoMethodError だが、TypeError に
   すると make test が 3 件退行する (自前コーパスが Class で呼んでいる)。要調査。
+
+## クラス再オープン時の superclass mismatch 検査 (2026-08-21 試作 → 撤回)
+
+CRuby は `class C < A` の後に `class C < B` と書くと TypeError
+"superclass mismatch for class C" を出す (module/class の取り違えも
+"C is not a module")。korb_class_body の再オープン経路に同じ検査を足したところ、
+**prelude 自体が "superclass mismatch for class Lazy" で落ちた** (make test が
+全滅)。C 側で作ったクラスと prelude の `class X < Y` 宣言で superclass の
+見え方がずれている箇所があるらしい。
+
+**やるなら**: まず C 側で作る組込みクラスの superclass を prelude の宣言と
+揃える (Enumerator::Lazy 以外にもある可能性)。検査自体は数行。
