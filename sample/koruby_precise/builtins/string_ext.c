@@ -441,6 +441,41 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 /* a non-7-bit argument becomes the one that decides (a later
                  * argument is checked against it, not against the format) */
                 if (ne != renc || !korb_str_ascii_only_p(c->vm, arg)) { renc = ne; enc_src = arg; }
+                /* a precision counts CHARACTERS (CRuby); fprintf would count
+                 * bytes, so a multi-byte argument is pre-truncated and the
+                 * precision dropped from the spec. */
+                int pdot = -1;
+                for (int k = 1; k < si; k++) if (spec[k] == '.') { pdot = k; break; }
+                if (pdot >= 0 && !KORB_ENC_SB(c->vm, KORB_STR_ENC(arg))) {
+                    int prec = 0;
+                    for (int k = pdot + 1; k < si && isdigit((unsigned char)spec[k]); k++) prec = prec * 10 + (spec[k] - '0');
+                    const KorbString *const as = VAL2STR(arg);
+                    const char *const ab = korb_strbuf_data(as->buf);
+                    uint32_t bl = 0;                          /* byte length of the first `prec` characters */
+                    for (int ch = 0; ch < prec && bl < as->len; ch++) {
+                        uint32_t adv = 1;                     /* UTF-8 lead byte → sequence length */
+                        const unsigned char b = (unsigned char)ab[bl];
+                        if (b >= 0xF0) adv = 4; else if (b >= 0xE0) adv = 3; else if (b >= 0xC0) adv = 2;
+                        bl += (bl + adv <= as->len) ? adv : (as->len - bl);
+                    }
+                    /* the width counts characters too, so pad here rather than
+                     * handing a byte-counting fprintf a width */
+                    bool left = false; int width = 0;
+                    for (int k = 1; k < pdot; k++) {
+                        if (spec[k] == '-') left = true;
+                        else if (isdigit((unsigned char)spec[k])) width = width * 10 + (spec[k] - '0');
+                    }
+                    uint32_t cc = 0;                          /* characters kept */
+                    for (uint32_t bi2 = 0; bi2 < bl; cc++) {
+                        const unsigned char b2 = (unsigned char)ab[bi2];
+                        bi2 += (b2 >= 0xF0) ? 4 : (b2 >= 0xE0) ? 3 : (b2 >= 0xC0) ? 2 : 1;
+                    }
+                    const int pad = (width > (int)cc) ? width - (int)cc : 0;
+                    if (!left) for (int p2 = 0; p2 < pad; p2++) fputc(' ', ms);
+                    fwrite(ab, 1, bl, ms);
+                    if (left) for (int p2 = 0; p2 < pad; p2++) fputc(' ', ms);
+                    break;
+                }
                 fprintf(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf));
             }
             else if (KORB_OBJECT_P(arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
