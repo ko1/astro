@@ -217,7 +217,8 @@ const char *korb_enc_name_of(const struct korb_vm *vm, uint32_t idx);
 uint32_t korb_enc_index_pub(struct korb_vm *vm, const char *name);   /* encoding name → header index (registers) */            /* encoding index → name */
 bool   korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx);        /* ASCII-compatible encoding? */
 bool   korb_str_enc_combine(const struct korb_vm *vm, VALUE a, VALUE b, uint32_t *out);   /* shared encoding */
-RESULT korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb);    /* Encoding::CompatibilityError */   /* module overrides a Module hook (const_added) */   /* owner = defining module (nil = top-level) — for Module#constants */
+RESULT korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb);
+RESULT korb_raise_enc_compat_msg(CTX *c, VALUE *slots, const char *msg);   /* Encoding::CompatibilityError */    /* Encoding::CompatibilityError */   /* module overrides a Module hook (const_added) */   /* owner = defining module (nil = top-level) — for Module#constants */
 VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent */
 /* command-line -I / -r: prepend a directory to $LOAD_PATH, and require a
  * feature by name (the same path search `require` itself does) */

@@ -1064,12 +1064,10 @@ korb_str_enc_combine(const struct korb_vm *vm, VALUE av, VALUE bv, uint32_t *out
     return false;
 }
 /* Encoding::CompatibilityError, which lives in the prelude (nested in Encoding). */
+/* raise Encoding::CompatibilityError (a prelude class) with `msg` */
 RESULT
-korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb)
+korb_raise_enc_compat_msg(CTX *c, VALUE *slots, const char *msg)
 {
-    char msg[160];
-    snprintf(msg, sizeof msg, "incompatible character encodings: %s and %s",
-             korb_enc_name_of(c->vm, ea), korb_enc_name_of(c->vm, eb));
     const VALUE encm = korb_const_get(c->vm, korb_intern(c->vm, "Encoding", 8));
     VALUE cls = KORB_NIL;
     if (KORB_CLASS_P(encm)) {
@@ -1081,6 +1079,14 @@ korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb)
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
         ARO_STORE(c, VAL2EXC(r.value), (VALUE *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
     return r;
+}
+RESULT
+korb_raise_enc_compat(CTX *c, VALUE *slots, uint32_t ea, uint32_t eb)
+{
+    char msg[160];
+    snprintf(msg, sizeof msg, "incompatible character encodings: %s and %s",
+             korb_enc_name_of(c->vm, ea), korb_enc_name_of(c->vm, eb));
+    return korb_raise_enc_compat_msg(c, slots, msg);
 }
 
 /* a + b — alloc first, then copy through refs (fixup-safe; v2_design §4.3). */
@@ -11208,6 +11214,16 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
      * move the String and invalidate its data pointer mid-parse. */
     if (n == 1 && KORB_STRING_P(re)) {
         const KorbString *s = VAL2STR(re);
+        if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(re)))) {   /* checked before parsing */
+            char m[96];
+            snprintf(m, sizeof m, "ASCII incompatible encoding: %s", korb_enc_name_of(c->vm, KORB_STR_ENC(re)));
+            return korb_raise_enc_compat_msg(c, slots, m);
+        }
+        for (uint32_t i = 0; i < s->len; i++)
+            if (UNLIKELY(korb_strbuf_data(s->buf)[i] == '\0')) {
+                if (!exc) return RESULT_OK(KORB_NIL);
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
+            }
         char buf[128];
         if (s->len < sizeof buf) {
             memcpy(buf, korb_strbuf_data(s->buf), s->len);
@@ -11217,6 +11233,37 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (!exc) return RESULT_OK(KORB_NIL);
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid value for convert(): \"%.*s\"", (int)s->len, korb_strbuf_data(s->buf));
     }
+    /* a Numeric that is not one of the builtin kinds: CRuby asks #real? — a real
+     * one becomes the real component, a complex one is returned as-is, and with
+     * two of them the answer is n1 + n2 * Complex(0, 1) through their own #+/#*. */
+    if (korb_obj_is_numeric(c, re)) {
+        const uint32_t real_p = korb_intern(c->vm, "real?", 5);
+        slots[0] = re; slots[1] = im;                      /* parked: every send below allocates */
+        bool re_real = true, im_real = true;
+        if (korb_responds_to(c, slots[0], real_p)) {
+            slots[2] = slots[0];                           /* receiver at cursor[-1] */
+            const RESULT rr = korb_send(c, slots + 3, real_p, 0, 0);
+            if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
+            re_real = KORB_TRUTHY(rr.value);
+        }
+        if (n >= 2 && korb_obj_is_numeric(c, slots[1]) && korb_responds_to(c, slots[1], real_p)) {
+            slots[2] = slots[1];
+            const RESULT ir = korb_send(c, slots + 3, real_p, 0, 0);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            im_real = KORB_TRUTHY(ir.value);
+        }
+        if (n == 1 && !re_real) return RESULT_OK(slots[0]);           /* already complex */
+        if (n == 1) return korb_cpx_new(c, slots + 2, slots[0], LONG2FIX(0));
+        if (!re_real || !im_real) {                                    /* n1 + n2 * Complex(0,1) */
+            slots[2] = UNWRAP(korb_cpx_new(c, slots + 4, LONG2FIX(0), LONG2FIX(1)));
+            slots[3] = slots[1]; slots[4] = slots[2];
+            const RESULT mr = korb_send(c, slots + 5, korb_intern(c->vm, "*", 1), 0, 1);
+            if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+            slots[3] = slots[0]; slots[4] = mr.value;
+            return korb_send(c, slots + 5, korb_intern(c->vm, "+", 1), 0, 1);
+        }
+        return korb_cpx_new(c, slots + 2, slots[0], slots[1]);
+    }
     /* non-numeric arg (Symbol, nil, multi-arg String, ...) */
     if (n == 1 && KORB_OBJECT_P(re) && korb_responds_to(c, re, korb_intern(c->vm, "to_c", 4))) {
         slots[0] = re;
@@ -11225,7 +11272,7 @@ korb_bi_complex(CTX *c, VALUE *slots, VALUE_SLICE args)
         if (KORB_COMPLEX_P(cr.value)) return RESULT_OK(cr.value);
     }
     if (!exc) return RESULT_OK(KORB_NIL);
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_type_name(VALUE_SLICE_GET(args, 0)));
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Complex", korb_coerce_name(c, VALUE_SLICE_GET(args, 0)));
 }
 
 static RESULT
