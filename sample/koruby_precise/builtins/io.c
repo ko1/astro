@@ -1881,9 +1881,34 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     /* The mode may come from the positional argument or from `mode:`; a
      * positional nil defers to the option (CRuby accepts both spellings). */
     VALUE modev = (n >= 2) ? VALUE_SLICE_GET(a, 1) : KORB_NIL;
-    if (modev == KORB_NIL && KORB_HASH_P(opts)) {
-        const int32_t mi = korb_hash_find(VAL2HASH(opts), ID2SYM(korb_intern(c->vm, "mode", 4)));
-        if (mi >= 0) modev = korb_items_data(VAL2HASH(opts)->items)[2 * mi + 1];
+    if (KORB_HASH_P(opts)) {
+        const KorbHash *const oh = VAL2HASH(opts);
+        const int32_t mi = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "mode", 4)));
+        if (mi >= 0) {
+            const VALUE mo = korb_items_data(oh->items)[2 * mi + 1];
+            if (UNLIKELY(modev != KORB_NIL && mo != KORB_NIL))      /* CRuby: only one spelling */
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "mode specified twice");
+            if (modev == KORB_NIL) modev = mo;
+        }
+        /* a "w:ENC" mode string and an encoding option are also mutually exclusive */
+        if (KORB_STRING_P(modev) && memchr(korb_strbuf_data(VAL2STR(modev)->buf), ':', VAL2STR(modev)->len)) {
+            static const struct { const char *nm; uint32_t len; } ek[] = {
+                { "encoding", 8 }, { "external_encoding", 17 }, { "internal_encoding", 17 } };
+            for (size_t k = 0; k < 3; k++)
+                if (korb_hash_find(oh, ID2SYM(korb_intern(c->vm, ek[k].nm, ek[k].len))) >= 0)
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "encoding specified twice");
+        }
+        if (KORB_STRING_P(modev)) {                                /* "wb" + binmode: / "wt" + textmode: */
+            const char *const md = korb_strbuf_data(VAL2STR(modev)->buf);
+            uint32_t ml = VAL2STR(modev)->len;                     /* flags only: stop at the ':' */
+            const char *const colon = memchr(md, ':', ml);
+            if (colon) ml = (uint32_t)(colon - md);
+            const bool has_b = memchr(md, 'b', ml) != NULL, has_t = memchr(md, 't', ml) != NULL;
+            const int32_t bi = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "binmode", 7)));
+            const int32_t ti = korb_hash_find(oh, ID2SYM(korb_intern(c->vm, "textmode", 8)));
+            if ((has_b && bi >= 0) || (has_t && ti >= 0))
+                return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "binmode specified twice");
+        }
     }
     /* slots[0] = opts, slots[1] = the (possibly coerced) mode value — both
      * rooted from here on, since the coercion and korb_io_make below allocate. */
