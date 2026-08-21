@@ -139,6 +139,7 @@ struct korb_spawn_plan {
     uint32_t nunset;
     struct korb_redir redir[8];
     uint32_t nredir;
+    int   pgroup;                           /* setpgid(0, pgroup) in the child; -1 = inherit */
 };
 
 /* Copy `s` into the plan's argument arena and record it as the next argv slot. */
@@ -282,6 +283,7 @@ static bool korb_redir_value(CTX *c, struct korb_spawn_plan *p, int from, VALUE 
  * type error; `*ok` is false when the arguments are not a command at all. */
 static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct korb_spawn_plan *p) {
     memset(p, 0, sizeof *p);
+    p->pgroup = -1;
     uint32_t lo = 0, hi = VALUE_SLICE_LEN(a);
     /* a leading Hash (or anything with #to_hash) is the environment */
     if (hi > 0 && !KORB_HASH_P(VALUE_SLICE_GET(a, 0)) && KORB_OBJECT_P(VALUE_SLICE_GET(a, 0)) &&
@@ -330,6 +332,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
         const uint32_t chdir_id = korb_intern(c->vm, "chdir", 5);
         const uint32_t close_others_id = korb_intern(c->vm, "close_others", 12);
         const uint32_t unsetenv_id = korb_intern(c->vm, "unsetenv_others", 15);
+        const uint32_t pgroup_id = korb_intern(c->vm, "pgroup", 6);
         for (uint32_t i = 0; i < h->len; i++) {
             const VALUE k = korb_items_data(h->items)[2 * i];
             VALUE v = korb_items_data(h->items)[2 * i + 1];
@@ -347,6 +350,19 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
                 }
                 if ((uint32_t)SYM2ID(k) == close_others_id) p->close_others = KORB_TRUTHY(v);
                 else p->unsetenv_others = KORB_TRUTHY(v);
+                continue;
+            }
+            /* pgroup: true (or 0) starts a new group, an Integer joins that group */
+            if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == pgroup_id) {
+                if (v == KORB_TRUE) p->pgroup = 0;
+                else if (FIXNUM_P(v)) {
+                    const long g = FIX2LONG(v);
+                    if (UNLIKELY(g < 0))
+                        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative process group ID : %ld", g);
+                    p->pgroup = (int)g;
+                } else if (UNLIKELY(v != KORB_FALSE && v != KORB_NIL)) {
+                    return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+                }
                 continue;
             }
             if (SYMBOL_P(k) && (uint32_t)SYM2ID(k) == chdir_id && !KORB_STRING_P(v) && KORB_OBJECT_P(v)) {
@@ -410,6 +426,7 @@ static RESULT korb_spawn_plan_build(CTX *c, VALUE *slots, VALUE_SLICE a, struct 
  * exiting, because Process.exec runs this in the calling process itself. */
 static bool korb_spawn_child_setup(const struct korb_spawn_plan *p) {
     korb_child_reset_signals();                     /* the mask survives execve — the child must not start with signals blocked */
+    if (p->pgroup >= 0 && setpgid(0, p->pgroup) != 0) return false;
     if (p->chdir[0] != '\0' && chdir(p->chdir) != 0) return false;
     for (uint32_t i = 0; i < p->nredir; i++) {
         const struct korb_redir *r = &p->redir[i];

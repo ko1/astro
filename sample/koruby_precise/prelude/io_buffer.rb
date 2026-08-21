@@ -167,9 +167,11 @@ class IO
     end
 
     def self.__writable_io?(file)
+      # 空文字列の write は権限を見ない (CRuby も同じ) ので、モードのビットを直接見る
+      return file.__io_writable? if file.is_a?(IO)
       return true unless file.respond_to?(:write)
       begin
-        file.write("")     # 追記なしの書き込み可否テスト
+        file.write("")     # IO 以外は書き込みを試すしかない
         true
       rescue IOError, SystemCallError
         false
