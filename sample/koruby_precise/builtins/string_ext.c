@@ -187,6 +187,11 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     }
     uint32_t ai = 0; bool err = false; const char *errmsg = NULL;
+    /* the result's encoding: the format's, widened by every String argument that
+     * is not plain 7-bit (CRuby's rb_enc_check per argument) */
+    uint32_t renc = KORB_STR_ENC(VALUE_REF_GET(self)), enc_a = 0, enc_b = 0;
+    VALUE enc_src = VALUE_REF_GET(self);
+    bool enc_err = false;
     /* CRuby refuses to mix `%1$s` with `%s` in one format string; which one came
      * first decides the wording of the error. */
     bool saw_numbered = false, saw_unnumbered = false, saw_named = false;
@@ -427,7 +432,17 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
           }
           case 's': {
             spec[si++] = 's'; spec[si] = '\0';
-            if (KORB_STRING_P(arg)) { fprintf(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf)); }
+            if (KORB_STRING_P(arg)) {
+                uint32_t ne;                              /* the argument widens the result's encoding */
+                if (UNLIKELY(!korb_str_enc_combine(c->vm, enc_src, arg, &ne))) {
+                    enc_a = KORB_STR_ENC(enc_src); enc_b = KORB_STR_ENC(arg);
+                    enc_err = true; err = true; break;
+                }
+                /* a non-7-bit argument becomes the one that decides (a later
+                 * argument is checked against it, not against the format) */
+                if (ne != renc || !korb_str_ascii_only_p(c->vm, arg)) { renc = ne; enc_src = arg; }
+                fprintf(ms, spec, korb_strbuf_data(VAL2STR(arg)->buf));
+            }
             else if (KORB_OBJECT_P(arg) && fmt_stable) {   /* user object: dispatch #to_s (honours overrides) */
                 slots[1] = arg;
                 RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
@@ -537,12 +552,13 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     }
     if (err) {
         if (shared) vm->fmt_busy = false; else free(buf);
+        if (enc_err) return korb_raise_enc_compat(c, slots, enc_a, enc_b);
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", errmsg ? errmsg : "format error");
     }
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
     if (shared) vm->fmt_busy = false; else free(buf);
-    /* the result carries the FORMAT string's encoding (CRuby) */
-    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(VALUE_REF_GET(self)));
+    /* the result carries the format's encoding, widened by the arguments (CRuby) */
+    if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, renc);
     return r;
 }
 
