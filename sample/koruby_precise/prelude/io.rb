@@ -18,6 +18,11 @@ class IO
     v == "-" ? nil : v
   end
 
+  # The encoding a read result carries (the C read paths ask once and memoize).
+  def __io_read_enc_name
+    (internal_encoding || external_encoding || Encoding::UTF_8).name
+  end
+
   def external_encoding
     __resolve_enc
     return @__enc2 if @__enc2
@@ -48,6 +53,7 @@ class IO
       @__enc = intern
       @__enc2 = ext
     end
+    __io_enc_reset          # the C read paths memoize the resolved encoding
   end
 
   # A mode string may carry "…:external[:internal]"; the encodings are resolved
