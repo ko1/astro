@@ -829,6 +829,7 @@ static RESULT korb_m_io_lineno(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)a;
     const KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
+    KORB_IO_NEED_READ(c, slots, self);                  /* #lineno is about records read */
     return RESULT_OK(LONG2FIX((intptr_t)rep->lineno));
 }
 static RESULT korb_m_io_lineno_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -859,8 +860,11 @@ static RESULT korb_m_io_readlines(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         rep = korb_io_rep(c, VALUE_REF_GET(self));
         slots[2] = UNWRAP(korb_io_read_sep(c, slots + 2, rep, sepref, &la));
         if (slots[2] == KORB_NIL) break;
+        korb_io_rep(c, VALUE_REF_GET(self))->lineno++;   /* #readlines advances #lineno (CRuby) */
         CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
     }
+    korb_const_define(c, korb_intern(c->vm, "$.", 2),
+                      LONG2FIX((intptr_t)korb_io_rep(c, VALUE_REF_GET(self))->lineno));
     return RESULT_OK(VALUE_REF_GET(arr));
 }
 static RESULT korb_m_io_each_line(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
@@ -1127,7 +1131,7 @@ static RESULT korb_m_io_pos_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
 static RESULT korb_m_io_rewind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)slots; (void)a;
     KorbIORep *const rep = korb_io_rep(c, VALUE_REF_GET(self));
-    if (rep) (void)korb_io_seek_rep(rep, 0, SEEK_SET);
+    if (rep) { (void)korb_io_seek_rep(rep, 0, SEEK_SET); rep->lineno = 0; }   /* #lineno restarts */
     return RESULT_OK(LONG2FIX(0));
 }
 /* IO#each_char { |ch| } — yield each UTF-8 character (of the rest); no block → Enumerator. */
