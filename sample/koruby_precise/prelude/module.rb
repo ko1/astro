@@ -119,7 +119,9 @@ class Module
       next if m.equal?(self)
       next unless m.respond_to?(:__autoload_table, true)
       tbl = m.__autoload_table
-      next unless tbl.key?(n) && !m.const_defined?(n, false)
+      # const_defined? counts a PENDING autoload as defined, so it cannot be used
+      # to tell "already loaded" here — __autoload_loaded? below does that.
+      next unless tbl.key?(n)
       return __autoload_loaded?(tbl[n]) ? nil : tbl[n]
     end
     nil
