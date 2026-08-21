@@ -1198,6 +1198,13 @@ module Kernel
     end
   end
   module_function :trace_var, :untrace_var
+
+  # 実体は Object 側の C メソッドで、そちらが先に見つかる。ここに名前を置くのは
+  # Kernel.private_instance_methods に並べるためと、Kernel.system の形で呼べるため。
+  def system(*args, **opts, &blk); __system(*args, **opts, &blk); end
+  def spawn(*args, **opts, &blk);  __spawn(*args, **opts, &blk);  end
+  def exec(*args, **opts, &blk);   __exec(*args, **opts, &blk);   end
+  module_function :system, :spawn, :exec
 end
 
 class Object

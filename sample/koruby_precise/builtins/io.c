@@ -1923,8 +1923,15 @@ static RESULT korb_m_io_s_new_fd(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     slots[0] = opts;
     slots[1] = modev;
     char mode[16] = "r";
-    if (slots[1] != KORB_NIL)
+    if (slots[1] != KORB_NIL) {
         CHECK(korb_io_mode_coerce(c, slots + 2, &slots[1], mode, sizeof mode));
+    } else {                            /* no mode given: take the descriptor's own */
+        const int fl = fcntl(fd, F_GETFL);
+        if (fl >= 0) {
+            if ((fl & O_ACCMODE) == O_WRONLY) strcpy(mode, "w");
+            else if ((fl & O_ACCMODE) == O_RDWR) strcpy(mode, "r+");
+        }
+    }
     if (KORB_HASH_P(slots[0])) {                                   /* binmode: true → 'b' */
         const int32_t bi = korb_hash_find(VAL2HASH(slots[0]), ID2SYM(korb_intern(c->vm, "binmode", 7)));
         if (bi >= 0 && KORB_TRUTHY(korb_items_data(VAL2HASH(slots[0])->items)[2 * bi + 1]) &&
