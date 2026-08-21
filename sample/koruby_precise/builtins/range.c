@@ -1,5 +1,30 @@
 /* koruby_precise — range.c: builtin methods, #included into korb_runtime.c's TU
  * (inherits its includes + korb_runtime.h macros).  Split from korb_runtime.c. */
+
+/* CRuby's ruby_float_step: how many values a float step yields, and the i-th one
+ * (an inclusive range clamps an overshooting last value back to `end`). */
+long korb_float_step_n(double beg, double end, double unit, bool excl) {
+    double n = (end - beg) / unit;
+    double err = (fabs(beg) + fabs(end) + fabs(end - beg)) / fabs(unit) * DBL_EPSILON;
+    if (err > 0.5) err = 0.5;
+    if (excl) {
+        if (n <= 0) return 0;
+        n = (n < 1) ? 0 : floor(n - err);
+    } else {
+        if (n < 0) return 0;
+        n = floor(n + err);
+    }
+    /* one more step may still fit within the rounding error (CRuby) */
+    const double d = (n + 1) * unit + beg;
+    if (beg < end) { if (excl ? d < end : d <= end) n++; }
+    else if (beg > end) { if (excl ? d > end : d >= end) n++; }
+    return (long)n + 1;
+}
+double korb_float_step_at(double beg, double end, double unit, long i, bool excl) {
+    const double d = beg + (double)i * unit;
+    if (!excl && (unit >= 0 ? end < d : d < end)) return end;
+    return d;
+}
 /* ---- Range methods ------------------------------------------------------- */
 
 
@@ -1432,12 +1457,9 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (korb_num_to_d(rng->rbegin, &dbeg) && korb_num_to_d(rng->rend, &dend) && korb_num_to_d(sv, &dstep)) {
                 if (UNLIKELY(dstep == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "step can't be 0");   /* negative → count formula gives empty/backward */
                 const bool excl = rng->exclude_end;
-                const double nf = (dend - dbeg) / dstep;
-                double err = (fabs(dbeg) + fabs(dend) + fabs(dend - dbeg)) / fabs(dstep) * DBL_EPSILON;
-                if (err > 0.5) err = 0.5;
-                const long lim = excl ? (long)ceil(nf - err) : (long)floor(nf + err) + 1;
+                const long lim = korb_float_step_n(dbeg, dend, dstep, excl);
                 for (long i = 0; i < lim; i++) {
-                    slots[0] = UNWRAP(korb_float_new(c, slots + 1, dbeg + (double)i * dstep));
+                    slots[0] = UNWRAP(korb_float_new(c, slots + 1, korb_float_step_at(dbeg, dend, dstep, i, excl)));
                     RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 }

@@ -69,11 +69,9 @@ static RESULT korb_aseq_to_array(CTX *c, VALUE *slots, VALUE_REF self) {
     slots[0] = UNWRAP(korb_ary_new(c, slots, 8));
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     if (use_float) {
-        for (long i = 0; ; i++) {
-            double d = s + (double)i * st;                    /* count-based to limit fp drift */
-            bool over = st > 0 ? (excl ? d >= lim : d > lim) : (excl ? d <= lim : d < lim);
-            if (over) break;
-            slots[1] = UNWRAP(korb_float_new(c, slots + 1, d));
+        const long cnt = korb_float_step_n(s, lim, st, excl);   /* CRuby's count formula (+ clamp) */
+        for (long i = 0; i < cnt; i++) {
+            slots[1] = UNWRAP(korb_float_new(c, slots + 1, korb_float_step_at(s, lim, st, i, excl)));
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
         }
     } else {
@@ -111,11 +109,7 @@ static RESULT korb_m_aseq_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (excl && cnt > 0 && span % st == 0) cnt--;                        /* endpoint excluded when hit exactly */
         return RESULT_OK(LONG2FIX(cnt));
     }
-    double n = (ld - bd) / sd;                                                /* float: CRuby ruby_float_step_size */
-    double err = (fabs(bd) + fabs(ld) + fabs(ld - bd)) / fabs(sd) * DBL_EPSILON;
-    if (err > 0.5) err = 0.5;
-    n = excl ? floor(n - err) : floor(n + err);                              /* +1 applies to both (endpoint counts) */
-    intptr_t cnt = (intptr_t)n + 1;
+    const long cnt = korb_float_step_n(bd, ld, sd, excl);                     /* CRuby's ruby_float_step_size */
     return RESULT_OK(LONG2FIX(cnt > 0 ? cnt : 0));
 }
 static RESULT korb_m_aseq_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself) {
@@ -155,8 +149,8 @@ static RESULT korb_m_aseq_first(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     VALUE_REF dst = VALUE_REF_AT(&slots[0]);
     for (intptr_t i = 0; (want_n ? (intptr_t)VAL2ARY(VALUE_REF_GET(dst))->len < n : i < 1); i++) {
         if (use_float) {
-            double d = s + (double)i * st;
-            if (!endless && (st > 0 ? (excl ? d >= lim : d > lim) : (excl ? d <= lim : d < lim))) break;
+            if (!endless && i >= korb_float_step_n(s, lim, st, excl)) break;
+            const double d = endless ? s + (double)i * st : korb_float_step_at(s, lim, st, i, excl);
             slots[1] = UNWRAP(korb_float_new(c, slots + 1, d));
             CHECK(korb_ary_push_val(c, slots + 2, dst, slots[1]));
         } else {
