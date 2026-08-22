@@ -1676,7 +1676,7 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         return r;
     }
     {
-        const intptr_t v = sign * n;
+        const korb_sword_t v = sign * n;
         if (UNLIKELY(!FIXABLE(v))) {   /* fixnum-overflow but int64-fit (e.g. 2^62) → Bignum */
             korb_mp_t z2; korb_mp_init_set_si(z2, (long)v);
             RESULT r = korb_big_from_mpz(c, slots, z2);

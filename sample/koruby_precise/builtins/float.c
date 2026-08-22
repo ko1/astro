@@ -28,7 +28,7 @@ static RESULT korb_m_flt_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     } else {
         if (!korb_flt_simplest_roundtrip(f, &n, &d)) return korb_flt_to_rat(c, slots, f);
     }
-    return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
+    return korb_rat_new(c, slots, (korb_sword_t)n, (korb_sword_t)d);
 }
 /* Rational#rationalize(eps=nil): the simplest rational within eps of self (no
  * eps → self unchanged); >1 arg → ArgumentError. */
@@ -45,7 +45,7 @@ static RESULT korb_m_rat_rationalize(CTX *c, VALUE *slots, VALUE_REF self, VALUE
     int64_t n, d;
     if (!korb_rationalize_internal(af - eps, af + eps, &n, &d)) return RESULT_OK(VALUE_REF_GET(self));
     if (neg) n = -n;
-    return korb_rat_new(c, slots, (intptr_t)n, (intptr_t)d);
+    return korb_rat_new(c, slots, (korb_sword_t)n, (korb_sword_t)d);
 }
 static RESULT korb_m_flt_numerator(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; if (UNLIKELY(!isfinite(SELF_FLT))) return RESULT_OK(VALUE_REF_GET(self));   /* NaN/±Infinity → self (CRuby) */
@@ -88,7 +88,7 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
 }
 /* An integer-valued double → Fixnum, or Bignum when it exceeds the Fixnum range. */
 static RESULT korb_flt_int_result(CTX *c, VALUE *slots, double t) {
-    if (LIKELY(t >= (double)FIXNUM_MIN && t <= (double)FIXNUM_MAX)) return RESULT_OK(LONG2FIX((intptr_t)t));
+    if (LIKELY(t >= (double)FIXNUM_MIN && t <= (double)FIXNUM_MAX)) return RESULT_OK(LONG2FIX((korb_sword_t)t));
     korb_mp_t z; korb_mp_init(z); korb_mp_set_d(z, t);            /* t is already integer-valued (floor/ceil/round/trunc) */
     RESULT r = korb_big_from_mpz(c, slots, z);
     korb_mp_clear(z);
@@ -143,7 +143,7 @@ static double korb_round_half_apply(double v, int half) {
 }
 static RESULT korb_flt_round_to(CTX *c, VALUE *slots, double d, int kind, VALUE_SLICE a) {
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
-    intptr_t ndig = 0;
+    korb_sword_t ndig = 0;
     if (npos >= 1) {
         if (UNLIKELY(!korb_to_index(VALUE_SLICE_GET(a, 0), &ndig))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     }
@@ -291,15 +291,15 @@ static RESULT korb_m_int_between(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 
 /* Integer round/floor/ceil/truncate(ndigits). ndig>=0 → self; ndig<0 → snap to 10^-ndig.
  * kind: 0=floor 1=ceil 2=round 3=trunc */
-static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALUE_SLICE a) {
+static RESULT korb_int_round_to(CTX *c, VALUE *slots, korb_sword_t v, int kind, VALUE_SLICE a) {
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
-    intptr_t ndig = 0;
+    korb_sword_t ndig = 0;
     if (npos >= 1) {
         VALUE dv = VALUE_SLICE_GET(a, 0);
         if (KORB_FLOAT_P(dv)) {                        /* a non-finite Float digits count is out of range */
             const double d = korb_float_val(dv);
             if (UNLIKELY(isinf(d) || isnan(d))) return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", isnan(d) ? "NaN" : "Infinity");
-            ndig = (intptr_t)d;
+            ndig = (korb_sword_t)d;
         } else if (UNLIKELY(KORB_BIGNUM_P(dv))) {      /* a Bignum digits count can't fit */
             return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
         } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
@@ -311,20 +311,20 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
     if (UNLIKELY(ndig > INT32_MAX || ndig < INT32_MIN)) /* ndigits must fit in a C int (CRuby) */
         return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to `int'", (long)ndig);
     if (ndig >= 0) return RESULT_OK(LONG2FIX(v));      /* no fractional digits in an Integer */
-    intptr_t f = 1;
-    for (intptr_t k = 0; k < -ndig; k++) {
+    korb_sword_t f = 1;
+    for (korb_sword_t k = 0; k < -ndig; k++) {
         if (UNLIKELY(f > FIXNUM_MAX / 10)) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of Fixnum range (Bignum not implemented)");
         f *= 10;
     }
-    intptr_t q = v / f, r = v % f, res;
+    korb_sword_t q = v / f, r = v % f, res;
     switch (kind) {
       case 0:  res = (r != 0 && v < 0) ? (q - 1) * f : q * f; break;   /* floor */
       case 1:  res = (r != 0 && v > 0) ? (q + 1) * f : q * f; break;   /* ceil */
       case 3:  res = q * f; break;                                     /* truncate */
       default: {                                                       /* round (half: mode) */
-        intptr_t ar = r < 0 ? -r : r;
+        korb_sword_t ar = r < 0 ? -r : r;
         res = q * f;
-        const intptr_t twice = ar * 2;
+        const korb_sword_t twice = ar * 2;
         if (twice > f) res += (v < 0 ? -f : f);                        /* clear majority → away from zero */
         else if (twice == f) {                                         /* exact tie */
             if (half == 1) { if (q & 1) res += (v < 0 ? -f : f); }     /* :even → nearest even multiple */
@@ -336,18 +336,18 @@ static RESULT korb_int_round_to(CTX *c, VALUE *slots, intptr_t v, int kind, VALU
     return RESULT_OK(LONG2FIX(res));
 }
 /* round/floor/ceil/truncate for a Bignum receiver with a negative digit count —
- * done in GMP so it doesn't overflow the intptr_t fixnum path (kind: 0 floor,
+ * done in GMP so it doesn't overflow the korb_sword_t fixnum path (kind: 0 floor,
  * 1 ceil, 2 round, 3 truncate). */
 static RESULT korb_bigint_round_to(CTX *c, VALUE *slots, VALUE bigself, int kind, VALUE_SLICE a) {
     slots[0] = bigself;                                  /* root across a possible #to_int digit coercion */
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
-    intptr_t ndig = 0;
+    korb_sword_t ndig = 0;
     if (npos >= 1) {
         VALUE dv = VALUE_SLICE_GET(a, 0);
         if (KORB_FLOAT_P(dv)) {
             const double d = korb_float_val(dv);
             if (UNLIKELY(isinf(d) || isnan(d))) return korb_raise(c, slots, KORB_E_RANGE, 0, "float %s out of range of integer", isnan(d) ? "NaN" : "Infinity");
-            ndig = (intptr_t)d;
+            ndig = (korb_sword_t)d;
         } else if (UNLIKELY(KORB_BIGNUM_P(dv))) {
             return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
         } else if (UNLIKELY(!korb_to_index(dv, &ndig))) {
@@ -400,7 +400,7 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         else { double al, ah; bad = korb_num_to_d(lo, &al) && korb_num_to_d(hi, &ah) && al > ah; }
         if (UNLIKELY(bad)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "min argument must be less than or equal to max argument");
     }
-    intptr_t n = SELF_INT;
+    korb_sword_t n = SELF_INT;
     double lod, hid;
     if (lo != KORB_NIL) {                              /* nil bound = unbounded on that side */
         if (FIXNUM_P(lo)) { if (n < FIX2LONG(lo)) return RESULT_OK(lo); }
@@ -419,7 +419,7 @@ static RESULT korb_m_int_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         korb_mp_t z; korb_to_mpz(VALUE_REF_GET(self), z);
         const size_t bytes = (korb_mp_sizeinbase(z, 2) + 7) / 8;
         korb_mp_clear(z);
-        return RESULT_OK(LONG2FIX((intptr_t)bytes));
+        return RESULT_OK(LONG2FIX((korb_sword_t)bytes));
     }
     return RESULT_OK(LONG2FIX(8));   /* a Fixnum occupies a machine word */
 }
@@ -430,16 +430,16 @@ static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (korb_mp_sgn(z) < 0) korb_mp_com(z, z);             /* ~z = -z-1: two's-complement magnitude */
         const size_t len = (korb_mp_sgn(z) == 0) ? 0 : korb_mp_sizeinbase(z, 2);
         korb_mp_clear(z);
-        return RESULT_OK(LONG2FIX((intptr_t)len));
+        return RESULT_OK(LONG2FIX((korb_sword_t)len));
     }
-    intptr_t n = FIX2LONG(VALUE_REF_GET(self));
+    korb_sword_t n = FIX2LONG(VALUE_REF_GET(self));
     if (n < 0) n = ~n;                                 /* -n-1: bits of the two's-complement magnitude */
-    intptr_t len = 0;
+    korb_sword_t len = 0;
     while (n > 0) { len++; n >>= 1; }
     return RESULT_OK(LONG2FIX(len));
 }
 static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
-    intptr_t base = 10;
+    korb_sword_t base = 10;
     if (VALUE_SLICE_LEN(a) >= 1) {
         VALUE bv = VALUE_SLICE_GET(a, 0);
         if (UNLIKELY(!korb_to_index(bv, &base))) {       /* coerce the radix via #to_int (before self is read) */
@@ -459,13 +459,13 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         } else {
             while (korb_mp_sgn(z) > 0) {
                 const unsigned long d = korb_mp_fdiv_q_ui(z, z, (unsigned long)base);   /* z = z/base, returns z%base */
-                CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((intptr_t)d)));
+                CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((korb_sword_t)d)));
             }
         }
         korb_mp_clear(z);
         return RESULT_OK(VALUE_REF_GET(dst));
     }
-    intptr_t n = SELF_INT;
+    korb_sword_t n = SELF_INT;
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     do {

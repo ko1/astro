@@ -201,8 +201,8 @@ korb_rat_new_v(CTX *c, VALUE *slots, VALUE num, VALUE den)
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->den, slots[1]);
     return RESULT_OK((VALUE)r);
 }
-/* intptr → VALUE (Fixnum if FIXABLE, else Bignum — e.g. float_to_rat's 1<<62). */
-static RESULT korb_intptr_to_val(CTX *c, VALUE *slots, intptr_t n) {
+/* word → VALUE (Fixnum if FIXABLE, else Bignum — e.g. float_to_rat's 1<<62). */
+static RESULT korb_intptr_to_val(CTX *c, VALUE *slots, korb_sword_t n) {
     if (LIKELY(FIXABLE(n))) return RESULT_OK(LONG2FIX(n));
     korb_mp_t z; korb_mp_init_set_si(z, (long)n);
     RESULT r = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return r;

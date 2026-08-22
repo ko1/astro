@@ -15,7 +15,7 @@ static void korb_to_mpz(VALUE v, korb_mp_t out) {
 static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src) {
     if (korb_mp_fits_slong_p(src)) {
         long v = korb_mp_get_si(src);
-        if (FIXABLE((intptr_t)v)) return RESULT_OK(LONG2FIX((intptr_t)v));
+        if (FIXABLE((korb_sword_t)v)) return RESULT_OK(LONG2FIX((korb_sword_t)v));
     }
     KorbBignum *b = korb_alloc(c, slots, sizeof(KorbBignum), KORB_OBJ_BIGNUM);   /* may GC; src is local */
     korb_mp_init_set(b->z, src);
@@ -124,7 +124,7 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
         RESULT denr = korb_big_from_mpz(c, slots, zr);     /* a**n (normalised) */
         korb_mp_clear(zr);
         if (FIXNUM_P(denr.value)) {
-            intptr_t d = FIX2LONG(denr.value);
+            korb_sword_t d = FIX2LONG(denr.value);
             if (d == 1 || d == -1) return RESULT_OK(LONG2FIX(d));   /* 1/±1 → Integer (CRuby) */
             return korb_rat_new(c, slots, 1, d);
         }
@@ -165,7 +165,7 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
     return r;
 }
 /* a << n (n>0) / a >> -n.  `amount` may be negative to shift right. */
-RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, intptr_t amount) {
+RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, korb_sword_t amount) {
     korb_mp_t za, zr; korb_to_mpz(a, za); korb_mp_init(zr);
     if (amount >= 0) korb_mp_mul_2exp(zr, za, (korb_mp_bitcnt_t)amount);
     else             korb_mp_fdiv_q_2exp(zr, za, (korb_mp_bitcnt_t)(-amount));
@@ -176,7 +176,7 @@ RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, intptr_t amount) {
 }
 /* compare two Integers (Fixnum/Bignum) → -1 / 0 / 1. */
 int korb_int_cmp(VALUE a, VALUE b) {
-    if (FIXNUM_P(a) && FIXNUM_P(b)) { intptr_t x = FIX2LONG(a), y = FIX2LONG(b); return x < y ? -1 : x > y ? 1 : 0; }
+    if (FIXNUM_P(a) && FIXNUM_P(b)) { korb_sword_t x = FIX2LONG(a), y = FIX2LONG(b); return x < y ? -1 : x > y ? 1 : 0; }
     korb_mp_t za, zb; korb_to_mpz(a, za); korb_to_mpz(b, zb);
     int r = korb_mp_cmp(za, zb);
     korb_mp_clear(za); korb_mp_clear(zb);
@@ -210,7 +210,7 @@ static RESULT korb_m_integer_sqrt(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1)");
     VALUE n = VALUE_SLICE_GET(a, 0);
-    if (KORB_FLOAT_P(n)) n = LONG2FIX((intptr_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
+    if (KORB_FLOAT_P(n)) n = LONG2FIX((korb_sword_t)korb_float_val(n));   /* Integer.sqrt(8.5) → isqrt(8) (CRuby truncates) */
     if (UNLIKELY(!KORB_INTEGER_P(n)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Integer", korb_type_name(VALUE_SLICE_GET(a, 0)));
     korb_mp_t z, r;

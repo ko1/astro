@@ -155,7 +155,7 @@ RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line)
 RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op);  /* op 0& 1| 2^ */
 RESULT korb_int_rat_divmod(CTX *c, VALUE *slots, VALUE s, VALUE rat, int op);  /* op 0 div 1 modulo 2 divmod 3 remainder */
 RESULT korb_int_intdiv(CTX *c, VALUE *slots, VALUE a, VALUE b, int op);  /* Fixnum/Bignum; op 0 div 1 modulo 2 divmod 3 remainder */
-RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, intptr_t amount);
+RESULT korb_int_shift(CTX *c, VALUE *slots, VALUE a, korb_sword_t amount);
 RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v);
 int    korb_int_cmp(VALUE a, VALUE b);
 int    korb_big_flo_cmp(VALUE bi, double d);   /* exact Integer<=>double, 2 = NaN */
