@@ -478,6 +478,12 @@ struct korb_thread {
     uint8_t roe;                     /* Thread#report_on_exception (default 1) */
     uint8_t aoe;                     /* Thread#abort_on_exception (死時に main へ例外転送) */
     uint8_t defer_ints;              /* >0 = handle_interrupt(:never) 区間 (配送延期) */
+    const char *waiting_feature;     /* require 待ち: 対象 feature の abspath (待機側の
+                                        stack 上バッファ; PENDED の間だけ有効)。 */
+    const char *blocked_in;          /* C-level cooperative wait の label ("require" 等)。
+                                        NULL 以外の間は #stop? が true になり、#backtrace に
+                                        `in '<label>'` フレームが 1 枚見える (busy-yield でも
+                                        観測上は blocked として振る舞う)。 */
     int     priority;                /* Thread#priority (保持のみ; scheduler は無視) */
     struct korb_thread *rq_next;     /* run queue link (READY FIFO) */
     struct korb_thread *next;        /* vm->thread_list link (全 rep; 解放しない) */
@@ -983,6 +989,12 @@ struct korb_vm {
      * (libc-side strings, no GC). */
     const char *cur_load_file;
     char **loaded_files; uint32_t loaded_cnt, loaded_capa;
+    /* Features currently being loaded, with the green thread that owns each
+     * load: a concurrent require of the same feature from another thread
+     * WAITS (yielding the scheduler) instead of seeing the pre-eval
+     * $LOADED_FEATURES mark and returning false (CRuby's per-feature lock). */
+    struct korb_load_claim { const char *path; struct korb_thread *owner; }
+        *loading; uint32_t loading_cnt, loading_capa;
     /* "other" string encodings (index 3..7 in the header enc field): the interned
      * encoding-name symbol per index (0 = free).  Character-level ops on these
      * raise NotImplementedError; #encoding still round-trips via the name. */

@@ -907,8 +907,10 @@ static RESULT
 korb_m_thread_stop_p(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)c; (void)slots; (void)a;
-    const uint8_t st = VAL2THREAD(VALUE_REF_GET(self))->rep->state;
-    return RESULT_OK((st == KORB_TH_PENDED || st == KORB_TH_DEAD) ? KORB_TRUE : KORB_FALSE);
+    const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    const uint8_t st = t->state;
+    return RESULT_OK((st == KORB_TH_PENDED || st == KORB_TH_DEAD || t->blocked_in != NULL)
+                     ? KORB_TRUE : KORB_FALSE);
 }
 
 /* #fetch(key[, default]) { |key| … } — TLS 版 Hash#fetch (KeyError あり) */
@@ -1022,8 +1024,19 @@ static RESULT
 korb_m_thread_backtrace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
 {
     (void)a;
-    if (VAL2THREAD(VALUE_REF_GET(self))->rep->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
-    return korb_ary_new(c, slots, 1);
+    const struct korb_thread *const t = VAL2THREAD(VALUE_REF_GET(self))->rep;
+    if (t->state == KORB_TH_DEAD) return RESULT_OK(KORB_NIL);
+    if (t->blocked_in == NULL) return korb_ary_new(c, slots, 1);
+    /* Blocked in a C-level wait: one synthetic frame naming the method, so
+     * introspection like `bt.any? { |f| f.include?("require") }` (rubyspec's
+     * concurrent-require fixture) can see where the thread sits. */
+    char frame[128];
+    snprintf(frame, sizeof frame, "<internal>:in '%s'", t->blocked_in);
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 1));
+    VALUE_REF arr = VALUE_REF_AT(&slots[0]);
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, frame, (uint32_t)strlen(frame)));
+    CHECK(korb_ary_push_val(c, slots + 2, arr, slots[1]));
+    return RESULT_OK(VALUE_REF_GET(arr));
 }
 
 static RESULT

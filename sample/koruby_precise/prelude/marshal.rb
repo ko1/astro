@@ -63,8 +63,23 @@ module Marshal
     if id
       out << "@"; _long(id, out); return
     end
-    st[:objs][o] = st[:objs].size                      # assign link id (pre-order)
+    # Pre-order link id — EXCEPT for #_dump ('u') objects: CRuby indexes the
+    # payload's ivar values first and the object itself last, so those
+    # register at the end of _dump_udump instead.
+    st[:objs][o] = st[:objs].size unless _udump_route?(o)
     _dump_val(o, out, st)                              # depth is counted in _dump
+  end
+
+  # Will `o` take the _dump_udump route in _dump_val?  Mirrors its dispatch.
+  def self._udump_route?(o)
+    case o
+    when Class, Module, Integer, String, Float, Regexp, Array, Hash, Range, Struct, Rational, Complex
+      false
+    else
+      return false if defined?(Data) && Data === o
+      return false if o.respond_to?(:marshal_dump)
+      o.respond_to?(:_dump)
+    end
   end
 
   def self._dump_val(o, out, st)
@@ -287,6 +302,9 @@ module Marshal
     else
       out << "u"; _symdump(name.to_sym, out, st); _long(d.bytesize, out); out << d.b
     end
+    # CRuby indexes the payload's ivar values BEFORE the object itself, so the
+    # object gets its link id only now (see _dump0's deferred registration).
+    st[:objs][o] = st[:objs].size unless st[:objs].key?(o)
   end
 
   # Exception: CRuby stores the message and backtrace as the pseudo-ivars
@@ -361,8 +379,10 @@ module Marshal
     end
     st[:syms][sym] = st[:syms].size
     s = sym.to_s
-    if s.ascii_only?
-      out << ":"; _long(s.bytesize, out); out << s.b     # ASCII symbol → bare
+    if s.ascii_only? || _str_enc_marker(s).nil?
+      # ASCII symbol → bare; likewise a binary (ASCII-8BIT) symbol — no
+      # encoding annotation exists for it (CRuby dumps just `:` + bytes).
+      out << ":"; _long(s.bytesize, out); out << s.b
     else
       out << "I"; out << ":"; _long(s.bytesize, out); out << s.b
       _long(1, out); _write_enc(_str_enc_marker(s), out, st)

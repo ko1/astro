@@ -7803,9 +7803,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 uint32_t len = VAL2STR(slots[0])->len;
                 KorbString *r = korb_str_alloc(c, slots + 1, len);
                 memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), len);   /* re-read src (moved) */
+                KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(slots[0]));   /* String.new(str) keeps str's encoding */
                 return RESULT_OK((VALUE)r);
             }
-            if (argc == 0) return korb_str_new(c, slots, "", 0);
+            if (argc == 0) {                            /* String.new → ASCII-8BIT (CRuby: no source literal) */
+                RESULT nr = korb_str_new(c, slots, "", 0);
+                if (LIKELY(nr.state == KORB_NORMAL)) KORB_STR_ENC_SET(nr.value, KORB_ENC_BINARY);
+                return nr;
+            }
             /* non-String source (#to_str-able) or kwargs-only: alloc empty, run
              * #initialize (which #to_str-coerces + replaces).  Instance rooted at
              * slots[1], args below base — same layout as the subclass path. */
@@ -7891,8 +7896,14 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                         uint32_t len = VAL2STR(slots[1])->len;
                         KorbString *r = korb_str_alloc(c, slots + 2, len);
                         memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[1])->buf), len);
+                        KORB_STR_ENC_SET((VALUE)r, KORB_STR_ENC(slots[1]));   /* copy keeps the source's encoding */
                         inst = (VALUE)r;
-                    } else inst = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+                    } else {
+                        inst = UNWRAP(korb_str_new(c, slots + 1, "", 0));
+                        /* no source string → ASCII-8BIT, as String.new (a user
+                         * #initialize that replaces content overrides this). */
+                        KORB_STR_ENC_SET(inst, KORB_ENC_BINARY);
+                    }
                 }
                 slots[1] = inst;                               /* root instance */
                 korb_klass_override_set(c, slots[1], slots[0]);   /* override class = the subclass */
@@ -10460,12 +10471,77 @@ static bool korb_feature_loaded_p(CTX *c, const char *path)
     return false;
 }
 
+/* Loading-claim table: which green thread is mid-load of a feature. */
+static struct korb_thread *
+korb_loading_owner(struct korb_vm *vm, const char *abspath)
+{
+    for (uint32_t i = 0; i < vm->loading_cnt; i++)
+        if (strcmp(vm->loading[i].path, abspath) == 0) return vm->loading[i].owner;
+    return NULL;
+}
+static void
+korb_loading_add(struct korb_vm *vm, const char *abspath, struct korb_thread *owner)
+{
+    if (vm->loading_cnt == vm->loading_capa) {
+        vm->loading_capa = vm->loading_capa ? vm->loading_capa * 2 : 8;
+        vm->loading = realloc(vm->loading, sizeof(*vm->loading) * vm->loading_capa);
+        if (!vm->loading) abort();
+    }
+    vm->loading[vm->loading_cnt].path = strdup(abspath);
+    vm->loading[vm->loading_cnt].owner = owner;
+    vm->loading_cnt++;
+}
+static void
+korb_loading_remove(struct korb_vm *vm, const char *abspath)
+{
+    for (uint32_t i = 0; i < vm->loading_cnt; i++)
+        if (strcmp(vm->loading[i].path, abspath) == 0) {
+            free((void *)(uintptr_t)vm->loading[i].path);
+            vm->loading[i] = vm->loading[--vm->loading_cnt];
+            break;
+        }
+    /* Wake every thread parked on this feature (they re-check and either see
+     * it loaded → false, or claim the retry after a raised load). */
+    for (struct korb_thread *t = vm->thread_list; t; t = t->next) {
+        if (t->state == KORB_TH_PENDED && t->waiting_feature &&
+            strcmp(t->waiting_feature, abspath) == 0) {
+            t->waiting_feature = NULL;
+            t->state = KORB_TH_READY;
+            korb_thread_runq_push(vm, t);
+        }
+    }
+}
+
 /* Load `abspath` (read + eval at top level), tracking it as a required feature.
  * dedup: if true (require), a second require of the same path returns false. */
 static RESULT
 korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *out)
 {
     struct korb_vm *const vm = c->vm;
+    if (dedup) {
+        /* Another green thread mid-load of this feature: wait for it (yield
+         * the scheduler) rather than trusting the pre-eval loaded mark.  The
+         * same thread falls through — the mark answers circular requires. */
+        for (;;) {
+            struct korb_thread *const owner = korb_loading_owner(vm, abspath);
+            if (owner == NULL || owner == vm->cur_thread || owner->state == KORB_TH_DEAD) break;
+            struct korb_thread *const me = vm->cur_thread;
+            if (me == NULL) break;                 /* threads not booted: nothing to wait for */
+            /* Park for real (PENDED): a busy re-queue loop would keep the runq
+             * non-empty forever and starve the blop pump — a loader sleeping on
+             * a timer would then never wake (livelock).  korb_loading_remove
+             * wakes us. */
+            me->blocked_in = "require";            /* observable: #stop? / #backtrace */
+            me->waiting_feature = abspath;
+            me->state = KORB_TH_PENDED;
+            RESULT yr = korb_thread_yield_cpu(c, slots);
+            me->waiting_feature = NULL;
+            me->blocked_in = NULL;
+            if (UNLIKELY(yr.state != KORB_NORMAL)) return yr;
+            RESULT ci = korb_thread_check_ints(c, slots);
+            if (UNLIKELY(ci.state != KORB_NORMAL)) return ci;
+        }
+    }
     if (dedup && korb_feature_loaded_p(c, abspath)) { *out = KORB_FALSE; return RESULT_OK(KORB_FALSE); }
     size_t got = 0;
     char *buf = korb_file_slurp(abspath, &got);
@@ -10474,6 +10550,7 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
     if (dedup) {
         korb_mark_loaded(vm, abspath);
         korb_loaded_features_push(c, slots, abspath);   /* keep $LOADED_FEATURES in step */
+        korb_loading_add(vm, abspath, vm->cur_thread);  /* claim for cross-thread waiters */
     }
     const char *const saved = vm->cur_load_file;
     char *const abscopy = strdup(abspath);             /* stable across the eval (fname baked into AST) */
@@ -10481,6 +10558,7 @@ korb_load_abspath(CTX *c, VALUE *slots, const char *abspath, bool dedup, VALUE *
     RESULT r = korb_eval_toplevel(c, slots, buf, got, abscopy);
     vm->cur_load_file = saved;
     free(buf);
+    if (dedup) korb_loading_remove(vm, abspath);
     if (UNLIKELY(r.state != KORB_NORMAL)) {
         /* a load that raised did not happen: CRuby leaves neither the C-side
          * record nor $LOADED_FEATURES behind, so the next require retries */
