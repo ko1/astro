@@ -365,7 +365,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 break;
             }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
-            fprintf(ms, spec, (long)FIX2LONG(arg));
+            fprintf(ms, spec, (long long)FIX2LONG(arg));
             break;
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {   /* a/A = hex float (C printf) */

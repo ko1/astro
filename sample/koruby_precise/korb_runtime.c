@@ -5387,7 +5387,7 @@ static const char *const korb_cmp_op_name[] = { "<", "<=", ">", ">=" };
 static void
 korb_cmperr_operand(VALUE v, char *buf, size_t cap)
 {
-    if (FIXNUM_P(v))          snprintf(buf, cap, "%ld", (long)FIX2LONG(v));
+    if (FIXNUM_P(v))          snprintf(buf, cap, "%lld", (long long)FIX2LONG(v));
     else if (v == KORB_NIL)   snprintf(buf, cap, "nil");
     else if (v == KORB_TRUE)  snprintf(buf, cap, "true");
     else if (v == KORB_FALSE) snprintf(buf, cap, "false");
@@ -9933,7 +9933,7 @@ void korb_fprint_to_s(CTX *c, FILE *fp, VALUE v);   /* wrapper (slots-less → n
 static void
 korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
-    if (FIXNUM_P(v))           { fprintf(fp, "%ld", (long)FIX2LONG(v)); return; }
+    if (FIXNUM_P(v))           { fprintf(fp, "%lld", (long long)FIX2LONG(v)); return; }
     if (v == KORB_NIL)         { return; }                     /* "" */
     if (v == KORB_TRUE)        { fputs("true", fp); return; }
     if (v == KORB_FALSE)       { fputs("false", fp); return; }
@@ -10064,7 +10064,7 @@ void korb_fprint_to_s(CTX *c, FILE *fp, VALUE v) { korb_fprint_to_s_s(c, NULL, f
 void
 korb_fprint_inspect_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
 {
-    if (FIXNUM_P(v))     { fprintf(fp, "%ld", (long)FIX2LONG(v)); return; }
+    if (FIXNUM_P(v))     { fprintf(fp, "%lld", (long long)FIX2LONG(v)); return; }
     if (v == KORB_NIL)   { fputs("nil", fp); return; }
     if (v == KORB_TRUE)  { fputs("true", fp); return; }
     if (v == KORB_FALSE) { fputs("false", fp); return; }
@@ -10973,7 +10973,7 @@ static bool korb_arg_rational_ok(VALUE v) {
            KORB_STRING_P(v) || KORB_COMPLEX_P(v);
 }
 static bool korb_arg_to_mpq(VALUE v, korb_mq_t out) {
-    if (FIXNUM_P(v)) { korb_mq_set_si(out, (long)FIX2LONG(v), 1); return true; }
+    if (FIXNUM_P(v)) { korb_mq_set_si(out, (long long)FIX2LONG(v), 1); return true; }
     if (KORB_BIGNUM_P(v)) { korb_mp_t z; korb_to_mpz(v, z); korb_mq_set_z(out, z); korb_mp_clear(z); return true; }
     if (KORB_RATIONAL_P(v)) { korb_mp_t zn, zd; korb_to_mpz(VAL2RAT(v)->num, zn); korb_to_mpz(VAL2RAT(v)->den, zd);
                               korb_mq_set_num(out, zn); korb_mq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd); korb_mq_canonicalize(out); return true; }

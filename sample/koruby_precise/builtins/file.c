@@ -1302,7 +1302,7 @@ static RESULT korb_m_dir_mkdir(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     (void)self;
     RESULT err; const char *path = korb_path_arg(c, slots, a, &err); if (!path) return err;
     long mode = 0777;
-    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) mode = (long)FIX2LONG(VALUE_SLICE_GET(a, 1));
+    if (VALUE_SLICE_LEN(a) >= 2 && FIXNUM_P(VALUE_SLICE_GET(a, 1))) mode = (long long)FIX2LONG(VALUE_SLICE_GET(a, 1));
     if (mkdir(path, (mode_t)mode) != 0) return korb_raise_errno(c, slots, errno, "dir_s_mkdir", path);
     return RESULT_OK(LONG2FIX(0));
 }

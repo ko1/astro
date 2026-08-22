@@ -182,7 +182,7 @@ static RESULT korb_m_ary_aref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (ev == KORB_NIL) { if (s > 0) { e = (korb_sword_t)n; e_incl = false; } else { e = 0; e_incl = true; } }
         else {
             e = FIX2LONG(ev); if (e < 0) e += n; e_incl = !excl;
-            if (UNLIKELY(e > (korb_sword_t)n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%ld out of range", (long)FIX2LONG(ev));
+            if (UNLIKELY(e > (korb_sword_t)n)) return korb_raise(c, slots, KORB_E_RANGE, 0, "%lld out of range", (long long)FIX2LONG(ev));
         }
         slots[0] = UNWRAP(korb_ary_new(c, slots, 8));       /* result (rooted) */
         VALUE_REF out = VALUE_REF_AT(&slots[0]);

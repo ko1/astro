@@ -253,7 +253,7 @@ static RESULT korb_time_make(CTX *c, VALUE *slots, VALUE cls, double epoch, bool
 static VALUE korb_time_ns_sym(struct korb_vm *vm) { return ID2SYM(korb_intern(vm, "@__ns", 5)); }
 static long korb_time_nsec_of(CTX *c, VALUE t) {
     const VALUE nv = korb_ivar_get(c, t, korb_time_ns_sym(c->vm));
-    if (FIXNUM_P(nv)) return (long)FIX2LONG(nv);
+    if (FIXNUM_P(nv)) return (long long)FIX2LONG(nv);
     const double e = korb_time_epoch(c, t);            /* fallback: reconstruct from the (lossy) epoch */
     long ns = (long)((e - (double)(time_t)e) * 1e9 + 0.5);
     return ns < 0 ? 0 : ns > 999999999 ? 999999999 : ns;
@@ -643,7 +643,7 @@ static RESULT korb_m_time_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 slots[6] = slots[5];
                 slots[5] = UNWRAP(korb_send(c, slots + 7, toi, 0, 0));
             }
-            prec = FIXNUM_P(slots[5]) ? (long)FIX2LONG(slots[5]) : 9;
+            prec = FIXNUM_P(slots[5]) ? (long long)FIX2LONG(slots[5]) : 9;
             if (prec < 0) prec = 0;
         }
         korb_sword_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];

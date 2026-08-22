@@ -8,7 +8,7 @@
 /* Initialise a local temp mpz from a Fixnum / Bignum VALUE.  Caller korb_mp_clear's
  * it.  The copy is independent of the GC heap, so it survives later allocs. */
 static void korb_to_mpz(VALUE v, korb_mp_t out) {
-    if (FIXNUM_P(v)) korb_mp_init_set_si(out, (long)FIX2LONG(v));
+    if (FIXNUM_P(v)) korb_mp_init_set_si(out, (long long)FIX2LONG(v));
     else             korb_mp_init_set(out, VAL2BIG(v)->z);
 }
 /* Normalise an mpz result → Fixnum when it fits, else a fresh Bignum object. */

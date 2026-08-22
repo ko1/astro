@@ -78,7 +78,7 @@ static bool korb_sock_fill_addr(int family, const char *host, int port,
 /* Render a port argument as a getaddrinfo service string: an Integer becomes
  * decimal, a String/Symbol passes through as a service name. */
 static void korb_sock_serv_arg(CTX *c, VALUE v, char *buf, size_t cap) {
-    if (FIXNUM_P(v))            snprintf(buf, cap, "%ld", (long)FIX2LONG(v));
+    if (FIXNUM_P(v))            snprintf(buf, cap, "%lld", (long long)FIX2LONG(v));
     else if (KORB_STRING_P(v)) {
         uint32_t n; const char *const p = korb_str_cstr_len(v, &n);
         if (n >= cap) n = (uint32_t)cap - 1;
@@ -226,7 +226,7 @@ static RESULT korb_m_sock_getaddrinfo(CTX *c, VALUE *slots, VALUE_REF self, VALU
     if (!korb_sock_cstr(VALUE_SLICE_GET(a, 0), host, sizeof host))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     const VALUE pv = VALUE_SLICE_GET(a, 1);
-    if (FIXNUM_P(pv)) snprintf(portbuf, sizeof portbuf, "%ld", (long)FIX2LONG(pv));
+    if (FIXNUM_P(pv)) snprintf(portbuf, sizeof portbuf, "%lld", (long long)FIX2LONG(pv));
     else if (!korb_sock_cstr(pv, portbuf, sizeof portbuf)) portbuf[0] = '\0';
     struct addrinfo hints, *res = NULL, *ai;
     memset(&hints, 0, sizeof hints);

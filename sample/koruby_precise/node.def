@@ -112,7 +112,7 @@ NODE_DEF
 node_rational(CTX *c, NODE *n, VALUE *slots, uint64_t num, uint64_t den)
 {
     (void)n;
-    return korb_rat_new(c, slots, (intptr_t)num, (intptr_t)den);
+    return korb_rat_new(c, slots, (korb_sword_t)num, (korb_sword_t)den);
 }
 
 // Rational literal whose numerator/denominator exceed Fixnum (e.g. 999...r):
@@ -316,8 +316,8 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
          * result, no FIX2LONG/LONG2FIX shifts.  64-bit signed overflow ⟺ x+y is
          * not FIXABLE (the tag bit makes the tagged range == the fixnum range),
          * so __builtin_add_overflow subsumes the explicit FIXABLE check. */
-        intptr_t s;
-        if (LIKELY(!__builtin_add_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
+        korb_sword_t s;
+        if (LIKELY(!__builtin_add_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
         return korb_int_arith(c, slots, l, rhs, 0, n->u.node_plus.line);
     }
@@ -341,8 +341,8 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged sub: l - (rhs-1) = (2x+1) - 2y = 2(x-y)+1, already tagged.
          * 64-bit signed overflow ⟺ x-y not FIXABLE (see node_plus). */
-        intptr_t s;
-        if (LIKELY(!__builtin_sub_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
+        korb_sword_t s;
+        if (LIKELY(!__builtin_sub_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
         return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
     }
@@ -366,8 +366,8 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
         /* tagged mul: x*(rhs-1) = x*2y = 2xy, then |1 → 2xy+1 (tagged xy).  Only
          * lhs needs decoding (one sar); 64-bit overflow of 2xy ⟺ xy not FIXABLE. */
-        intptr_t p;
-        if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (intptr_t)rhs - 1, &p)))
+        korb_sword_t p;
+        if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (korb_sword_t)rhs - 1, &p)))
             return RESULT_OK((VALUE)(p | 1));
         return korb_int_arith(c, slots, l, rhs, 2, n->u.node_mul.line);
     }
@@ -390,10 +390,10 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "/", 1), n->u.node_div.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
-        intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
+        korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
             return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_div.line, "divided by 0");
-        intptr_t q = a / b;
+        korb_sword_t q = a / b;
         if ((a % b != 0) && ((a ^ b) < 0)) q--;
         if (UNLIKELY(!FIXABLE(q)))
             return korb_int_arith(c, slots, l, rhs, 3, n->u.node_div.line);
@@ -426,10 +426,10 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "%", 1), n->u.node_mod.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
-        intptr_t a = FIX2LONG(l), b = FIX2LONG(rhs);
+        korb_sword_t a = FIX2LONG(l), b = FIX2LONG(rhs);
         if (UNLIKELY(b == 0))
             return korb_raise(c, slots, KORB_E_ZERODIV, n->u.node_mod.line, "divided by 0");
-        intptr_t r = a % b;
+        korb_sword_t r = a % b;
         if (r != 0 && ((r ^ b) < 0)) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
@@ -491,9 +491,9 @@ node_shl(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     (void)line;   /* line read lazily from n on the cold (non-fixnum) path only */
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
-        const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
+        const korb_sword_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
         if (LIKELY(sh >= 0 && sh < 62)) {
-            const intptr_t r = a << sh;
+            const korb_sword_t r = a << sh;
             if (LIKELY((r >> sh) == a && FIXABLE(r))) return RESULT_OK(LONG2FIX(r));   /* no overflow */
         }
         /* overflow / wide / negative shift → Integer#<< (bignum promote, or >>) */
@@ -526,7 +526,7 @@ node_shr(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
     (void)line;
     const VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
-        const intptr_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
+        const korb_sword_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
         if (LIKELY(sh >= 0 && sh < 63)) return RESULT_OK(LONG2FIX(a >> sh));   /* arithmetic shift */
         if (sh >= 63) return RESULT_OK(LONG2FIX(a < 0 ? -1 : 0));
         /* sh < 0 (= left shift) may overflow → dispatch */
@@ -542,7 +542,7 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
     (void)line;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = v; return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0); }
     if (LIKELY(FIXNUM_P(v))) {
-        intptr_t i = -FIX2LONG(v);
+        korb_sword_t i = -FIX2LONG(v);
         if (LIKELY(FIXABLE(i)))
             return RESULT_OK(LONG2FIX(i));
         return korb_big_neg(c, slots, v);
@@ -563,7 +563,7 @@ node_lt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<", 1), n->u.node_lt.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
-        return RESULT_OK((intptr_t)l < (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK((korb_sword_t)l < (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<Float inline */
         return RESULT_OK(korb_float_val(l) < korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 0, n->u.node_lt.line);
@@ -576,7 +576,7 @@ node_le(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, "<=", 2), n->u.node_le.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
-        return RESULT_OK((intptr_t)l <= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK((korb_sword_t)l <= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float<=Float inline */
         return RESULT_OK(korb_float_val(l) <= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 1, n->u.node_le.line);
@@ -589,7 +589,7 @@ node_gt(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">", 1), n->u.node_gt.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
-        return RESULT_OK((intptr_t)l > (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK((korb_sword_t)l > (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>Float inline */
         return RESULT_OK(korb_float_val(l) > korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 2, n->u.node_gt.line);
@@ -602,7 +602,7 @@ node_ge(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, uin
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = VALUE_REF_GET(lhs); slots[1] = rhs; return korb_send(c, slots + 2, korb_intern(c->vm, ">=", 2), n->u.node_ge.line, 1); }
     VALUE l = VALUE_REF_GET(lhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
-        return RESULT_OK((intptr_t)l >= (intptr_t)rhs ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK((korb_sword_t)l >= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))            /* Float>=Float inline */
         return RESULT_OK(korb_float_val(l) >= korb_float_val(rhs) ? KORB_TRUE : KORB_FALSE);
     return korb_cmp_slow(c, slots, l, rhs, 3, n->u.node_ge.line);
@@ -1593,7 +1593,7 @@ node_call(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, struct
      * ivar/structacc...).  Mirrors korb_call_cached's two hot branches; anything
      * else (cache miss, CFUNC, attr, non-simple, main-global) falls through. */
     const uint32_t argc = argv_cnt - 1;
-    const VALUE self = slots[-(intptr_t)argv_cnt];       /* base[-1] (the staged self receiver) */
+    const VALUE self = slots[-(korb_sword_t)argv_cnt];       /* base[-1] (the staged self receiver) */
     if (LIKELY(KORB_OBJECT_P(self))) {
         const VALUE klass = VAL2OBJ(self)->klass;
         if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
@@ -1624,7 +1624,7 @@ node_call_kws(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, st
     uint32_t argc = argv_cnt - 1;
     VALUE *cur = slots;
     if (LIKELY(argc > 0) && KORB_HASH_P(slots[-1]) && VAL2HASH(slots[-1])->len == 0) { argc--; cur = slots - 1; }
-    const VALUE self = slots[-(intptr_t)argv_cnt];       /* base[-1] (absolute slot; unchanged by the drop) */
+    const VALUE self = slots[-(korb_sword_t)argv_cnt];       /* base[-1] (absolute slot; unchanged by the drop) */
     return korb_call_cached(c, cur, mid, line, cc, ic, argc, self);
 }
 
@@ -1640,7 +1640,7 @@ node_call_kw(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, uin
 {
     (void)n;
     /* self staged as receiver (argv[0]) → base[-1]; pos+kw args follow. */
-    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - 1 - pos_argc, slots[-(intptr_t)argv_cnt]);
+    return korb_call_kw(c, slots, mid, line, cc, ic, pos_argc, (const uint32_t *)(const void *)kw_syms, argv_cnt - 1 - pos_argc, slots[-(korb_sword_t)argv_cnt]);
 }
 
 // ---- call-site splat: f(*arr) / f(a, *arr, b) ------------------------------
@@ -1731,7 +1731,7 @@ node_send(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, int32_
      * a simple ISEQ (method_call/object) and an attr/struct reader (ivar/
      * structacc).  The ic->kind == INSTANCE guard is mandatory: a site whose
      * receiver flips class/instance must not reuse a class-method entry. */
-    const VALUE recv = slots[-(intptr_t)argc - 1];
+    const VALUE recv = slots[-(korb_sword_t)argc - 1];
     if (LIKELY(KORB_OBJECT_P(recv) &&
                !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS))) {
         const VALUE klass = VAL2OBJ(recv)->klass;
@@ -1782,7 +1782,7 @@ NODE_DEF @framehdr
 node_send_safe(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, NODE **argv@children)
 {
     (void)n;
-    if (slots[-(intptr_t)argv_cnt] == KORB_NIL) return RESULT_OK(KORB_NIL);
+    if (slots[-(korb_sword_t)argv_cnt] == KORB_NIL) return RESULT_OK(KORB_NIL);
     return korb_send(c, slots, mid, line, argv_cnt - 1);
 }
 
@@ -1851,14 +1851,14 @@ node_aref(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
     const VALUE r = VALUE_REF_GET(recv);
     if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(idx) && !c->vm->aref_redefined)) {
         const KorbArray *const a = VAL2ARY(r);
-        intptr_t i = FIX2LONG(idx);
-        if (i < 0) i += (intptr_t)a->len;
+        korb_sword_t i = FIX2LONG(idx);
+        if (i < 0) i += (korb_sword_t)a->len;
         if (LIKELY((uintptr_t)i < a->len)) return RESULT_OK(korb_items_data(a->items)[i]);
         return RESULT_OK(KORB_NIL);
     }
     if (FIXNUM_P(r) && FIXNUM_P(idx) && !c->vm->int_aref_redefined) {   /* int[bit] = (n>>i)&1 single-bit test, skip send+dispatch+builtin (optcarrot ~5M/run) */
-        const intptr_t n = FIX2LONG(r);
-        const intptr_t i = FIX2LONG(idx);
+        const korb_sword_t n = FIX2LONG(r);
+        const korb_sword_t i = FIX2LONG(idx);
         if (i < 0)   return RESULT_OK(LONG2FIX(0));            /* bits below 0 don't exist */
         if (i >= 63) return RESULT_OK(LONG2FIX(n < 0 ? 1 : 0));/* beyond Fixnum width = sign extension */
         return RESULT_OK(LONG2FIX((n >> i) & 1));
@@ -1892,8 +1892,8 @@ node_aset(CTX *c, NODE *n, VALUE *slots, uint32_t line, VALUE_REF recv@child, VA
     if (LIKELY(KORB_ARRAY_P(r) && FIXNUM_P(iv) && !c->vm->aref_redefined)) {
         KORB_CHECK_FROZEN_HEAP(c, slots, r, "Array");
         const KorbArray *const a = VAL2ARY(r);
-        intptr_t i = FIX2LONG(iv);
-        if (i < 0) i += (intptr_t)a->len;
+        korb_sword_t i = FIX2LONG(iv);
+        if (i < 0) i += (korb_sword_t)a->len;
         if (LIKELY(i >= 0 && (uintptr_t)i < a->len)) {     /* in-range: in-place store */
             korb_ary_store_at(c, r, (uint32_t)i, val);
             return RESULT_OK(val);
@@ -2076,7 +2076,7 @@ node_call_blk(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line, st
     (void)n; (void)block_dispatcher;
     /* self staged as receiver (argv[0]) → base[-1]; it is also the block's captured
      * self.  def_env carries the raw PREV: tag the live slots base odd (eget path). */
-    VALUE *const self_cell = &slots[-(intptr_t)argv_cnt];
+    VALUE *const self_cell = &slots[-(korb_sword_t)argv_cnt];
     return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, *self_cell, block,
                          (VALUE *)((uintptr_t)&slots[def_env_off] | 1u), self_cell);
 }
@@ -2096,7 +2096,7 @@ node_call_blkproc(CTX *c, NODE *n, VALUE *slots, uint32_t mid@sym, uint32_t line
         if (iseq == NULL) iseq = KORB_BLK_CPROC;         /* Symbol/Method#to_proc: forward as a C-proc block */
     }
     /* self staged as receiver (argv[0]) → base[-1]. */
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, slots[-(intptr_t)argv_cnt], iseq,
+    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, slots[-(korb_sword_t)argv_cnt], iseq,
                          iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
 }
 
