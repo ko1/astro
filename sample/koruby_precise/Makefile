@@ -98,20 +98,27 @@ SRCS = main.c node.c korb_runtime.c parse.c
 # list them + korb_runtime.h so edits trigger a rebuild.
 BUILTINS_INCLUDED = $(wildcard builtins/*.c)
 
-koruby_precise: .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILTINS_INCLUDED) $(NODE_GENFILES) \
-                $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
-                $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
-                $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h $(RUNTIME)/astro_ref_template.h
-	$(CC) -I. -I./prism/include -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
-	    -Wno-unused-parameter -rdynamic -fno-plt \
+KORUBY_DEPS = .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUILTINS_INCLUDED) $(NODE_GENFILES) \
+              $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(PRECISE_GC_DIR)/gc_types.h \
+              $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
+              $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h $(RUNTIME)/astro_ref_template.h
+KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DBARUBY_GC=$(GC_NUM) \
 	    -DASTRO_DEBUG=$(ASTRO_DEBUG) \
 	    -DKORUBY_SRC_DIR='"$(KORUBY_SRC_DIR)"' \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
-	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"' \
-	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt
+	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"'
+# $@ = output binary; $(1) = extra flags/sources (PRELUDE_EMBED stage 2)
+define KORUBY_LINK
+	$(CC) $(KORUBY_CPPFLAGS) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
+	    -Wno-unused-parameter -rdynamic -fno-plt \
+	    -o $@ $(SRCS) $(1) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt
+endef
+
+koruby_precise: $(KORUBY_DEPS)
+	$(call KORUBY_LINK)
 
 # Generated files: grouped target (single generator invocation).
 $(NODE_GENFILES) &: node.def koruby_gen.rb $(LIB)/astrogen.rb

@@ -105,8 +105,18 @@ void
 code_repo_add(const char *name, NODE *body, bool force)
 {
     if (body == NULL) return;
-    bool found = code_repo_find(HASH(body)) != NULL;
-    if (!force && found) return;
+    /* Registration must be cheap: HASH has no cache (see astro_node.c), so a
+     * dedup scan here recomputes every registered body's subtree hash —
+     * O(bodies²), ~0.26 s of the startup for the 1037-body prelude.  The
+     * force=true path (all of parse) therefore skips dedup entirely; duplicate
+     * hashes are deduped where they matter, in astro_cs_compile (in-session
+     * dedup + on-disk cache + compile log).  Only the record_all path
+     * (force=false; bake-coverage tooling) still scans. */
+    bool found = false;
+    if (!force) {
+        found = code_repo_find(HASH(body)) != NULL;
+        if (found) return;
+    }
 
     if (code_repo.size == code_repo.capa) {
         uint32_t capa = code_repo.capa ? code_repo.capa * 2 : 16;

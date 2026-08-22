@@ -2,6 +2,7 @@
 //
 // Provides hash functions, HASH, DUMP, and alloc_dispatcher_name.
 //
+#include "astro_node.h"   // emit API declarations
 // #include this file from your node.c, AFTER defining `node_allocate(size_t)`
 // and BEFORE #including astro_code_store.c and the generated files.
 

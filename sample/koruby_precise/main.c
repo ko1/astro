@@ -615,6 +615,7 @@ extern const char koruby_embed_src_name[];
 extern void koruby_embed_setup(CTX *c);
 #endif
 
+
 int
 main(int argc, char *argv[])
 {
@@ -797,6 +798,21 @@ main(int argc, char *argv[])
                     "(hash mismatch or empty code store)\n");
             korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */
             return 3;
+        }
+    } else {
+        /* --plain means "don't run USER code compiled"; the fixed prelude is
+         * known code and stays on its baked SDs (its per-method behavior is
+         * identical either way — this only stops prelude helpers from
+         * distorting user-code tree-walk measurements the other direction).
+         * No INIT(): the program's code_store stays untouched. */
+        ensure_preload();
+        if (prelude_ast) {
+            unsigned int pswaps = astro_cs_load(prelude_ast, NULL) ? 1 : 0;
+            for (uint32_t i = 0; i < g_prelude_repo_count; i++)
+                if (astro_cs_load(code_repo_body_at(i), NULL)) pswaps++;
+            if (OPTION.verbose)
+                fprintf(stderr, "koruby_precise: plain: prelude on %u baked SDs "
+                        "(%u bodies)\n", pswaps, g_prelude_repo_count);
         }
     }
 #endif /* !KORUBY_EMBED */
