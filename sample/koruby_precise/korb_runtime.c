@@ -12075,7 +12075,10 @@ korb_ctx_new(void)
     /* WASI の mmap エミュレーションは MAP_NORESERVE も PROT_NONE のガード
      * ページも扱えない。素の確保で代用する = **値スタックの溢れがガード
      * ページで捕まらない**ので、そこはインタプリタ側の深さ検査に頼る。 */
-    char *base = calloc(1, bytes + page);
+    /* wasm の線形メモリは memory.grow で増えた分が仕様上ゼロなので calloc は
+     * 要らない (mmap(MAP_ANONYMOUS) のゼロ保証と同じ理屈)。calloc だと memset が
+     * そのまま RSS になる。 */
+    char *base = malloc(bytes + page);
     if (base == NULL) { perror("koruby_precise: alloc slots"); abort(); }
 #else
     char *base = mmap(NULL, bytes + page, PROT_READ | PROT_WRITE,

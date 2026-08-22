@@ -34,7 +34,11 @@
 /* 32bit (wasm32 等): アドレス空間が 4 GiB しかなく、遅延ページングも無いので
  * 「巨大な仮想領域を予約して実際に触った分だけ物理化する」戦略が成立しない。
  * ここは**実メモリ**になるため、必要量に合わせて小さく取る。 */
-#  define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 20)   /* 64 MiB 実メモリ */
+/* 512 MiB * 2 面 = 1 GiB を calloc で**実確保**する (アドレス空間 4 GiB の 1/4)。
+ * 遅延ページングが無いので hello world でも RSS が 1.3 GB になる。本来は必要に
+ * 応じて伸ばすべきで、この定数はその暫定。小さすぎると生存データを少し積んだ
+ * だけで OOM する (2 要素配列 1.5M 個で 64 MiB では足りない)。 */
+#  define ARO_GC_REGION_VIRT_BYTES  ((size_t)512u << 20)   /* 512 MiB 実メモリ */
 #else
 #  define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 30)   /* 64 GiB virtual */
 #endif

@@ -174,7 +174,9 @@ mmap_region(size_t bytes)
 #ifdef KORB_WASI
     // WASI の mmap エミュレーションは MAP_NORESERVE を受け付けない。
     // wasm の線形メモリはどのみち遅延コミットされないので、素の確保でよい。
-    char *p = (char *)calloc(1, bytes);
+    // wasm の線形メモリは memory.grow で増えた分が仕様上ゼロなので、calloc の
+    // memset は要らない (mmap(MAP_ANONYMOUS) がゼロを保証するのと同じ理屈)。
+    char *p = (char *)malloc(bytes);
     if (p == NULL) { perror("alloc"); abort(); }
 #else
     char *p = (char *)mmap(NULL, bytes, PROT_READ|PROT_WRITE,
