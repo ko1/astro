@@ -54,31 +54,37 @@
  * The GC edge filter (ARO_GC_VISIT_EDGE in precise_gc/gc.h) skips values
  * with (v & 7) != 0 or v == 0 — exactly the non-heap encodings above.
  * --------------------------------------------------------------------------- */
-typedef intptr_t VALUE;
+typedef int64_t  VALUE;
 #define ARO_GC_VALUE_TYPEDEFED 1
+/* VALUE is a 64-bit word, NOT a pointer: on a 32-bit target (wasm32) a tagged
+ * Float still needs all 64 bits.  Tag arithmetic therefore goes through
+ * korb_word_t; only the VAL2* casts below may narrow to a real pointer. */
+typedef uint64_t korb_word_t;
+typedef int64_t  korb_sword_t;
+#define KORB_WORD(v)  ((korb_word_t)(v))
 
 #define KORB_NIL       ((VALUE)0)
 /* Special singletons live in the low-nibble 0b0100 quadrant, with a variant
  * selector in the upper bits — leaving room for Qundef-style sentinels beyond
  * the false/true booleans.  (v & 0xF) == 4 tags the quadrant; (v >> 4) selects.
  * All have (v & 7) == 4 ≠ 0, so the GC never mistakes one for a heap pointer. */
-#define KORB_SPECIAL(n)    ((VALUE)(((uintptr_t)(n) << 4) | 0x4u))
-#define KORB_SPECIAL_P(v)  (((uintptr_t)(v) & 0xFu) == 0x4u)
+#define KORB_SPECIAL(n)    ((VALUE)((KORB_WORD(n) << 4) | 0x4u))
+#define KORB_SPECIAL_P(v)  ((KORB_WORD(v) & 0xFu) == 0x4u)
 #define KORB_FALSE     KORB_SPECIAL(0)   /* 0b000100 =  4 */
 #define KORB_TRUE      KORB_SPECIAL(1)   /* 0b010100 = 20 */
 #define KORB_UNDEF     KORB_SPECIAL(2)   /* 0b100100 = 36 — never a valid Ruby value (uninitialized / removed marker) */
 
-#define FIXNUM_P(v)    (((uintptr_t)(v) & 1u) != 0)
-#define LONG2FIX(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | 1u))
-#define FIX2LONG(v)    (((intptr_t)(v)) >> 1)
-#define FIXNUM_MAX     (INTPTR_MAX >> 1)
-#define FIXNUM_MIN     (INTPTR_MIN >> 1)
+#define FIXNUM_P(v)    ((KORB_WORD(v) & 1u) != 0)
+#define LONG2FIX(i)    ((VALUE)((KORB_WORD((korb_sword_t)(i)) << 1) | 1u))
+#define FIX2LONG(v)    (((korb_sword_t)(v)) >> 1)
+#define FIXNUM_MAX     (INT64_MAX >> 1)
+#define FIXNUM_MIN     (INT64_MIN >> 1)
 #define FIXABLE(i)     ((i) >= FIXNUM_MIN && (i) <= FIXNUM_MAX)
 
 /* Symbol — low nibble 0b1100 (static-symbol id in the upper bits). */
-#define SYMBOL_P(v)    (((uintptr_t)(v) & 0xFu) == 0xCu)
-#define ID2SYM(id)     ((VALUE)(((uintptr_t)(id) << 4) | 0xCu))
-#define SYM2ID(v)      ((uint32_t)((uintptr_t)(v) >> 4))
+#define SYMBOL_P(v)    ((KORB_WORD(v) & 0xFu) == 0xCu)
+#define ID2SYM(id)     ((VALUE)((KORB_WORD(id) << 4) | 0xCu))
+#define SYM2ID(v)      ((uint32_t)(KORB_WORD(v) >> 4))
 
 /* -----------------------------------------------------------------------------
  * Flonum — immediate Float, no heap box.  Now that Symbol has vacated the
@@ -89,35 +95,35 @@ typedef intptr_t VALUE;
  * constant; out-of-range doubles heap-box.
  * GC-safe: (flonum & 7) ∈ {2,6} ≠ 0, so the edge filter / AROH_IS_GC_OBJECT
  * never treat a flonum as a heap pointer. --------------------------------- */
-#define FLONUM_P(v)    (((uintptr_t)(v) & 3u) == 2u)
-#define KORB_FLO_ZERO  ((VALUE)(intptr_t)0x8000000000000002ULL)
+#define FLONUM_P(v)    ((KORB_WORD(v) & 3u) == 2u)
+#define KORB_FLO_ZERO  ((VALUE)(korb_sword_t)0x8000000000000002ULL)
 
 static inline VALUE korb_d2flo(double d) {   /* 0 → not representable (caller heap-boxes) */
-    union { double d; uintptr_t v; } t; t.d = d;
+    union { double d; korb_word_t v; } t; t.d = d;
     if (t.v == 0u) return KORB_FLO_ZERO;          /* +0.0 (−0.0 falls through → heap-box, keeps sign) */
     unsigned top3 = (unsigned)((t.v >> 60) & 7u);
     if (top3 != 3u && top3 != 4u) return 0;
-    uintptr_t e = ((t.v << 3 | t.v >> 61) & ~(uintptr_t)1u) | 2u;           /* rotl3, low2=10, bit2=sign */
-    if (e == (uintptr_t)KORB_FLO_ZERO) return 0;                            /* the lone non-zero double colliding with the +0.0 magic → heap-box */
+    korb_word_t e = ((t.v << 3 | t.v >> 61) & ~(korb_word_t)1u) | 2u;       /* rotl3, low2=10, bit2=sign */
+    if (e == KORB_WORD(KORB_FLO_ZERO)) return 0;                            /* the lone non-zero double colliding with the +0.0 magic → heap-box */
     return (VALUE)e;
 }
 static inline double korb_flo2d(VALUE fv) {
-    uintptr_t v = (uintptr_t)fv;
-    if (v == (uintptr_t)KORB_FLO_ZERO) return 0.0;
-    uintptr_t b63 = (uintptr_t)v >> 63;
-    union { double d; uintptr_t v; } t;
-    uintptr_t x = (2u - b63) | ((uintptr_t)v & ~(uintptr_t)3u);
+    korb_word_t v = KORB_WORD(fv);
+    if (v == KORB_WORD(KORB_FLO_ZERO)) return 0.0;
+    korb_word_t b63 = v >> 63;
+    union { double d; korb_word_t v; } t;
+    korb_word_t x = (2u - b63) | (v & ~(korb_word_t)3u);
     t.v = (x >> 3) | (x << 61);                                            /* rotr3 */
     return t.d;
 }
 
 /* Falsy = nil (0) or false (4): clearing bit2 maps both to 0. */
-#define KORB_TRUTHY(v)   (((uintptr_t)(v) & ~(uintptr_t)4u) != 0)
+#define KORB_TRUTHY(v)   ((KORB_WORD(v) & ~(korb_word_t)4u) != 0)
 
 /* Heap pointer test — also the GC contract macro (singletons / fixnums /
  * symbols have non-zero low bits or are 0, so they never look like heap
  * pointers). */
-#define AROH_IS_GC_OBJECT(v)  ((v) != 0 && ((uintptr_t)(v) & 7u) == 0)
+#define AROH_IS_GC_OBJECT(v)  ((v) != 0 && (KORB_WORD(v) & 7u) == 0)
 
 /* -----------------------------------------------------------------------------
  * RESULT — 2-register return carrying VALUE + control state (v2_design §4.6).

@@ -757,9 +757,9 @@ static RESULT korb_m_meth_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         slots[0] = m->recv;
         RESULT hr = korb_send(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0);
         if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
-        if (FIXNUM_P(hr.value)) h ^= (uintptr_t)FIX2LONG(hr.value) * 0x100000001b3ULL;
+        if (FIXNUM_P(hr.value)) h ^= (korb_word_t)FIX2LONG(hr.value) * 0x100000001b3ULL;
     }
-    return RESULT_OK(LONG2FIX((intptr_t)(h & (((uintptr_t)1 << 62) - 1))));
+    return RESULT_OK(LONG2FIX((korb_sword_t)(h & (((korb_word_t)1 << 62) - 1))));
 }
 /* Method#unbind → UnboundMethod owned by the receiver's class. */
 static RESULT korb_m_meth_unbind(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {

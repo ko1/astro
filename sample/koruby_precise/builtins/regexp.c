@@ -413,7 +413,7 @@ static RESULT korb_m_md_hash(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)korb_strbuf_data(s->buf)[i]; h *= 1099511628211ULL; }
     const KorbArray *o = VAL2ARY(md->offsets);
     for (uint32_t i = 0; i < o->len; i++) { h ^= (uint64_t)FIX2LONG(korb_items_data(o->items)[i]); h *= 1099511628211ULL; }
-    return RESULT_OK(LONG2FIX((long)(h & 0x3fffffffffffffffULL)));
+    return RESULT_OK(LONG2FIX((korb_sword_t)(h & (((korb_word_t)1 << 62) - 1))));
 }
 /* deconstruct_keys(keys) → named captures as a Symbol-keyed Hash (keys: nil = all,
  * or an Array selecting a subset; returns {} early if a requested key is absent). */
