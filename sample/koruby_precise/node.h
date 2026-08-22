@@ -222,6 +222,7 @@ VALUE  korb_const_get(struct korb_vm *vm, uint32_t name_sym);   /* nil if absent
  * feature by name (the same path search `require` itself does) */
 void   korb_load_path_unshift(CTX *c, VALUE *slots, const char *dir);
 RESULT korb_require_feature(CTX *c, VALUE *slots, const char *name);
+void korb_seed_provided_features(CTX *c, VALUE *slots);   /* CRuby-parity pre-required features */
 /* `$!` stack (per-CTX, GC-visited): push the exception on entering a rescue
  * body, pop on exit; top == `$!`.  See node_rescue / node_errinfo. */
 void   korb_errinfo_push(CTX *c, VALUE v);

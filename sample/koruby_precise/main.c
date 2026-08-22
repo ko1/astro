@@ -828,6 +828,7 @@ main(int argc, char *argv[])
         c->slots[-1] = pm.value;                  /* prelude self at base[-1] (bottom header) */
         RESULT pr = EVAL(c, prelude_ast, pcur);
         if (pr.state == KORB_RAISE) { korb_report_uncaught(c, pr.value); korb_io_flush_std(c->vm); return 1; }
+        korb_seed_provided_features(c, pcur);   /* CRuby-parity: fiber/pathname preload + pseudo $LOADED_FEATURES */
     }
 
     /* Run (unless `--aot-compile` alone — then we bake below without running).

@@ -170,3 +170,17 @@ module Kernel
   def self.autoload(name, path) = Object.autoload(name, path)
   def self.autoload?(name, inherit = true) = Object.autoload?(name, inherit)
 end
+
+class Module
+  # ruby2_keywords is a marker for the pre-3.0 kwargs bridge.  koruby's kwargs
+  # ride a Hash flag end to end, so the marking itself is a no-op here.
+  private def ruby2_keywords(*names)
+    nil
+  end
+end
+
+module Kernel
+  private def ruby2_keywords(*names)
+    nil
+  end
+end

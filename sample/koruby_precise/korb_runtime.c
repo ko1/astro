@@ -10471,6 +10471,64 @@ static bool korb_feature_loaded_p(CTX *c, const char *path)
     return false;
 }
 
+/* Does $LOADED_FEATURES carry `stem` — exactly, or as a path whose basename
+ * (with or without ".rb") is `stem`?  The provided-features seed stores
+ * "<internal:koruby>/<stem>.rb" pseudo paths; a later require of the bare
+ * name must see them as already loaded. */
+static bool
+korb_feature_basename_loaded_p(CTX *c, const char *stem)
+{
+    if (korb_feature_loaded_p(c, stem)) return true;
+    const VALUE lf = korb_const_get(c->vm, korb_intern(c->vm, "$LOADED_FEATURES", 16));
+    if (!KORB_ARRAY_P(lf)) return false;
+    const size_t sl = strlen(stem);
+    const KorbArray *const a = VAL2ARY(lf);
+    for (uint32_t i = 0; i < a->len; i++) {
+        const VALUE e = korb_items_data(a->items)[i];
+        if (!KORB_STRING_P(e)) continue;
+        const char *b = korb_strbuf_data(VAL2STR(e)->buf);
+        const uint32_t bl = VAL2STR(e)->len;
+        const char *slash = NULL;
+        for (uint32_t j = 0; j < bl; j++) if (b[j] == '/') slash = b + j;
+        const char *base = slash ? slash + 1 : b;
+        const size_t rest = (size_t)(bl - (uint32_t)(base - b));
+        if (rest == sl && strncmp(base, stem, sl) == 0) return true;
+        if (rest == sl + 3 && strncmp(base, stem, sl) == 0 && strncmp(base + sl, ".rb", 3) == 0) return true;
+    }
+    return false;
+}
+
+/* CRuby ships a set of features pre-required (require of them returns false
+ * from the start): complex/enumerator/fiber/rational/thread/ruby2_keywords
+ * (+ set/pathname since 4.0).  fiber and pathname have real lib .rb files —
+ * load them so their stdlib surface exists; the rest are built into the
+ * runtime and get "<internal:koruby>/<name>.rb" pseudo entries. */
+RESULT korb_require_feature(CTX *c, VALUE *slots, const char *name);   /* fwd */
+void
+korb_seed_provided_features(CTX *c, VALUE *slots)
+{
+    /* The preload requires PARSE their files, which clobbers the toplevel
+     * frame globals the caller derived its cursor from (parse of any file
+     * overwrites koruby_toplevel_locals_cnt / _local_syms).  Restore them —
+     * the crash mode is the user program running on pathname.rb's counts. */
+    const uint32_t saved_cnt  = koruby_toplevel_locals_cnt;
+    const uint32_t *saved_sym = koruby_toplevel_local_syms;
+    const uint32_t saved_scnt = koruby_toplevel_local_cnt;
+    static const char *const preload[] = { "fiber", "pathname", NULL };
+    for (uint32_t i = 0; preload[i]; i++)
+        (void)korb_require_feature(c, slots, preload[i]);   /* pushes the real path */
+    koruby_toplevel_locals_cnt = saved_cnt;
+    koruby_toplevel_local_syms = saved_sym;
+    koruby_toplevel_local_cnt  = saved_scnt;
+    static const char *const pseudo[] =
+        { "complex", "enumerator", "rational", "thread", "set", "ruby2_keywords", NULL };
+    for (uint32_t i = 0; pseudo[i]; i++) {
+        char path[128];
+        snprintf(path, sizeof path, "<internal:koruby>/%s.rb", pseudo[i]);
+        korb_loaded_features_push(c, slots, path);
+    }
+}
+
 /* Loading-claim table: which green thread is mid-load of a feature. */
 static struct korb_thread *
 korb_loading_owner(struct korb_vm *vm, const char *abspath)
@@ -10674,11 +10732,11 @@ korb_bi_require(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* Not on disk.  A handful of stdlib features are built into koruby (no .rb
      * on disk): a require of one of those succeeds as a no-op.  Any other
      * missing feature is a LoadError, matching CRuby. */
-    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", "pp", "prettyprint", "date", "delegate", NULL };
+    static const char *const builtin_features[] = { "set", "stringio", "enumerator", "comparable", "rbconfig", "pp", "prettyprint", "date", "delegate", "complex", "rational", "thread", "ruby2_keywords", NULL };
     const char *stem = namebuf; if (strncmp(stem, "./", 2) == 0) stem += 2;
     for (uint32_t i = 0; builtin_features[i]; i++)
         if (strcmp(stem, builtin_features[i]) == 0) {                 /* built-in: load-once contract by feature name */
-            if (korb_feature_loaded_p(c, stem)) return RESULT_OK(KORB_FALSE);
+            if (korb_feature_basename_loaded_p(c, stem)) return RESULT_OK(KORB_FALSE);
             (void)korb_mark_loaded(c->vm, stem);
             korb_loaded_features_push(c, slots, stem);
             return RESULT_OK(KORB_TRUE);

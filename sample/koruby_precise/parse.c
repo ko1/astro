@@ -895,6 +895,7 @@ extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 extern const struct NodeKind kind_node_const_set;    /* FOO = expr */
 static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa);
+static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
 extern const struct NodeKind kind_node_dstr_concat;  /* string-interp concat chain */
 extern const struct NodeKind kind_node_hash_set;     /* hash-literal set chain */
@@ -1566,13 +1567,15 @@ transduce_func_call(struct kp_ctx *tc, const pm_call_node_t *cn)
      * synth rest local (keywords ride in its trailing hash) and thread the block
      * from the synth forwarding slot.  node_call_splat_blkproc treats a nil proc
      * as "no block", so the blockless call needs no separate node. */
-    if (argc == 1 && PM_NODE_TYPE_P(args->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
+    if (argc >= 1 && PM_NODE_TYPE_P(args->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
         if (tc->frame->fwd_slot < 0)
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
         int32_t self_off = -1 - tc->chain - 1;
         int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 1;
         NODE *arr;
-        WITH_CHAIN(tc, 1, (arr = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+        WITH_CHAIN(tc, 1, (arr = (argc == 1)
+            ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
+            : build_array_with_fwd(tc, args->arguments.nodes, argc - 1)));   /* f(a, ..., ...) */
         NODE *_cs = ALLOC_node_call_splat_blkproc(mid, line, self_off, proc_off, arr);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
         bake_add(tc, &_cs->u.node_call_splat_blkproc.proc_off);
@@ -1804,13 +1807,15 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
     #undef SAFE_WRAP
     /* `recv.m(...)` — same forwarding as the implicit-self case, with the receiver
      * as the extra staged child. */
-    if (argc == 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
+    if (argc >= 1 && PM_NODE_TYPE_P(cn->arguments->arguments.nodes[argc - 1], PM_FORWARDING_ARGUMENTS_NODE)) {
         if (tc->frame->fwd_slot < 0)
             return kp_unsupported(tc, (const pm_node_t *)cn, "... forwarding outside a (...) method body");
         int32_t proc_off = tc->frame->fwd_blk_slot - tc->chain - 2;
         NODE *recv, *arr;
         WITH_CHAIN(tc, 2, (recv = transduce(tc, cn->receiver),
-                           arr  = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+                           arr  = (argc == 1)
+                               ? bake_lget(tc, (uint32_t)tc->frame->fwd_slot)
+                               : build_array_with_fwd(tc, cn->arguments->arguments.nodes, argc - 1)));
         NODE *_cs = ALLOC_node_send_splat_blkproc(mid, line, proc_off, recv, arr);
         bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
         return _cs;
@@ -2454,6 +2459,18 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
      * Hash is elided at run time (CRuby 3.0 empty-kwsplat rule) */
     if (PM_NODE_TYPE_P(last, PM_KEYWORD_HASH_NODE)) return ALLOC_node_ary_push_kw(acc, elem);
     return ALLOC_node_ary_push(acc, elem);
+}
+
+/* Leading positionals + forwarded rest: `f(a, b, ...)` → [a, b, *fwd_rest].
+ * Same staging shape as build_array's splat member. */
+static NODE *
+build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n)
+{
+    NODE *acc, *fwd;
+    uint32_t sc = kind_node_ary_push.slot_count;
+    WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
+                        fwd = bake_lget(tc, (uint32_t)tc->frame->fwd_slot)));
+    return ALLOC_node_ary_concat(acc, fwd);
 }
 
 /* Value of `return` / `next` / `break` arguments: none → nil, one plain arg →

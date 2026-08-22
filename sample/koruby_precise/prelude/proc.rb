@@ -57,3 +57,9 @@ class Method
     to_proc.curry(n)
   end
 end
+
+class Proc
+  def ruby2_keywords
+    self   # kwargs already flow through the Hash flag; marking is a no-op
+  end
+end
