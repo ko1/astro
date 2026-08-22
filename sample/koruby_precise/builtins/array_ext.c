@@ -830,7 +830,7 @@ static RESULT korb_m_ary_delete(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         bool eq;
         if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {   /* user #== → dispatch element == needle */
             slots[3] = e; slots[4] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 5, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 5, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             eq = KORB_TRUTHY(r.value);
             e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* re-read after the (GC-capable) dispatch */
@@ -888,7 +888,7 @@ static RESULT korb_m_ary_rindex(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         const VALUE e = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];
         if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(LONG2FIX(i));
         } else if (korb_value_eq(e, slots[0])) {
@@ -939,16 +939,16 @@ static RESULT korb_m_ary_zip(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (!KORB_ARRAY_P(slots[1]) && !KORB_RANGE_P(slots[1]) && !KORB_ARITHSEQ_P(slots[1])) {
             bool done = false;
             if (korb_responds_to_coerce(c, slots + 2, slots[1], to_ary_id)) {   /* #to_ary conversion (honors respond_to?) */
-                RESULT r = korb_send_impl(c, slots + 2, to_ary_id, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT r = korb_send_impl(c, slots + 2, to_ary_id, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (KORB_ARRAY_P(r.value)) { slots[1] = r.value; done = true; }
             }
             if (!done && korb_responds_to_coerce(c, slots + 2, slots[1], each_id)) {   /* responds to #each → arg.to_enum(:each).to_a */
                 slots[2] = ID2SYM(each_id);                   /* the :each argument to #to_enum */
-                RESULT er = korb_send_impl(c, slots + 3, to_enum_id, 0, 1, NULL, NULL, KORB_NIL);   /* recv=slots[1], arg=slots[2] */
+                RESULT er = korb_send_impl(c, slots + 3, to_enum_id, 0, 1, NULL, NULL, NULL);   /* recv=slots[1], arg=slots[2] */
                 if (UNLIKELY(er.state != KORB_NORMAL)) return er;
                 slots[2] = er.value;                          /* the enumerator (rooted) */
-                RESULT r = korb_send_impl(c, slots + 3, to_a_id, 0, 0, NULL, NULL, KORB_NIL);   /* recv at slots[2] */
+                RESULT r = korb_send_impl(c, slots + 3, to_a_id, 0, 0, NULL, NULL, NULL);   /* recv at slots[2] */
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (KORB_ARRAY_P(r.value)) { slots[1] = r.value; done = true; }
             }

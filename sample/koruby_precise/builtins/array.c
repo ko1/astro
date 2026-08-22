@@ -16,7 +16,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
         if (!KORB_ARRAY_P(slots[0]) && KORB_OBJECT_P(slots[0])) {
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             if (korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
-                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
+                RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 if (UNLIKELY(!KORB_ARRAY_P(ar.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Array", korb_type_name(slots[0]));
                 slots[0] = ar.value;
@@ -65,7 +65,7 @@ static RESULT korb_m_ary_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
         if (!KORB_OBJECT_P(o) || !korb_responds_to_coerce_p(c, slots, &o, to_ary)) return RESULT_OK(KORB_NIL);
         slots[0] = o;
-        RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         if (!KORB_ARRAY_P(ar.value)) return RESULT_OK(KORB_NIL);
         o = ar.value;
@@ -444,7 +444,7 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     if (!KORB_ARRAY_P(other)) {                            /* Array-like (responds to #to_ary) → delegate other == self */
         if (KORB_OBJECT_P(other) && korb_responds_to(c, other, korb_intern(c->vm, "to_ary", 6))) {
             slots[0] = other; slots[1] = VALUE_REF_GET(self);
-            return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
         }
         return RESULT_OK(KORB_FALSE);
     }
@@ -459,7 +459,7 @@ static RESULT korb_m_ary_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* dispatch == (recurses for nested) */
             slots[2] = v; slots[3] = v2;
-            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eq(v, v2)) {
@@ -487,7 +487,7 @@ static RESULT korb_m_ary_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {
             slots[2] = v; slots[3] = v2;
-            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eql(v, v2)) {
@@ -506,7 +506,7 @@ static RESULT korb_m_ary_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (e == slots[0]) return RESULT_OK(KORB_TRUE);     /* identity short-circuit (CRuby rb_equal; catches NaN's own bits) */
         if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (element == needle) */
             slots[1] = e; slots[2] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(KORB_TRUE);
         } else if (korb_value_eq(e, slots[0])) {

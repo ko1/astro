@@ -94,7 +94,7 @@ static RESULT korb_m_obj_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
  * is honoured (dispatch rather than the identity korb_m_obj_eq). */
 static RESULT korb_m_obj_case_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = VALUE_REF_GET(self); slots[1] = VALUE_SLICE_GET(a, 0);
-    return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+    return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
 }
 static RESULT korb_m_obj_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots; return RESULT_OK(korb_value_eql(VALUE_REF_GET(self), VALUE_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }  /* type-strict: 1.eql?(1.0) => false */
 static RESULT korb_m_obj_neq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -129,7 +129,7 @@ static RESULT korb_m_obj_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     const VALUE s = VALUE_REF_GET(self), o = VALUE_SLICE_GET(a, 0);
     if (s == o) return RESULT_OK(LONG2FIX(0));                 /* identical */
     slots[0] = s; slots[1] = o;
-    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1, NULL, NULL, KORB_NIL);
+    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "==", 2), 0, 1, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     return RESULT_OK((r.value != KORB_NIL && r.value != KORB_FALSE) ? LONG2FIX(0) : KORB_NIL);
 }
@@ -160,7 +160,7 @@ static RESULT korb_ivar_name_arg(CTX *c, VALUE *slots, VALUE name, VALUE *out_sy
     if (korb_name_to_sym(c, name, out_sym)) { *ok = true; return RESULT_OK(KORB_NIL); }
     if (KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, korb_intern(c->vm, "to_str", 6))) {
         slots[0] = name;
-        RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+        RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (korb_name_to_sym(c, sr.value, out_sym)) { *ok = true; return RESULT_OK(KORB_NIL); }
     }

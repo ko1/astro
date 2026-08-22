@@ -25,7 +25,7 @@ static RESULT korb_set_member_disp(CTX *c, VALUE *slots, VALUE elems, bool by_id
         if (by_id) { if (e == slots[1]) { *found = true; return RESULT_OK(KORB_NIL); } continue; }
         if (KORB_OBJECT_P(e) || KORB_OBJECT_P(slots[1])) {          /* user #eql? → dispatch */
             slots[2] = e; slots[3] = slots[1];
-            RESULT r = korb_send_impl(c, slots + 4, korb_intern(c->vm, "eql?", 4), 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, korb_intern(c->vm, "eql?", 4), 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) { *found = true; return RESULT_OK(KORB_NIL); }
         } else if (korb_value_eql(e, slots[1])) { *found = true; return RESULT_OK(KORB_NIL); }
@@ -519,7 +519,7 @@ static RESULT korb_m_obj_extend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (UNLIKELY(korb_responds_to(c, slots[2], extended))) {                  /* fire Module#extended(obj) hook */
             slots[3] = slots[2];                                                  /* module = receiver (sp[-2]) */
             slots[4] = slots[0];                                                  /* extended object = arg (sp[-1]) */
-            RESULT hr = korb_send_impl(c, slots + 5, extended, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT hr = korb_send_impl(c, slots + 5, extended, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
         }
     }
@@ -729,7 +729,7 @@ static RESULT korb_m_class_attr_n(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             VALUE nv = sym;
             if (KORB_OBJECT_P(nv) && korb_responds_to_coerce_p(c, slots + 2, &nv, to_str)) {
                 slots[2] = nv;
-                RESULT sr = korb_send_impl(c, slots + 3, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 3, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", korb_type_name(VALUE_SLICE_GET(a, i)));
                 sym = sr.value;
@@ -1211,7 +1211,7 @@ static RESULT korb_m_class_ge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
  * `*out` = -1/0/1, or 2 when <=> returns nil (incomparable). */
 static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other, int *out) {
     slots[0] = self; slots[1] = other;
-    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, KORB_NIL);
+    RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<=>", 3), 0, 1, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (r.value == KORB_NIL) { *out = 2; return RESULT_OK(KORB_NIL); }
     /* rb_cmpint: Fixnum/Bignum/Float compare by sign; any other value by
@@ -1231,12 +1231,12 @@ static RESULT korb_comparable_cmp(CTX *c, VALUE *slots, VALUE self, VALUE other,
     slots[2] = r.value;                                   /* park across dispatch */
     slots[0] = slots[2]; slots[1] = LONG2FIX(0);
     RESULT g = korb_send_impl(c, slots + 2, korb_intern(c->vm, ">", 1), 0, 1,
-                              NULL, NULL, KORB_NIL);
+                              NULL, NULL, NULL);
     if (UNLIKELY(g.state != KORB_NORMAL)) return g;
     if (g.value != KORB_NIL && g.value != KORB_FALSE) { *out = 1; return RESULT_OK(KORB_TRUE); }
     slots[0] = slots[2]; slots[1] = LONG2FIX(0);
     RESULT l = korb_send_impl(c, slots + 2, korb_intern(c->vm, "<", 1), 0, 1,
-                              NULL, NULL, KORB_NIL);
+                              NULL, NULL, NULL);
     if (UNLIKELY(l.state != KORB_NORMAL)) return l;
     *out = (l.value != KORB_NIL && l.value != KORB_FALSE) ? -1 : 0;
     return RESULT_OK(KORB_TRUE);
@@ -1705,7 +1705,7 @@ static RESULT korb_m_class_const_get(CTX *c, VALUE *slots, VALUE_REF self, VALUE
                     korb_mcache_find(vm, korb_dispatch_class(c, VALUE_REF_GET(self)), cm, &cmdef)) {
                     slots[0] = VALUE_REF_GET(self);
                     slots[1] = ID2SYM(cid);
-                    return korb_send_impl(c, slots + 2, cm, 0, 1, NULL, NULL, KORB_NIL);
+                    return korb_send_impl(c, slots + 2, cm, 0, 1, NULL, NULL, NULL);
                 }
             }
             RESULT nr = korb_raise(c, slots, KORB_E_NAME, 0, "uninitialized constant %.*s", (int)clen, buf + (p - buf));
@@ -1759,7 +1759,7 @@ static RESULT korb_m_class_const_defined(CTX *c, VALUE *slots, VALUE_REF self, V
         const uint32_t to_str = korb_intern(vm, "to_str", 6);
         if (KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str)) {
             slots[0] = name;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (UNLIKELY(!KORB_STRING_P(sr.value))) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
             name = sr.value;
@@ -1915,7 +1915,7 @@ static RESULT korb_obj_eval_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             if (KORB_OBJECT_P(src) && korb_responds_to_coerce_p(c, slots, &src, to_str)) {
                 slots[0] = VALUE_REF_GET(self);              /* root receiver across the dispatch */
                 slots[1] = src;
-                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); src = sr.value; }
             }
@@ -2048,7 +2048,7 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (e->msg != KORB_NIL) {
         if (KORB_STRING_P(e->msg)) return RESULT_OK(e->msg);
         slots[0] = e->msg;                                /* non-String message → #to_s it */
-        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     }
     /* no explicit message → the class name (exc_class for an abstract/user class,
      * else the builtin etype name), matching CRuby's default.  Use the *qualified*
@@ -2065,7 +2065,7 @@ static RESULT korb_m_exc_message(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_m_exc_message_via_to_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a;
     slots[0] = VALUE_REF_GET(self);
-    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    return korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
 }
 /* Exception#inspect → "#<ClassName: message>" (or "#<ClassName>" if #to_s is
  * empty).  Uses the dispatched (overridable) #to_s for the message. */
@@ -2079,7 +2079,7 @@ static RESULT korb_m_exc_inspect(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     else
         snprintf(cnbuf, sizeof cnbuf, "%s", korb_etype_name(e->etype));
     slots[0] = sv;
-    RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    RESULT tr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
     slots[0] = KORB_STRING_P(tr.value) ? tr.value : KORB_NIL; /* park the message string */
     const KorbString *const ms = KORB_STRING_P(slots[0]) ? VAL2STR(slots[0]) : NULL;

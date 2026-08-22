@@ -675,7 +675,7 @@ korb_m_thread_name_set(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
                 slots[0] = v;
-                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (KORB_STRING_P(sr.value)) v = sr.value;
             }
@@ -700,7 +700,7 @@ korb_thread_tls_key(CTX *c, VALUE *slots, VALUE k, VALUE *out)
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(k) && korb_responds_to_coerce_p(c, slots, &k, to_str)) {
             slots[0] = k;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (KORB_STRING_P(sr.value)) k = sr.value;
         }

@@ -68,7 +68,7 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
             const uint32_t inf_mid = korb_intern(c->vm, "infinite?", 9);
             if (korb_responds_to(c, ov, inf_mid)) {
                 slots[0] = ov;
-                RESULT ir = korb_send_impl(c, slots + 1, inf_mid, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT ir = korb_send_impl(c, slots + 1, inf_mid, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
                 const int self_level = si > 0 ? 1 : -1;
                 const int other_level = (ir.value == LONG2FIX(1)) ? 1 : (ir.value == LONG2FIX(-1)) ? -1 : 0;

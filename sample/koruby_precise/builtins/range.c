@@ -138,7 +138,7 @@ static RESULT korb_m_range_cover(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         else if (cmp_end >= 0)   res = true;
         else {                                                   /* incl self, excl other, self.end < other.end: cover other.max */
             slots[5] = slots[2];                                 /* root the other range */
-            RESULT mr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "max", 3), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT mr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "max", 3), 0, 0, NULL, NULL, NULL);
             if (mr.state == KORB_RAISE && KORB_EXC_P(mr.value) && VAL2EXC(mr.value)->etype == KORB_E_TYPE) res = false;   /* max undeterminable → false */
             else if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
             else if (mr.value == KORB_NIL) res = false;
@@ -188,7 +188,7 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
                 const char *onm = korb_type_name(slots[1]);
-                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (!KORB_STRING_P(sr.value))
                     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to String (%s#to_str gives %s)", onm, onm, korb_type_name(sr.value));
@@ -210,7 +210,7 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
             if (cur_eq_end) return RESULT_OK(KORB_FALSE); /* reached end without a match */
             if (korb_utf8_count(korb_strbuf_data(cur->buf), cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
             slots[4] = slots[2];                          /* stage current as the #succ receiver */
-            RESULT sc = korb_send_impl(c, slots + 5, mid_succ, 0, 0, NULL, NULL, KORB_NIL);   /* current = current.succ */
+            RESULT sc = korb_send_impl(c, slots + 5, mid_succ, 0, 0, NULL, NULL, NULL);   /* current = current.succ */
             if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
             if (UNLIKELY(!KORB_STRING_P(sc.value))) return RESULT_OK(KORB_FALSE);
             slots[2] = sc.value;
@@ -256,18 +256,18 @@ static RESULT korb_m_range_include(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         for (int guard = 0; guard < 10000000; guard++) {
             if (slots[2] != KORB_NIL) {                      /* current <=> end → stop once past the end */
                 slots[3] = slots[0]; slots[4] = slots[2];
-                RESULT cmp = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, KORB_NIL);
+                RESULT cmp = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, NULL);
                 if (UNLIKELY(cmp.state != KORB_NORMAL)) return cmp;
                 if (!FIXNUM_P(cmp.value)) return RESULT_OK(KORB_FALSE);
                 const intptr_t cv = FIX2LONG(cmp.value);
                 if (excl ? (cv >= 0) : (cv > 0)) return RESULT_OK(KORB_FALSE);
             }
             slots[3] = slots[0]; slots[4] = slots[1];        /* current == x */
-            RESULT eq = korb_send_impl(c, slots + 5, mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT eq = korb_send_impl(c, slots + 5, mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(eq.state != KORB_NORMAL)) return eq;
             if (KORB_TRUTHY(eq.value)) return RESULT_OK(KORB_TRUE);
             slots[3] = slots[0];                             /* current = current.succ */
-            RESULT sc = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sc = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
             slots[0] = sc.value;
         }
@@ -289,7 +289,7 @@ static RESULT korb_range_eq_via(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         bool eq;
         if (KORB_OBJECT_P(x) || KORB_OBJECT_P(y)) {                   /* dispatch the endpoint's own operator */
             slots[4] = x; slots[5] = y;                              /* recv, arg */
-            RESULT r = korb_send_impl(c, slots + 6, mid, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 6, mid, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             eq = KORB_TRUTHY(r.value);
         } else {                                                     /* eql? is type-strict (1.eql?(1.0)=false); == is cross-numeric */
@@ -478,7 +478,7 @@ static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             /* endless non-Integer range: a materializing enumerator can't work —
              * hand back a #succ-driven generator (prelude __each_endless_enum). */
             slots[0] = VALUE_REF_GET(self);
-            return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__each_endless_enum", 19), 0, 0, NULL, NULL, KORB_NIL);
+            return korb_send_impl(c, slots + 1, korb_intern(c->vm, "__each_endless_enum", 19), 0, 0, NULL, NULL, NULL);
         }
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, a));
         slots[1] = UNWRAP(korb_enum_desc(c, slots + 1, VALUE_REF_GET(self), "each"));
@@ -493,7 +493,7 @@ static RESULT korb_m_range_each(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             slots[1] = slots[0];                       /* receiver for #succ */
-            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "succ", 4), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "succ", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[0] = sr.value;
         }
@@ -608,7 +608,7 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         slots[2] = SELF_RANGE->rend;                         /* end */
         for (int guard = 0; guard < 100000000; guard++) {
             slots[3] = slots[1]; slots[4] = slots[2];        /* cur <=> end (recv slots[3], arg slots[4]) */
-            RESULT cr = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT cr = korb_send_impl(c, slots + 5, mid_cmp, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!FIXNUM_P(cr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(slots[1]));
             const intptr_t cmp = FIX2LONG(cr.value);
@@ -616,7 +616,7 @@ static RESULT korb_m_range_to_a(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             CHECK(korb_ary_push_val(c, slots + 5, VALUE_REF_AT(&slots[0]), slots[1]));
             if (cmp == 0) break;
             slots[3] = slots[1];                             /* cur = cur.succ */
-            RESULT sr = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 4, mid_succ, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[1] = sr.value;
         }
@@ -672,7 +672,7 @@ static RESULT korb_m_range_each_with_object(CTX *c, VALUE *slots, VALUE_REF self
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
         slots[2] = VALUE_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, NULL);
     }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {
@@ -745,7 +745,7 @@ static RESULT korb_m_range_reverse_each(CTX *c, VALUE *slots, VALUE_REF self, VA
     if (UNLIKELY(block == NULL)) {                        /* no block → self.to_enum(:reverse_each) (finite range) */
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "reverse_each", 12));
-        return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_enum", 7), 0, 1, NULL, NULL, NULL);
     }
     if (UNLIKELY(SELF_RANGE->rend == KORB_NIL))           /* endless range → can't reverse-iterate from infinity */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(SELF_RANGE->rend));
@@ -1288,7 +1288,7 @@ static RESULT korb_m_range_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         else { if (lo >= hi) return RESULT_OK(KORB_NIL); slots[0] = LONG2FIX(lo); i = lo + 1; }
         for (; i < hi; i++) {
             slots[1] = slots[0]; slots[2] = LONG2FIX(i);
-            RESULT r = korb_send_impl(c, slots + 3, op_mid, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 3, op_mid, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             slots[0] = r.value;
         }
@@ -1389,7 +1389,7 @@ static RESULT korb_range_step_impl(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
         const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
         if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_int)) {
             slots[0] = sv;
-            RESULT sr = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (KORB_INTEGER_P(sr.value)) sv = sr.value;
         }

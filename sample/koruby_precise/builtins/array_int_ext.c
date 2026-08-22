@@ -58,7 +58,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
         slots[1] = korb_items_data(VAL2ARY(VALUE_REF_GET(self))->items)[i];   /* element (rooted; returned on match) */
         if (!KORB_ARRAY_P(slots[1])) {                       /* coerce a non-Array element via #to_ary */
             if (!KORB_OBJECT_P(slots[1]) || !korb_responds_to_coerce(c, slots + 2, slots[1], to_ary)) continue;
-            RESULT cr = korb_send_impl(c, slots + 2, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT cr = korb_send_impl(c, slots + 2, to_ary, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             if (!KORB_ARRAY_P(cr.value)) continue;
             slots[1] = cr.value;
@@ -67,7 +67,7 @@ static RESULT korb_ary_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE key, ui
         const VALUE el = korb_items_data(VAL2ARY(slots[1])->items)[idx];
         if (KORB_OBJECT_P(el) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (el == key) */
             slots[2] = el; slots[3] = slots[0];              /* recv, arg */
-            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[1]);
         } else if (korb_value_eq(el, slots[0])) {
@@ -110,7 +110,7 @@ static RESULT korb_dig_dispatch(CTX *c, VALUE *slots, VALUE cur, VALUE_SLICE a, 
         const uint32_t rest = VALUE_SLICE_LEN(a) - k;
         slots[0] = cur;                                   /* receiver at base[-(rest+1)] */
         for (uint32_t j = 0; j < rest; j++) slots[1 + j] = VALUE_SLICE_GET(a, k + j);   /* args at base[-rest..-1] */
-        return korb_send_impl(c, slots + rest + 1, dig_id, 0, rest, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + rest + 1, dig_id, 0, rest, NULL, NULL, NULL);
     }
     return korb_raise(c, slots, KORB_E_TYPE, 0, "%s does not have #dig method", korb_type_name(cur));
 }
@@ -161,7 +161,7 @@ static RESULT korb_int_shift_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, 
         if (!KORB_OBJECT_P(o) || !korb_responds_to(c, o, mid))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, o));
         slots[1] = o;
-        RESULT r = korb_send_impl(c, slots + 2, mid, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT r = korb_send_impl(c, slots + 2, mid, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (UNLIKELY(!KORB_INTEGER_P(r.value))) {
             const char *on = korb_coerce_name(c, slots[1]);
@@ -477,7 +477,7 @@ static RESULT korb_m_hash_dig(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
                 KorbHash *const hc = VAL2HASH(cur);
                 if (hc->default_proc != KORB_NIL) {
                     slots[0] = hc->default_proc; slots[1] = cur; slots[2] = key;   /* default_proc.call(hash, key) */
-                    RESULT r = korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, KORB_NIL);
+                    RESULT r = korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
                     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                     cur = r.value;
                 }
@@ -695,7 +695,7 @@ static RESULT korb_m_hash_default_proc_set(CTX *c, VALUE *slots, VALUE_REF self,
         if (!korb_responds_to_coerce_p(c, slots, &p, to_proc))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Proc", korb_type_name(p));
         slots[0] = p;
-        RESULT pr = korb_send_impl(c, slots + 1, to_proc, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT pr = korb_send_impl(c, slots + 1, to_proc, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
         if (UNLIKELY(!KORB_PROC_P(pr.value)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s to Proc", korb_type_name(slots[0]));
@@ -810,7 +810,7 @@ static RESULT korb_m_hash_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
         if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
             slots[0] = ov;
-            RESULT hr = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT hr = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
             ov = hr.value;
         }
@@ -1473,7 +1473,7 @@ static RESULT korb_m_hash_reduce(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             CHECK(korb_ary_push_val(c, slots + 4, VALUE_REF_AT(&slots[3]), slots[2]));
             if (!have_acc) { slots[0] = slots[3]; have_acc = true; continue; }
             slots[4] = slots[0]; slots[5] = slots[3];           /* recv=acc, arg=pair */
-            RESULT r = korb_send_impl(c, slots + 6, op_mid, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 6, op_mid, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             slots[0] = r.value;
         }
@@ -1505,7 +1505,7 @@ static RESULT korb_m_hash_each_wo(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         slots[0] = VALUE_REF_GET(self);
         slots[1] = ID2SYM(korb_intern(c->vm, "each_with_object", 16));
         slots[2] = VALUE_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "to_enum", 7), 0, 2, NULL, NULL, NULL);
     }
     slots[0] = VALUE_SLICE_GET(a, 0);             /* memo */
     for (uint32_t i = 0; ; i++) {

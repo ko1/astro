@@ -482,7 +482,7 @@ static RESULT korb_re_match_set(CTX *c, VALUE *slots, VALUE re, VALUE str) {
             str = UNWRAP(korb_str_new(c, slots + 1, nm, (uint32_t)strlen(nm)));
         } else if (KORB_OBJECT_P(str) && korb_responds_to_coerce_p(c, slots + 1, &str, korb_intern(c->vm, "to_str", 6))) {
             slots[1] = str;
-            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (!KORB_STRING_P(sr.value)) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
             str = sr.value;
@@ -775,7 +775,7 @@ RESULT korb_re_literal_regexp(CTX *c, VALUE *slots, VALUE pv, VALUE *out) {
 static RESULT korb_emit_to_s(CTX *c, VALUE *slots, FILE *ms, VALUE v) {
     if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); fwrite(korb_strbuf_data(r->buf), 1, r->len, ms); return RESULT_OK(KORB_NIL); }
     slots[0] = v;
-    RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, KORB_NIL);
+    RESULT sr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
     if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); fwrite(korb_strbuf_data(r->buf), 1, r->len, ms); }
     else korb_fprint_to_s(c, ms, sr.value);
@@ -819,7 +819,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(rv) && korb_responds_to_coerce_p(c, slots + 3, &rv, to_str)) {
                 slots[3] = rv;
-                RESULT sr = korb_send_impl(c, slots + 4, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 4, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) { free(src); return sr; }
                 if (!KORB_STRING_P(sr.value)) { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(rv)); }
                 const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
@@ -849,7 +849,7 @@ RESULT korb_re_str_gsub(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, VAL
             slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));   /* whole match = hash key */
             slots[4] = slots[2];                                            /* hash recv     (base[-1]) */
             slots[5] = slots[3];                                           /* key arg       */
-            RESULT hr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, KORB_NIL);  /* respects default / default_proc */
+            RESULT hr = korb_send_impl(c, slots + 6, korb_intern(c->vm, "[]", 2), 0, 1, NULL, NULL, NULL);  /* respects default / default_proc */
             if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return hr; }
             slots[4] = hr.value;
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);        /* nil → "", else #to_s */
@@ -1067,7 +1067,7 @@ static RESULT korb_m_re_new(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     else {                                                /* #to_str coercion, else TypeError */
         slots[0] = src;
         if (korb_responds_to(c, src, korb_intern(c->vm, "to_str", 6))) {
-            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (!KORB_STRING_P(r.value))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_re_arg_type(src));

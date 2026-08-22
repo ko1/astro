@@ -92,7 +92,7 @@ static RESULT korb_m_str_force_encoding(CTX *c, VALUE *slots, VALUE_REF self, VA
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(enc) && korb_responds_to_coerce_p(c, slots, &enc, to_str)) {   /* Encoding has no #to_str → skipped */
             slots[0] = enc;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
             enc = sr.value;
@@ -454,7 +454,7 @@ static RESULT korb_str_append_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_RE
     { const uint32_t to_str = korb_intern(c->vm, "to_str", 6);   /* coerce a #to_str object → String */
       if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
           slots[0] = o;                                          /* receiver, rooted across dispatch */
-          const RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+          const RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
           if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
           if (LIKELY(KORB_STRING_P(sr.value))) {
               VALUE_REF sref = SLOTS_PUSH(slots, sr.value);      /* coerced String (self stays rooted) */
@@ -502,7 +502,7 @@ static RESULT korb_m_str_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
             slots[0] = VALUE_REF_GET(self); slots[1] = o;   /* root self + receiver across the dispatch */
-            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); o = sr.value; self = VALUE_REF_AT(&slots[0]); }
         }
@@ -525,7 +525,7 @@ static RESULT korb_m_str_prepend(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (UNLIKELY(!KORB_STRING_P(slots[1]))) {
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
-                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 slots[1] = sr.value;
             }
@@ -610,7 +610,7 @@ static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v) {
     const uint32_t to_int = korb_intern(c->vm, "to_int", 6);
     slots[0] = *v;                                    /* root the receiver across respond_to?/to_int dispatch */
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_int)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
-    RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
+    RESULT r = korb_send_impl(c, slots + 1, to_int, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (!korb_to_index(r.value, &tmp)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
     *v = r.value;
@@ -622,7 +622,7 @@ static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v) {
     const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
     slots[0] = *v;
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
-    RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+    RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (!KORB_ARRAY_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
     *v = r.value;
@@ -634,7 +634,7 @@ static RESULT korb_coerce_to_str(CTX *c, VALUE *slots, VALUE *v) {
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = *v;                                    /* root the receiver across respond_to?/to_str dispatch */
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
-    RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);   /* receiver at slots[0] */
+    RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);   /* receiver at slots[0] */
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (!KORB_STRING_P(r.value)) { *v = r.value; return RESULT_OK(KORB_FALSE); }
     *v = r.value;
@@ -734,7 +734,7 @@ static RESULT korb_m_str_aset(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (UNLIKELY(!KORB_STRING_P(slots[0]))) {
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
-            RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             slots[0] = cr.value;
         }
@@ -892,7 +892,7 @@ static RESULT korb_str_sets_coerce(CTX *c, VALUE *slots, VALUE_SLICE a) {
         if (KORB_STRING_P(sv)) continue;
         if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, to_str)) {
             slots[0] = sv;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (KORB_STRING_P(sr.value)) { VALUE_REF_SET(VALUE_SLICE_REF(a, j), sr.value); continue; }
         }
@@ -931,7 +931,7 @@ static RESULT korb_str_delfix(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots, &pv, to_str)) {
             slots[0] = pv;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             pv = sr.value;
         }
@@ -1060,13 +1060,13 @@ static RESULT korb_m_str_tr(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
     if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
-        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
     slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
     if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
-        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[1] = r.value;
     }
@@ -1107,13 +1107,13 @@ static RESULT korb_m_str_tr_s(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     slots[0] = VALUE_SLICE_GET(a, 0);                    /* from_str (coerce via #to_str) */
     if (!KORB_STRING_P(slots[0]) && KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_str)) {
-        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
     slots[1] = VALUE_SLICE_GET(a, 1);                    /* to_str (staged after from's coercion) */
     if (!KORB_STRING_P(slots[1]) && KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
-        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT r = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[1] = r.value;
     }
@@ -1177,7 +1177,7 @@ static RESULT korb_str_gsub_into(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots, &pv, to_str)) {
             slots[0] = pv;                             /* recv for the #to_str dispatch (self stays the caller's rooted VALUE_REF) */
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             if (!KORB_STRING_P(sr.value)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(VALUE_SLICE_GET(a, 0)));
             pv = sr.value;                             /* the coerced String pattern; downstream roots it like the literal-String path */
@@ -1337,7 +1337,7 @@ static RESULT korb_m_str_rpartition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     if (UNLIKELY(!KORB_STRING_P(sv))) {                /* coerce a non-String separator via #to_str */
         slots[0] = sv;
         if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, korb_intern(c->vm, "to_str", 6))) {
-            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             sv = r.value;
         }
@@ -1373,7 +1373,7 @@ static RESULT korb_m_str_partition(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
     if (UNLIKELY(!KORB_STRING_P(sv))) {                /* coerce a non-String separator via #to_str */
         slots[0] = sv;
         if (KORB_OBJECT_P(sv) && korb_responds_to_coerce_p(c, slots, &sv, korb_intern(c->vm, "to_str", 6))) {
-            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             sv = r.value;
         }
@@ -1605,7 +1605,7 @@ static RESULT korb_m_str_index(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         if (!korb_responds_to_coerce_p(c, slots, &sv, to_str))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(sv));
         slots[0] = sv;
-        RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT cr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (UNLIKELY(!KORB_STRING_P(cr.value)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_type_name(slots[0]));
@@ -1963,7 +1963,7 @@ static RESULT korb_m_str_split(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
             if (KORB_OBJECT_P(sepv) && korb_responds_to_coerce_p(c, slots, &sepv, to_str)) {
                 slots[0] = sepv;                             /* root receiver across the dispatch */
-                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
                 if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); sepv = sr.value; }
             }
@@ -2065,7 +2065,7 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(o) && korb_responds_to_coerce_p(c, slots, &o, to_str)) {
             slots[0] = o;
-            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             o = sr.value;
         }
@@ -2081,7 +2081,7 @@ static RESULT korb_m_str_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
                 slots[0] = ov;
                 slots[1] = VALUE_REF_GET(self);
                 oh->flags |= KORB_FL_JOIN_VISITING;
-                RESULT ir = korb_send_impl(c, slots + 2, cmp, 0, 1, NULL, NULL, KORB_NIL);   /* ov <=> self */
+                RESULT ir = korb_send_impl(c, slots + 2, cmp, 0, 1, NULL, NULL, NULL);   /* ov <=> self */
                 ((AroObjectHeader *)(uintptr_t)slots[0])->flags &= ~KORB_FL_JOIN_VISITING;   /* re-read: dispatch may have moved ov */
                 if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
                 if (FIXNUM_P(ir.value)) {
@@ -2411,7 +2411,7 @@ static RESULT korb_line_coerce_sep(CTX *c, VALUE *slots, VALUE_SLICE a) {
     const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
     if (KORB_OBJECT_P(s0) && korb_responds_to_coerce_p(c, slots, &s0, to_str)) {
         slots[0] = s0;                                   /* root receiver across the dispatch */
-        RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, KORB_NIL);
+        RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
         if (LIKELY(KORB_STRING_P(sr.value))) { VALUE_REF_SET(VALUE_SLICE_REF(a, 0), sr.value); return RESULT_OK(KORB_NIL); }
     }
@@ -2491,7 +2491,7 @@ static RESULT korb_m_str_upto(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (!KORB_STRING_P(slots[1])) {          /* coerce end via #to_str */
         const uint32_t to_str = korb_intern(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[1]) && korb_responds_to_coerce(c, slots + 2, slots[1], to_str)) {
-            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT sr = korb_send_impl(c, slots + 2, to_str, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
             slots[1] = sr.value;
             slots[0] = VALUE_REF_GET(self);  /* re-read after dispatch */

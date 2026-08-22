@@ -201,7 +201,7 @@ static RESULT korb_rand_core(CTX *c, VALUE *slots, KorbMT *st, VALUE_SLICE a) {
     if (!FIXNUM_P(arg) && !KORB_FLOAT_P(arg) && KORB_OBJECT_P(arg) &&    /* coerce via #to_int */
         korb_responds_to_coerce_p(c, slots, &arg, korb_intern(c->vm, "to_int", 6))) {
         slots[0] = arg;
-        RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+        RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
         arg = ir.value;
     }

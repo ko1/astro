@@ -111,7 +111,7 @@ static RESULT korb_m_env_to_h_blk(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
             VALUE pv = slots[1];
             if (KORB_OBJECT_P(pv) && korb_responds_to_coerce_p(c, slots + 3, &pv, korb_intern(c->vm, "to_ary", 6))) {
                 slots[3] = pv;
-                RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, KORB_NIL);
+                RESULT ar = korb_send_impl(c, slots + 4, korb_intern(c->vm, "to_ary", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
                 slots[1] = ar.value;
             }

@@ -97,7 +97,7 @@ static RESULT korb_m_hash_default(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         slots[0] = SELF_HASH->default_proc;
         slots[1] = VALUE_REF_GET(self);
         slots[2] = VALUE_SLICE_GET(a, 0);
-        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, KORB_NIL);
+        return korb_send_impl(c, slots + 3, korb_intern(c->vm, "call", 4), 0, 2, NULL, NULL, NULL);
     }
     return RESULT_OK(SELF_HASH->default_val);
 }
@@ -159,7 +159,7 @@ static RESULT korb_m_hash_assoc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         bool match;
         if (KORB_OBJECT_P(k) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (key == needle) */
             slots[1] = k; slots[2] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             match = KORB_TRUTHY(r.value);
         } else {
@@ -208,7 +208,7 @@ static RESULT korb_m_hash_eq(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {   /* value == via dispatch (recurses for nested) */
             slots[2] = v; slots[3] = v2;
-            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eq(v, v2)) {
@@ -239,7 +239,7 @@ static RESULT korb_m_hash_eql(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (KORB_OBJECT_P(v) || KORB_ARRAY_P(v) || KORB_HASH_P(v) ||
             KORB_OBJECT_P(v2) || KORB_ARRAY_P(v2) || KORB_HASH_P(v2)) {
             slots[2] = v; slots[3] = v2;
-            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, mid_eql, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) { VAL2HASH(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING; return r; }
             if (!KORB_TRUTHY(r.value)) { result = KORB_FALSE; break; }
         } else if (!korb_value_eql(v, v2)) {
@@ -256,7 +256,7 @@ static RESULT korb_m_hash_value_q(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SL
         const VALUE v = korb_items_data(VAL2HASH(VALUE_REF_GET(self))->items)[2 * i + 1];
         if (KORB_OBJECT_P(v) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = v; slots[2] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 3, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(KORB_TRUE);
         } else if (korb_value_eq(v, slots[0])) {
@@ -436,7 +436,7 @@ static RESULT korb_m_hash_merge(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
             if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
                 slots[1] = ov;
-                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
                 ov = hr.value;
             }
@@ -479,7 +479,7 @@ static RESULT korb_m_hash_update(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
             const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
             if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
                 slots[1] = ov;
-                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
                 ov = hr.value;
             }
@@ -516,7 +516,7 @@ static RESULT korb_m_hash_key(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const VALUE v = korb_items_data(h->items)[2 * i + 1], k = korb_items_data(h->items)[2 * i];
         if (KORB_OBJECT_P(v) || KORB_OBJECT_P(slots[0])) {  /* user == → dispatch (value == needle) */
             slots[1] = k; slots[2] = v; slots[3] = slots[0];
-            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 4, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[1]);
         } else if (korb_value_eq(v, slots[0])) {
@@ -553,7 +553,7 @@ static RESULT korb_hash_cmp_op(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
         const uint32_t to_hash = korb_intern(c->vm, "to_hash", 7);
         if (KORB_OBJECT_P(ov) && korb_responds_to_coerce_p(c, slots, &ov, to_hash)) {
             slots[1] = ov;
-            RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT hr = korb_send_impl(c, slots + 2, to_hash, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
             ov = hr.value;
         }

@@ -19,7 +19,7 @@ static RESULT korb_math_coerce_d(CTX *c, VALUE *slots, VALUE v, double *out) {
         const VALUE vcls = korb_class_obj_of(c, v);
         if (KORB_CLASS_P(numeric) && KORB_CLASS_P(vcls) && korb_class_le(vcls, numeric)
             && korb_responds_to(c, v, to_f)) {
-            RESULT fr = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT fr = korb_send_impl(c, slots + 1, to_f, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
             if (LIKELY(korb_num_to_d(fr.value, out))) return RESULT_OK(KORB_NIL);
         }

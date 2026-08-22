@@ -103,7 +103,7 @@ static RESULT korb_path_coerce(CTX *c, VALUE *slots, VALUE_SLICE a, uint32_t idx
         const uint32_t mid = korb_intern(c->vm, conv[i].name, conv[i].len);
         if (!korb_responds_to(c, v, mid)) continue;
         slots[0] = v;                              /* receiver, rooted across the dispatch */
-        const RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, KORB_NIL);
+        const RESULT r = korb_send_impl(c, slots + 1, mid, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         v = r.value;
     }

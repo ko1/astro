@@ -308,7 +308,7 @@ static RESULT korb_m_hash_sum(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         for (uint32_t i = 0; i < VAL2HASH(VALUE_REF_GET(self))->len; i++) {
             VALUE pair; CHECK(korb_hash_pair_at(c, slots + 1, self, i, &pair));   /* pair at slots[3] */
             slots[4] = slots[0]; slots[5] = slots[3];                            /* recv=acc, arg=pair */
-            RESULT r = korb_send_impl(c, slots + 6, plus_mid, 0, 1, NULL, NULL, KORB_NIL);
+            RESULT r = korb_send_impl(c, slots + 6, plus_mid, 0, 1, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             slots[0] = r.value;
         }
@@ -367,7 +367,7 @@ static RESULT korb_m_ary_replace(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
     if (UNLIKELY(!KORB_ARRAY_P(slots[0]))) {            /* coerce via #to_ary before mutating self */
         const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) {
-            RESULT cr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+            RESULT cr = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
             slots[0] = cr.value;
         }
@@ -472,7 +472,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, nre, (VALUE *)(uintptr_t)&nre->source, sre->source);
         slots[1] = (VALUE)nre;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_RANGE) {   /* Range → fresh (unfrozen) copy (literals/Range.new are frozen) */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -483,7 +483,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         ARO_STORE(c, nr, (VALUE *)(uintptr_t)&nr->rend,   sr->rend);
         slots[1] = (VALUE)nr;
         slots[2] = VALUE_REF_GET(self);                    /* CRuby calls #initialize_copy(orig) after copying */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_PROC) {   /* Proc → fresh (unfrozen) shallow copy */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -495,7 +495,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         slots[1] = (VALUE)np;
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs). */
         slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (AROH_IS_GC_OBJECT(v) && KORB_OBJ_TYPE(v) == KORB_OBJ_EXCEPTION) {   /* Exception → fresh copy (was aliasing self) */
         slots[1] = v;                                      /* root the source across the alloc */
@@ -516,7 +516,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         /* CRuby calls #initialize_copy(orig) after copying (default no-op; a user override runs) */
         slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_OBJECT_P(v)) {                         /* user object → fresh instance, shallow-copy ivars */
         slots[1] = UNWRAP(korb_obj_new(c, slots + 1, VAL2OBJ(v)->klass));
@@ -537,7 +537,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         /* CRuby calls #initialize_copy(orig) on the new object after copying the
          * ivars — the default is a no-op here, but a user override runs its logic. */
         slots[2] = VALUE_REF_GET(self);                   /* orig (arg); recv = the new object at slots[1] */
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else {
         return RESULT_OK(v);   /* immediate / no special copy */
@@ -546,7 +546,7 @@ static RESULT korb_m_obj_dup(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         korb_klass_override_set(c, slots[1], slots[0]);   /* dup keeps a builtin-subclass class but NOT a singleton class */
     if (need_initcopy && sub) {                           /* String/Array/Hash/Set subclass: run the (possibly overridden) #initialize_copy now that the class is set */
         slots[2] = VALUE_REF_GET(self);
-        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, KORB_NIL);
+        RESULT icr = korb_send_impl(c, slots + 3, korb_intern(c->vm, "initialize_copy", 15), 0, 1, NULL, NULL, NULL);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     }
     return RESULT_OK(slots[1]);
@@ -638,7 +638,7 @@ static RESULT korb_m_ary_product(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
         if (!KORB_ARRAY_P(slots[0])) {                   /* coerce a #to_ary object to an Array */
             const uint32_t to_ary = korb_intern(c->vm, "to_ary", 6);
             if (KORB_OBJECT_P(slots[0]) && korb_responds_to_coerce_p(c, slots + 1, &slots[0], to_ary)) {
-                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, KORB_NIL);
+                RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 slots[0] = r.value;
             }
@@ -735,7 +735,7 @@ static RESULT korb_m_ary_one(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         if (has_pat) {
             if (pat_obj) {
                 slots[2] = slots[0]; slots[3] = slots[1];
-                RESULT r = korb_send_impl(c, slots + 4, ceq, 0, 1, NULL, NULL, KORB_NIL);
+                RESULT r = korb_send_impl(c, slots + 4, ceq, 0, 1, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 t = KORB_TRUTHY(r.value);
             } else {

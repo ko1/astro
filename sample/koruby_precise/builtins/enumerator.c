@@ -153,7 +153,7 @@ static RESULT korb_enum_gen_run(CTX *c, VALUE *slots, VALUE_REF self, intptr_t l
     if (limit == 0) return RESULT_OK(slots[2]);               /* take(0): no run */
     slots[5] = SELF_ENUM->source;                            /* the generator proc */
     slots[6] = slots[4];                                     /* arg0 = yielder */
-    RESULT br = korb_send_impl(c, slots + 7, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, KORB_NIL);
+    RESULT br = korb_send_impl(c, slots + 7, korb_intern(vm, "call", 4), 0, 1, NULL, NULL, NULL);
     if (br.state == KORB_RAISE && KORB_EXC_P(br.value) && VAL2EXC(br.value)->etype == KORB_E_STOP_ITERATION)
         return RESULT_OK(slots[2]);                           /* hit the bound (or natural end) → collector */
     if (UNLIKELY(br.state != KORB_NORMAL && br.state != KORB_BREAK)) return br;
@@ -659,7 +659,7 @@ static RESULT korb_m_to_lazy(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     if (KORB_HASH_P(v)) {                                        /* lazy over the [k,v] pairs (the driver iterates Arrays) */
         slots[0] = v;
-        RESULT ta = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, KORB_NIL);
+        RESULT ta = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_a", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
         slots[0] = ta.value;
         return korb_lazy_new(c, slots + 1, slots[0], 1);

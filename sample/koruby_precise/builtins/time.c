@@ -353,13 +353,13 @@ static RESULT korb_m_time_at(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
          * TypeError), so check the class before asking. */
         if (korb_obj_is_numeric(c, v) && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_r", 4))) {
             slots[0] = v;
-            RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT rr = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_r", 4), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;
             got = korb_epoch_parts(rr.value, &sec, &nsec);
         }
         if (!got && korb_responds_to_coerce_p(c, slots, &v, korb_intern(c->vm, "to_int", 6))) {
             slots[0] = v;
-            RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+            RESULT ir = korb_send_impl(c, slots + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
             if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
             got = korb_epoch_parts(ir.value, &sec, &nsec);
         }
@@ -450,14 +450,14 @@ static RESULT korb_time_from_parts(CTX *c, VALUE *slots, VALUE cls, VALUE_SLICE 
         if (!KORB_STRING_P(cv)) {                            /* coerce: #to_int, else #to_str → parse */
             if (korb_responds_to(c, cv, korb_intern(c->vm, "to_int", 6))) {
                 slots[1] = cv;
-                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, KORB_NIL);
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (FIXNUM_P(r.value)) { comp[i] = FIX2LONG(r.value); cls = slots[0]; continue; }
                 if (KORB_FLOAT_P(r.value)) { comp[i] = (intptr_t)korb_float_val(r.value); cls = slots[0]; continue; }
             }
             if (korb_responds_to(c, cv, korb_intern(c->vm, "to_str", 6))) {
                 slots[1] = cv;
-                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, KORB_NIL);
+                RESULT r = korb_send_impl(c, slots + 2, korb_intern(c->vm, "to_str", 6), 0, 0, NULL, NULL, NULL);
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 cls = slots[0];
                 if (KORB_STRING_P(r.value)) cv = r.value;
