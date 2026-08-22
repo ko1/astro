@@ -27,28 +27,76 @@ koruby_precise が `--build` でクロスコンパイル**する (KORUBY_BUILD_T
 exe は起動時にパースを一切しない (プログラムも prelude も埋め込み AST を
 再構築するだけ)。warm ビルドは ~3.5s (native は ~4.5s)。
 
-計測 (2026-08-22, wasmtime compile 済み .cwasm, 3 回の生値は
-`~/ruby/src/trials/20260822_koruby_wasm_aot/`):
+## ベンチマーク (全 53 本, 起動込み総実行時間)
 
-| bench | AOT wasm | interp wasm | ruby.wasm (記録値) |
-|---|---|---|---|
-| 起動 (`p 1`) | **0.014s** | 0.02s | 0.09s |
-| while 80M | **0.43s** | 6.7s | 15.9s |
-| fib(32) | **0.14s** | 0.61s | 0.45s |
-| 8M.times | **0.19s** | 0.49s | 1.0s |
-| object 3M | **0.39s** | 0.97s | 1.96s |
-| String 2M | **0.68s** | 0.79s | 1.08s |
-| Hash 4M | **0.55s** | 1.06s | 2.49s |
-| 配列 1.5M 保持 | **0.26s** | 0.42s | 1.18s |
+rubyharness の全 53 bench、各 3 回の min、**起動込み wall clock** (wasmtime
+compile 済み .cwasm)。生値と方法は
+`~/ruby/src/trials/20260822_koruby_wasm_full_bench/`。出力は native CRuby を
+oracle に diff 検証済み。3 系比較できる 50 bench で **AOT は 50/50 全勝**
+(vs ruby.wasm)、interp は 28勝22敗。
 
-インタプリタで唯一負けていた再帰 (fib) も AOT では ruby.wasm の 3 倍速い側に
-回った。
+ファイルサイズ: **AOT .wasm ~7.8 MB/本** (プログラム毎の増分は ~0.1 MB;
+中身はインタプリタ+prelude+SD の固定部) vs **ruby.wasm 27.0 MB**、interp
+koruby.wasm 3.0 MB。.cwasm 化後は AOT ~27.7 MB / interp 9.4 MB / ruby 40.1 MB。
 
-**訂正 (2026-08-22)**: 当初「interp の起動 0.30s は 5,187 行の prelude パース
-のため」と書いたが誤り。主犯は code_repo_add の O(bodies²) hash 再計算で、
-排除後 (ba929ec0) は**パース込みで起動 0.02s** — ruby.wasm (0.09s) より速い。
-上の interp 列は修正後の値 (当初値は
-~/ruby/src/trials/20260822_koruby_wasm_aot/ 参照)。
+「—」= 除外: bignum/render_span_kernel は BIGNUM=wrap の意味論差 (koruby 側)、
+nbody は ruby.wasm が native CRuby と libm 最終桁不一致 (koruby は一致)。
+
+| bench | ruby.wasm | interp | AOT | AOT .wasm |
+|---|---:|---:|---:|---:|
+| ackermann | 2.90s | 3.79s | 0.78s | 7.76 MB |
+| array_access | 2.91s | 3.28s | 0.86s | 7.76 MB |
+| ary | 1.72s | 1.99s | 0.24s | 7.75 MB |
+| aryidx | 0.17s | 0.07s | 0.02s | 7.76 MB |
+| bignum | 0.40s | — | — | 7.75 MB |
+| binary_trees | 0.94s | 0.84s | 0.39s | 7.77 MB |
+| bitops | 15.92s | 6.06s | 0.30s | 7.76 MB |
+| block | 5.08s | 0.74s | 0.30s | 7.75 MB |
+| block_yield_kernel | 2.11s | 0.80s | 0.24s | 7.76 MB |
+| casewhen | 1.30s | 2.29s | 0.31s | 7.76 MB |
+| closures | 2.47s | 1.30s | 0.47s | 7.76 MB |
+| cmpsort | 2.19s | 0.79s | 0.53s | 7.77 MB |
+| collatz | 2.14s | 4.80s | 0.74s | 7.76 MB |
+| exception | 1.23s | 0.65s | 0.27s | 7.76 MB |
+| fannkuch | 2.21s | 3.71s | 0.31s | 7.78 MB |
+| fib | 1.58s | 1.98s | 0.42s | 7.76 MB |
+| floatcalc | 4.12s | 2.53s | 0.29s | 7.76 MB |
+| gc_bigobj | 2.57s | 0.58s | 0.32s | 7.76 MB |
+| gc_wb | 0.68s | 0.67s | 0.15s | 7.76 MB |
+| gcchurn | 1.55s | 2.66s | 0.36s | 7.76 MB |
+| gcd | 3.10s | 3.58s | 0.68s | 7.76 MB |
+| gen_gc | 1.23s | 1.35s | 0.77s | 7.77 MB |
+| hash | 2.61s | 3.82s | 1.53s | 7.76 MB |
+| hashiter | 2.41s | 0.64s | 0.25s | 7.76 MB |
+| intdiv | 2.03s | 2.16s | 0.18s | 7.76 MB |
+| iterators | 8.34s | 2.10s | 0.85s | 7.76 MB |
+| ivar | 3.27s | 3.60s | 0.76s | 7.76 MB |
+| kwargs | 1.48s | 2.44s | 0.50s | 7.76 MB |
+| mandelbrot | 6.71s | 3.30s | 0.55s | 7.77 MB |
+| mapreduce | 5.84s | 1.19s | 0.49s | 7.76 MB |
+| mathfn | 2.48s | 1.61s | 0.75s | 7.76 MB |
+| method_call | 3.41s | 3.83s | 0.77s | 7.76 MB |
+| methodchain | 4.65s | 1.07s | 0.68s | 7.76 MB |
+| nbody | — | 1.50s | 0.67s | 7.83 MB |
+| nested_loop | 2.61s | 3.95s | 0.47s | 7.76 MB |
+| nesteddata | 0.40s | 0.32s | 0.14s | 7.76 MB |
+| object | 1.54s | 1.35s | 0.43s | 7.76 MB |
+| poly | 1.50s | 2.28s | 0.50s | 7.77 MB |
+| rangeeach | 1.70s | 0.41s | 0.17s | 7.75 MB |
+| render_span_kernel | 3.69s | — | — | 7.79 MB |
+| send | 2.60s | 3.39s | 0.55s | 7.76 MB |
+| sieve | 1.07s | 1.34s | 0.18s | 7.76 MB |
+| sort | 4.68s | 0.76s | 0.18s | 7.76 MB |
+| sprintfb | 1.68s | 1.18s | 0.85s | 7.76 MB |
+| str | 2.35s | 2.82s | 1.64s | 7.76 MB |
+| strcmp | 0.43s | 0.29s | 0.23s | 7.77 MB |
+| strfmt | 2.16s | 2.79s | 1.95s | 7.76 MB |
+| strops | 1.65s | 0.79s | 0.56s | 7.77 MB |
+| strscan | 1.39s | 0.52s | 0.51s | 7.76 MB |
+| structacc | 2.78s | 0.99s | 0.40s | 7.77 MB |
+| tak | 3.24s | 3.92s | 0.85s | 7.76 MB |
+| while | 10.23s | 4.23s | 0.29s | 7.75 MB |
+| while2 | 2.08s | 1.88s | 0.13s | 7.75 MB |
 
 ## 32bit で踏むもの
 
@@ -154,30 +202,13 @@ GitHub Pages でもそのまま動く: `wasi/build/` は gitignore なので、�
   遅延コミットされるので実 RSS は数百 MB 弱 (native の観測と同じ理屈)。
   モバイル Safari 等ではタブのメモリ上限に注意。
 
-## ruby.wasm との比較 (2026-08-22, wasmtime 44)
+## 測り方の注意 (wasmtime)
 
-**測り方**: `wasmtime compile` で .cwasm にしてから測る。**そうしないとモジュールの
-コンパイル時間を測ることになる** (27 MB の ruby.wasm で毎回 7.5 秒)。wasmtime は
-既定でモジュール全体を事前コンパイルし、キャッシュは `directory` を書いた TOML を
-`-C cache-config=` で渡さない限り効かない (`-C cache=y` だけでは置き場が無く効かない)。
+`wasmtime compile` で .cwasm にしてから測ること。そうしないとモジュールの
+コンパイル時間を測ることになる (27 MB の ruby.wasm で毎回 7.5 秒)。wasmtime の
+キャッシュは `directory` を書いた TOML を `-C cache-config=` で渡さない限り
+効かない (`-C cache=y` だけでは置き場が無く効かない)。
 
-事前コンパイル済みでの起動: 当初 **koruby 0.30s / ruby 0.09s** だったが、
-0.30s の主犯はパースではなく code_repo_add の O(bodies²) hash 再計算だった
-(ba929ec0 で排除、**0.02s** に)。
-
-実行時間 (起動を引いた値、3 回の最小)。koruby は**純インタプリタ (AOT 無し)**、
-CRuby は wasm なので YJIT 無し:
-
-| bench | koruby | ruby | 比 |
-|---|---|---|---|
-| while 80M | 6.40s | 15.47s | **0.41x** |
-| 8M.times | 0.49s | 1.00s | **0.49x** |
-| 3M object 確保 (使い捨て) | 0.61s | 1.89s | **0.32x** |
-| 2M String 確保 | 0.84s | 1.04s | **0.81x** |
-| fib(32) | 0.56s | 0.43s | **1.30x** (koruby が遅い) |
-
-ループ・ブロック・短命オブジェクトの確保で速く、再帰で負ける。ネイティブでの
-YJIT 比の傾向 (再帰と object だけ負ける) と一致している。
-
-実行時間が 0.3 秒を下回るものは起動の引き算誤差に埋もれるので載せていない
-(Hash・Array・生存データ保持)。生存データ系は上記のヒープ上限で規模を上げられない。
+(朝時点の interp-only 比較とその撤回の経緯は
+`~/ruby/src/trials/20260822_koruby_wasm_vs_rubywasm/` と
+`~/ruby/src/trials/20260822_koruby_wasm_aot/` に残してある。)
