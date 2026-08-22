@@ -8324,8 +8324,12 @@ static RESULT korb_m_io_poll_raw(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 static RESULT korb_blop_poll_wait(CTX *c, VALUE *slots, struct pollfd *fds, nfds_t nfds,
                                   double timeout_sec, ssize_t *out_ready);
 #include "builtins/io.c"
-#include "builtins/process.c"
-#include "builtins/socket.c"
+#ifdef KORB_WASI
+#  include "wasi/wasi_stubs.c"      /* WASI: プロセスもソケットも無い */
+#else
+#  include "builtins/process.c"
+#  include "builtins/socket.c"
+#endif
 #include "builtins/time.c"
 #include "builtins/random.c"
 #include "builtins/array.c"
@@ -12067,6 +12071,13 @@ korb_ctx_new(void)
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     bytes = (bytes + page - 1) & ~(page - 1);
 
+#ifdef KORB_WASI
+    /* WASI の mmap エミュレーションは MAP_NORESERVE も PROT_NONE のガード
+     * ページも扱えない。素の確保で代用する = **値スタックの溢れがガード
+     * ページで捕まらない**ので、そこはインタプリタ側の深さ検査に頼る。 */
+    char *base = calloc(1, bytes + page);
+    if (base == NULL) { perror("koruby_precise: alloc slots"); abort(); }
+#else
     char *base = mmap(NULL, bytes + page, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (base == MAP_FAILED) { perror("koruby_precise: mmap slots"); abort(); }
@@ -12074,6 +12085,7 @@ korb_ctx_new(void)
         perror("koruby_precise: mprotect guard");
         abort();
     }
+#endif
 
     /* Leading slack cells: every frame's EP is base[-2] (self at base[-1]); the
      * toplevel frame sits at c->slots so its EP cell is c->slots[-2].  Reserve two

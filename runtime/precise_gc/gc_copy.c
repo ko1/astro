@@ -171,9 +171,16 @@ typedef struct ASTroGC {
 static char *
 mmap_region(size_t bytes)
 {
+#ifdef KORB_WASI
+    // WASI の mmap エミュレーションは MAP_NORESERVE を受け付けない。
+    // wasm の線形メモリはどのみち遅延コミットされないので、素の確保でよい。
+    char *p = (char *)calloc(1, bytes);
+    if (p == NULL) { perror("alloc"); abort(); }
+#else
     char *p = (char *)mmap(NULL, bytes, PROT_READ|PROT_WRITE,
                            MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); abort(); }
+#endif
     return p;
 }
 

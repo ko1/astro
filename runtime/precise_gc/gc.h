@@ -30,7 +30,14 @@
  * effectively unbounded.  Per-page / per-block / per-line sizes are
  * left fixed (they're tuning knobs, not program-limiting).
  * --------------------------------------------------------------------------- */
-#define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 30)   /* 64 GiB virtual */
+#if SIZE_MAX <= 0xffffffffu
+/* 32bit (wasm32 等): アドレス空間が 4 GiB しかなく、遅延ページングも無いので
+ * 「巨大な仮想領域を予約して実際に触った分だけ物理化する」戦略が成立しない。
+ * ここは**実メモリ**になるため、必要量に合わせて小さく取る。 */
+#  define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 20)   /* 64 MiB 実メモリ */
+#else
+#  define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 30)   /* 64 GiB virtual */
+#endif
 
 // Forward decls (defined in context.h)
 struct CTX_struct;
