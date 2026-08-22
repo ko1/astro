@@ -280,11 +280,11 @@ static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (LIKELY(FIXNUM_P(num) && FIXNUM_P(den)))
         return korb_float_new(c, slots, (double)FIX2LONG(num) / (double)FIX2LONG(den));
     /* Bignum num/den: naive num.to_d / den.to_d overflows each to ±Inf → NaN.
-     * mpq_get_d computes the ratio exactly-rounded regardless of magnitude. */
+     * korb_mq_get_d computes the ratio exactly-rounded regardless of magnitude. */
     korb_mp_t zn, zd; korb_to_mpz(num, zn); korb_to_mpz(den, zd);
-    mpq_t q; mpq_init(q); mpq_set_num(q, zn); mpq_set_den(q, zd); mpq_canonicalize(q);
-    const double r = mpq_get_d(q);
-    mpq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
+    korb_mq_t q; korb_mq_init(q); korb_mq_set_num(q, zn); korb_mq_set_den(q, zd); korb_mq_canonicalize(q);
+    const double r = korb_mq_get_d(q);
+    korb_mq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
     return korb_float_new(c, slots, r);
 }
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
@@ -10968,12 +10968,12 @@ static bool korb_arg_rational_ok(VALUE v) {
     return FIXNUM_P(v) || KORB_BIGNUM_P(v) || KORB_RATIONAL_P(v) || KORB_FLOAT_P(v) ||
            KORB_STRING_P(v) || KORB_COMPLEX_P(v);
 }
-static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
-    if (FIXNUM_P(v)) { mpq_set_si(out, (long)FIX2LONG(v), 1); return true; }
-    if (KORB_BIGNUM_P(v)) { korb_mp_t z; korb_to_mpz(v, z); mpq_set_z(out, z); korb_mp_clear(z); return true; }
+static bool korb_arg_to_mpq(VALUE v, korb_mq_t out) {
+    if (FIXNUM_P(v)) { korb_mq_set_si(out, (long)FIX2LONG(v), 1); return true; }
+    if (KORB_BIGNUM_P(v)) { korb_mp_t z; korb_to_mpz(v, z); korb_mq_set_z(out, z); korb_mp_clear(z); return true; }
     if (KORB_RATIONAL_P(v)) { korb_mp_t zn, zd; korb_to_mpz(VAL2RAT(v)->num, zn); korb_to_mpz(VAL2RAT(v)->den, zd);
-                              mpq_set_num(out, zn); mpq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd); mpq_canonicalize(out); return true; }
-    if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); if (!isfinite(d)) return false; mpq_set_d(out, d); return true; }
+                              korb_mq_set_num(out, zn); korb_mq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd); korb_mq_canonicalize(out); return true; }
+    if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); if (!isfinite(d)) return false; korb_mq_set_d(out, d); return true; }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v); char buf[512];
         if (s->len >= sizeof(buf)) return false;
@@ -10991,12 +10991,12 @@ static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
             korb_mp_t zn, zd; korb_mp_init(zd);
             if (korb_mp_init_set_str(zn, numbuf, 10) != 0) { korb_mp_clear(zn); korb_mp_clear(zd); return false; }
             korb_mp_ui_pow_ui(zd, 10, fraclen);
-            mpq_set_num(out, zn); mpq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd);
-            mpq_canonicalize(out); return true;
+            korb_mq_set_num(out, zn); korb_mq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd);
+            korb_mq_canonicalize(out); return true;
         }
-        if (mpq_set_str(out, buf, 10) != 0) return false;     /* "a/b" or plain integer */
-        if (mpq_sgn(out) == 0 && buf[0] != '0' && !(buf[0] == '-' && buf[1] == '0') && strchr(buf, '0') == NULL) return false;
-        mpq_canonicalize(out); return true;
+        if (korb_mq_set_str(out, buf, 10) != 0) return false;     /* "a/b" or plain integer */
+        if (korb_mq_sgn(out) == 0 && buf[0] != '0' && !(buf[0] == '-' && buf[1] == '0') && strchr(buf, '0') == NULL) return false;
+        korb_mq_canonicalize(out); return true;
     }
     return false;
 }
@@ -11028,18 +11028,18 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     if (KORB_INTEGER_P(nv) && (n < 2 || KORB_INTEGER_P(VALUE_SLICE_GET(args, 1))))
         return korb_rat_new_v(c, slots, nv, n >= 2 ? VALUE_SLICE_GET(args, 1) : LONG2FIX(1));
     {
-        mpq_t q0, q1; mpq_init(q0);
-        if (!korb_arg_to_mpq(nv, q0)) { mpq_clear(q0); goto bad; }
+        korb_mq_t q0, q1; korb_mq_init(q0);
+        if (!korb_arg_to_mpq(nv, q0)) { korb_mq_clear(q0); goto bad; }
         if (n >= 2) {
-            mpq_init(q1);
-            if (!korb_arg_to_mpq(VALUE_SLICE_GET(args, 1), q1)) { mpq_clear(q0); mpq_clear(q1); goto bad; }
-            if (mpq_sgn(q1) == 0) { mpq_clear(q0); mpq_clear(q1); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
-            mpq_div(q0, q0, q1); mpq_clear(q1);
+            korb_mq_init(q1);
+            if (!korb_arg_to_mpq(VALUE_SLICE_GET(args, 1), q1)) { korb_mq_clear(q0); korb_mq_clear(q1); goto bad; }
+            if (korb_mq_sgn(q1) == 0) { korb_mq_clear(q0); korb_mq_clear(q1); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+            korb_mq_div(q0, q0, q1); korb_mq_clear(q1);
         }
-        mpq_canonicalize(q0);
-        slots[0] = UNWRAP(korb_big_from_mpz(c, slots, mpq_numref(q0)));     /* num */
-        slots[1] = UNWRAP(korb_big_from_mpz(c, slots + 1, mpq_denref(q0))); /* den */
-        mpq_clear(q0);
+        korb_mq_canonicalize(q0);
+        slots[0] = UNWRAP(korb_big_from_mpz(c, slots, korb_mq_numref(q0)));     /* num */
+        slots[1] = UNWRAP(korb_big_from_mpz(c, slots + 1, korb_mq_denref(q0))); /* den */
+        korb_mq_clear(q0);
         return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
     }
 bad:

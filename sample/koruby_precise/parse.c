@@ -857,17 +857,17 @@ kp_integer_value(const pm_integer_t *integer, intptr_t *out)
 static char *
 kp_integer_to_decimal(const pm_integer_t *iv)
 {
-    mpz_t z; mpz_init(z);
-    if (iv->values == NULL) mpz_set_ui(z, iv->value);
-    else                    mpz_import(z, iv->length, -1, sizeof(uint32_t), 0, 0, iv->values);
-    if (iv->negative) mpz_neg(z, z);
-    char *gs = mpz_get_str(NULL, 10, z);                 /* GMP-malloc'd */
-    mpz_clear(z);
+    korb_mp_t z; korb_mp_init(z);
+    if (iv->values == NULL) korb_mp_set_ui(z, iv->value);
+    else                    korb_mp_import(z, iv->length, -1, sizeof(uint32_t), 0, 0, iv->values);
+    if (iv->negative) korb_mp_neg(z, z);
+    char *gs = korb_mp_get_str(NULL, 10, z);                 /* GMP-malloc'd */
+    korb_mp_clear(z);
     size_t len = strlen(gs);
     char *buf = malloc(len + 1);
     if (!buf) abort();
     memcpy(buf, gs, len + 1);
-    void (*freefn)(void *, size_t); mp_get_memory_functions(NULL, NULL, &freefn); freefn(gs, len + 1);
+    korb_mp_strfree(gs, len + 1);          /* backend が確保した文字列 */
     return buf;
 }
 

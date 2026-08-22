@@ -72,6 +72,37 @@ typedef mp_bitcnt_t korb_mp_bitcnt_t;
 #define korb_mp_ui_pow_ui    mpz_ui_pow_ui
 #define korb_mp_xor          mpz_xor
 
+#define korb_mp_fprintf      gmp_fprintf
+
+/* 有理数 (Rational の内部計算で使う)。 */
+typedef mpq_t      korb_mq_t;
+typedef mpq_srcptr korb_mq_srcptr;
+typedef mpq_ptr    korb_mq_ptr;
+#define korb_mq_add            mpq_add
+#define korb_mq_canonicalize   mpq_canonicalize
+#define korb_mq_clear          mpq_clear
+#define korb_mq_cmp            mpq_cmp
+#define korb_mq_denref         mpq_denref
+#define korb_mq_div            mpq_div
+#define korb_mq_div_2exp       mpq_div_2exp
+#define korb_mq_get_d          mpq_get_d
+#define korb_mq_init           mpq_init
+#define korb_mq_numref         mpq_numref
+#define korb_mq_set_d          mpq_set_d
+#define korb_mq_set_den        mpq_set_den
+#define korb_mq_set_num        mpq_set_num
+#define korb_mq_set_si         mpq_set_si
+#define korb_mq_set_str        mpq_set_str
+#define korb_mq_set_z          mpq_set_z
+#define korb_mq_sgn            mpq_sgn
+
+/* get_str が返した文字列の解放 (GMP の allocator 経由) */
+static inline void korb_mp_strfree(char *s, size_t n) {
+    void (*freefn)(void *, size_t);
+    mp_get_memory_functions(NULL, NULL, &freefn);
+    freefn(s, n);
+}
+
 /* GC hooks: the limbs are external malloc, so the collector needs their size
  * and a way to release them (see AROH_FINALIZE in context.h). */
 static inline size_t korb_mp_extbytes(korb_mp_srcptr z) {

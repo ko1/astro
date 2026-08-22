@@ -345,26 +345,26 @@ static RESULT korb_m_int_fdiv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         if (exact) {
             korb_mp_t zn, zd; korb_to_mpz(sv, zn); korb_to_mpz(bv, zd);
             if (korb_mp_sgn(zd) != 0) {                       /* zero divisor → Float ±Inf/NaN below */
-                mpq_t q; mpq_init(q);
-                mpq_set_num(q, zn); mpq_set_den(q, zd); mpq_canonicalize(q);
-                double r = mpq_get_d(q);                  /* GMP truncates toward zero — round to nearest below */
+                korb_mq_t q; korb_mq_init(q);
+                korb_mq_set_num(q, zn); korb_mq_set_den(q, zd); korb_mq_canonicalize(q);
+                double r = korb_mq_get_d(q);                  /* GMP truncates toward zero — round to nearest below */
                 if (isfinite(r)) {
                     const double r2 = nextafter(r, r >= 0 ? HUGE_VAL : -HUGE_VAL);   /* next double away from zero */
                     if (isfinite(r2)) {
-                        mpq_t qr, qr2, mid; mpq_init(qr); mpq_init(qr2); mpq_init(mid);
-                        mpq_set_d(qr, r); mpq_set_d(qr2, r2);
-                        mpq_add(mid, qr, qr2); mpq_div_2exp(mid, mid, 1);            /* (r + r2) / 2 */
-                        const int cmp = mpq_cmp(q, mid);
+                        korb_mq_t qr, qr2, mid; korb_mq_init(qr); korb_mq_init(qr2); korb_mq_init(mid);
+                        korb_mq_set_d(qr, r); korb_mq_set_d(qr2, r2);
+                        korb_mq_add(mid, qr, qr2); korb_mq_div_2exp(mid, mid, 1);            /* (r + r2) / 2 */
+                        const int cmp = korb_mq_cmp(q, mid);
                         if (cmp == 0) {                                            /* exact tie → round half to even */
                             uint64_t bits; memcpy(&bits, &r, sizeof bits);
                             if (bits & 1u) r = r2;
                         } else if ((cmp > 0) == (r >= 0)) {                        /* exact beyond the midpoint → round away from zero */
                             r = r2;
                         }
-                        mpq_clear(qr); mpq_clear(qr2); mpq_clear(mid);
+                        korb_mq_clear(qr); korb_mq_clear(qr2); korb_mq_clear(mid);
                     }
                 }
-                mpq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
+                korb_mq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
                 return korb_float_new(c, slots, r);
             }
             korb_mp_clear(zn); korb_mp_clear(zd);

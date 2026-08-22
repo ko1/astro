@@ -82,8 +82,8 @@ PRECISE_GC_DIR := $(RUNTIME)/precise_gc
 GC_SRC         := $(PRECISE_GC_DIR)/gc_$(GC).c
 GC_COMMON_SRC  := $(PRECISE_GC_DIR)/gc_common.c
 
-# Marker file: rebuild when the GC selection (or debug level) changes.
-GC_VARIANT := $(GC)-d$(ASTRO_DEBUG)
+# Marker file: rebuild when the GC / bignum selection (or debug level) changes.
+GC_VARIANT := $(GC)-b$(BIGNUM)-d$(ASTRO_DEBUG)
 GC_MARKER  := $(shell test -f .built_gc && cat .built_gc 2>/dev/null)
 ifneq ($(GC_MARKER),$(GC_VARIANT))
 $(shell echo "$(GC_VARIANT)" > .built_gc)

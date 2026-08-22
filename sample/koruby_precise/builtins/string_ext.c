@@ -360,7 +360,7 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (KORB_BIGNUM_P(arg)) {                     /* Bignum: let GMP honour the flags/width via %Zd */
                 spec[si++] = 'Z'; spec[si++] = 'd'; spec[si] = '\0';
                 korb_mp_t z; korb_to_mpz(arg, z);
-                gmp_fprintf(ms, spec, z);
+                korb_mp_fprintf(ms, spec, z);
                 korb_mp_clear(z);
                 break;
             }
