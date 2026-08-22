@@ -104,6 +104,39 @@ libkoruby-regex-wasm.a にまとめる (wasi/Makefile。llvm-objcopy は wasm ob
 AOT .wasm は prelude 埋め込み済みで mount 不要
 (require する場合だけ `--dir` が要る)。
 
+## ブラウザで動く (wasi/demo/)
+
+import は標準の `wasi_snapshot_preview1` 33 個だけなので、ブラウザは JS の
+WASI shim があれば動く。`@bjorn3/browser_wasi_shim` 0.4.2 (wasi/demo/shim/ に
+vendor、MIT/Apache-2.0) で **interp + AOT の両方が動くことを Node (V8 = ブラウザと
+同じエンジン + 同じ shim コード) で確認済み**。ブロック・regex・`sleep` も動く。
+
+```sh
+# サンプルルートで:
+python3 -m http.server
+# → http://localhost:8000/wasi/demo/
+```
+
+- **インタプリタ .wasm は prelude ソース埋め込み** (`-DKORUBY_PRELUDE_BLOB`,
+  tools/gen_prelude_blob.rb が main.c の KORUBY_PRELUDE_FILES から生成) なので
+  mount も fetch も不要。native は開発性 (prelude 編集→即実行) のため
+  ファイル読みのまま。AOT .wasm は AST ごと埋め込みで元から不要。
+- **ブラウザ (main thread) は実行中止まる**: wasm は同期実行なので、走って
+  いる間 rAF / setInterval / DOM は全部停止する (CSS アニメーションだけは
+  compositor 駆動なので動き続けることが多い)。demo に JS 時計 + CSS スピナーを
+  置いて見えるようにしてある。**Worker 実行なら UI は止まらない** (demo の
+  Run (Worker) ボタン。compile 済み Module を postMessage で渡す)。
+- **`sleep` は動くが busy-wait**: shim の `poll_oneoff` は
+  `while (endTime > getNow()) {}` で回す (JS は本当にはブロックできない)。
+  時間は正確だが CPU 1 コアを食う。Worker なら UI には影響しない。真面目に
+  やるなら SharedArrayBuffer + Atomics.wait ベースの shim (COOP/COEP 必須)。
+  wasmtime / Node native WASI は本物のブロック。
+- shim の `poll_oneoff` は clock 購読 1 本のみ。fd を混ぜる IO 待ちは NOTSUP
+  になるので、IO.select 系はブラウザでは不可。
+- ヒープは起動時 malloc の 512 MiB×2 だが、wasm の memory.grow は OS 側で
+  遅延コミットされるので実 RSS は数百 MB 弱 (native の観測と同じ理屈)。
+  モバイル Safari 等ではタブのメモリ上限に注意。
+
 ## ruby.wasm との比較 (2026-08-22, wasmtime 44)
 
 **測り方**: `wasmtime compile` で .cwasm にしてから測る。**そうしないとモジュールの

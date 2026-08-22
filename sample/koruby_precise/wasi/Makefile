@@ -40,7 +40,8 @@ SDFLAGS = --target=wasm32-wasip1 -O2 -w
 CORE_SRCS = $(SRC)/main.c $(SRC)/node.c $(SRC)/korb_runtime.c $(SRC)/parse.c \
             $(SRC)/wasi/wasi_missing.c \
             $(RUNTIME)/precise_gc/gc_common.c $(RUNTIME)/precise_gc/gc_copy.c
-CORE_OBJS = $(patsubst %.c,$(BUILD)/obj/%.o,$(notdir $(CORE_SRCS)))
+CORE_OBJS = $(patsubst %.c,$(BUILD)/obj/%.o,$(notdir $(CORE_SRCS))) \
+            $(BUILD)/obj/prelude_blob.o
 
 PRISM_SRCS = $(wildcard $(SRC)/prism/src/*.c) $(wildcard $(SRC)/prism/src/util/*.c)
 PRISM_OBJS = $(patsubst %.c,$(BUILD)/prism/%.o,$(notdir $(PRISM_SRCS)))
@@ -59,6 +60,15 @@ $(BUILD)/obj/%.o: $(SRC)/wasi/%.c | $(BUILD)/obj
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 $(BUILD)/obj/%.o: $(RUNTIME)/precise_gc/%.c | $(BUILD)/obj
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+# The interpreter bakes the prelude source in (no mount needed at startup);
+# main.c reads it under -DKORUBY_PRELUDE_BLOB.
+$(BUILD)/obj/prelude_blob.c: $(SRC)/main.c $(wildcard $(SRC)/prelude/*.rb) \
+                             $(SRC)/tools/gen_prelude_blob.rb | $(BUILD)/obj
+	ruby $(SRC)/tools/gen_prelude_blob.rb $(SRC) > $@
+$(BUILD)/obj/prelude_blob.o: $(BUILD)/obj/prelude_blob.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/obj/main.o: CPPFLAGS += -DKORUBY_PRELUDE_BLOB
 
 # korb_runtime.c #includes builtins/*.c; node.c #includes the generated
 # node_*.c and the runtime's astro_*.c.  List them so edits rebuild.

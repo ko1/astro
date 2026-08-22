@@ -29,7 +29,10 @@ struct koruby_option OPTION;
  * their method-body SDs are baked once into preload_store/all.so (ensure_preload),
  * not into every program's code store. */
 #define KORUBY_PRELUDE_DIR  KORUBY_SRC_DIR "/prelude"
-static const char *const KORUBY_PRELUDE_FILES[] = {
+/* Also the single source of truth for the baked variant: tools/
+ * gen_prelude_blob.rb parses this initializer (KORUBY_PRELUDE_BLOB builds
+ * read the blob and never touch the list — hence the unused attribute). */
+__attribute__((unused)) static const char *const KORUBY_PRELUDE_FILES[] = {
     "enumerable.rb", "enumerator.rb", "proc.rb", "hash.rb", "set.rb", "encoding.rb", "exception.rb", "numeric.rb",
     "module.rb", "time.rb", "io.rb", "io_buffer.rb", "stringio.rb", "marshal.rb", "system.rb",
 };
@@ -79,6 +82,24 @@ read_file_all(const char *path, size_t *len_out)
 
 #define KORUBY_PRELUDE_NFILES (sizeof(KORUBY_PRELUDE_FILES) / sizeof(KORUBY_PRELUDE_FILES[0]))
 
+#ifdef KORUBY_PRELUDE_BLOB
+/* Prelude source baked into the binary (tools/gen_prelude_blob.rb — same
+ * concatenation as the file path below).  Used by the wasm interpreter so
+ * startup needs no filesystem mount; native keeps reading the files so a
+ * prelude edit takes effect without a rebuild. */
+extern const char koruby_prelude_blob[];
+extern const size_t koruby_prelude_blob_len;
+static char *
+load_prelude_source(size_t *len_out)
+{
+    char *const buf = malloc(koruby_prelude_blob_len + 1);
+    if (!buf) abort();
+    memcpy(buf, koruby_prelude_blob, koruby_prelude_blob_len);
+    buf[koruby_prelude_blob_len] = '\0';
+    *len_out = koruby_prelude_blob_len;
+    return buf;
+}
+#else
 /* Read + concatenate the prelude files (in KORUBY_PRELUDE_FILES order) into one
  * malloc'd, NUL-terminated source buffer. */
 static char *
@@ -100,6 +121,7 @@ load_prelude_source(size_t *len_out)
     *len_out = total;
     return buf;
 }
+#endif /* KORUBY_PRELUDE_BLOB */
 
 /* Newest mtime among the prelude files — folded into the preload-store version so
  * editing a prelude .rb invalidates the baked SDs. */

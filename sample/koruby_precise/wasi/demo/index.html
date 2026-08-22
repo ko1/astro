@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>koruby_precise on the browser (WASI)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+  textarea { width: 100%; height: 11rem; font-family: monospace; font-size: 14px; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 1rem; min-height: 8rem;
+        white-space: pre-wrap; overflow-x: auto; }
+  button { font-size: 1rem; padding: .4rem 1.2rem; }
+  .note { color: #666; font-size: .85rem; }
+  #anim { display: flex; gap: 2rem; align-items: center; margin: .6rem 0;
+          padding: .6rem 1rem; background: #f4f4f4; border-radius: .5rem; }
+  #jsclock { font-family: monospace; font-size: 1.4rem; }
+  .spinner { width: 22px; height: 22px; border: 4px solid #ccc; border-top-color: #d33;
+             border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<h1>koruby_precise (wasm32-wasip1) in the browser</h1>
+<p class="note">
+  インタプリタ koruby.wasm (prelude 埋め込み済み、mount 不要) を
+  <code>@bjorn3/browser_wasi_shim</code> で実行。
+  下のアニメーションで「wasm 実行中にブラウザが止まるか」が見える:
+  <b>JS 時計 = main thread</b> (main-thread 実行中は止まる)、
+  <b>CSS スピナー = compositor</b> (止まらないことが多い)。
+  Worker 実行なら UI は一切止まらない。
+  起動: サンプルルートで <code>python3 -m http.server</code> →
+  <code>http://localhost:8000/wasi/demo/</code>
+</p>
+
+<div id="anim">
+  <span id="jsclock">--:--:--.---</span>
+  <div class="spinner"></div>
+  <span class="note">← JS 時計 (rAF) と CSS スピナー。止まり方の違いを観察</span>
+</div>
+
+<textarea id="src">
+def fib(n) = n < 2 ? n : fib(n-1) + fib(n-2)
+p fib(27)
+sleep 2          # shim の poll_oneoff は busy-wait — この間 UI がどうなるか
+p [3, 1, 2].sort.map { _1 * 10 }
+p "hello42" =~ /l+o(\d+)/, $1
+</textarea>
+<p>
+  <button id="run_main">Run (main thread)</button>
+  <button id="run_worker">Run (Worker)</button>
+  <span id="status" class="note"></span>
+</p>
+<pre id="out"></pre>
+
+<script type="module">
+import { WASI, File, OpenFile, ConsoleStdout, WASIProcExit } from './shim/index.js';
+
+const out = document.getElementById('out');
+const status = document.getElementById('status');
+const log = (line) => { out.textContent += line + '\n'; };
+
+// --- the observation aid: a millisecond clock on the main thread ----------
+const clockEl = document.getElementById('jsclock');
+(function tick() {
+  const d = new Date();
+  clockEl.textContent = d.toTimeString().slice(0, 8) + '.' +
+                        String(d.getMilliseconds()).padStart(3, '0');
+  requestAnimationFrame(tick);
+})();
+
+// Fetch + compile once; the same Module is reused on main and (via
+// postMessage) in the Worker.
+status.textContent = 'loading koruby.wasm …';
+const mod = await WebAssembly.compileStreaming(fetch('../build/koruby.wasm'));
+status.textContent = 'ready';
+
+function finish(rc, t0) {
+  status.textContent = `exit ${rc} — ${((performance.now() - t0) / 1000).toFixed(2)}s`;
+}
+
+// --- main-thread run: the JS clock freezes while this runs ----------------
+async function runMain() {
+  out.textContent = '';
+  status.textContent = 'running on the MAIN thread…';
+  await new Promise(r => setTimeout(r));       // let the status paint first
+  const t0 = performance.now();
+  try {
+    const fds = [
+      new OpenFile(new File([])),
+      ConsoleStdout.lineBuffered(log),
+      ConsoleStdout.lineBuffered(log),
+    ];
+    const code = document.getElementById('src').value;
+    const wasi = new WASI(['koruby', '-e', code], [], fds, { debug: false });
+    const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
+    let rc = 0;
+    try { rc = wasi.start(inst); }
+    catch (e) { if (e instanceof WASIProcExit) rc = e.code; else throw e; }
+    finish(rc, t0);
+  } catch (e) { status.textContent = 'error'; log(String(e)); }
+}
+
+// --- Worker run: UI (clock included) keeps moving -------------------------
+let worker = null;
+function runWorker() {
+  out.textContent = '';
+  status.textContent = 'running in a WORKER…';
+  const t0 = performance.now();
+  if (worker) worker.terminate();              // previous run may still spin
+  worker = new Worker('./worker.js', { type: 'module' });
+  worker.onmessage = (ev) => {
+    if (ev.data.line !== undefined) log(ev.data.line);
+    else if (ev.data.exit !== undefined) finish(ev.data.exit, t0);
+    else if (ev.data.error !== undefined) { status.textContent = 'error'; log(ev.data.error); }
+  };
+  worker.postMessage({ mod, code: document.getElementById('src').value });
+}
+
+document.getElementById('run_main').addEventListener('click', runMain);
+document.getElementById('run_worker').addEventListener('click', runWorker);
+</script>
+</body>
+</html>
