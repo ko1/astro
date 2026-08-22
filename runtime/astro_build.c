@@ -493,13 +493,14 @@ astro_build_executable(const struct astro_build_config *cfg)
         char *strip_cmd = NULL;
         size_t sl = 0, sc = 0;
         const char *strip_prog = "strip";
+        char *cross = NULL;
         // Match strip to cross prefix when --cc is something like
         // aarch64-linux-gnu-gcc.
         if (cfg->cc) {
             const char *dash = strrchr(cfg->cc, '-');
             if (dash && strncmp(dash + 1, "gcc", 3) == 0) {
                 size_t plen = (size_t)(dash - cfg->cc) + 1;
-                char *cross = malloc(plen + 6);
+                cross = malloc(plen + 6);
                 memcpy(cross, cfg->cc, plen);
                 memcpy(cross + plen, "strip", 6);
                 strip_prog = cross;
@@ -516,7 +517,7 @@ astro_build_executable(const struct astro_build_config *cfg)
             fprintf(stderr, "astro_build: strip failed (exit %d)\n", sret);
         }
         free(strip_cmd);
-        if (strip_prog != (const char *)"strip") free((void *)(uintptr_t)strip_prog);
+        free(cross);
     }
 
     return ret;

@@ -440,7 +440,7 @@ korb_bi_sleep(CTX *c, VALUE *slots, VALUE_SLICE args)
 static void
 korb_thread_trampoline(unsigned hi, unsigned lo)
 {
-    CTX *const c = (CTX *)(((uintptr_t)hi << 32) | (uintptr_t)lo);
+    CTX *const c = (CTX *)(uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo);
     struct korb_thread *const t = c->vm->cur_thread;
     t->started = 1;
     /* body Proc を自分の (scan される) value stack で proc.call(*args) する。
@@ -544,7 +544,7 @@ korb_thread_init_body(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a,
     ((ucontext_t *)t->uctx)->uc_stack.ss_size = KORB_FIBER_CSTACK_BYTES;
     ((ucontext_t *)t->uctx)->uc_link = NULL;
     makecontext((ucontext_t *)t->uctx, (void (*)(void))korb_thread_trampoline, 2,
-                (unsigned)((uintptr_t)c >> 32), (unsigned)((uintptr_t)c & 0xFFFFFFFFu));
+                (unsigned)((uint64_t)(uintptr_t)c >> 32), (unsigned)((uintptr_t)c & 0xFFFFFFFFu));
     t->state = KORB_TH_READY;
     korb_thread_runq_push(c->vm, t);
     return RESULT_OK(VALUE_REF_GET(self));

@@ -25,7 +25,7 @@ GC_NUM     = 5
 
 CPPFLAGS = -I$(SRC) -I$(SRC)/wasi -I$(SRC)/prism/include -I$(RUNTIME) \
            -include $(SRC)/wasi/wasi_decls.h \
-           -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
+           -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
            -DKORB_WASI=1 -DKORB_BIGNUM=$(BIGNUM_NUM) -DBARUBY_GC=$(GC_NUM) -DASTRO_DEBUG=0 \
            -DKORUBY_SRC_DIR='"/koruby"' -DASTRO_RUNTIME_DIR='"/koruby"' \
            -DASTRO_PRISM_INC_DIR='"/koruby"'
@@ -48,7 +48,7 @@ PRISM_OBJS = $(patsubst %.c,$(BUILD)/prism/%.o,$(notdir $(PRISM_SRCS)))
 .PHONY: all aot check clean clean-sd
 all: $(BUILD)/koruby.wasm
 
-$(BUILD)/koruby.wasm: $(CORE_OBJS) $(BUILD)/libprism-wasm.a
+$(BUILD)/koruby.wasm: $(CORE_OBJS) $(BUILD)/libprism-wasm.a $(BUILD)/libkoruby-regex-wasm.a
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 # --- core objects ----------------------------------------------------------
@@ -67,6 +67,45 @@ $(BUILD)/obj/node.o: $(wildcard $(SRC)/node_*.c) $(SRC)/node.h $(SRC)/node_head.
                      $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c
 $(CORE_OBJS): $(SRC)/context.h Makefile
 
+# --- regex (astrogre + bridge, statically linked) --------------------------
+# wasm has no dlopen, so the koruby_regex.so / libastrogre.so pair becomes a
+# static archive.  astrogre's generic ASTro symbols (ALLOC_node_* / kind_* /
+# OPTION / astro_* ...) collide with koruby's, and llvm-objcopy cannot
+# localize wasm symbols — so we rename them at the preprocessor level:
+# pass 1 compiles unrenamed, llvm-nm lists the defined extern symbols, and
+# pass 2 recompiles every TU with `#define <sym> astrogre_hidden_<sym>`
+# (-include rename.h).  Renaming is uniform across the astrogre+bridge TU
+# set, so cross-references resolve; only the koruby_re_* API keeps its name.
+ASTROGRE := $(abspath ../../astrogre)
+NM       := $(WASI_SDK)/bin/llvm-nm
+REGEX_ENGINE = node.c parse.c match.c backend_astrogre.c aho_corasick.c libastrogre_option.c
+REGEX_NAMES  = $(basename $(REGEX_ENGINE)) regex_bridge
+RXFLAGS  = --target=wasm32-wasip1 -O2 -w -D_WASI_EMULATED_PROCESS_CLOCKS \
+           -I$(ASTROGRE) -I$(RUNTIME)
+RX1_OBJS = $(addprefix $(BUILD)/regex1/,$(addsuffix .o,$(REGEX_NAMES)))
+RX2_OBJS = $(addprefix $(BUILD)/regex/,$(addsuffix .o,$(REGEX_NAMES)))
+
+$(ASTROGRE)/node_eval.c: $(ASTROGRE)/node.def
+	$(MAKE) -C $(ASTROGRE) node_eval.c
+
+$(BUILD)/regex1/%.o: $(ASTROGRE)/%.c $(ASTROGRE)/node_eval.c | $(BUILD)/regex1
+	$(CC) $(RXFLAGS) -c $< -o $@
+$(BUILD)/regex1/regex_bridge.o: $(SRC)/regex_bridge.c | $(BUILD)/regex1
+	$(CC) $(RXFLAGS) -c $< -o $@
+
+$(BUILD)/regex/rename.h: $(RX1_OBJS) | $(BUILD)/regex
+	$(NM) --extern-only --defined-only $(RX1_OBJS) \
+	  | awk '$$3 != "" && $$3 !~ /^koruby_re_/ { print "#define", $$3, "astrogre_hidden_" $$3 }' \
+	  | sort -u > $@
+
+$(BUILD)/regex/%.o: $(ASTROGRE)/%.c $(BUILD)/regex/rename.h | $(BUILD)/regex
+	$(CC) $(RXFLAGS) -include $(BUILD)/regex/rename.h -c $< -o $@
+$(BUILD)/regex/regex_bridge.o: $(SRC)/regex_bridge.c $(BUILD)/regex/rename.h | $(BUILD)/regex
+	$(CC) $(RXFLAGS) -include $(BUILD)/regex/rename.h -c $< -o $@
+
+$(BUILD)/libkoruby-regex-wasm.a: $(RX2_OBJS)
+	$(AR) rcs $@ $^
+
 # --- prism -----------------------------------------------------------------
 $(BUILD)/libprism-wasm.a: $(PRISM_OBJS)
 	$(AR) rcs $@ $^
@@ -77,7 +116,7 @@ $(BUILD)/prism/%.o: $(SRC)/prism/src/util/%.c | $(BUILD)/prism
 
 # --- AOT (native --build cross-compiling with the wasi-sdk) ----------------
 # Runs from the sample root so the bake's code_store is the usual one.
-aot: $(BUILD)/libprism-wasm.a
+aot: $(BUILD)/libprism-wasm.a $(BUILD)/libkoruby-regex-wasm.a
 	@test -n "$(PROG)" || { echo "usage: make aot PROG=foo.rb [OUT=foo.wasm]" >&2; exit 2; }
 	$(MAKE) -C $(SRC) koruby_precise
 	cd $(SRC) && KORUBY_BUILD_TARGET=wasi WASI_SDK='$(WASI_SDK)' \
@@ -85,7 +124,7 @@ aot: $(BUILD)/libprism-wasm.a
 	    '$(abspath $(if $(OUT),$(OUT),$(BUILD)/$(notdir $(basename $(PROG))).wasm))' \
 	    '$(abspath $(PROG))'
 
-$(BUILD)/obj $(BUILD)/prism:
+$(BUILD)/obj $(BUILD)/prism $(BUILD)/regex1 $(BUILD)/regex:
 	mkdir -p $@
 
 clean:

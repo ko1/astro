@@ -682,7 +682,7 @@ static RESULT korb_m_hash_transform_values_b(CTX *c, VALUE *slots, VALUE_REF sel
 static RESULT korb_m_ary_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, NODE *block, VALUE *def_env, VALUE *cself);
 static RESULT korb_m_hash_minmax(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     slots[0] = UNWRAP(korb_hash_first_n(c, slots, self, 0xFFFFFFFFu));   /* all pairs, then Array#minmax */
-    return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
+    return korb_m_ary_minmax(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
 }
 static RESULT korb_m_hash_default_proc(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a; return RESULT_OK(VAL2HASH(VALUE_REF_GET(self))->default_proc);

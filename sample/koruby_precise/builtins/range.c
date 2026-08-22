@@ -335,7 +335,7 @@ static RESULT korb_m_range_min(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (r->rend == KORB_NIL && !KORB_INTEGER_P(r->rbegin))
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "can't iterate from %s", korb_type_name(r->rbegin));
             slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));
-            return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
+            return korb_m_ary_min(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
         }
         uint32_t take = (uint32_t)n; if ((korb_sword_t)take > hi - lo) take = (uint32_t)(hi > lo ? hi - lo : 0);
         return korb_range_seq(c, slots, lo, take, 1);
@@ -386,7 +386,7 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (cmp != 2) return RESULT_OK(cmp <= 0 ? r->rend : KORB_NIL);
         }
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, VALUE_SLICE_MAKE(NULL, 0)));   /* non-integer (String …) → via to_a */
-        return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, KORB_NIL);
+        return korb_m_ary_max(c, slots + 1, VALUE_REF_AT(&slots[0]), a, NULL, NULL, NULL);
     }
     if (VALUE_SLICE_LEN(a) >= 1 && VALUE_SLICE_GET(a, 0) != KORB_NIL) {   /* max(n) → last n descending */
         korb_sword_t n;

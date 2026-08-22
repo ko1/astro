@@ -27,7 +27,7 @@ korb_raise_fiber_error(CTX *c, VALUE *slots, const char *msg)
 static void
 korb_fiber_trampoline(unsigned hi, unsigned lo)
 {
-    CTX *const c = (CTX *)(((uintptr_t)hi << 32) | (uintptr_t)lo);
+    CTX *const c = (CTX *)(uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo);
     KorbFiberRep *const rep = c->vm->starting_fiber;
     rep->fstate = 1;                                  /* running */
     VALUE arg = rep->transfer;                        /* value from the first resume */
@@ -119,7 +119,7 @@ korb_fiber_switch_in(CTX *c, VALUE *slots, KorbFiberRep *const rep, VALUE xfer, 
         ((ucontext_t *)rep->uctx)->uc_link = NULL;
         c->vm->starting_fiber = rep;
         makecontext((ucontext_t *)rep->uctx, (void (*)(void))korb_fiber_trampoline, 2,
-                    (unsigned)((uintptr_t)c >> 32), (unsigned)((uintptr_t)c & 0xFFFFFFFFu));
+                    (unsigned)((uint64_t)(uintptr_t)c >> 32), (unsigned)((uintptr_t)c & 0xFFFFFFFFu));
     }
     /* activate the fiber's stacks */
     c->slots = rep->vslots; c->slots_top = rep->vslots_top;

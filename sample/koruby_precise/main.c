@@ -103,6 +103,7 @@ load_prelude_source(size_t *len_out)
 
 /* Newest mtime among the prelude files — folded into the preload-store version so
  * editing a prelude .rb invalidates the baked SDs. */
+#ifndef __wasi__
 static uint64_t
 prelude_mtime(void)
 {
@@ -115,6 +116,7 @@ prelude_mtime(void)
     }
     return newest;
 }
+#endif /* !__wasi__ */
 
 /* Number of code-repo entries that belong to the Enumerable prelude (recorded
  * right after the prelude is parsed, before the user program registers any
@@ -390,7 +392,7 @@ koruby_do_build(CTX *c, NODE *prelude_ast, uint32_t prelude_locals,
         snprintf(wasi_cflags, sizeof wasi_cflags,
                  "-O2 -w -I%s -I%s/wasi -I%s/prism/include -I%s"
                  " -include %s/wasi/wasi_decls.h"
-                 " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS"
+                 " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
                  " -DKORB_WASI=1 -DKORB_BIGNUM=2 -DBARUBY_GC=%d -DASTRO_DEBUG=0",
                  KORUBY_SRC_DIR, KORUBY_SRC_DIR, KORUBY_SRC_DIR, ASTRO_RUNTIME_DIR,
                  KORUBY_SRC_DIR, BARUBY_GC);
@@ -454,7 +456,7 @@ koruby_do_build(CTX *c, NODE *prelude_ast, uint32_t prelude_locals,
             fprintf(mf,
                 "HOSTCFLAGS := -O2 -w -I%s -I%s/wasi -I%s/prism/include -I%s"
                 " -include %s/wasi/wasi_decls.h"
-                " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS"
+                " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
                 " -DKORB_WASI=1 -DASTRO_DEBUG=0 -DKORB_BIGNUM=2 -DBARUBY_GC=%d"
                 " '-DKORUBY_SRC_DIR=\"/koruby\"' '-DASTRO_RUNTIME_DIR=\"/koruby\"'"
                 " '-DASTRO_PRISM_INC_DIR=\"/koruby\"'\n",
@@ -508,7 +510,8 @@ koruby_do_build(CTX *c, NODE *prelude_ast, uint32_t prelude_locals,
 
     /* 4. Link: host objects + logged SD objects + libprism. */
     const uint32_t n_sd = astro_cs_compile_log_size();
-    const char **objs = calloc(n_sd + 10, sizeof(*objs));
+    /* 7 host + wasi_missing + prism + regex + NULL terminator + slack */
+    const char **objs = calloc(n_sd + 12, sizeof(*objs));
     uint32_t no = 0;
     static const char *const host_objs[] = {
         "host/main_embed.o", "host/_embed.o", "host/node.o", "host/korb_runtime.o",
@@ -536,6 +539,8 @@ koruby_do_build(CTX *c, NODE *prelude_ast, uint32_t prelude_locals,
     }
     objs[no++] = wasi ? KORUBY_SRC_DIR "/wasi/build/libprism-wasm.a"
                       : KORUBY_SRC_DIR "/prism/build/libprism.a";
+    if (wasi)   /* statically linked regex engine (native uses dlopen) */
+        objs[no++] = KORUBY_SRC_DIR "/wasi/build/libkoruby-regex-wasm.a";
     bcfg->extra_objects = objs;
 
     bcfg->src_dir = KORUBY_SRC_DIR;

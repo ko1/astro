@@ -24,6 +24,7 @@
 #endif
 #include <sys/stat.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include "astro_code_store.h"
 
 // ---------------------------------------------------------------------------
@@ -382,7 +383,7 @@ astro_cs_check_version(uint64_t current)
     uint64_t saved = 0;
     FILE *fp = fopen(version_path, "r");
     if (fp) {
-        if (fscanf(fp, "%lx", &saved) != 1) saved = 0;
+        if (fscanf(fp, "%" SCNx64, &saved) != 1) saved = 0;
         fclose(fp);
     }
 
@@ -407,7 +408,7 @@ astro_cs_check_version(uint64_t current)
     mkdir(astro_cs.store_dir, 0755);
     fp = fopen(version_path, "w");
     if (fp) {
-        fprintf(fp, "%lx\n", current);
+        fprintf(fp, "%" PRIx64 "\n", current);
         fclose(fp);
     }
 }
