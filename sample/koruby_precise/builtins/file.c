@@ -11,6 +11,54 @@
 #include <glob.h>
 #include <errno.h>
 
+
+/* --- libc の差の吸収 ---------------------------------------------------
+ * 「このプラットフォームは何か」ではなく「この libc に X はあるか」で書く。
+ * そうすると WASI だけでなく musl / macOS の差も同じ仕組みで吸収される。 */
+#ifndef PATH_MAX
+#  define PATH_MAX 4096
+#endif
+
+/* 無い errno 名には番兵を与えて下の表を成立させる。X-macro のリストの中には
+ * プリプロセッサ指令を書けないので、リストの手前で埋めるしかない。番兵は
+ * 負値なのでプラットフォームが返すことはなく、逆引きは korb_errno_name の
+ * ガードで飛ばす。Errno::<名前> 自体は (値 < 0 で) 定義されたままになる。 */
+#ifndef EHOSTDOWN
+#  define EHOSTDOWN (-1001)
+#endif
+#ifndef ENODATA
+#  define ENODATA (-1002)
+#endif
+#ifndef ENOSR
+#  define ENOSR (-1003)
+#endif
+#ifndef ENOSTR
+#  define ENOSTR (-1004)
+#endif
+#ifndef EPFNOSUPPORT
+#  define EPFNOSUPPORT (-1005)
+#endif
+#ifndef EREMOTE
+#  define EREMOTE (-1006)
+#endif
+#ifndef ESHUTDOWN
+#  define ESHUTDOWN (-1007)
+#endif
+#ifndef ESOCKTNOSUPPORT
+#  define ESOCKTNOSUPPORT (-1008)
+#endif
+#ifndef ESRMNT
+#  define ESRMNT (-1009)
+#endif
+#ifndef ETIME
+#  define ETIME (-1010)
+#endif
+#ifndef ETOOMANYREFS
+#  define ETOOMANYREFS (-1011)
+#endif
+#ifndef EUSERS
+#  define EUSERS (-1012)
+#endif
 /* The Errno::* names koruby knows.  One list drives both directions: the
  * errno → class-name lookup used when raising, and the __errno_table builtin
  * the prelude uses to define the Errno constants.  Keeping them in step is why
@@ -44,8 +92,10 @@ static const struct { const char *name; int num; } korb_errno_tab[] = {
  * share a number on Linux (EAGAIN/EWOULDBLOCK, ENOTSUP/EOPNOTSUPP); the first
  * listed wins, which is the one CRuby reports. */
 static const char *korb_errno_name(int e) {
-    for (size_t i = 0; i < sizeof korb_errno_tab / sizeof korb_errno_tab[0]; i++)
+    for (size_t i = 0; i < sizeof korb_errno_tab / sizeof korb_errno_tab[0]; i++) {
+        if (korb_errno_tab[i].num < 0) continue;                  /* この libc に無い名前 (番兵) */
         if (korb_errno_tab[i].num == e) return korb_errno_tab[i].name;
+    }
     return NULL;
 }
 
