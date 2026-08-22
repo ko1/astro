@@ -25,6 +25,9 @@ node_allocate(size_t size)
 #include "astro_code_store.c"
 #include "astro_build.c"
 
+/* --build embed emitters (hand-written; used by generated node_emit_ast.c) */
+#include "node_embed.c"
+
 /* --- generated code ------------------------------------------------------ */
 #include "node_eval.c"
 #include "node_dispatch.c"

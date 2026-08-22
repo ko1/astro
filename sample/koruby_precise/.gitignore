@@ -18,3 +18,5 @@ koruby_regex.so
 code_store/
 bench-report/
 .buildtmp/
+/code_store_wasi/
+/_embed.c

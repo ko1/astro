@@ -534,6 +534,12 @@ class KorubyNodeDef < ASTroGen::NodeDef
           # references it at runtime (below), so excluding it from the hash
           # lets structurally identical nodes on different lines share SDs.
           self.name == 'line' ? '0' : super
+        when 'VALUE'
+          # Symbol literals are runtime-ref'd by the SD (build_specializer), so
+          # exclude the per-process ID from the hash: structurally identical
+          # sym lits share one SD and the store binds across intern orders.
+          return super if child?
+          "(SYMBOL_P(#{val}) ? hash_uint64(0xCu) : hash_uint64((uint64_t)(uintptr_t)(#{val})))"
         else
           super
         end
@@ -555,6 +561,17 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_specializer(name)
+        # Bare VALUE operand (node_lit): Symbol literals are per-process
+        # interned IDs, so baking the raw bits breaks any consumer with a
+        # different intern order (--build exes rebuild the AST without
+        # parsing).  Runtime-ref symbols; other immediates bake as constants.
+        if !child? && @type == 'VALUE'
+          return nil,
+            "    if (SYMBOL_P(n->u.#{name}.#{self.name}))\n" \
+            "        fprintf(fp, \"        n->u.#{name}.#{self.name}\");\n" \
+            "    else\n" \
+            "        fprintf(fp, \"        (VALUE)0x%lxL\", (long)n->u.#{name}.#{self.name});"
+        end
         # Staged (VALUE_REF) @child: the EVAL arg is a VALUE_REF to the
         # staging cell, mirroring the DISPATCH glue (the base default
         # would pass the bare cell expression).
@@ -581,6 +598,92 @@ class KorubyNodeDef < ASTroGen::NodeDef
             return nil, "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           end
           super
+        else
+          super
+        end
+      end
+
+      # --build embedding (_embed.c).  The framework default covers scalars and
+      # NODE* children; everything koruby adds on top — symbol IDs, NUL-bearing
+      # byte arrays, @children, and the parse-built structures behind `void *`
+      # operands — routes through the hand-written koruby_emit_* helpers
+      # (node_embed.c), whose printed expressions re-intern via `_ectx` at exe
+      # startup (the builder is emitted with a `CTX *_ectx` parameter).
+
+      # const char* operands that are really uint32 symbol-ID arrays, with the
+      # per-node count expression the matcher reads at runtime.
+      SYM_ARRAY_CNT = {
+        %w[node_call_kw kw_syms] =>
+          '(n->u.node_call_kw.argv_cnt - 1U - n->u.node_call_kw.pos_argc)',
+        %w[node_undef mids]        => 'n->u.node_undef.cnt',
+        %w[node_nesting name_syms] => 'n->u.node_nesting.name_cnt',
+        %w[node_binding name_syms] => 'n->u.node_binding.name_cnt',
+      }.freeze
+
+      # const char* byte buffers (may contain NULs) with their length field.
+      BYTES_LEN = {
+        %w[node_str bytes]        => 'len',
+        %w[node_str_frozen bytes] => 'len',
+        %w[node_str_enc bytes]    => 'len',
+        %w[node_bignum digits]    => 'len',
+        %w[node_regexp bytes]     => 'len',
+        %w[node_rational_big num] => 'nlen',
+        %w[node_rational_big den] => 'dlen',
+      }.freeze
+
+      # void* operands → emit helper + optional count expression (%{f} = field).
+      VOIDP_EMIT = {
+        %w[node_def opt_defaults] =>
+          ['koruby_emit_opt_defaults', 'n->u.node_def.params_cnt - n->u.node_def.req_cnt'],
+        %w[node_singleton_def opt_defaults] =>
+          ['koruby_emit_opt_defaults', 'n->u.node_singleton_def.params_cnt - n->u.node_singleton_def.req_cnt'],
+        %w[node_entry opt_defaults] =>
+          ['koruby_emit_opt_defaults', 'n->u.node_entry.params_cnt - n->u.node_entry.req_cnt'],
+        %w[node_def kw_info]              => ['koruby_emit_kw_info', nil],
+        %w[node_singleton_def kw_info]    => ['koruby_emit_kw_info', nil],
+        %w[node_entry kw_info]            => ['koruby_emit_kw_info', nil],
+        %w[node_def param_info]           => ['koruby_emit_param_info', nil],
+        %w[node_singleton_def param_info] => ['koruby_emit_param_info', nil],
+        %w[node_entry param_info]         => ['koruby_emit_param_info', nil],
+        %w[node_entry destructure_spec] =>
+          ['koruby_emit_u8s', 'n->u.node_entry.params_cnt'],
+        %w[node_entry cap_ns]     => ['koruby_emit_u16s', 'n->u.node_entry.cap_depth'],
+        %w[node_massign offsets]  => ['koruby_emit_i32s', 'n->u.node_massign.ntargets'],
+        %w[node_massign_splat offsets] =>
+          ['koruby_emit_i32s', 'n->u.node_massign_splat.npre + 1U + n->u.node_massign_splat.npost'],
+        %w[node_massign_het descs] => ['koruby_emit_het_descs', 'n->u.node_massign_het.nt'],
+        %w[node_attr descs]        => ['koruby_emit_attr_descs', 'n->u.node_attr.count'],
+        %w[node_match_pred desc]   => ['koruby_emit_pat', nil],
+        %w[node_match_req desc]    => ['koruby_emit_pat', nil],
+      }.freeze
+
+      def build_emit_ast(node_name)
+        return super if ref? || storageless?
+        field = "n->u.#{node_name}.#{self.name}"
+        if children?
+          # Prints BOTH ALLOC args (array expr + count) — @children is the sole
+          # operand contributing two parameters.
+          return "    koruby_emit_children(fp, #{field}, #{field}_cnt);"
+        end
+        return "    koruby_emit_intern(fp, #{field});" if sym?
+        case storage_type
+        when 'VALUE'
+          "    koruby_emit_value(fp, #{field});"
+        when 'const char *'
+          if (cnt = SYM_ARRAY_CNT[[node_name, self.name]])
+            "    koruby_emit_syms(fp, #{field}, #{cnt});"
+          elsif (len = BYTES_LEN[[node_name, self.name]])
+            "    koruby_emit_cstr_len(fp, #{field}, n->u.#{node_name}.#{len});"
+          else
+            super   # NUL-terminated diagnostic strings (what / name)
+          end
+        when 'void *'
+          helper, cnt = VOIDP_EMIT[[node_name, self.name]]
+          unless helper
+            raise ASTroGen::NodeDef::UnsupportedOperand,
+                  "void * #{node_name}.#{self.name} has no embed emitter"
+          end
+          cnt ? "    #{helper}(fp, #{field}, #{cnt});" : "    #{helper}(fp, #{field});"
         else
           super
         end

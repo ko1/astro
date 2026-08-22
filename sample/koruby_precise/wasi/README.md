@@ -1,22 +1,48 @@
 # WASI (wasm32) ビルド
 
 ```sh
-WASI_SDK=$HOME/wasi-sdk
-$WASI_SDK/bin/clang --target=wasm32-wasip1 -O2 -w \
-  -I. -Iwasi -Iprism/include -I../../runtime -include wasi/wasi_decls.h \
-  -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
-  -DKORB_WASI=1 -DKORB_BIGNUM=2 -DBARUBY_GC=5 -DASTRO_DEBUG=0 \
-  -DKORUBY_SRC_DIR='"/koruby"' -DASTRO_RUNTIME_DIR='"/koruby"' -DASTRO_PRISM_INC_DIR='"/koruby"' \
-  main.c node.c korb_runtime.c parse.c wasi/wasi_missing.c \
-  ../../runtime/precise_gc/gc_common.c ../../runtime/precise_gc/gc_copy.c \
-  libprism-wasm.a -lwasi-emulated-mman -lwasi-emulated-signal -lwasi-emulated-process-clocks -lm \
-  -Wl,-z,stack-size=16777216 -o koruby.wasm
+make -C wasi                                # build/koruby.wasm (インタプリタ)
+wasmtime --dir .::/koruby wasi/build/koruby.wasm -e 'p 1+2'
 
-wasmtime --dir .::/koruby koruby.wasm -e 'p 1+2'
+make -C wasi aot PROG=foo.rb                # build/foo.wasm (AOT 全埋め込み)
+wasmtime wasi/build/foo.wasm                # mount 不要 (prelude+program 埋め込み)
 ```
 
 libprism-wasm.a は prism/src/*.c を同じ target でコンパイルして llvm-ar でまとめる
-(prism は wasm32 でそのまま通る)。
+(prism は wasm32 でそのまま通る)。wasi/Makefile が全部やる。
+
+## AOT (`--build` 全埋め込み)
+
+wasm には dlopen も実行時 C コンパイラも無いので、AOT は**ネイティブの
+koruby_precise が `--build` でクロスコンパイル**する (KORUBY_BUILD_TARGET=wasi):
+
+1. prelude + program + 全 method body を code_store_wasi/ に bake
+   (SD .c 生成はファイル出力だけなのでネイティブ側でやれる。hash は構造のみで
+   symbol ID 非依存 — node_lit の symbol は SD が runtime-ref する)
+2. `_embed.c` を emit — AST を DAG のまま ALLOC 列で再構築する C コード。
+   dispatcher は SD_<hash> に直接パッチ済み、symbol 名は起動時に re-intern
+3. wasi-sdk clang で SD .o (並列, code_store_wasi/o/ にキャッシュ) +
+   ホスト .o (code_store_wasi/host/ にキャッシュ) をビルドしてリンク
+
+exe は起動時にパースを一切しない (プログラムも prelude も埋め込み AST を
+再構築するだけ)。warm ビルドは ~3.5s (native は ~4.5s)。
+
+計測 (2026-08-22, wasmtime compile 済み .cwasm, 3 回の生値は
+`~/ruby/src/trials/20260822_koruby_wasm_aot/`):
+
+| bench | AOT wasm | interp wasm | ruby.wasm (記録値) |
+|---|---|---|---|
+| 起動 (`p 1`) | **0.014s** | 0.30s | 0.09s |
+| while 80M | **0.43s** | 7.0s | 15.9s |
+| fib(32) | **0.15s** | 0.93s | 0.45s |
+| 8M.times | **0.19s** | 0.82s | 1.0s |
+| object 3M | **0.39s** | 1.33s | 1.96s |
+| String 2M | **0.70s** | 1.12s | 1.08s |
+| Hash 4M | **0.58s** | 1.63s | 2.49s |
+| 配列 1.5M 保持 | **0.28s** | 0.75s | 1.18s |
+
+起動が ruby.wasm の 6 倍速くなり (パース消滅)、インタプリタで唯一負けていた
+再帰 (fib) も 3 倍速い側に回った。
 
 ## 32bit で踏むもの
 
@@ -61,11 +87,14 @@ libprism-wasm.a は prism/src/*.c を同じ target でコンパイルして llvm
 - Fiber / Thread (ucontext が無い) と Enumerator#next
 - Process / Kernel#system / Socket (wasi/wasi_stubs.c が NotImplementedError)
 - **正規表現** — koruby_regex.so を dlopen しているため。静的リンクが要る。
-- AOT code store — 実行時コンパイルができない。静的 code store が要る。
+- 実行時 AOT (`--aot-compile`) — 実行時コンパイル不可。かわりに上記の
+  `--build` クロスコンパイルを使う (AOT 済み全埋め込み .wasm が出る)。
 - 多倍長は BIGNUM=wrap (64bit で wrap、Ruby とは意味論が違う)。GMP を
   クロスビルドすれば BIGNUM=gmp も使えるはず。
 
-prelude はまだ埋め込んでおらず、`--dir` で渡している。
+インタプリタ .wasm は prelude を `--dir` mount から起動時に読む。
+AOT .wasm は prelude 埋め込み済みで mount 不要
+(require する場合だけ `--dir` が要る)。
 
 ## ruby.wasm との比較 (2026-08-22, wasmtime 44)
 

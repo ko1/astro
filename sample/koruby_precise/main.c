@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include "node.h"
+#include "astro_node.h"      /* astro_emit_ast_c_program_params (--build) */
 #include "astro_code_store.h"
 #include "astro_build.h"
 #include "precise_gc/gc.h"
@@ -144,6 +145,7 @@ koruby_extra_cflags(char *buf, size_t n)
              " -DBARUBY_GC=%d", KORB_BIGNUM, BARUBY_GC);   /* framework backend-select macros */
 }
 
+#ifndef __wasi__
 /* mtime of this binary, used both as the staleness reference and as the code
  * store "version" (a rebuilt interpreter changes the SD ABI + the prelude). */
 static uint64_t
@@ -171,6 +173,7 @@ preload_stale(void)
     uint64_t v = preload_version();
     return v != 0 && v > (uint64_t)sso.st_mtime;
 }
+#endif /* !__wasi__ */
 
 /* Bake the fixed prelude's SDs once into preload_store/all.so, then register it
  * as the code store's preload handle.  The prelude is identical across all
@@ -181,6 +184,12 @@ preload_stale(void)
 static void
 ensure_preload(void)
 {
+#ifdef __wasi__
+    /* No dlopen, so there is no second .so to split the prelude into: the
+     * prelude's SDs are baked into the program's store alongside its own
+     * (see bake_from below) and linked into the module by the host build. */
+    return;
+#else
     if (g_prelude_repo_count == 0) return;
 
     bool stale = preload_stale();
@@ -206,16 +215,29 @@ ensure_preload(void)
      * the interpreter (or is reported as a compile-miss under --compiled-only),
      * never on stale specialized code. */
     if (!stale) astro_cs_set_preload(KORUBY_PRELOAD_SO);
+#endif
+}
+
+/* First code-repo entry a bake covers.  Normally the prelude bodies
+ * [0, g_prelude_repo_count) are skipped — they live in preload.so — but a
+ * dlopen-free host has no preload.so, so it bakes them here instead. */
+static uint32_t
+bake_from(void)
+{
+#ifdef __wasi__
+    return 0;
+#else
+    return g_prelude_repo_count;
+#endif
 }
 
 /* AOT bake: the program AST + every *user* method body (each is its own entry —
- * call sites dispatch through body->head.dispatcher at runtime).  Prelude bodies
- * [0, g_prelude_repo_count) are skipped — they live in preload.so. */
+ * call sites dispatch through body->head.dispatcher at runtime). */
 static void
 bake_code_store(NODE *ast)
 {
     astro_cs_compile(ast, NULL);
-    for (uint32_t i = g_prelude_repo_count; i < code_repo_count(); i++) {
+    for (uint32_t i = bake_from(); i < code_repo_count(); i++) {
         if (code_repo_skip_specialize_at(i)) continue;
         astro_cs_compile(code_repo_body_at(i), NULL);
     }
@@ -318,6 +340,254 @@ swap_in_cached_sds(NODE *ast)
     return swaps;
 }
 
+#ifndef KORUBY_EMBED
+/* ------------------------------------------------------------------ --build
+ * Standalone executable.  Bake every entry (prelude + program + method bodies)
+ * into the code store with the compile log on, emit _embed.c — DAG AST
+ * builders whose dispatchers are pre-bound to SD_<hash>, plus startup
+ * metadata — and hand the source list to the framework toolchain driver.
+ * The exe rebuilds both ASTs at startup via ALLOC (symbol names re-intern
+ * through the builders' CTX parameter), so it parses nothing at startup.
+ *
+ * KORUBY_BUILD_TARGET=wasi cross-compiles to wasm32-wasip1 with the wasi-sdk
+ * (see wasi/README.md): dlopen-free, wrap bignum, emulated POSIX libs. */
+/* GC backend source for the exe link — the Makefile bakes the selected
+ * backend's path; default matches the default GC (copy). */
+#ifndef KORUBY_GC_SRC
+#define KORUBY_GC_SRC ASTRO_RUNTIME_DIR "/precise_gc/gc_copy.c"
+#endif
+
+static int
+koruby_do_build(CTX *c, NODE *prelude_ast, uint32_t prelude_locals,
+                NODE *ast, struct astro_build_config *bcfg)
+{
+    const char *tgt = getenv("KORUBY_BUILD_TARGET");
+    const bool wasi = tgt && strcmp(tgt, "wasi") == 0;
+
+    /* 1. Bake all entries; the log records (hash, SD name) for the emitter.
+     * The wasm store is separate: its o/ cache holds wasm32 objects, which
+     * must never mix with the native ones. */
+    const char *const store = wasi ? "code_store_wasi" : "code_store";
+    astro_cs_init(store, KORUBY_SRC_DIR, 0);
+    astro_build_begin_aot_session();
+    astro_cs_compile(prelude_ast, NULL);
+    astro_cs_compile(ast, NULL);
+    for (uint32_t i = 0; i < code_repo_count(); i++) {
+        if (code_repo_skip_specialize_at(i)) continue;
+        astro_cs_compile(code_repo_body_at(i), NULL);
+    }
+
+    /* SD objects: parallel make into <store>/o/ (a compile cache shared across
+     * builds); the exe links the .o files below.  For wasm the environment's
+     * CC / CFLAGS override the store Makefile's native defaults. */
+    static char wasi_cc[512];
+    if (wasi) {
+        const char *sdk = getenv("WASI_SDK");
+        snprintf(wasi_cc, sizeof wasi_cc, "%s/bin/clang --target=wasm32-wasip1",
+                 sdk && sdk[0] ? sdk : "wasi-sdk");
+        setenv("CC", wasi_cc, 1);
+        static char wasi_cflags[2048];
+        snprintf(wasi_cflags, sizeof wasi_cflags,
+                 "-O2 -w -I%s -I%s/wasi -I%s/prism/include -I%s"
+                 " -include %s/wasi/wasi_decls.h"
+                 " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS"
+                 " -DKORB_WASI=1 -DKORB_BIGNUM=2 -DBARUBY_GC=%d -DASTRO_DEBUG=0",
+                 KORUBY_SRC_DIR, KORUBY_SRC_DIR, KORUBY_SRC_DIR, ASTRO_RUNTIME_DIR,
+                 KORUBY_SRC_DIR, BARUBY_GC);
+        setenv("CFLAGS", wasi_cflags, 1);
+        astro_cs_build_objs(NULL);
+    } else {
+        char cflags[2048];
+        koruby_extra_cflags(cflags, sizeof cflags);
+        astro_cs_build_objs(cflags);
+    }
+
+    /* 2. _embed.c: builders + metadata. */
+    koruby_emit_set_vm(c->vm);
+    const char *embed_path = "_embed.c";
+    FILE *fp = fopen(embed_path, "w");
+    if (!fp) { perror(embed_path); return 1; }
+    astro_emit_ast_c_program_params(fp, prelude_ast, "koruby_embed_prelude_ast",
+                                    "node.h", "CTX *_ectx");
+    fprintf(fp, "\n");
+    astro_emit_ast_c_program_params(fp, ast, "koruby_embed_program_ast",
+                                    NULL, "CTX *_ectx");
+    fprintf(fp, "\nconst uint32_t koruby_embed_prelude_locals = %uU;\n",
+            prelude_locals);
+    fprintf(fp, "const char koruby_embed_src_name[] = ");
+    koruby_emit_cstr_len(fp, c->vm->script_name,
+                         (uint32_t)strlen(c->vm->script_name));
+    fprintf(fp, ";\n");
+    fprintf(fp, "void\nkoruby_embed_setup(CTX *c)\n{\n");
+    fprintf(fp, "    koruby_toplevel_locals_cnt = %uU;\n", koruby_toplevel_locals_cnt);
+    fprintf(fp, "    koruby_toplevel_local_cnt = %uU;\n", koruby_toplevel_local_cnt);
+    if (koruby_toplevel_local_cnt > 0) {
+        fprintf(fp, "    koruby_toplevel_local_syms = korb_embed_syms(c, %uU",
+                koruby_toplevel_local_cnt);
+        for (uint32_t i = 0; i < koruby_toplevel_local_cnt; i++) {
+            const char *nm = korb_sym_name(c->vm, koruby_toplevel_local_syms[i]);
+            fprintf(fp, ", ");
+            koruby_emit_cstr_len(fp, nm, (uint32_t)strlen(nm));
+            fprintf(fp, ", %uU", (uint32_t)strlen(nm));
+        }
+        fprintf(fp, ");\n");
+    } else {
+        fprintf(fp, "    (void)c;\n");
+    }
+    fprintf(fp, "}\n");
+    fclose(fp);
+
+    /* 3. Host objects — the interpreter sources compiled for the target,
+     * cached in <store>/host/ via a generated host.mk.  Each object depends
+     * on this binary (its mtime moves whenever any interpreter source
+     * changes), so a warm build compiles only _embed.c and links.  _embed.c
+     * is startup-once ALLOC code, so -O0 keeps its (large) compile cheap. */
+    {
+        char mk[512];
+        snprintf(mk, sizeof mk, "%s/host.mk", store);
+        FILE *mf = fopen(mk, "w");
+        if (!mf) { perror(mk); return 1; }
+        if (wasi) {
+            const char *sdk = getenv("WASI_SDK");
+            fprintf(mf, "HOSTCC := %s/bin/clang --target=wasm32-wasip1\n",
+                    sdk && sdk[0] ? sdk : "wasi-sdk");
+            fprintf(mf,
+                "HOSTCFLAGS := -O2 -w -I%s -I%s/wasi -I%s/prism/include -I%s"
+                " -include %s/wasi/wasi_decls.h"
+                " -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS"
+                " -DKORB_WASI=1 -DASTRO_DEBUG=0 -DKORB_BIGNUM=2 -DBARUBY_GC=%d"
+                " '-DKORUBY_SRC_DIR=\"/koruby\"' '-DASTRO_RUNTIME_DIR=\"/koruby\"'"
+                " '-DASTRO_PRISM_INC_DIR=\"/koruby\"'\n",
+                KORUBY_SRC_DIR, KORUBY_SRC_DIR, KORUBY_SRC_DIR, ASTRO_RUNTIME_DIR,
+                KORUBY_SRC_DIR, BARUBY_GC);
+        } else {
+            fprintf(mf, "HOSTCC := %s\n", bcfg->cc ? bcfg->cc : "cc");
+            fprintf(mf,
+                "HOSTCFLAGS := -O2 -w -I%s -I%s/prism/include -I%s"
+                " -DASTRO_DEBUG=0 -DKORB_BIGNUM=%d -DBARUBY_GC=%d"
+                " '-DKORUBY_SRC_DIR=\"%s\"' '-DASTRO_RUNTIME_DIR=\"%s\"'"
+                " '-DASTRO_PRISM_INC_DIR=\"%s\"'\n",
+                KORUBY_SRC_DIR, KORUBY_SRC_DIR, ASTRO_RUNTIME_DIR,
+                KORB_BIGNUM, BARUBY_GC,
+                KORUBY_SRC_DIR, ASTRO_RUNTIME_DIR, ASTRO_PRISM_INC_DIR);
+        }
+        char *const cwd = getcwd(NULL, 0);
+        fprintf(mf, "BIN := %s/koruby_precise\n\n", KORUBY_SRC_DIR);
+        fprintf(mf, "OBJS = host/node.o host/korb_runtime.o host/parse.o"
+                    " host/gc_common.o host/gc_backend.o host/main_embed.o"
+                    " host/_embed.o%s\n",
+                wasi ? " host/wasi_missing.o" : "");
+        fprintf(mf, "all: $(OBJS)\n");
+        fprintf(mf, "host:\n\tmkdir -p host\n");
+        fprintf(mf, "host/%%.o: %s/%%.c $(BIN) | host\n"
+                    "\t$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@\n", KORUBY_SRC_DIR);
+        fprintf(mf, "host/wasi_missing.o: %s/wasi/wasi_missing.c $(BIN) | host\n"
+                    "\t$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@\n", KORUBY_SRC_DIR);
+        fprintf(mf, "host/gc_common.o: %s/precise_gc/gc_common.c $(BIN) | host\n"
+                    "\t$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@\n", ASTRO_RUNTIME_DIR);
+        fprintf(mf, "host/gc_backend.o: %s $(BIN) | host\n"
+                    "\t$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@\n", KORUBY_GC_SRC);
+        fprintf(mf, "host/main_embed.o: %s/main.c $(BIN) | host\n"
+                    "\t$(HOSTCC) $(HOSTCFLAGS) -DKORUBY_EMBED=1 -c $< -o $@\n",
+                KORUBY_SRC_DIR);
+        /* _embed.c changes every build; -O0 (startup-once ALLOC code). */
+        fprintf(mf, "host/_embed.o: %s/_embed.c | host\n"
+                    "\t$(HOSTCC) $(filter-out -O2,$(HOSTCFLAGS)) -O0 -c $< -o $@\n",
+                cwd ? cwd : ".");
+        fclose(mf);
+        free(cwd);
+
+        char cmd[1024];
+        snprintf(cmd, sizeof cmd, "make -C %s -f host.mk -j6 --no-print-directory -s",
+                 store);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "koruby_precise: --build: host object build failed\n");
+            return 1;
+        }
+    }
+
+    /* 4. Link: host objects + logged SD objects + libprism. */
+    const uint32_t n_sd = astro_cs_compile_log_size();
+    const char **objs = calloc(n_sd + 10, sizeof(*objs));
+    uint32_t no = 0;
+    static const char *const host_objs[] = {
+        "host/main_embed.o", "host/_embed.o", "host/node.o", "host/korb_runtime.o",
+        "host/parse.o", "host/gc_common.o", "host/gc_backend.o",
+    };
+    for (size_t i = 0; i < sizeof(host_objs) / sizeof(host_objs[0]); i++) {
+        char *p = malloc(strlen(store) + strlen(host_objs[i]) + 2);
+        sprintf(p, "%s/%s", store, host_objs[i]);
+        objs[no++] = p;
+    }
+    if (wasi) {
+        char *p = malloc(strlen(store) + 32);
+        sprintf(p, "%s/host/wasi_missing.o", store);
+        objs[no++] = p;
+    }
+    for (uint32_t i = 0; i < n_sd; i++) {
+        const char *sd_name = NULL;
+        node_hash_t h;
+        astro_cs_compile_log_get(i, &h, &sd_name);
+        (void)h;
+        if (!sd_name) continue;
+        char *p = malloc(strlen(store) + strlen(sd_name) + 16);
+        sprintf(p, "%s/o/%s.o", store, sd_name);
+        objs[no++] = p;
+    }
+    objs[no++] = wasi ? KORUBY_SRC_DIR "/wasi/build/libprism-wasm.a"
+                      : KORUBY_SRC_DIR "/prism/build/libprism.a";
+    bcfg->extra_objects = objs;
+
+    bcfg->src_dir = KORUBY_SRC_DIR;
+    bcfg->runtime_dir = ASTRO_RUNTIME_DIR;
+    static const char *no_sources[] = { NULL };
+    bcfg->sources = no_sources;
+
+    if (wasi) {
+        /* Toolchain: wasi-sdk clang (overridable via ASTRO_BUILD_OPTS --cc=). */
+        static char cc_path[512];
+        if (!bcfg->cc) {
+            const char *sdk = getenv("WASI_SDK");
+            snprintf(cc_path, sizeof cc_path, "%s/bin/clang",
+                     sdk && sdk[0] ? sdk : "wasi-sdk");
+            bcfg->cc = cc_path;
+        }
+        static const char *cflags_wasi[] = { "--target=wasm32-wasip1", NULL };
+        static const char *ldflags_wasi[] = {
+            "-lwasi-emulated-mman", "-lwasi-emulated-signal",
+            "-lwasi-emulated-process-clocks", "-lm",
+            "-Wl,-z,stack-size=16777216", NULL,
+        };
+        bcfg->sample_cflags  = cflags_wasi;
+        bcfg->sample_ldflags = ldflags_wasi;
+        bcfg->no_libdl = true;
+    } else {
+        static const char *ldflags_native[] = {
+            "-lm",
+#if KORB_BIGNUM == 1
+            "-lgmp",
+#endif
+            "-lcrypt", NULL,
+        };
+        bcfg->sample_ldflags = ldflags_native;
+    }
+
+    const int rc = astro_build_executable(bcfg);
+    astro_build_end_aot_session();
+    if (!bcfg->keep_intermediates) unlink(embed_path);
+    return rc;
+}
+#endif /* !KORUBY_EMBED */
+
+#ifdef KORUBY_EMBED
+/* Provided by the generated _embed.c linked into this executable. */
+extern NODE *koruby_embed_prelude_ast(CTX *_ectx);
+extern NODE *koruby_embed_program_ast(CTX *_ectx);
+extern const uint32_t koruby_embed_prelude_locals;
+extern const char koruby_embed_src_name[];
+extern void koruby_embed_setup(CTX *c);
+#endif
+
 int
 main(int argc, char *argv[])
 {
@@ -348,17 +618,20 @@ main(int argc, char *argv[])
      * still covers the whole program. */
     const bool skip_run = bcfg.aot_compile && !bcfg.run && !bcfg.pg_compile;
 
-    if (bcfg.out_exe) {
-        fprintf(stderr, "koruby_precise: --build is not supported in M0\n");
-        return 2;
-    }
-
     /* sample flags + positional script */
-    const char *eval_code = NULL;
-    const char *script = NULL;
     const char *load_dirs[64]; uint32_t nload_dirs = 0;    /* -I */
     const char *req_libs[64];  uint32_t nreq_libs  = 0;    /* -r */
     int i = 1;
+#ifdef KORUBY_EMBED
+    /* Embedded executable: the program is baked in — argv[1..] is Ruby ARGV. */
+    if (bcfg.out_exe) {
+        fprintf(stderr, "koruby_precise: --build inside a built executable is not supported\n");
+        return 2;
+    }
+    const char *src_name = koruby_embed_src_name;
+#else
+    const char *eval_code = NULL;
+    const char *script = NULL;
     for (; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "-e") == 0) {
@@ -426,12 +699,22 @@ main(int argc, char *argv[])
         src_name = "-";
         src = read_file_all("-", &src_len);
     }
+#endif /* !KORUBY_EMBED */
 
     CTX *c = korb_ctx_new();
     c->vm->script_name = src_name;
     c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
     korb_define_argv(c, argc - i, &argv[i], src_name);   /* ARGV = remaining args; $0 = script */
 
+#ifdef KORUBY_EMBED
+    /* Rebuild the baked ASTs (dispatchers pre-bound; symbols re-intern through
+     * `c`).  No parse: the exe starts straight into evaluation. */
+    NODE *prelude_ast = koruby_embed_prelude_ast(c);
+    uint32_t prelude_locals = koruby_embed_prelude_locals;
+    g_prelude_repo_count = code_repo_count();   /* the exe registers no bodies at build time */
+    NODE *ast = koruby_embed_program_ast(c);
+    koruby_embed_setup(c);   /* toplevel locals count + TOPLEVEL_BINDING sym table */
+#else
     /* Parse the Enumerable prelude first (registers its method bodies in the
      * code repo so AOT bakes/swaps them too); run it after the AOT swap below.
      * Captured here because koruby_toplevel_locals_cnt is overwritten by the
@@ -446,6 +729,7 @@ main(int argc, char *argv[])
     g_prelude_repo_count = code_repo_count();
 
     NODE *ast = koruby_parse_source(c, src, src_len, src_name, true);
+#endif /* KORUBY_EMBED */
 
     if (OPTION.dump_ast) {
         DUMP(stdout, ast, true);
@@ -457,6 +741,18 @@ main(int argc, char *argv[])
     if (OPTION.clear_store) {
         int rc = system("rm -rf code_store");
         if (rc != 0) fprintf(stderr, "koruby_precise: --ccs: rm -rf code_store failed\n");
+    }
+
+#ifndef KORUBY_EMBED
+    /* --build OUT: bake + emit + link a standalone executable, no run
+     * (run the built exe instead — same convention as `--aot-compile` alone). */
+    if (bcfg.out_exe) {
+        const int rc = koruby_do_build(c, prelude_ast, prelude_locals, ast, &bcfg);
+        if (rc == 0 && !OPTION.quiet)
+            fprintf(stderr, "koruby_precise: built %s (program + prelude + %u bodies embedded)\n",
+                    bcfg.out_exe, code_repo_count());
+        korb_io_flush_std(c->vm);
+        return rc;
     }
 
     if (!OPTION.plain) {
@@ -476,6 +772,7 @@ main(int argc, char *argv[])
             return 3;
         }
     }
+#endif /* !KORUBY_EMBED */
 
     /* Run the Enumerable prelude in its own toplevel frame (self = a throwaway
      * `main`), defining its methods on the global Enumerable module before the
@@ -565,6 +862,7 @@ main(int argc, char *argv[])
         }
     }
 
+#ifndef KORUBY_EMBED
     if (OPTION.aot_compile || OPTION.pg_compile) {
         /* Bodies were registered in the code repo at parse time, so the whole
          * program bakes whether or not it ran. */
@@ -574,6 +872,7 @@ main(int argc, char *argv[])
                     code_repo_count());
         }
     }
+#endif
 
     korb_ctx_free(c);
     korb_io_flush_std(c->vm);   /* stdio is gone: the std streams flush here */

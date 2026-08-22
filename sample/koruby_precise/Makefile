@@ -110,6 +110,7 @@ koruby_precise: .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUI
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
+	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"' \
 	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt
 
 # Generated files: grouped target (single generator invocation).

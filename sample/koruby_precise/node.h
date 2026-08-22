@@ -504,6 +504,23 @@ extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;
 
+/* --build embed support.  korb_embed_* (korb_runtime.c) rebuild parse-built
+ * side structures at exe startup — called from the generated _embed.c.
+ * koruby_emit_set_vm (node_embed.c) points the emitters at the bake VM. */
+NODE **korb_embed_nodes(uint32_t cnt, ...);
+uint32_t *korb_embed_syms(CTX *c, uint32_t cnt, ...);
+void *korb_embed_kw_info(CTX *c, uint32_t count, int32_t kwrest_slot, ...);
+void *korb_embed_param_info(CTX *c, uint32_t n, ...);
+void *korb_embed_u8(uint32_t cnt, ...);
+void *korb_embed_u16(uint32_t cnt, ...);
+void *korb_embed_i32(uint32_t cnt, ...);
+void *korb_embed_het_descs(CTX *c, uint32_t cnt, ...);
+void *korb_embed_attr_descs(CTX *c, uint32_t cnt, ...);
+void *korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, struct Node *value_node,
+                     uint32_t n, uint32_t npost, uint32_t ecnt, ...);
+void koruby_emit_set_vm(const struct korb_vm *vm);
+void koruby_emit_cstr_len(FILE *fp, const char *p, uint32_t len);
+
 /* code repo iteration (main.c) — every method body is its own AOT entry
  * because call sites dispatch through body->head.dispatcher at runtime. */
 uint32_t code_repo_count(void);

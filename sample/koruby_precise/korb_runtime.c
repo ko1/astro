@@ -12247,3 +12247,191 @@ korb_ctx_free(CTX *c)
     aro_gc_fini(c);
     /* slots mmap + VM tables are process-lifetime; OS reclaims. */
 }
+
+/* --- korb_embed_*: --build exe startup helpers ------------------------------
+ * Called from the generated _embed.c AST builder to rebuild the parse-built
+ * side structures (`void *` operands, symbol arrays) that emit_ast can't bake
+ * as plain literals.  Symbol names re-intern here, so the embedded AST is
+ * independent of the bake process's intern order.  All allocations are
+ * immortal (AST metadata), matching parse. */
+
+static void *
+korb_embed_alloc(size_t size)
+{
+    void *p = malloc(size);
+    if (!p) { fprintf(stderr, "koruby_precise: out of memory (embed)\n"); abort(); }
+    return p;
+}
+
+NODE **
+korb_embed_nodes(uint32_t cnt, ...)
+{
+    NODE **const a = korb_embed_alloc(sizeof(NODE *) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) a[i] = va_arg(ap, NODE *);
+    va_end(ap);
+    return a;
+}
+
+/* (name, len) pairs → interned uint32 array. */
+uint32_t *
+korb_embed_syms(CTX *c, uint32_t cnt, ...)
+{
+    uint32_t *const a = korb_embed_alloc(sizeof(uint32_t) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        a[i] = korb_intern(c->vm, name, len);
+    }
+    va_end(ap);
+    return a;
+}
+
+/* (name, len, slot, deflt NODE*) per entry. */
+void *
+korb_embed_kw_info(CTX *c, uint32_t count, int32_t kwrest_slot, ...)
+{
+    struct korb_kw_info *const kw = korb_embed_alloc(sizeof(*kw));
+    kw->count = count;
+    kw->kwrest_slot = kwrest_slot;
+    kw->entries = korb_embed_alloc(sizeof(struct korb_kw_entry) * (count ? count : 1));
+    va_list ap;
+    va_start(ap, kwrest_slot);
+    for (uint32_t i = 0; i < count; i++) {
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        kw->entries[i].mid = korb_intern(c->vm, name, len);
+        kw->entries[i].slot = va_arg(ap, uint32_t);
+        kw->entries[i].deflt = va_arg(ap, NODE *);
+    }
+    va_end(ap);
+    return kw;
+}
+
+/* (kind, name-or-NULL, len) per entry.  Flexible-array struct. */
+void *
+korb_embed_param_info(CTX *c, uint32_t n, ...)
+{
+    struct korb_param_info *const pi =
+        korb_embed_alloc(sizeof(*pi) + sizeof(struct korb_param_entry) * n);
+    pi->n = n;
+    va_list ap;
+    va_start(ap, n);
+    for (uint32_t i = 0; i < n; i++) {
+        pi->e[i].kind = (uint8_t)va_arg(ap, uint32_t);
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        pi->e[i].name = name ? korb_intern(c->vm, name, len) : 0;
+    }
+    va_end(ap);
+    return pi;
+}
+
+void *
+korb_embed_u8(uint32_t cnt, ...)
+{
+    uint8_t *const a = korb_embed_alloc(cnt ? cnt : 1);
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) a[i] = (uint8_t)va_arg(ap, unsigned int);
+    va_end(ap);
+    return a;
+}
+
+void *
+korb_embed_u16(uint32_t cnt, ...)
+{
+    uint16_t *const a = korb_embed_alloc(sizeof(uint16_t) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) a[i] = (uint16_t)va_arg(ap, unsigned int);
+    va_end(ap);
+    return a;
+}
+
+void *
+korb_embed_i32(uint32_t cnt, ...)
+{
+    int32_t *const a = korb_embed_alloc(sizeof(int32_t) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) a[i] = (int32_t)va_arg(ap, int);
+    va_end(ap);
+    return a;
+}
+
+/* (kind, slot, name-or-NULL, len) per target: kind 0 keeps the slot; kinds
+ * 1 (@ivar) / 2 (CONST) re-intern the name into `data`. */
+void *
+korb_embed_het_descs(CTX *c, uint32_t cnt, ...)
+{
+    struct korb_het_desc { int32_t kind; int32_t data; };
+    struct korb_het_desc *const d =
+        korb_embed_alloc(sizeof(*d) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        d[i].kind = va_arg(ap, int32_t);
+        const int32_t slot = va_arg(ap, int32_t);
+        const char *const name = va_arg(ap, const char *);
+        const uint32_t len = va_arg(ap, uint32_t);
+        d[i].data = name ? (int32_t)korb_intern(c->vm, name, len) : slot;
+    }
+    va_end(ap);
+    return d;
+}
+
+/* (mid name, len, ivar name, len, is_writer) per accessor. */
+void *
+korb_embed_attr_descs(CTX *c, uint32_t cnt, ...)
+{
+    struct korb_attr_desc *const d =
+        korb_embed_alloc(sizeof(*d) * (cnt ? cnt : 1));
+    va_list ap;
+    va_start(ap, cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        const char *const mn = va_arg(ap, const char *);
+        const uint32_t ml = va_arg(ap, uint32_t);
+        d[i].mid = korb_intern(c->vm, mn, ml);
+        const char *const in = va_arg(ap, const char *);
+        const uint32_t il = va_arg(ap, uint32_t);
+        d[i].ivar = korb_intern(c->vm, in, il);
+        d[i].is_writer = (uint8_t)va_arg(ap, uint32_t);
+    }
+    va_end(ap);
+    return d;
+}
+
+/* Recursive pattern descriptor: fixed head, then ecnt sub-pattern pointers,
+ * then kcnt key VALUEs (symbols arrive as ID2SYM(korb_intern(...)) results). */
+void *
+korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node,
+               uint32_t n, uint32_t npost, uint32_t ecnt, ...)
+{
+    (void)c;
+    struct korb_pat *const p = korb_embed_alloc(sizeof(*p));
+    p->kind = (uint8_t)kind;
+    p->bind_off = bind_off;
+    p->value_node = value_node;
+    p->n = n;
+    p->npost = npost;
+    p->elems = NULL;
+    p->keys = NULL;
+    va_list ap;
+    va_start(ap, ecnt);
+    if (ecnt > 0) {
+        p->elems = korb_embed_alloc(sizeof(struct korb_pat *) * ecnt);
+        for (uint32_t i = 0; i < ecnt; i++)
+            p->elems[i] = va_arg(ap, struct korb_pat *);
+    }
+    const uint32_t kcnt = va_arg(ap, uint32_t);
+    if (kcnt > 0) {
+        p->keys = korb_embed_alloc(sizeof(VALUE) * kcnt);
+        for (uint32_t i = 0; i < kcnt; i++) p->keys[i] = va_arg(ap, VALUE);
+    }
+    va_end(ap);
+    return p;
+}
