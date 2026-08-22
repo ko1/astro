@@ -11,8 +11,14 @@
  */
 
 #define _GNU_SOURCE
+#ifdef __wasi__
+/* wasm32-wasip1: no pthreads, no rlimit.  The floor auto-detection below is
+ * compiled out; the host (koruby) supplies the floor via
+ * astrogre_set_stack_floor, and standalone use falls back to a fixed guess. */
+#else
 #include <sys/resource.h>
 #include <pthread.h>
+#endif
 #include "node.h"
 #include "context.h"
 #include "parse.h"
@@ -38,6 +44,16 @@ astrogre_stack_floor(void)
 {
     if (g_stack_floor_override) return g_stack_floor_override;
     if (g_stack_floor) return g_stack_floor;
+#ifdef __wasi__
+    /* No pthread/rlimit introspection: assume a few MiB below the current
+     * frame (hosts that know better call astrogre_set_stack_floor). */
+    {
+        char here;
+        const size_t assume = 4u * 1024u * 1024u;
+        g_stack_floor = (uintptr_t)&here > assume ? (uintptr_t)&here - assume : 4096u;
+        return g_stack_floor;
+    }
+#else
     void  *lo = NULL;
     size_t size = 0;
     pthread_attr_t attr;
@@ -59,6 +75,7 @@ astrogre_stack_floor(void)
     const size_t margin = 256u * 1024u;
     g_stack_floor = (uintptr_t)lo + margin;
     return g_stack_floor;
+#endif
 }
 
 /* The single rep_cont sentinel node used by all repeats.  Allocated

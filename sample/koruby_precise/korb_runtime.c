@@ -2808,6 +2808,26 @@ static const char *korb_re_error(struct korb_vm *vm) {
     memcpy(buf, p, cap); buf[cap] = '\0';
     return buf;
 }
+#ifdef KORB_WASI
+/* No dlopen: the bridge + astrogre are statically linked (wasi/Makefile's
+ * libkoruby-regex-wasm.a; astrogre internals renamed to avoid symbol
+ * clashes).  Same koruby_re_* API the dlsym path resolves. */
+extern int koruby_re_exec(const char *, size_t, unsigned, const char *, size_t, size_t, void *);
+extern const char *koruby_re_named(const char *, size_t, unsigned, int, int *);
+extern int koruby_re_valid(const char *, size_t, unsigned);
+extern void koruby_re_set_stack_floor(const void *);
+extern const char *koruby_re_error(void);
+static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
+    if (vm->re_fn == NULL) {
+        vm->re_fn       = (void *)koruby_re_exec;
+        vm->re_named_fn = (void *)koruby_re_named;
+        vm->re_valid_fn = (void *)koruby_re_valid;
+        vm->re_floor_fn = (void *)koruby_re_set_stack_floor;
+        vm->re_err_fn   = (void *)koruby_re_error;
+    }
+    return (korb_re_exec_fn_t)vm->re_fn;
+}
+#else
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
         void *h = dlopen(KORUBY_SRC_DIR "/koruby_regex.so", RTLD_NOW | RTLD_LOCAL);
@@ -2820,6 +2840,7 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     }
     return vm->re_fn == (void *)(korb_sword_t)-1 ? NULL : (korb_re_exec_fn_t)vm->re_fn;
 }
+#endif
 /* fwd (defined in builtins/regexp.c, included after string.c) — lets String#/
  * Symbol#start_with? take a Regexp prefix. */
 static RESULT korb_re_run(CTX *c, VALUE *slots, VALUE re, VALUE subj, size_t startb, korb_re_match_t *m);

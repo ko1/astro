@@ -86,9 +86,17 @@ exe は起動時にパースを一切しない (プログラムも prelude も�
 
 - Fiber / Thread (ucontext が無い) と Enumerator#next
 - Process / Kernel#system / Socket (wasi/wasi_stubs.c が NotImplementedError)
-- **正規表現** — koruby_regex.so を dlopen しているため。静的リンクが要る。
+
+正規表現は**静的リンクで動く** (native の koruby_regex.so dlopen の代替)。
+astrogre + regex_bridge を wasi clang でビルドし、ASTro の汎用シンボル
+(ALLOC_node_* / kind_* / OPTION / astro_* — koruby と衝突する) を
+プリプロセッサで `astrogre_hidden_` に一括リネームして
+libkoruby-regex-wasm.a にまとめる (wasi/Makefile。llvm-objcopy は wasm obj の
+シンボル操作未対応なので nm→rename.h の 2 pass)。
 - 実行時 AOT (`--aot-compile`) — 実行時コンパイル不可。かわりに上記の
   `--build` クロスコンパイルを使う (AOT 済み全埋め込み .wasm が出る)。
+- `BARUBY_GC_PURGE` — mprotect(PROT_NONE) ベースなので wasm では
+  `mmap PURGE arena: Invalid argument`。STRESS は使える。
 - 多倍長は BIGNUM=wrap (64bit で wrap、Ruby とは意味論が違う)。GMP を
   クロスビルドすれば BIGNUM=gmp も使えるはず。
 
