@@ -73,19 +73,17 @@ static void korb_mt_seed_int(KorbMT *const st, VALUE seed) {
         else { uint32_t key[2] = { (uint32_t)(a & 0xFFFFFFFFu), (uint32_t)(a >> 32) }; korb_mt_init_by_array(st, key, 2); }
         return;
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(seed)) {
-        mpz_t z; mpz_init(z); mpz_abs(z, VAL2BIG(seed)->z);
+        korb_mp_t z; korb_mp_init(z); korb_mp_abs(z, VAL2BIG(seed)->z);
         size_t count = 0;
-        uint32_t *w = (uint32_t *)mpz_export(NULL, &count, -1 /*LSW first*/, sizeof(uint32_t), 0, 0, z);
-        mpz_clear(z);
+        uint32_t *w = (uint32_t *)korb_mp_export(NULL, &count, -1 /*LSW first*/, sizeof(uint32_t), 0, 0, z);
+        korb_mp_clear(z);
         if (count == 0) korb_mt_init_genrand(st, 0);
         else if (count == 1) korb_mt_init_genrand(st, w[0]);
         else korb_mt_init_by_array(st, w, (int)count);
         free(w);
         return;
     }
-#endif
     korb_mt_init_genrand(st, 0);
 }
 /* non-deterministic seed for Random.new (no arg) / first Kernel#rand. */

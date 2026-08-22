@@ -80,25 +80,19 @@ static RESULT korb_m_flt_cmp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     }
     double s = SELF_FLT;
     if (UNLIKELY(isnan(s) || isnan(o))) return RESULT_OK(KORB_NIL);   /* NaN is unordered */
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(ov)) {                                 /* Float <=> Bignum: exact (invert Integer<=>Float) */
         const int cmp = korb_big_flo_cmp(ov, s);
         return RESULT_OK(cmp == 2 ? KORB_NIL : LONG2FIX(-cmp));
     }
-#endif
     return RESULT_OK(LONG2FIX((s > o) - (s < o)));
 }
 /* An integer-valued double → Fixnum, or Bignum when it exceeds the Fixnum range. */
 static RESULT korb_flt_int_result(CTX *c, VALUE *slots, double t) {
     if (LIKELY(t >= (double)FIXNUM_MIN && t <= (double)FIXNUM_MAX)) return RESULT_OK(LONG2FIX((intptr_t)t));
-#ifdef KORB_HAVE_GMP
-    mpz_t z; mpz_init(z); mpz_set_d(z, t);            /* t is already integer-valued (floor/ceil/round/trunc) */
+    korb_mp_t z; korb_mp_init(z); korb_mp_set_d(z, t);            /* t is already integer-valued (floor/ceil/round/trunc) */
     RESULT r = korb_big_from_mpz(c, slots, z);
-    mpz_clear(z);
+    korb_mp_clear(z);
     return r;
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Float out of Fixnum range (Bignum not implemented)");
-#endif
 }
 /* round/floor/ceil/truncate → Integer (kind 0=floor 1=ceil 2=round 3=trunc) */
 static RESULT korb_flt_toint(CTX *c, VALUE *slots, double d, int kind) {
@@ -363,30 +357,30 @@ static RESULT korb_bigint_round_to(CTX *c, VALUE *slots, VALUE bigself, int kind
         }
     }
     if (ndig >= 0) return RESULT_OK(slots[0]);            /* an Integer has no fractional digits */
-    mpz_t z, f, q, r, res;
+    korb_mp_t z, f, q, r, res;
     korb_to_mpz(slots[0], z);
-    mpz_init(f); mpz_ui_pow_ui(f, 10, (unsigned long)(-ndig));
-    mpz_init(q); mpz_init(r); mpz_init(res);
-    mpz_tdiv_qr(q, r, z, f);                              /* truncated: q toward 0, r has sign of z */
-    const int rsgn = mpz_sgn(r), zsgn = mpz_sgn(z);
+    korb_mp_init(f); korb_mp_ui_pow_ui(f, 10, (unsigned long)(-ndig));
+    korb_mp_init(q); korb_mp_init(r); korb_mp_init(res);
+    korb_mp_tdiv_qr(q, r, z, f);                              /* truncated: q toward 0, r has sign of z */
+    const int rsgn = korb_mp_sgn(r), zsgn = korb_mp_sgn(z);
     switch (kind) {
-      case 0:  if (rsgn != 0 && zsgn < 0) mpz_sub_ui(q, q, 1); mpz_mul(res, q, f); break;   /* floor */
-      case 1:  if (rsgn != 0 && zsgn > 0) mpz_add_ui(q, q, 1); mpz_mul(res, q, f); break;   /* ceil  */
-      case 3:  mpz_mul(res, q, f); break;                                                   /* truncate */
+      case 0:  if (rsgn != 0 && zsgn < 0) korb_mp_sub_ui(q, q, 1); korb_mp_mul(res, q, f); break;   /* floor */
+      case 1:  if (rsgn != 0 && zsgn > 0) korb_mp_add_ui(q, q, 1); korb_mp_mul(res, q, f); break;   /* ceil  */
+      case 3:  korb_mp_mul(res, q, f); break;                                                   /* truncate */
       default: {                                                                            /* round */
-        mpz_mul(res, q, f);
-        mpz_t ar; mpz_init(ar); mpz_abs(ar, r); mpz_mul_ui(ar, ar, 2);   /* twice = 2|r| */
-        const int cmp = mpz_cmp(ar, f);
+        korb_mp_mul(res, q, f);
+        korb_mp_t ar; korb_mp_init(ar); korb_mp_abs(ar, r); korb_mp_mul_ui(ar, ar, 2);   /* twice = 2|r| */
+        const int cmp = korb_mp_cmp(ar, f);
         bool away = false;
         if (cmp > 0) away = true;                                        /* clear majority */
-        else if (cmp == 0) away = (half == 1) ? (mpz_odd_p(q) != 0) : (half != 2);   /* tie: even/up/down */
-        if (away) { if (zsgn < 0) mpz_sub(res, res, f); else mpz_add(res, res, f); }
-        mpz_clear(ar);
+        else if (cmp == 0) away = (half == 1) ? (korb_mp_odd_p(q) != 0) : (half != 2);   /* tie: even/up/down */
+        if (away) { if (zsgn < 0) korb_mp_sub(res, res, f); else korb_mp_add(res, res, f); }
+        korb_mp_clear(ar);
         break;
       }
     }
     RESULT out = korb_big_from_mpz(c, slots + 1, res);
-    mpz_clear(z); mpz_clear(f); mpz_clear(q); mpz_clear(r); mpz_clear(res);
+    korb_mp_clear(z); korb_mp_clear(f); korb_mp_clear(q); korb_mp_clear(r); korb_mp_clear(res);
     return out;
 }
 static RESULT korb_m_int_floor(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)    { return KORB_BIGNUM_P(VALUE_REF_GET(self)) ? korb_bigint_round_to(c, slots, VALUE_REF_GET(self), 0, a) : korb_int_round_to(c, slots, SELF_INT, 0, a); }
@@ -421,27 +415,23 @@ static RESULT korb_m_int_clamp(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
 
 static RESULT korb_m_int_size(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {              /* Bignum: bytes needed to hold |self| */
-        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);
-        const size_t bytes = (mpz_sizeinbase(z, 2) + 7) / 8;
-        mpz_clear(z);
+        korb_mp_t z; korb_to_mpz(VALUE_REF_GET(self), z);
+        const size_t bytes = (korb_mp_sizeinbase(z, 2) + 7) / 8;
+        korb_mp_clear(z);
         return RESULT_OK(LONG2FIX((intptr_t)bytes));
     }
-#endif
     return RESULT_OK(LONG2FIX(8));   /* a Fixnum occupies a machine word */
 }
 static RESULT korb_m_int_bit_length(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)c;(void)slots;(void)a;
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
-        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);
-        if (mpz_sgn(z) < 0) mpz_com(z, z);             /* ~z = -z-1: two's-complement magnitude */
-        const size_t len = (mpz_sgn(z) == 0) ? 0 : mpz_sizeinbase(z, 2);
-        mpz_clear(z);
+        korb_mp_t z; korb_to_mpz(VALUE_REF_GET(self), z);
+        if (korb_mp_sgn(z) < 0) korb_mp_com(z, z);             /* ~z = -z-1: two's-complement magnitude */
+        const size_t len = (korb_mp_sgn(z) == 0) ? 0 : korb_mp_sizeinbase(z, 2);
+        korb_mp_clear(z);
         return RESULT_OK(LONG2FIX((intptr_t)len));
     }
-#endif
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     if (n < 0) n = ~n;                                 /* -n-1: bits of the two's-complement magnitude */
     intptr_t len = 0;
@@ -460,23 +450,21 @@ static RESULT korb_m_int_digits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         if (base < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative radix");
         if (base < 2) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid radix %ld", (long)base);
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) {
-        mpz_t z; korb_to_mpz(VALUE_REF_GET(self), z);   /* GMP copy: independent of the GC heap, survives the allocs below */
-        if (mpz_sgn(z) < 0) { mpz_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain"); }
+        korb_mp_t z; korb_to_mpz(VALUE_REF_GET(self), z);   /* GMP copy: independent of the GC heap, survives the allocs below */
+        if (korb_mp_sgn(z) < 0) { korb_mp_clear(z); return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain"); }
         VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 8)));
-        if (mpz_sgn(z) == 0) {
+        if (korb_mp_sgn(z) == 0) {
             CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(0)));
         } else {
-            while (mpz_sgn(z) > 0) {
-                const unsigned long d = mpz_fdiv_q_ui(z, z, (unsigned long)base);   /* z = z/base, returns z%base */
+            while (korb_mp_sgn(z) > 0) {
+                const unsigned long d = korb_mp_fdiv_q_ui(z, z, (unsigned long)base);   /* z = z/base, returns z%base */
                 CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((intptr_t)d)));
             }
         }
-        mpz_clear(z);
+        korb_mp_clear(z);
         return RESULT_OK(VALUE_REF_GET(dst));
     }
-#endif
     intptr_t n = SELF_INT;
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_MATH_DOMAIN, 0, "out of domain");
     VALUE_REF dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));

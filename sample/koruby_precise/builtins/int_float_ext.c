@@ -24,16 +24,10 @@ static RESULT korb_m_immed_clone(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLI
 }
 static RESULT korb_m_int_abs2(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; const VALUE sv = VALUE_REF_GET(self);
-#ifdef KORB_HAVE_GMP
-    if (!FIXNUM_P(sv)) { mpz_t z; korb_to_mpz(sv, z); mpz_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); mpz_clear(z); return out; }
-#endif
+    if (!FIXNUM_P(sv)) { korb_mp_t z; korb_to_mpz(sv, z); korb_mp_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return out; }
     intptr_t n = FIX2LONG(sv), r;
     if (__builtin_mul_overflow(n, n, &r) || !FIXABLE(r)) {
-#ifdef KORB_HAVE_GMP
-        mpz_t z; korb_to_mpz(sv, z); mpz_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); mpz_clear(z); return out;
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
-#endif
+        korb_mp_t z; korb_to_mpz(sv, z); korb_mp_mul(z, z, z); RESULT out = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return out;
     }
     return RESULT_OK(LONG2FIX(r));
 }
@@ -55,7 +49,6 @@ static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         const bool r = mode == 0 ? (n == 0) : mode == 1 ? (n != 0) : (n == m);   /* nobits/anybits/allbits */
         return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
     }
-#ifdef KORB_HAVE_GMP
     slots[0] = o;                                         /* root o across the AND alloc + compare */
     RESULT ar = korb_int_bitwise(c, slots + 1, sv, o, 0);   /* self & o */
     if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
@@ -63,9 +56,6 @@ static RESULT korb_m_int_bits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     if (mode == 2) r = (korb_int_cmp(ar.value, slots[0]) == 0);       /* allbits: (self & o) == o */
     else { const bool z = (korb_int_cmp(ar.value, LONG2FIX(0)) == 0); r = (mode == 0) ? z : !z; }
     return RESULT_OK(r ? KORB_TRUE : KORB_FALSE);
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Bignum bit test (no GMP)");
-#endif
 }
 static RESULT korb_m_int_nobits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a)  { return korb_m_int_bits(c, slots, self, a, 0); }
 static RESULT korb_m_int_anybits(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { return korb_m_int_bits(c, slots, self, a, 1); }

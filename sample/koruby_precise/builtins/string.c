@@ -1649,9 +1649,7 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     }
     if (base == 0) base = 10;
     intptr_t n = 0; bool any = false, prev_us = false;
-#ifdef KORB_HAVE_GMP
-    bool big = false; mpz_t z;
-#endif
+    bool big = false; korb_mp_t z;
     for (; i < end; i++) {
         const char ch = d[i];
         if (ch == '_') { if (!any || prev_us) break; prev_us = true; continue; }
@@ -1662,37 +1660,29 @@ static RESULT korb_m_str_to_i(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
         else break;
         if (dig >= base) break;
         any = true;
-#ifdef KORB_HAVE_GMP
-        if (big) { mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)dig); continue; }
+        if (big) { korb_mp_mul_ui(z, z, (unsigned long)base); korb_mp_add_ui(z, z, (unsigned long)dig); continue; }
         intptr_t nn;
         if (UNLIKELY(__builtin_mul_overflow(n, (intptr_t)base, &nn) || __builtin_add_overflow(nn, (intptr_t)dig, &nn))) {
-            mpz_init_set_si(z, n);                       /* overflow → keep parsing in GMP */
-            mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)dig);
+            korb_mp_init_set_si(z, n);                       /* overflow → keep parsing in GMP */
+            korb_mp_mul_ui(z, z, (unsigned long)base); korb_mp_add_ui(z, z, (unsigned long)dig);
             big = true; continue;
         }
         n = nn;
-#else
-        n = n * base + dig;
-#endif
     }
-#ifdef KORB_HAVE_GMP
     if (big) {
-        if (sign < 0) mpz_neg(z, z);
+        if (sign < 0) korb_mp_neg(z, z);
         RESULT r = korb_big_from_mpz(c, slots, z);       /* normalizes back to Fixnum if it fits */
-        mpz_clear(z);
+        korb_mp_clear(z);
         return r;
     }
-#endif
     {
         const intptr_t v = sign * n;
-#ifdef KORB_HAVE_GMP
         if (UNLIKELY(!FIXABLE(v))) {   /* fixnum-overflow but int64-fit (e.g. 2^62) → Bignum */
-            mpz_t z2; mpz_init_set_si(z2, (long)v);
+            korb_mp_t z2; korb_mp_init_set_si(z2, (long)v);
             RESULT r = korb_big_from_mpz(c, slots, z2);
-            mpz_clear(z2);
+            korb_mp_clear(z2);
             return r;
         }
-#endif
         return RESULT_OK(LONG2FIX(v));
     }
 }

@@ -67,9 +67,7 @@ KORB_MATH1(expm1, expm1)  KORB_MATH1(log1p, log1p)
  * (e = 0) otherwise.  This lets Math.log{,2,10} stay finite for Bignums that
  * exceed the double range (e.g. Math.log2(2**10000) == 10000.0, not Infinity). */
 static bool korb_math_frexp_val(VALUE v, double *d, long *e) {
-#ifdef KORB_HAVE_GMP
-    if (KORB_BIGNUM_P(v)) { *d = mpz_get_d_2exp(e, VAL2BIG(v)->z); return true; }   /* v = d·2^e */
-#endif
+    if (KORB_BIGNUM_P(v)) { *d = korb_mp_get_d_2exp(e, VAL2BIG(v)->z); return true; }   /* v = d·2^e */
     double x;
     if (!korb_num_to_d(v, &x)) return false;
     *d = x; *e = 0;

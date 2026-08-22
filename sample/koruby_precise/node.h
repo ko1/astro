@@ -149,8 +149,7 @@ bool   korb_num_to_d(VALUE v, double *out);
 /* numeric arithmetic with a Float operand.  op: 0=+ 1=- 2=* 3=/ 4=% */
 RESULT korb_num_arith(CTX *c, VALUE *slots, VALUE l, VALUE rhs, int op, uint32_t line);
 
-#ifdef KORB_HAVE_GMP
-/* arbitrary-precision Integer (bignum.c).  Integer args are Fixnum or Bignum. */
+/* 多倍長 Integer (bignum.c)。Integer 引数は Fixnum か Bignum。 */
 RESULT korb_int_arith(CTX *c, VALUE *slots, VALUE a, VALUE b, int op, uint32_t line);  /* op 0+ 1- 2* 3/ 4% */
 RESULT korb_int_pow(CTX *c, VALUE *slots, VALUE base, VALUE expv, uint32_t line);
 RESULT korb_int_bitwise(CTX *c, VALUE *slots, VALUE a, VALUE b, int op);  /* op 0& 1| 2^ */
@@ -161,7 +160,6 @@ RESULT korb_big_neg(CTX *c, VALUE *slots, VALUE v);
 int    korb_int_cmp(VALUE a, VALUE b);
 int    korb_big_flo_cmp(VALUE bi, double d);   /* exact Integer<=>double, 2 = NaN */
 double korb_big_to_d(VALUE v);
-#endif
 
 /* string interpolation step: acc (String) + to_s(part) → new String */
 RESULT korb_str_interp(CTX *c, VALUE *slots, VALUE_REF acc, VALUE part);

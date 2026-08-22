@@ -20,9 +20,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>
-#ifdef KORB_HAVE_GMP
-#include <gmp.h>          /* arbitrary-precision Integer backing (KORB_OBJ_BIGNUM) */
-#endif
+#include "builtins/bignum_backend.h"   /* korb_mp_*: 多倍長整数 backend (KORB_OBJ_BIGNUM) */
 #include <string.h>
 #include <stdlib.h>
 
@@ -329,17 +327,15 @@ typedef struct KorbArithSeq {
     VALUE ARO_GC_EDGE a1;
 } KorbArithSeq;
 
-#ifdef KORB_HAVE_GMP
-/* Arbitrary-precision Integer.  .class reports Integer (CRuby-unified); the mpz
- * limbs are external malloc — a moving GC copies this struct (limb pointer stays
- * valid).  Collected bignums free their limbs via AROH_FINALIZE (mpz_clear), and
- * the limb bytes are tracked as GC external pressure (account in korb_big_from_mpz
- * / AROH_FINALIZE) so the GC fires on bignum-heavy load — no leak. */
+/* Arbitrary-precision Integer.  .class reports Integer (CRuby-unified).  The
+ * payload type belongs to the backend (bignum_backend.h); with GMP the limbs are
+ * external malloc — a moving GC copies this struct (limb pointer stays valid).
+ * Collected bignums release the payload via AROH_FINALIZE, and its bytes are
+ * tracked as GC external pressure so the GC fires on bignum-heavy load. */
 typedef struct KorbBignum {
     AroObjectHeader head;            /* KORB_OBJ_BIGNUM */
-    mpz_t z;
+    korb_mp_t z;                     /* backend-owned payload */
 } KorbBignum;
-#endif
 
 /* Set: a thin wrapper over an array of unique elements (dedup by korb_value_eq). */
 typedef struct KorbSet {
@@ -1387,18 +1383,13 @@ struct CTX_struct {
  * Each case frees only memory the object OWNS; shared/immortal data (a method
  * entry's body / opt_defaults / kw_info live in the immortal AST; both copies of
  * a define_method'd entry share them) is NOT freed here. */
-#ifdef KORB_HAVE_GMP
-#  define KORB_BIG_LIMB_BYTES(z) ((size_t)mpz_size(z) * sizeof(mp_limb_t))
-#  define KORB_FINALIZE_BIGNUM_CASE                                            \
+#define KORB_FINALIZE_BIGNUM_CASE                                              \
       case KORB_OBJ_BIGNUM: {                                                  \
         KorbBignum *_aro_bz = (KorbBignum *)_aro_h;   /* _aro_h = the payload */ \
-        aro_gc_account_external(c, -(ssize_t)KORB_BIG_LIMB_BYTES(_aro_bz->z)); \
-        mpz_clear(_aro_bz->z);                                                \
+        aro_gc_account_external(c, -(ssize_t)korb_mp_extbytes(_aro_bz->z));     \
+        korb_mp_free(_aro_bz->z);                                              \
         break;                                                                 \
       }
-#else
-#  define KORB_FINALIZE_BIGNUM_CASE
-#endif
 #define AROH_FINALIZE(payload) do {                                            \
     AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);                    \
     switch (_aro_h->flags & KORB_OBJ_TYPE_MASK) {                              \

@@ -31,9 +31,7 @@ static RESULT korb_m_ary_initialize(CTX *c, VALUE *slots, VALUE_REF self, VALUE_
     intptr_t n;
     if (UNLIKELY(!korb_to_index(slots[0], &n))) {        /* size form */
         if (KORB_BIGNUM_P(slots[0])) {                   /* a real Integer, just too large for an array size */
-#ifdef KORB_HAVE_GMP
-            if (mpz_sgn(VAL2BIG(slots[0])->z) < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
-#endif
+            if (korb_mp_sgn(VAL2BIG(slots[0])->z) < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "array size too big");
         }
         VALUE sz = slots[0];                             /* else coerce via #to_int */

@@ -162,15 +162,13 @@ static intptr_t korb_gcd_pos(intptr_t a, intptr_t b) {   /* gcd of |a|,|b| */
 }
 /* korb_to_mpz / korb_big_from_mpz live in builtins/bignum.c (included later);
  * forward-declare so the Rational core can reduce Bignum num/den. */
-#ifdef KORB_HAVE_GMP
-static void korb_to_mpz(VALUE v, mpz_t out);
-static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const mpz_t src);
-#endif
+static void korb_to_mpz(VALUE v, korb_mp_t out);
+static RESULT korb_big_from_mpz(CTX *c, VALUE *slots, const korb_mp_t src);
 static RESULT korb_coerce_to_int(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_int coercion, usable from the main body */
 static RESULT korb_coerce_to_ary(CTX *c, VALUE *slots, VALUE *v);   /* fwd (string.c) — #to_ary coercion */
 
 /* Make a reduced Rational from VALUE num/den (Fixnum or Bignum); den != 0,
- * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via mpz_gcd. */
+ * normalized den > 0.  Fixnum-fits fast path; Bignum path reduces via korb_mp_gcd. */
 RESULT
 korb_rat_new_v(CTX *c, VALUE *slots, VALUE num, VALUE den)
 {
@@ -185,37 +183,29 @@ korb_rat_new_v(CTX *c, VALUE *slots, VALUE num, VALUE den)
         ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->den, LONG2FIX(d));
         return RESULT_OK((VALUE)r);
     }
-#ifdef KORB_HAVE_GMP
-    mpz_t zn, zd, zg;
+    korb_mp_t zn, zd, zg;
     korb_to_mpz(num, zn); korb_to_mpz(den, zd);
-    if (UNLIKELY(mpz_sgn(zd) == 0)) { mpz_clear(zn); mpz_clear(zd); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
-    if (mpz_sgn(zd) < 0) { mpz_neg(zn, zn); mpz_neg(zd, zd); }
-    mpz_init(zg); mpz_gcd(zg, zn, zd);
-    if (mpz_cmp_ui(zg, 1) > 0) { mpz_divexact(zn, zn, zg); mpz_divexact(zd, zd, zg); }
-    mpz_clear(zg);
-    RESULT nr = korb_big_from_mpz(c, slots, zn); mpz_clear(zn);
-    if (UNLIKELY(nr.state != KORB_NORMAL)) { mpz_clear(zd); return nr; }
+    if (UNLIKELY(korb_mp_sgn(zd) == 0)) { korb_mp_clear(zn); korb_mp_clear(zd); return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0"); }
+    if (korb_mp_sgn(zd) < 0) { korb_mp_neg(zn, zn); korb_mp_neg(zd, zd); }
+    korb_mp_init(zg); korb_mp_gcd(zg, zn, zd);
+    if (korb_mp_cmp_ui(zg, 1) > 0) { korb_mp_divexact(zn, zn, zg); korb_mp_divexact(zd, zd, zg); }
+    korb_mp_clear(zg);
+    RESULT nr = korb_big_from_mpz(c, slots, zn); korb_mp_clear(zn);
+    if (UNLIKELY(nr.state != KORB_NORMAL)) { korb_mp_clear(zd); return nr; }
     slots[0] = nr.value;                                       /* root num across den alloc */
-    RESULT dr = korb_big_from_mpz(c, slots + 1, zd); mpz_clear(zd);
+    RESULT dr = korb_big_from_mpz(c, slots + 1, zd); korb_mp_clear(zd);
     if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
     slots[1] = dr.value;
     KorbRational *r = korb_alloc(c, slots + 2, sizeof(KorbRational), KORB_OBJ_RATIONAL);
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->num, slots[0]);
     ARO_STORE(c, r, (VALUE *)(uintptr_t)&r->den, slots[1]);
     return RESULT_OK((VALUE)r);
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Bignum Rational not available (no GMP)");
-#endif
 }
 /* intptr → VALUE (Fixnum if FIXABLE, else Bignum — e.g. float_to_rat's 1<<62). */
 static RESULT korb_intptr_to_val(CTX *c, VALUE *slots, intptr_t n) {
     if (LIKELY(FIXABLE(n))) return RESULT_OK(LONG2FIX(n));
-#ifdef KORB_HAVE_GMP
-    mpz_t z; mpz_init_set_si(z, (long)n);
-    RESULT r = korb_big_from_mpz(c, slots, z); mpz_clear(z); return r;
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (no GMP)");
-#endif
+    korb_mp_t z; korb_mp_init_set_si(z, (long)n);
+    RESULT r = korb_big_from_mpz(c, slots, z); korb_mp_clear(z); return r;
 }
 /* Legacy intptr entry (some callers pass values up to 1<<62, beyond Fixnum). */
 RESULT korb_rat_new(CTX *c, VALUE *slots, intptr_t num, intptr_t den) {
@@ -273,12 +263,10 @@ static int korb_rat_cmp(VALUE l, VALUE r) {
             __int128 b = (__int128)FIX2LONG(rn) * FIX2LONG(ld);
             return (a > b) - (a < b);
         }
-#ifdef KORB_HAVE_GMP
-        mpz_t a, b, t; korb_to_mpz(ln, a); korb_to_mpz(rd, t); mpz_mul(a, a, t);
-        korb_to_mpz(rn, b); korb_to_mpz(ld, t); mpz_mul(b, b, t);
-        int cmp = mpz_cmp(a, b); mpz_clear(a); mpz_clear(b); mpz_clear(t);
+        korb_mp_t a, b, t; korb_to_mpz(ln, a); korb_to_mpz(rd, t); korb_mp_mul(a, a, t);
+        korb_to_mpz(rn, b); korb_to_mpz(ld, t); korb_mp_mul(b, b, t);
+        int cmp = korb_mp_cmp(a, b); korb_mp_clear(a); korb_mp_clear(b); korb_mp_clear(t);
         return (cmp > 0) - (cmp < 0);
-#endif
     }
     double x, y;
     if (korb_num_to_d(l, &x) && korb_num_to_d(r, &y)) return (x > y) - (x < y);
@@ -291,17 +279,13 @@ static RESULT korb_m_rat_to_f(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE 
     const VALUE num = SELF_RAT->num, den = SELF_RAT->den;
     if (LIKELY(FIXNUM_P(num) && FIXNUM_P(den)))
         return korb_float_new(c, slots, (double)FIX2LONG(num) / (double)FIX2LONG(den));
-#ifdef KORB_HAVE_GMP
     /* Bignum num/den: naive num.to_d / den.to_d overflows each to ±Inf → NaN.
      * mpq_get_d computes the ratio exactly-rounded regardless of magnitude. */
-    mpz_t zn, zd; korb_to_mpz(num, zn); korb_to_mpz(den, zd);
+    korb_mp_t zn, zd; korb_to_mpz(num, zn); korb_to_mpz(den, zd);
     mpq_t q; mpq_init(q); mpq_set_num(q, zn); mpq_set_den(q, zd); mpq_canonicalize(q);
     const double r = mpq_get_d(q);
-    mpq_clear(q); mpz_clear(zn); mpz_clear(zd);
+    mpq_clear(q); korb_mp_clear(zn); korb_mp_clear(zd);
     return korb_float_new(c, slots, r);
-#else
-    double n, d; korb_num_to_d(num, &n); korb_num_to_d(den, &d); return korb_float_new(c, slots, n / d);
-#endif
 }
 static RESULT korb_m_rat_self(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) { (void)c;(void)slots;(void)a; return RESULT_OK(VALUE_REF_GET(self)); }
 /* integer floor-div of rational num/den (mode: 0 floor, 1 ceil, 2 trunc,
@@ -319,25 +303,21 @@ static RESULT korb_rat_intdiv(CTX *c, VALUE *slots, VALUE num, VALUE den, int mo
                               else if (t == d && (q & 1)) q += (n < 0 ? -1 : 1); }
         return RESULT_OK(LONG2FIX(q));   /* trunc (mode 2) = bare q */
     }
-#ifdef KORB_HAVE_GMP
-    mpz_t zn, zd, zq, zr; korb_to_mpz(num, zn); korb_to_mpz(den, zd); mpz_init(zq); mpz_init(zr);
-    if (mode == 0)      mpz_fdiv_qr(zq, zr, zn, zd);
-    else if (mode == 1) mpz_cdiv_qr(zq, zr, zn, zd);
-    else                mpz_tdiv_qr(zq, zr, zn, zd);
-    if (mode == 3 || mode == 5) { mpz_t two_ar; mpz_init(two_ar); mpz_abs(two_ar, zr); mpz_mul_ui(two_ar, two_ar, 2);
-                     const int cmp = mpz_cmp(two_ar, zd);   /* :up rounds ties away (>=), :down keeps ties (>) */
-                     if (cmp > 0 || (mode == 3 && cmp == 0)) { if (mpz_sgn(zn) < 0) mpz_sub_ui(zq, zq, 1); else mpz_add_ui(zq, zq, 1); }
-                     mpz_clear(two_ar); }
-    else if (mode == 4) { mpz_t two_ar; mpz_init(two_ar); mpz_abs(two_ar, zr); mpz_mul_ui(two_ar, two_ar, 2);
-                     const int cmp = mpz_cmp(two_ar, zd);   /* round half to even */
-                     if (cmp > 0 || (cmp == 0 && mpz_odd_p(zq))) { if (mpz_sgn(zn) < 0) mpz_sub_ui(zq, zq, 1); else mpz_add_ui(zq, zq, 1); }
-                     mpz_clear(two_ar); }
-    mpz_clear(zn); mpz_clear(zd); mpz_clear(zr);
-    RESULT r = korb_big_from_mpz(c, slots, zq); mpz_clear(zq);
+    korb_mp_t zn, zd, zq, zr; korb_to_mpz(num, zn); korb_to_mpz(den, zd); korb_mp_init(zq); korb_mp_init(zr);
+    if (mode == 0)      korb_mp_fdiv_qr(zq, zr, zn, zd);
+    else if (mode == 1) korb_mp_cdiv_qr(zq, zr, zn, zd);
+    else                korb_mp_tdiv_qr(zq, zr, zn, zd);
+    if (mode == 3 || mode == 5) { korb_mp_t two_ar; korb_mp_init(two_ar); korb_mp_abs(two_ar, zr); korb_mp_mul_ui(two_ar, two_ar, 2);
+                     const int cmp = korb_mp_cmp(two_ar, zd);   /* :up rounds ties away (>=), :down keeps ties (>) */
+                     if (cmp > 0 || (mode == 3 && cmp == 0)) { if (korb_mp_sgn(zn) < 0) korb_mp_sub_ui(zq, zq, 1); else korb_mp_add_ui(zq, zq, 1); }
+                     korb_mp_clear(two_ar); }
+    else if (mode == 4) { korb_mp_t two_ar; korb_mp_init(two_ar); korb_mp_abs(two_ar, zr); korb_mp_mul_ui(two_ar, two_ar, 2);
+                     const int cmp = korb_mp_cmp(two_ar, zd);   /* round half to even */
+                     if (cmp > 0 || (cmp == 0 && korb_mp_odd_p(zq))) { if (korb_mp_sgn(zn) < 0) korb_mp_sub_ui(zq, zq, 1); else korb_mp_add_ui(zq, zq, 1); }
+                     korb_mp_clear(two_ar); }
+    korb_mp_clear(zn); korb_mp_clear(zd); korb_mp_clear(zr);
+    RESULT r = korb_big_from_mpz(c, slots, zq); korb_mp_clear(zq);
     return r;
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Bignum Rational not available");
-#endif
 }
 /* Integer (self) combined with a Rational operand: op 0 div, 1 modulo,
  * 2 divmod, 3 remainder.  div = floor(self/rat); modulo/divmod use the floored
@@ -445,10 +425,9 @@ static RESULT korb_rat_round_digits(CTX *c, VALUE *slots, VALUE num0, VALUE den0
     if (nd == 0) return korb_rat_intdiv(c, slots, num0, den0, mode);
     slots[0] = num0;
     slots[1] = den0;                                      /* root across allocs */
-#ifdef KORB_HAVE_GMP
     {
-        mpz_t p; mpz_init(p); mpz_ui_pow_ui(p, 10, (unsigned long)(nd > 0 ? nd : -nd));   /* 10^|nd| */
-        RESULT pr = korb_big_from_mpz(c, slots + 2, p); mpz_clear(p);
+        korb_mp_t p; korb_mp_init(p); korb_mp_ui_pow_ui(p, 10, (unsigned long)(nd > 0 ? nd : -nd));   /* 10^|nd| */
+        RESULT pr = korb_big_from_mpz(c, slots + 2, p); korb_mp_clear(p);
         if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
         slots[2] = pr.value;
     }
@@ -469,9 +448,6 @@ static RESULT korb_rat_round_digits(CTX *c, VALUE *slots, VALUE num0, VALUE den0
     if (UNLIKELY(q.state != KORB_NORMAL)) return q;
     slots[4] = q.value;
     return korb_int_arith(c, slots + 5, slots[4], slots[2], 2, 0);             /* q * 10^-nd */
-#else
-    (void)nd; return korb_rat_intdiv(c, slots, slots[0], slots[1], mode);
-#endif
 }
 /* round([ndigits], half: :up|:even) — ndigits<=0 → Integer, ndigits>0 → Rational. */
 static RESULT korb_m_rat_round(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
@@ -515,42 +491,41 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     if (UNLIKELY(VALUE_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
     const VALUE e = VALUE_SLICE_GET(a, 0);
     slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;     /* root */
-#ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(e)) {                                /* exact Rational */
-        mpz_t en; korb_to_mpz(e, en);
-        if (!mpz_fits_slong_p(en)) {   /* exponent doesn't fit a long: only 0 and ±1 bases are representable */
-            const bool exp_neg = mpz_sgn(en) < 0, exp_odd = mpz_odd_p(en) != 0;
-            mpz_clear(en);
-            mpz_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
-            const int nsgn = mpz_sgn(zn);
+        korb_mp_t en; korb_to_mpz(e, en);
+        if (!korb_mp_fits_slong_p(en)) {   /* exponent doesn't fit a long: only 0 and ±1 bases are representable */
+            const bool exp_neg = korb_mp_sgn(en) < 0, exp_odd = korb_mp_odd_p(en) != 0;
+            korb_mp_clear(en);
+            korb_mp_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
+            const int nsgn = korb_mp_sgn(zn);
             if (nsgn == 0) {                                /* base 0: 0**(-n) diverges, 0**n = 0 */
-                mpz_clear(zn); mpz_clear(zd);
+                korb_mp_clear(zn); korb_mp_clear(zd);
                 if (exp_neg) return korb_raise(c, slots, KORB_E_ZERODIV, 0, "divided by 0");
                 return korb_rat_new_v(c, slots, LONG2FIX(0), LONG2FIX(1));
             }
-            mpz_t az; mpz_init(az); mpz_abs(az, zn);
-            const bool base_is_one = mpz_cmp(az, zd) == 0;  /* |num| == den → |base| == 1 */
-            mpz_clear(az); mpz_clear(zn); mpz_clear(zd);
+            korb_mp_t az; korb_mp_init(az); korb_mp_abs(az, zn);
+            const bool base_is_one = korb_mp_cmp(az, zd) == 0;  /* |num| == den → |base| == 1 */
+            korb_mp_clear(az); korb_mp_clear(zn); korb_mp_clear(zd);
             if (base_is_one) return korb_rat_new_v(c, slots, LONG2FIX((nsgn > 0 || !exp_odd) ? 1 : -1), LONG2FIX(1));
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "exponent is too large");
         }
-        long n = mpz_get_si(en); mpz_clear(en);
+        long n = korb_mp_get_si(en); korb_mp_clear(en);
         if (n == 0) return korb_rat_new_v(c, slots, LONG2FIX(1), LONG2FIX(1));
-        mpz_t zn, zd, rn, rd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd); mpz_init(rn); mpz_init(rd);
+        korb_mp_t zn, zd, rn, rd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd); korb_mp_init(rn); korb_mp_init(rd);
         const unsigned long an = (unsigned long)(n < 0 ? -n : n);
-        mpz_pow_ui(rn, zn, an); mpz_pow_ui(rd, zd, an);
-        if (n < 0) { mpz_swap(rn, rd); if (mpz_sgn(rd) < 0) { mpz_neg(rn, rn); mpz_neg(rd, rd); } }
+        korb_mp_pow_ui(rn, zn, an); korb_mp_pow_ui(rd, zd, an);
+        if (n < 0) { korb_mp_swap(rn, rd); if (korb_mp_sgn(rd) < 0) { korb_mp_neg(rn, rn); korb_mp_neg(rd, rd); } }
         slots[2] = UNWRAP(korb_big_from_mpz(c, slots + 2, rn));
         slots[3] = UNWRAP(korb_big_from_mpz(c, slots + 3, rd));
-        mpz_clear(zn); mpz_clear(zd); mpz_clear(rn); mpz_clear(rd);
+        korb_mp_clear(zn); korb_mp_clear(zd); korb_mp_clear(rn); korb_mp_clear(rd);
         return korb_rat_new_v(c, slots + 4, slots[2], slots[3]);
     }
     {   /* fractional / float exponent → Float (negative base + frac exp = NaN here; Complex out of scope) */
-        mpz_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
-        const double base = mpz_get_d(zn) / mpz_get_d(zd); mpz_clear(zn); mpz_clear(zd);
+        korb_mp_t zn, zd; korb_to_mpz(slots[0], zn); korb_to_mpz(slots[1], zd);
+        const double base = korb_mp_get_d(zn) / korb_mp_get_d(zd); korb_mp_clear(zn); korb_mp_clear(zd);
         double ex;
         if (KORB_FLOAT_P(e)) ex = korb_float_val(e);
-        else if (KORB_RATIONAL_P(e)) { mpz_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = mpz_get_d(a2) / mpz_get_d(b2); mpz_clear(a2); mpz_clear(b2); }
+        else if (KORB_RATIONAL_P(e)) { korb_mp_t a2, b2; korb_to_mpz(VAL2RAT(e)->num, a2); korb_to_mpz(VAL2RAT(e)->den, b2); ex = korb_mp_get_d(a2) / korb_mp_get_d(b2); korb_mp_clear(a2); korb_mp_clear(b2); }
         else if (KORB_OBJECT_P(e)) { bool h; RESULT cr = korb_try_coerce(c, slots, VALUE_REF_GET(self), e, "**", 0, &h); if (h) return cr; return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e)); }
         else return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Rational", korb_type_name(e));
         /* 0 ** negative: an exact (Rational) exponent diverges → ZeroDivisionError;
@@ -564,9 +539,6 @@ static RESULT korb_m_rat_pow(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
         }
         return korb_flo(c, slots, pow(base, ex));
     }
-#else
-    return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Rational ** without GMP");
-#endif
 }
 static RESULT korb_m_rat_abs(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     (void)a; slots[0] = SELF_RAT->num; slots[1] = SELF_RAT->den;   /* root across arith */
@@ -921,9 +893,7 @@ korb_num_to_d(VALUE v, double *out)
     if (FIXNUM_P(v))     { *out = (double)FIX2LONG(v); return true; }
     if (KORB_FLOAT_P(v)) { *out = korb_float_val(v);     return true; }
     if (KORB_RATIONAL_P(v)) { double n, d; korb_num_to_d(VAL2RAT(v)->num, &n); korb_num_to_d(VAL2RAT(v)->den, &d); *out = n / d; return true; }
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) { *out = korb_big_to_d(v); return true; }
-#endif
     return false;
 }
 
@@ -5045,9 +5015,7 @@ korb_value_eq(VALUE a, VALUE b)
     if (a == b) return true;    /* fixnum / symbol / singletons / identity */
     if (FIXNUM_P(a) && FIXNUM_P(b)) return false;   /* two Fixnums: equal iff identical (handled above) — skip korb_int_cmp (hot in Array#== of int arrays) */
     if (SYMBOL_P(a)) return false;   /* a Symbol is eql? only to the identical Symbol — skip the type cascade (hot in symbol-keyed Hash / kwargs scans) */
-#ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b) == 0;   /* Bignum/Fixnum */
-#endif
     if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
         const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
         if (x->len != y->len || memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) != 0) return false;
@@ -5112,7 +5080,6 @@ korb_value_eq(VALUE a, VALUE b)
         int cmp = korb_rat_cmp(a, b);
         if (cmp != 2) return cmp == 0;
     }
-#ifdef KORB_HAVE_GMP
     /* Bignum (or a Fixnum too large for an exact double) vs Float: compare
      * exactly — casting the integer to double would lose precision. */
     if (KORB_FLOAT_P(a) ^ KORB_FLOAT_P(b)) {          /* exactly one is Float */
@@ -5121,7 +5088,6 @@ korb_value_eq(VALUE a, VALUE b)
             (FIXNUM_P(iv) && (FIX2LONG(iv) > (1LL << 53) || FIX2LONG(iv) < -(1LL << 53))))
             return korb_big_flo_cmp(iv, korb_float_val(KORB_FLOAT_P(a) ? a : b)) == 0;
     }
-#endif
     double da, db;              /* numeric ==: 1 == 1.0, 1.0 == 1.0 */
     if ((KORB_FLOAT_P(a) || KORB_FLOAT_P(b)) && korb_num_to_d(a, &da) && korb_num_to_d(b, &db))
         return da == db;
@@ -5445,13 +5411,11 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         bool t = op == 0 ? x < y : op == 1 ? x <= y : op == 2 ? x > y : x >= y;
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(l) && KORB_INTEGER_P(r)) {        /* at least one Bignum */
         int cmp = korb_int_cmp(l, r);
         bool t = op == 0 ? cmp < 0 : op == 1 ? cmp <= 0 : op == 2 ? cmp > 0 : cmp >= 0;
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
-#endif
     if (KORB_HASH_P(l)) {                                /* subset/superset; coerce a non-Hash r via #to_hash (in korb_hash_cmp_op) */
         slots[0] = l; slots[1] = r;
         VALUE_REF lref = VALUE_REF_AT(&slots[0]);
@@ -5465,7 +5429,6 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
             return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
         }
     }
-#ifdef KORB_HAVE_GMP
     /* Bignum vs Float: compare exactly — casting the Bignum to double would lose
      * precision (e.g. 2**64+39 <= (2**64+39).to_f is false, not true). */
     if ((KORB_BIGNUM_P(l) && KORB_FLOAT_P(r)) || (KORB_FLOAT_P(l) && KORB_BIGNUM_P(r))) {
@@ -5476,7 +5439,6 @@ korb_cmp_slow(CTX *c, VALUE *slots, VALUE l, VALUE r, int op, uint32_t line)
         const bool t = op == 0 ? cmp < 0 : op == 1 ? cmp <= 0 : op == 2 ? cmp > 0 : cmp >= 0;
         return RESULT_OK(t ? KORB_TRUE : KORB_FALSE);
     }
-#endif
     double ld, rd;
     if ((KORB_FLOAT_P(l) || KORB_FLOAT_P(r)) && korb_num_to_d(l, &ld) && korb_num_to_d(r, &rd)) {
         bool t;
@@ -5674,9 +5636,7 @@ korb_minus_slow(CTX *c, VALUE *slots, VALUE_REF lhs, VALUE rhs, uint32_t line)
         if (h) return ur;
         return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs)) return korb_int_arith(c, slots, l, rhs, 1, line);   /* fixnum overflow / bignum */
-#endif
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
     if (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) return korb_num_arith(c, slots, l, rhs, 1, line);   /* mixed Float (e.g. Float-Rational) */
     if (KORB_RATIONAL_P(l) || KORB_RATIONAL_P(rhs)) return korb_rat_arith(c, slots, l, rhs, 1);
@@ -7722,9 +7682,7 @@ korb_send_impl(CTX *c, VALUE *slots, uint32_t mid, uint32_t line, uint32_t argc,
                 VALUE nv = slots[-(intptr_t)argc];
                 if (UNLIKELY(!korb_to_index(nv, &n))) {
                     if (KORB_BIGNUM_P(nv)) {                 /* a real Integer, just too large for an array size */
-#ifdef KORB_HAVE_GMP
-                        if (mpz_sgn(VAL2BIG(nv)->z) < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
-#endif
+                        if (korb_mp_sgn(VAL2BIG(nv)->z) < 0) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "negative array size");
                         return korb_raise(c, slots, KORB_E_ARGUMENT, line, "array size too big");
                     }
                     RESULT cr = korb_coerce_to_int(c, slots, &nv);   /* else coerce the size via #to_int */
@@ -8441,9 +8399,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_INTEGER, ">=", korb_m_num_ge, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "gcd", korb_m_int_gcd, 1);
     korb_def_cmethod(c, KORB_C_INTEGER, "lcm", korb_m_int_lcm, 1);
-#ifdef KORB_HAVE_GMP
     korb_def_modfunc(c, c->slots, korb_builtin_class_obj(c->vm, KORB_C_INTEGER), "sqrt", korb_m_integer_sqrt, 1);   /* Integer.sqrt class method */
-#endif
     korb_def_cmethod_blk(c, KORB_C_INTEGER, "step", korb_m_num_step, -1);
     korb_def_cmethod(c, KORB_C_INTEGER, "finite?", korb_m_true_lit2, 0);
     korb_def_cmethod(c, KORB_C_INTEGER, "fdiv", korb_m_int_fdiv, 1);
@@ -9980,13 +9936,11 @@ korb_fprint_to_s_s(CTX *c, VALUE *slots, FILE *fp, VALUE v)
     if (SYMBOL_P(v))           { fputs(korb_sym_name(c->vm, SYM2ID(v)), fp); return; }
     if (KORB_FLOAT_P(v))       { char b[40]; korb_float_to_s(korb_float_val(v), b); fputs(b, fp); return; }   /* flonum or heap */
     switch (KORB_OBJ_TYPE(v)) {
-#ifdef KORB_HAVE_GMP
       case KORB_OBJ_BIGNUM: {
-        char *s = mpz_get_str(NULL, 10, VAL2BIG(v)->z);   /* GMP-malloc'd */
+        char *s = korb_mp_get_str(NULL, 10, VAL2BIG(v)->z);   /* GMP-malloc'd */
         fputs(s, fp); free(s);
         return;
       }
-#endif
       case KORB_OBJ_STRING: {
         const KorbString *s = VAL2STR(v);
         fwrite(korb_strbuf_data(s->buf), 1, s->len, fp);
@@ -11007,7 +10961,6 @@ korb_bi_puts(CTX *c, VALUE *slots, VALUE_SLICE args)
     return er;
 }
 
-#ifdef KORB_HAVE_GMP
 /* Integer/Bignum/Rational/Float/String → canonical mpq.  false = unconvertible. */
 /* Can this value be a Rational() operand at all?  (Used to name the offending
  * argument in the TypeError.) */
@@ -11017,9 +10970,9 @@ static bool korb_arg_rational_ok(VALUE v) {
 }
 static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
     if (FIXNUM_P(v)) { mpq_set_si(out, (long)FIX2LONG(v), 1); return true; }
-    if (KORB_BIGNUM_P(v)) { mpz_t z; korb_to_mpz(v, z); mpq_set_z(out, z); mpz_clear(z); return true; }
-    if (KORB_RATIONAL_P(v)) { mpz_t zn, zd; korb_to_mpz(VAL2RAT(v)->num, zn); korb_to_mpz(VAL2RAT(v)->den, zd);
-                              mpq_set_num(out, zn); mpq_set_den(out, zd); mpz_clear(zn); mpz_clear(zd); mpq_canonicalize(out); return true; }
+    if (KORB_BIGNUM_P(v)) { korb_mp_t z; korb_to_mpz(v, z); mpq_set_z(out, z); korb_mp_clear(z); return true; }
+    if (KORB_RATIONAL_P(v)) { korb_mp_t zn, zd; korb_to_mpz(VAL2RAT(v)->num, zn); korb_to_mpz(VAL2RAT(v)->den, zd);
+                              mpq_set_num(out, zn); mpq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd); mpq_canonicalize(out); return true; }
     if (KORB_FLOAT_P(v)) { double d = korb_float_val(v); if (!isfinite(d)) return false; mpq_set_d(out, d); return true; }
     if (KORB_STRING_P(v)) {
         const KorbString *s = VAL2STR(v); char buf[512];
@@ -11035,10 +10988,10 @@ static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
             char numbuf[512]; uint32_t k = 0;
             for (uint32_t i = 0; i < m; i++) if (buf[i] != '.') numbuf[k++] = buf[i];
             numbuf[k] = 0;
-            mpz_t zn, zd; mpz_init(zd);
-            if (mpz_init_set_str(zn, numbuf, 10) != 0) { mpz_clear(zn); mpz_clear(zd); return false; }
-            mpz_ui_pow_ui(zd, 10, fraclen);
-            mpq_set_num(out, zn); mpq_set_den(out, zd); mpz_clear(zn); mpz_clear(zd);
+            korb_mp_t zn, zd; korb_mp_init(zd);
+            if (korb_mp_init_set_str(zn, numbuf, 10) != 0) { korb_mp_clear(zn); korb_mp_clear(zd); return false; }
+            korb_mp_ui_pow_ui(zd, 10, fraclen);
+            mpq_set_num(out, zn); mpq_set_den(out, zd); korb_mp_clear(zn); korb_mp_clear(zd);
             mpq_canonicalize(out); return true;
         }
         if (mpq_set_str(out, buf, 10) != 0) return false;     /* "a/b" or plain integer */
@@ -11047,7 +11000,6 @@ static bool korb_arg_to_mpq(VALUE v, mpq_t out) {
     }
     return false;
 }
-#endif
 static RESULT
 korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
 {
@@ -11075,7 +11027,6 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
     /* fast path: both Integer (preserves Bignum, no GMP rounding) */
     if (KORB_INTEGER_P(nv) && (n < 2 || KORB_INTEGER_P(VALUE_SLICE_GET(args, 1))))
         return korb_rat_new_v(c, slots, nv, n >= 2 ? VALUE_SLICE_GET(args, 1) : LONG2FIX(1));
-#ifdef KORB_HAVE_GMP
     {
         mpq_t q0, q1; mpq_init(q0);
         if (!korb_arg_to_mpq(nv, q0)) { mpq_clear(q0); goto bad; }
@@ -11092,7 +11043,6 @@ korb_bi_rational(CTX *c, VALUE *slots, VALUE_SLICE args)
         return korb_rat_new_v(c, slots + 2, slots[0], slots[1]);
     }
 bad:
-#endif
     /* A Complex operand (either position) is handled by Complex arithmetic:
      * Rational(3, Complex(2,0)) is 3/2, and a non-real denominator yields a
      * Complex quotient — exactly `numerator / denominator` in Ruby. */
@@ -11542,9 +11492,7 @@ korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VAL
     }
     if (base == 0) base = 10;
     intptr_t acc = 0; bool any = false, prev_us = false;
-#ifdef KORB_HAVE_GMP
-    bool big = false; mpz_t z;
-#endif
+    bool big = false; korb_mp_t z;
     for (; i < end; i++) {
         char ch = s[i];
         if (ch == '_') { if (!any || prev_us) goto bad; prev_us = true; continue; }
@@ -11555,48 +11503,36 @@ korb_str_to_int(CTX *c, VALUE *slots, const char *s, uint32_t len, int base, VAL
         else goto bad;
         if (d >= base) goto bad;
         any = true;
-#ifdef KORB_HAVE_GMP
-        if (big) { mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)d); continue; }
+        if (big) { korb_mp_mul_ui(z, z, (unsigned long)base); korb_mp_add_ui(z, z, (unsigned long)d); continue; }
         intptr_t nn;
         if (UNLIKELY(__builtin_mul_overflow(acc, (intptr_t)base, &nn) || __builtin_add_overflow(nn, (intptr_t)d, &nn))) {
-            mpz_init_set_si(z, acc); mpz_mul_ui(z, z, (unsigned long)base); mpz_add_ui(z, z, (unsigned long)d);
+            korb_mp_init_set_si(z, acc); korb_mp_mul_ui(z, z, (unsigned long)base); korb_mp_add_ui(z, z, (unsigned long)d);
             big = true; continue;
         }
         acc = nn;
-#else
-        if (__builtin_mul_overflow(acc, base, &acc) || __builtin_add_overflow(acc, d, &acc)) goto bad;
-#endif
     }
     if (!any || prev_us) goto bad;
-#ifdef KORB_HAVE_GMP
     if (big) {
-        if (sign < 0) mpz_neg(z, z);
+        if (sign < 0) korb_mp_neg(z, z);
         RESULT r = korb_big_from_mpz(c, slots, z);
-        mpz_clear(z);
+        korb_mp_clear(z);
         if (UNLIKELY(r.state != KORB_NORMAL)) return false;
         *out = r.value;
         return true;
     }
-#else
-    (void)c; (void)slots;
-#endif
     acc *= sign;
-#ifdef KORB_HAVE_GMP
     if (UNLIKELY(!FIXABLE(acc))) {   /* fixnum-overflow but int64-fit (e.g. 2^62) → Bignum, not a wrapped Fixnum */
-        mpz_t z2; mpz_init_set_si(z2, (long)acc);
+        korb_mp_t z2; korb_mp_init_set_si(z2, (long)acc);
         RESULT r = korb_big_from_mpz(c, slots, z2);
-        mpz_clear(z2);
+        korb_mp_clear(z2);
         if (UNLIKELY(r.state != KORB_NORMAL)) return false;
         *out = r.value;
         return true;
     }
-#endif
     *out = LONG2FIX(acc);   /* in-range Fixnum (larger values promoted to Bignum above) */
     return true;
   bad:
-#ifdef KORB_HAVE_GMP
-    if (big) mpz_clear(z);
-#endif
+    if (big) korb_mp_clear(z);
     return false;
 }
 
@@ -11634,24 +11570,17 @@ korb_bi_integer(CTX *c, VALUE *slots, VALUE_SLICE args)
         (FIXNUM_P(a0) || KORB_FLOAT_P(a0) || KORB_BIGNUM_P(a0) || KORB_RATIONAL_P(a0)))
         INT_FAIL(KORB_E_ARGUMENT, 0, "base specified for non string value");
     if (FIXNUM_P(a0)) return RESULT_OK(a0);
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(a0)) return RESULT_OK(a0);
-#endif
     if (KORB_FLOAT_P(a0)) {
         double d = korb_float_val(a0);
         if (UNLIKELY(!isfinite(d)))
             INT_FAIL(KORB_E_FLOAT_DOMAIN, 0, "%s", isnan(d) ? "NaN" : (d < 0 ? "-Infinity" : "Infinity"));
-#ifdef KORB_HAVE_GMP
         if (UNLIKELY(!FIXABLE((intptr_t)d) || fabs(d) >= 9.0e18)) {   /* large finite Float → Bignum (trunc) */
-            mpz_t z; mpz_init_set_d(z, d);                 /* mpz_set_d truncates toward zero */
+            korb_mp_t z; korb_mp_init_set_d(z, d);                 /* korb_mp_set_d truncates toward zero */
             RESULT r = korb_big_from_mpz(c, slots, z);
-            mpz_clear(z);
+            korb_mp_clear(z);
             return r;
         }
-#else
-        if (UNLIKELY(!FIXABLE((intptr_t)d)))
-            INT_FAIL(KORB_E_ARGUMENT, 0, "Integer(): value out of range");
-#endif
         return RESULT_OK(LONG2FIX((intptr_t)d));           /* trunc toward zero */
     }
     if (KORB_RATIONAL_P(a0))                                /* Integer(Rational) → truncate toward zero */
@@ -11872,9 +11801,7 @@ korb_bi_float(CTX *c, VALUE *slots, VALUE_SLICE args)
     VALUE a0 = VALUE_SLICE_GET(args, 0);
     if (KORB_FLOAT_P(a0)) return RESULT_OK(a0);
     if (FIXNUM_P(a0)) return korb_float_new(c, slots, (double)FIX2LONG(a0));
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(a0)) return korb_float_new(c, slots, korb_big_to_d(a0));
-#endif
     if (KORB_RATIONAL_P(a0)) { double d; (void)korb_num_to_d(a0, &d); return korb_float_new(c, slots, d); }
     if (KORB_STRING_P(a0)) {
         const KorbString *s = VAL2STR(a0);

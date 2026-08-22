@@ -145,18 +145,16 @@ static RESULT korb_int_shift_arg(CTX *c, VALUE *slots, VALUE_REF self, VALUE o, 
     slots[0] = VALUE_REF_GET(self);
     *extreme = false;
     for (;;) {
-#ifdef KORB_HAVE_GMP
         if (KORB_BIGNUM_P(o)) {                          /* amount doesn't fit a word → extreme shift */
-            const int osign = mpz_sgn(VAL2BIG(o)->z);
+            const int osign = korb_mp_sgn(VAL2BIG(o)->z);
             const bool right = (osign * dir) < 0;        /* left<<neg or right>>pos → shrink toward 0/-1 */
-            const bool self_neg = KORB_BIGNUM_P(slots[0]) ? (mpz_sgn(VAL2BIG(slots[0])->z) < 0) : (FIX2LONG(slots[0]) < 0);
+            const bool self_neg = KORB_BIGNUM_P(slots[0]) ? (korb_mp_sgn(VAL2BIG(slots[0])->z) < 0) : (FIX2LONG(slots[0]) < 0);
             const bool self_zero = !KORB_BIGNUM_P(slots[0]) && FIX2LONG(slots[0]) == 0;
             *extreme = true;
             if (right) { *ext_val = self_neg ? LONG2FIX(-1) : LONG2FIX(0); return RESULT_OK(KORB_NIL); }
             if (self_zero) { *ext_val = LONG2FIX(0); return RESULT_OK(KORB_NIL); }
             return korb_raise(c, slots, KORB_E_RANGE, 0, "shift width too big");
         }
-#endif
         if (LIKELY(korb_to_index(o, sh_out))) return RESULT_OK(KORB_NIL);   /* Fixnum / Float / ... */
         /* otherwise coerce once via #to_int, then re-check (Bignum/Fixnum) */
         const uint32_t mid = korb_intern(c->vm, "to_int", 6);
@@ -176,26 +174,18 @@ static RESULT korb_m_int_lshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     intptr_t sh; bool extreme = false; VALUE ext = KORB_NIL;
     { RESULT cr = korb_int_shift_arg(c, slots, self, VALUE_SLICE_GET(a, 0), +1, &sh, &extreme, &ext); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (extreme) return RESULT_OK(ext);
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) return korb_int_shift(c, slots, VALUE_REF_GET(self), sh);
-#endif
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     intptr_t r = sh >= 0 ? (sh < 62 ? (n << sh) : 0) : (n >> (-sh < 63 ? -sh : 62));
     if (sh >= 0 && (sh >= 62 || (r >> sh) != n || !FIXABLE(r)))
-#ifdef KORB_HAVE_GMP
         return korb_int_shift(c, slots, VALUE_REF_GET(self), sh);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
-#endif
     return RESULT_OK(LONG2FIX(r));
 }
 static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     intptr_t sh; bool extreme = false; VALUE ext = KORB_NIL;
     { RESULT cr = korb_int_shift_arg(c, slots, self, VALUE_SLICE_GET(a, 0), -1, &sh, &extreme, &ext); if (UNLIKELY(cr.state != KORB_NORMAL)) return cr; }
     if (extreme) return RESULT_OK(ext);
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(VALUE_REF_GET(self))) return korb_int_shift(c, slots, VALUE_REF_GET(self), -sh);   /* x >> sh == shift by -sh */
-#endif
     intptr_t n = FIX2LONG(VALUE_REF_GET(self));
     if (sh >= 0)   /* arithmetic right shift — always fits in a Fixnum */
         return RESULT_OK(LONG2FIX(sh < 63 ? (n >> sh) : (n < 0 ? -1 : 0)));
@@ -203,11 +193,7 @@ static RESULT korb_m_int_rshift(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
     const intptr_t ls = -sh;
     const intptr_t r = (ls < 62) ? (n << ls) : 0;
     if (ls >= 62 || (r >> ls) != n || !FIXABLE(r))
-#ifdef KORB_HAVE_GMP
         return korb_int_shift(c, slots, VALUE_REF_GET(self), ls);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "Integer overflow (Bignum is not implemented)");
-#endif
     return RESULT_OK(LONG2FIX(r));
 }
 /* Integer#[] — bit reference: int[i] (single bit), int[i, len] (len-bit field),
@@ -236,20 +222,16 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             } else if (small_j && FIX2LONG(rg->rend) < 0) {
                 nz = false;                                                 /* Bignum self, empty range */
             } else {
-#ifdef KORB_HAVE_GMP
-                mpz_t zn; korb_to_mpz(selfv, zn);                            /* Fixnum or Bignum self, into two's-complement mpz */
+                korb_mp_t zn; korb_to_mpz(selfv, zn);                            /* Fixnum or Bignum self, into two's-complement mpz */
                 if (endless) {
-                    nz = mpz_sgn(zn) != 0;
+                    nz = korb_mp_sgn(zn) != 0;
                 } else {                                                    /* mask = (1<<(j+1))-1, nz = (self & mask) != 0 */
-                    mpz_t mask, tmp; mpz_init(mask); mpz_init(tmp);
-                    mpz_ui_pow_ui(mask, 2, (unsigned long)(FIX2LONG(rg->rend) + 1)); mpz_sub_ui(mask, mask, 1);
-                    mpz_and(tmp, zn, mask); nz = mpz_sgn(tmp) != 0;
-                    mpz_clear(mask); mpz_clear(tmp);
+                    korb_mp_t mask, tmp; korb_mp_init(mask); korb_mp_init(tmp);
+                    korb_mp_ui_pow_ui(mask, 2, (unsigned long)(FIX2LONG(rg->rend) + 1)); korb_mp_sub_ui(mask, mask, 1);
+                    korb_mp_and(tmp, zn, mask); nz = korb_mp_sgn(tmp) != 0;
+                    korb_mp_clear(mask); korb_mp_clear(tmp);
                 }
-                mpz_clear(zn);
-#else
-                nz = true;
-#endif
+                korb_mp_clear(zn);
             }
             if (nz) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "The beginless range for Integer#[] results in infinity");
             zero = true;                                                    /* not raised ⇒ bits [0,j] all clear ⇒ result is 0 */
@@ -279,7 +261,6 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             if (len == 0) zero = true; else if (len > 0) mask_len = len;   /* len<0 ⇒ no upper mask (all bits) */
         } else single_bit = true;                                          /* n[i] */
     }
-#ifdef KORB_HAVE_GMP
     if (LIKELY(FIXNUM_P(selfv) && single_bit)) {              /* n[i] on a Fixnum — bit test, no GMP alloc */
         const intptr_t n = FIX2LONG(selfv);
         if (i < 0)   return RESULT_OK(LONG2FIX(0));           /* bits below 0 don't exist */
@@ -287,28 +268,16 @@ static RESULT korb_m_int_bitref(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
         return RESULT_OK(LONG2FIX((n >> i) & 1));
     }
     {
-        mpz_t z, r; korb_to_mpz(selfv, z); mpz_init(r);
-        if (i >= 0) mpz_fdiv_q_2exp(r, z, (mp_bitcnt_t)i);     /* self >> i (arith) */
-        else        mpz_mul_2exp(r, z, (mp_bitcnt_t)(-i));     /* self << -i */
-        if (zero) mpz_set_ui(r, 0);
-        else if (single_bit) { mpz_t one; mpz_init_set_ui(one, 1); mpz_and(r, r, one); mpz_clear(one); }
-        else if (mask_len > 0) { mpz_t m; mpz_init_set_ui(m, 1); mpz_mul_2exp(m, m, (mp_bitcnt_t)mask_len); mpz_sub_ui(m, m, 1); mpz_and(r, r, m); mpz_clear(m); }
+        korb_mp_t z, r; korb_to_mpz(selfv, z); korb_mp_init(r);
+        if (i >= 0) korb_mp_fdiv_q_2exp(r, z, (korb_mp_bitcnt_t)i);     /* self >> i (arith) */
+        else        korb_mp_mul_2exp(r, z, (korb_mp_bitcnt_t)(-i));     /* self << -i */
+        if (zero) korb_mp_set_ui(r, 0);
+        else if (single_bit) { korb_mp_t one; korb_mp_init_set_ui(one, 1); korb_mp_and(r, r, one); korb_mp_clear(one); }
+        else if (mask_len > 0) { korb_mp_t m; korb_mp_init_set_ui(m, 1); korb_mp_mul_2exp(m, m, (korb_mp_bitcnt_t)mask_len); korb_mp_sub_ui(m, m, 1); korb_mp_and(r, r, m); korb_mp_clear(m); }
         /* else (mask_len==0, range no-mask): all bits from offset */
-        mpz_clear(z);
-        RESULT res = korb_big_from_mpz(c, slots, r); mpz_clear(r); return res;
+        korb_mp_clear(z);
+        RESULT res = korb_big_from_mpz(c, slots, r); korb_mp_clear(r); return res;
     }
-#else
-    intptr_t n = FIX2LONG(selfv);
-    if (zero) return RESULT_OK(LONG2FIX(0));
-    intptr_t shifted = i >= 0 ? (i < 63 ? (n >> i) : (n < 0 ? -1 : 0)) : (n << (-i));
-    if (single_bit) {
-        if (i < 0 || i >= 63) return RESULT_OK(LONG2FIX(n < 0 && i >= 63 ? 1 : 0));
-        return RESULT_OK(LONG2FIX((n >> i) & 1));
-    }
-    if (mask_len <= 0) return RESULT_OK(LONG2FIX(shifted));                /* no upper mask */
-    intptr_t mask = mask_len >= 63 ? -1 : ((intptr_t)1 << mask_len) - 1;
-    return RESULT_OK(LONG2FIX(shifted & mask));
-#endif
 }
 /* bitwise & | ^ (kind 0/1/2) */
 static RESULT korb_int_bitop(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a, int kind) {
@@ -334,15 +303,11 @@ static RESULT korb_m_int_inv(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a
     (void)c;(void)slots;(void)a;
     const VALUE v = VALUE_REF_GET(self);
     if (LIKELY(FIXNUM_P(v))) return RESULT_OK(LONG2FIX(~FIX2LONG(v)));
-#ifdef KORB_HAVE_GMP
-    mpz_t z; korb_to_mpz(v, z);          /* Bignum: ~z = -z-1 (two's complement) */
-    mpz_com(z, z);
+    korb_mp_t z; korb_to_mpz(v, z);          /* Bignum: ~z = -z-1 (two's complement) */
+    korb_mp_com(z, z);
     const RESULT r = korb_big_from_mpz(c, slots, z);
-    mpz_clear(z);
+    korb_mp_clear(z);
     return r;
-#else
-    return RESULT_OK(LONG2FIX(~FIX2LONG(v)));
-#endif
 }
 static RESULT korb_m_int_remainder(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE a) {
     VALUE o = VALUE_SLICE_GET(a, 0);

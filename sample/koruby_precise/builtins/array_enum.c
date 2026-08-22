@@ -1139,9 +1139,7 @@ static RESULT korb_elem_hash(CTX *c, VALUE *slots, VALUE v, uint64_t *out) {
     const RESULT r = korb_send_impl(c, slots + 1, korb_intern(c->vm, "hash", 4), 0, 0, NULL, NULL, KORB_NIL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (FIXNUM_P(r.value)) *out = (uint64_t)FIX2LONG(r.value);
-#ifdef KORB_HAVE_GMP
-    else if (KORB_BIGNUM_P(r.value)) *out = (uint64_t)mpz_get_ui(VAL2BIG(r.value)->z);
-#endif
+    else if (KORB_BIGNUM_P(r.value)) *out = (uint64_t)korb_mp_get_ui(VAL2BIG(r.value)->z);
     else *out = korb_value_hash(r.value);
     return RESULT_OK(KORB_NIL);
 }

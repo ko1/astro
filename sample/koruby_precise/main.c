@@ -140,10 +140,8 @@ koruby_extra_cflags(char *buf, size_t n)
              " -I" KORUBY_SRC_DIR
              " -I" ASTRO_RUNTIME_DIR
              " -I" ASTRO_PRISM_INC_DIR
-#ifdef KORB_HAVE_GMP
-             " -DKORB_HAVE_GMP"   /* match the main build: SDs must keep the bignum-promote arithmetic paths, not the no-GMP overflow stubs */
-#endif
-             " -DBARUBY_GC=%d", BARUBY_GC);   /* framework backend-select macro */
+             " -DKORB_BIGNUM=%d"   /* SD は本体と同じ多倍長 backend で焼く */
+             " -DBARUBY_GC=%d", KORB_BIGNUM, BARUBY_GC);   /* framework backend-select macros */
 }
 
 /* mtime of this binary, used both as the staleness reference and as the code

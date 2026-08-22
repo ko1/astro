@@ -60,16 +60,14 @@ static uint64_t korb_deep_hash_d(VALUE v, uint32_t depth) {
         h = h * 31u + korb_deep_hash_d(r->rend, depth + 1);
         return h;
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) {
-        mpz_t z; korb_to_mpz(v, z);
-        uint64_t h = (mpz_sgn(z) < 0) ? 0xABCDEF01ULL : 0x12345678ULL;
-        const size_t n = mpz_size(z);
-        for (size_t i = 0; i < n; i++) h = h * 1099511628211ULL + (uint64_t)mpz_getlimbn(z, (mp_size_t)i);
-        mpz_clear(z);
+        korb_mp_t z; korb_to_mpz(v, z);
+        uint64_t h = (korb_mp_sgn(z) < 0) ? 0xABCDEF01ULL : 0x12345678ULL;
+        const size_t n = korb_mp_size(z);
+        for (size_t i = 0; i < n; i++) h = h * 1099511628211ULL + (uint64_t)korb_mp_getlimbn(z, (korb_mp_size_t)i);
+        korb_mp_clear(z);
         return h;
     }
-#endif
     return (uint64_t)(uintptr_t)v;                     /* identity (user objects etc.) */
 }
 static uint64_t korb_deep_hash(VALUE v) { return korb_deep_hash_d(v, 0); }

@@ -49,17 +49,13 @@ static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1,
 static RESULT korb_pack_int_val(CTX *c, VALUE *sc, VALUE e, int64_t *out) {
     if (FIXNUM_P(e)) { *out = FIX2LONG(e); return RESULT_OK(KORB_NIL); }
     if (KORB_FLOAT_P(e)) { *out = (int64_t)korb_float_val(e); return RESULT_OK(KORB_NIL); }
-#ifdef KORB_HAVE_GMP
-    if (KORB_BIGNUM_P(e)) { mpz_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)mpz_get_ui(z); *out = (mpz_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; mpz_clear(z); return RESULT_OK(KORB_NIL); }
-#endif
+    if (KORB_BIGNUM_P(e)) { korb_mp_t z; korb_to_mpz(e, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
     if (KORB_OBJECT_P(e) && korb_responds_to_coerce(c, sc, e, korb_intern(c->vm, "to_int", 6))) {
         sc[0] = e;
         RESULT r = korb_send_impl(c, sc + 1, korb_intern(c->vm, "to_int", 6), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (FIXNUM_P(r.value)) { *out = FIX2LONG(r.value); return RESULT_OK(KORB_NIL); }
-#ifdef KORB_HAVE_GMP
-        if (KORB_BIGNUM_P(r.value)) { mpz_t z; korb_to_mpz(r.value, z); uint64_t lo = (uint64_t)mpz_get_ui(z); *out = (mpz_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; mpz_clear(z); return RESULT_OK(KORB_NIL); }
-#endif
+        if (KORB_BIGNUM_P(r.value)) { korb_mp_t z; korb_to_mpz(r.value, z); uint64_t lo = (uint64_t)korb_mp_get_ui(z); *out = (korb_mp_sgn(z) < 0) ? -(int64_t)lo : (int64_t)lo; korb_mp_clear(z); return RESULT_OK(KORB_NIL); }
         return korb_raise(c, sc, KORB_E_TYPE, 0, "can't convert Object to Integer (Object#to_int gives %s)", korb_type_name(r.value));
     }
     return korb_raise(c, sc, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_type_name(e));
@@ -482,13 +478,11 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 uint64_t v = 0;
                 for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); v |= (uint64_t)(unsigned char)korb_strbuf_data(s->buf)[si + k] << (8 * (big ? (7 - k) : k)); }
                 si += 8;
-#ifdef KORB_HAVE_GMP
                 if (!sgn && (v >> 63)) {                  /* unsigned 64 > INT64_MAX → Bignum */
-                    mpz_t z; mpz_init_set_ui(z, (unsigned long)v); RESULT br = korb_big_from_mpz(c, slots + 4, z); mpz_clear(z);
+                    korb_mp_t z; korb_mp_init_set_ui(z, (unsigned long)v); RESULT br = korb_big_from_mpz(c, slots + 4, z); korb_mp_clear(z);
                     if (UNLIKELY(br.state != KORB_NORMAL)) return br;
                     CHECK(korb_ary_push_val(c, slots + 3, res, br.value));
                 } else
-#endif
                 { slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (intptr_t)(int64_t)v)); CHECK(korb_ary_push_val(c, slots + 3, res, slots[4])); }
             }
         } else if (d == 'U') {                            /* UTF-8 codepoints */
@@ -586,13 +580,11 @@ static RESULT korb_m_str_unpack(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                     const intptr_t iv = sgn ? (sz == 2 ? (intptr_t)(int16_t)v : (intptr_t)(int32_t)v) : (intptr_t)v;
                     CHECK(korb_ary_push_val(c, slots + 3, res, LONG2FIX(iv)));
                 }
-#ifdef KORB_HAVE_GMP
                 else if (!sgn && (v >> 63)) {            /* unsigned 64 > INT64_MAX → Bignum */
-                    mpz_t z; mpz_init_set_ui(z, (unsigned long)v); RESULT br = korb_big_from_mpz(c, slots + 4, z); mpz_clear(z);
+                    korb_mp_t z; korb_mp_init_set_ui(z, (unsigned long)v); RESULT br = korb_big_from_mpz(c, slots + 4, z); korb_mp_clear(z);
                     if (UNLIKELY(br.state != KORB_NORMAL)) return br;
                     CHECK(korb_ary_push_val(c, slots + 3, res, br.value));
                 }
-#endif
                 else {                                   /* signed 64, or unsigned that fits: promote past Fixnum if needed */
                     slots[4] = UNWRAP(korb_intptr_to_val(c, slots + 4, (intptr_t)(int64_t)v));
                     CHECK(korb_ary_push_val(c, slots + 3, res, slots[4]));

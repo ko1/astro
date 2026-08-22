@@ -367,7 +367,6 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
     }
     intptr_t lo, hi;
     if (!korb_range_int_bounds(r, &lo, &hi)) {            /* non-fixnum bounds */
-#ifdef KORB_HAVE_GMP
         /* Bignum-bounded Integer range (e.g. 0...2**64): max is end / end-1 with
          * no materialization (korb_range_int_bounds only recognises Fixnum). */
         if (KORB_INTEGER_P(r->rbegin) && KORB_INTEGER_P(r->rend) &&
@@ -377,7 +376,6 @@ static RESULT korb_m_range_max(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLICE
             if (!r->exclude_end) return RESULT_OK(r->rend);
             return korb_int_arith(c, slots, r->rend, LONG2FIX(1), 1, 0);              /* exclusive: end - 1 */
         }
-#endif
         /* Non-numeric INCLUSIVE range (Time..Time, 'f'..'l'): the max is simply
          * the end (when begin <= end) — no #succ / to_a materialization needed.
          * Exclusive non-numeric still needs the succ-strided to_a below. */

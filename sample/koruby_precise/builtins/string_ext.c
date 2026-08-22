@@ -10,23 +10,23 @@
  * Negatives use CRuby's two's-complement ".." notation: the digits of
  * base^(d+1) - |z| (d = digit count of |z|), prefixed with "..", which the
  * leading fill digit (f/7/1) makes an unambiguous infinite sign extension. */
-static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
+static void korb_fmt_radix(FILE *ms, const korb_mp_t z, int base, bool upper,
                            bool left, bool zero, bool alt, bool plus, bool space,
                            int width, bool has_prec, int prec) {
-    const bool neg = mpz_sgn(z) < 0;
+    const bool neg = korb_mp_sgn(z) < 0;
     /* An explicit + / space flag forces a *signed* representation (-|n|);
      * otherwise a negative uses the two's-complement ".." notation. */
     const bool signed_mode = neg && (plus || space);
     const bool tc = neg && !signed_mode;
     char *digits;
     if (tc) {
-        mpz_t a; mpz_init(a); mpz_abs(a, z);
-        const size_t d = mpz_sizeinbase(a, base);
-        mpz_t p; mpz_init(p);
-        mpz_ui_pow_ui(p, (unsigned long)base, (unsigned long)(d + 1));
-        mpz_sub(p, p, a);
-        digits = mpz_get_str(NULL, base, p);          /* d+1 chars; leading run of fill digits */
-        mpz_clear(a); mpz_clear(p);
+        korb_mp_t a; korb_mp_init(a); korb_mp_abs(a, z);
+        const size_t d = korb_mp_sizeinbase(a, base);
+        korb_mp_t p; korb_mp_init(p);
+        korb_mp_ui_pow_ui(p, (unsigned long)base, (unsigned long)(d + 1));
+        korb_mp_sub(p, p, a);
+        digits = korb_mp_get_str(NULL, base, p);          /* d+1 chars; leading run of fill digits */
+        korb_mp_clear(a); korb_mp_clear(p);
         /* collapse the leading fill-digit run to a single one (CRuby keeps exactly
          * one sign digit: -256 → "f00", not "ff00"). */
         const char fd = base == 16 ? 'f' : base == 8 ? '7' : '1';
@@ -34,14 +34,14 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
         while (skip + 1 < dl && digits[skip] == fd && digits[skip + 1] == fd) skip++;
         if (skip) memmove(digits, digits + skip, dl - skip + 1);
     } else if (signed_mode) {
-        mpz_t a; mpz_init(a); mpz_abs(a, z);
-        digits = mpz_get_str(NULL, base, a);          /* magnitude only; sign added below */
-        mpz_clear(a);
+        korb_mp_t a; korb_mp_init(a); korb_mp_abs(a, z);
+        digits = korb_mp_get_str(NULL, base, a);          /* magnitude only; sign added below */
+        korb_mp_clear(a);
     } else {
-        digits = mpz_get_str(NULL, base, z);
+        digits = korb_mp_get_str(NULL, base, z);
     }
     size_t dlen = strlen(digits);
-    if (has_prec && prec == 0 && mpz_sgn(z) == 0) dlen = 0;   /* %.0x/%.0o/%.0b of 0 → no digits (CRuby) */
+    if (has_prec && prec == 0 && korb_mp_sgn(z) == 0) dlen = 0;   /* %.0x/%.0o/%.0b of 0 → no digits (CRuby) */
     const char fill = base == 16 ? 'f' : base == 8 ? '7' : '1';
     if (upper) for (size_t k = 0; k < dlen; k++) digits[k] = (char)toupper((unsigned char)digits[k]);
     const char ufill = upper ? (char)toupper((unsigned char)fill) : fill;
@@ -56,8 +56,8 @@ static void korb_fmt_radix(FILE *ms, const mpz_t z, int base, bool upper,
     else if (!neg) { if (plus) pre[pi++] = '+'; else if (space) pre[pi++] = ' '; }
     char altb[2] = { 0, 0 }; int altn = 0;              /* # alternate-form prefix */
     if (alt) {
-        if (base == 16)     { if (mpz_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'X' : 'x'; altn = 2; } }
-        else if (base == 2) { if (mpz_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'B' : 'b'; altn = 2; } }
+        if (base == 16)     { if (korb_mp_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'X' : 'x'; altn = 2; } }
+        else if (base == 2) { if (korb_mp_sgn(z) != 0) { altb[0] = '0'; altb[1] = upper ? 'B' : 'b'; altn = 2; } }
         /* octal `#` means "starts with 0", so it applies to 0 as well — but only
          * when the digits do not already begin with one ("%#o" % 0 is "0", not
          * "00", while "%#.0o" % 0 renders no digits and so needs the prefix). */
@@ -359,9 +359,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
             }
             if (KORB_BIGNUM_P(arg)) {                     /* Bignum: let GMP honour the flags/width via %Zd */
                 spec[si++] = 'Z'; spec[si++] = 'd'; spec[si] = '\0';
-                mpz_t z; korb_to_mpz(arg, z);
+                korb_mp_t z; korb_to_mpz(arg, z);
                 gmp_fprintf(ms, spec, z);
-                mpz_clear(z);
+                korb_mp_clear(z);
                 break;
             }
             spec[si++] = 'l'; spec[si++] = 'd'; spec[si] = '\0';
@@ -427,9 +427,9 @@ static RESULT korb_m_str_format(CTX *c, VALUE *slots, VALUE_REF self, VALUE_SLIC
                 else if (sc == '+') plus = true;
                 else if (sc == ' ') space = true;
             }
-            mpz_t z; korb_to_mpz(arg, z);
+            korb_mp_t z; korb_to_mpz(arg, z);
             korb_fmt_radix(ms, z, base, upper, left, zero, alt, plus, space, width, has_prec, prec);
-            mpz_clear(z);
+            korb_mp_clear(z);
             break;
           }
           case 's': {
@@ -663,15 +663,15 @@ static RESULT korb_m_str_byteslice(CTX *c, VALUE *slots, VALUE_REF self, VALUE_S
      * position → nil; one that does not fit is the conversion failure CRuby
      * reports as RangeError. */
     if (UNLIKELY(KORB_BIGNUM_P(iv))) {
-        if (!mpz_fits_slong_p(VAL2BIG(iv)->z))
+        if (!korb_mp_fits_slong_p(VAL2BIG(iv)->z))
             return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
         return RESULT_OK(KORB_NIL);                      /* |index| > bytesize */
     }
     if (VALUE_SLICE_LEN(a) >= 2 && KORB_BIGNUM_P(VALUE_SLICE_GET(a, 1))) {
         const VALUE lv = VALUE_SLICE_GET(a, 1);
-        if (!mpz_fits_slong_p(VAL2BIG(lv)->z))
+        if (!korb_mp_fits_slong_p(VAL2BIG(lv)->z))
             return korb_raise(c, slots, KORB_E_RANGE, 0, "bignum too big to convert into 'long'");
-        if (mpz_sgn(VAL2BIG(lv)->z) < 0) return RESULT_OK(KORB_NIL);
+        if (korb_mp_sgn(VAL2BIG(lv)->z) < 0) return RESULT_OK(KORB_NIL);
     }
     if (UNLIKELY(!korb_to_index(iv, &i))) {              /* coerce index via #to_int (self via VALUE_REF; bn is a value) */
         RESULT cr = korb_coerce_to_int(c, slots, &iv);

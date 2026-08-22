@@ -39,6 +39,19 @@ LIB     = ../../lib
 CC ?= gcc
 optflags = -O2
 
+# 多倍長整数 backend (builtins/bignum_backend.h): gmp = 真の任意精度 (既定),
+# wrap = C の整数と同じく 64bit で wrap (外部依存なし、Ruby とは意味論が違う)
+BIGNUM ?= gmp
+BIGNUM_NUM_gmp  := 1
+BIGNUM_NUM_wrap := 2
+BIGNUM_NUM := $(BIGNUM_NUM_$(BIGNUM))
+ifeq ($(BIGNUM_NUM),)
+  $(error unknown BIGNUM=$(BIGNUM) (gmp|wrap))
+endif
+BIGNUM_LIBS_gmp  := -lgmp
+BIGNUM_LIBS_wrap :=
+BIGNUM_LIBS := $(BIGNUM_LIBS_$(BIGNUM))
+
 # ASTRO_DEBUG: ASTRO_ASSERT + invariant checks.  Off by default (perf-true
 # builds); enable with `make ASTRO_DEBUG=1` for bug hunts.
 ASTRO_DEBUG ?= 0
@@ -96,8 +109,8 @@ koruby_precise: .built_gc Makefile $(SRCS) context.h node.h korb_runtime.h $(BUI
 	    -DKORUBY_SRC_DIR='"$(KORUBY_SRC_DIR)"' \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
-	    -DKORB_HAVE_GMP \
-	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm -lgmp -lcrypt
+	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
+	    -o koruby_precise $(SRCS) $(GC_COMMON_SRC) $(GC_SRC) ./prism/build/libprism.a -ldl -lm $(BIGNUM_LIBS) -lcrypt
 
 # Generated files: grouped target (single generator invocation).
 $(NODE_GENFILES) &: node.def koruby_gen.rb $(LIB)/astrogen.rb

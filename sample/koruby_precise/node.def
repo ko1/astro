@@ -319,16 +319,10 @@ node_plus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, u
         intptr_t s;
         if (LIKELY(!__builtin_add_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
-#ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 0, n->u.node_plus.line);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_plus.line, "Integer overflow (Bignum is not implemented)");
-#endif
     }
-#ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 0, n->u.node_plus.line);
-#endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float+Float inline (skip korb_num_arith dispatch) */
         return korb_flo(c, slots, korb_float_val(l) + korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float+Integer inline */
@@ -350,16 +344,10 @@ node_minus(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, 
         intptr_t s;
         if (LIKELY(!__builtin_sub_overflow((intptr_t)l, (intptr_t)rhs - 1, &s)))
             return RESULT_OK((VALUE)s);
-#ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_minus.line, "Integer overflow (Bignum is not implemented)");
-#endif
     }
-#ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 1, n->u.node_minus.line);
-#endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float-Float inline */
         return korb_flo(c, slots, korb_float_val(l) - korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float-Integer inline */
@@ -381,16 +369,10 @@ node_mul(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         intptr_t p;
         if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (intptr_t)rhs - 1, &p)))
             return RESULT_OK((VALUE)(p | 1));
-#ifdef KORB_HAVE_GMP
         return korb_int_arith(c, slots, l, rhs, 2, n->u.node_mul.line);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_mul.line, "Integer overflow (Bignum is not implemented)");
-#endif
     }
-#ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 2, n->u.node_mul.line);
-#endif
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float*Float inline */
         return korb_flo(c, slots, korb_float_val(l) * korb_float_val(rhs));
     if (KORB_FLOAT_P(l) && FIXNUM_P(rhs))                    /* Float*Integer inline */
@@ -414,17 +396,11 @@ node_div(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         intptr_t q = a / b;
         if ((a % b != 0) && ((a ^ b) < 0)) q--;
         if (UNLIKELY(!FIXABLE(q)))
-#ifdef KORB_HAVE_GMP
             return korb_int_arith(c, slots, l, rhs, 3, n->u.node_div.line);
-#else
-            return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_div.line, "Integer overflow (Bignum is not implemented)");
-#endif
         return RESULT_OK(LONG2FIX(q));
     }
-#ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 3, n->u.node_div.line);
-#endif
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 3);   /* before Float (a Complex/Float must not fall into korb_num_arith) */
     if (KORB_FLOAT_P(l) && KORB_FLOAT_P(rhs))                /* Float/Float inline */
         return korb_flo(c, slots, korb_float_val(l) / korb_float_val(rhs));
@@ -457,10 +433,8 @@ node_mod(CTX *c, NODE *n, VALUE *slots, VALUE_REF lhs@child, VALUE rhs@child, ui
         if (r != 0 && ((r ^ b) < 0)) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
-#ifdef KORB_HAVE_GMP
     if ((KORB_BIGNUM_P(l) || KORB_BIGNUM_P(rhs)) && KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs))
         return korb_int_arith(c, slots, l, rhs, 4, n->u.node_mod.line);
-#endif
     if (KORB_STRING_P(l)) return korb_str_mod(c, slots, lhs, rhs);   /* "fmt" % args */
     if ((KORB_INTEGER_P(l) || KORB_FLOAT_P(l)) && (KORB_FLOAT_P(l) || KORB_FLOAT_P(rhs)) && !KORB_OBJECT_P(rhs)) {   /* numeric l (incl. Bignum), float involved (a user-object rhs → the % method, which coerces) */
         double rd;
@@ -571,15 +545,9 @@ node_neg(CTX *c, NODE *n, VALUE *slots, VALUE v@child, uint32_t line)
         intptr_t i = -FIX2LONG(v);
         if (LIKELY(FIXABLE(i)))
             return RESULT_OK(LONG2FIX(i));
-#ifdef KORB_HAVE_GMP
         return korb_big_neg(c, slots, v);
-#else
-        return korb_raise(c, slots, KORB_E_NOTIMPL, n->u.node_neg.line, "Integer overflow (Bignum is not implemented)");
-#endif
     }
-#ifdef KORB_HAVE_GMP
     if (KORB_BIGNUM_P(v)) return korb_big_neg(c, slots, v);
-#endif
     if (KORB_FLOAT_P(v)) return korb_flo(c, slots, -korb_float_val(v));
     slots[0] = v;                                /* String (→ frozen dup) / Rational / Complex / user-defined -@ via dispatch */
     return korb_send(c, slots + 1, korb_intern(c->vm, "-@", 2), n->u.node_neg.line, 0);
