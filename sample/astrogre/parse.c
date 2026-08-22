@@ -260,7 +260,8 @@ static void bm_add_special(uint64_t bm[4], int c) {
 
 /* Parse a single escape inside a class.  Returns 1 if handled (already set
  * bits), 0 if it was a single character (write *out_byte). */
-static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte) {
+static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte, uint32_t *out_cp) {
+    *out_cp = 0;
     int c = re_get(q);
     switch (c) {
     case 'd': case 'D': case 'w': case 'W': case 's': case 'S':
@@ -320,7 +321,11 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
             q->p += 4;
         }
         if (cp >= 0x80) {
-            re_error(q, "multi-byte \\u inside [] is not supported");
+            if (q->encoding != AGRE_ENC_UTF8) {
+                re_error(q, "multi-byte \\u inside [] needs UTF-8 mode");
+                return 0;
+            }
+            *out_cp = cp;   /* member is a codepoint; caller routes it */
             return 0;
         }
         *out_byte = (uint8_t)cp;
@@ -339,6 +344,120 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
     }
 }
 
+/* ---- multi-byte class members (UTF-8) -------------------------------------
+ * The class bitmap is byte-level; members at or above U+0080 (literal
+ * multi-byte characters and \u escapes) are collected as codepoint ranges and
+ * compiled into an alternation of byte-class sequences via lead/trail
+ * decomposition (RE2-style).  UTF-8 is self-synchronizing, so the generated
+ * lead-anchored sequences can never match in the middle of a codepoint.
+ * Negated classes with multi-byte members stay unsupported (complementing
+ * over codepoint space needs a different matcher). */
+typedef struct {
+    struct { uint32_t lo, hi; } r[64];
+    int n;
+} cls_cp_ranges_t;
+
+static void
+cls_cp_add(re_parser_t *q, cls_cp_ranges_t *cps, uint32_t lo, uint32_t hi)
+{
+    if (cps == NULL) {   /* nested [...] / && operand — not plumbed through */
+        re_error(q, "multi-byte char-class member is not supported here");
+        return;
+    }
+    if (cps->n >= (int)(sizeof(cps->r) / sizeof(cps->r[0]))) {
+        re_error(q, "too many multi-byte char-class members");
+        return;
+    }
+    cps->r[cps->n].lo = lo;
+    cps->r[cps->n].hi = hi;
+    cps->n++;
+}
+
+static int
+utf8_encode_cp(uint32_t cp, uint8_t out[4])
+{
+    if (cp < 0x80)      { out[0] = (uint8_t)cp; return 1; }
+    if (cp < 0x800)     { out[0] = (uint8_t)(0xC0 | (cp >> 6));
+                          out[1] = (uint8_t)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000)   { out[0] = (uint8_t)(0xE0 | (cp >> 12));
+                          out[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+                          out[2] = (uint8_t)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (uint8_t)(0xF0 | (cp >> 18));
+    out[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (uint8_t)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+static ire_node_t *
+cls_byte_range_node(uint8_t lo, uint8_t hi)
+{
+    ire_node_t *n = ire_new(IRE_CLASS);
+    bm_set_range(n->u.cls.bm, lo, hi);
+    return n;
+}
+
+static ire_node_t *
+ire_alt2(ire_node_t *l, ire_node_t *r)
+{
+    if (l == NULL) return r;
+    if (r == NULL) return l;
+    ire_node_t *a = ire_new(IRE_ALT);
+    a->u.alt.l = l;
+    a->u.alt.r = r;
+    return a;
+}
+
+/* Byte-class sequence matching exactly the UTF-8 encodings between the two
+ * equal-length byte strings lo..hi (inclusive, lexicographic).  Positions
+ * after a strictly-less lead byte range span the full trail space 80..BF. */
+static ire_node_t *
+utf8_seq_between(const uint8_t *lo, const uint8_t *hi, int len)
+{
+    if (len == 1) return cls_byte_range_node(lo[0], hi[0]);
+    if (lo[0] == hi[0]) {
+        ire_node_t *cat = ire_new(IRE_CONCAT);
+        ire_cat_push(cat, cls_byte_range_node(lo[0], lo[0]));
+        ire_cat_push(cat, utf8_seq_between(lo + 1, hi + 1, len - 1));
+        return cat;
+    }
+    /* [lo0] lo-tail..max  |  (lo0,hi0) full-tail  |  [hi0] min..hi-tail */
+    uint8_t maxt[4] = { 0xBF, 0xBF, 0xBF, 0xBF };
+    uint8_t mint[4] = { 0x80, 0x80, 0x80, 0x80 };
+    ire_node_t *a = ire_new(IRE_CONCAT);
+    ire_cat_push(a, cls_byte_range_node(lo[0], lo[0]));
+    ire_cat_push(a, utf8_seq_between(lo + 1, maxt, len - 1));
+    ire_node_t *b = NULL;
+    if ((uint8_t)(lo[0] + 1) <= (uint8_t)(hi[0] - 1)) {
+        b = ire_new(IRE_CONCAT);
+        ire_cat_push(b, cls_byte_range_node((uint8_t)(lo[0] + 1), (uint8_t)(hi[0] - 1)));
+        ire_cat_push(b, utf8_seq_between(mint, maxt, len - 1));
+    }
+    ire_node_t *c = ire_new(IRE_CONCAT);
+    ire_cat_push(c, cls_byte_range_node(hi[0], hi[0]));
+    ire_cat_push(c, utf8_seq_between(mint, hi + 1, len - 1));
+    return ire_alt2(ire_alt2(a, b), c);
+}
+
+/* Codepoint range [lo,hi] (lo >= 0x80) → alternation of byte sequences,
+ * split at encoded-length boundaries so both endpoints encode equally. */
+static ire_node_t *
+utf8_range_node(uint32_t lo, uint32_t hi)
+{
+    static const uint32_t bounds[][2] = { {0x80, 0x7FF}, {0x800, 0xFFFF}, {0x10000, 0x10FFFF} };
+    ire_node_t *acc = NULL;
+    for (size_t i = 0; i < sizeof(bounds) / sizeof(bounds[0]); i++) {
+        uint32_t l = lo > bounds[i][0] ? lo : bounds[i][0];
+        uint32_t h = hi < bounds[i][1] ? hi : bounds[i][1];
+        if (l > h) continue;
+        uint8_t lb[4], hb[4];
+        int len = utf8_encode_cp(l, lb);
+        (void)utf8_encode_cp(h, hb);
+        acc = ire_alt2(acc, utf8_seq_between(lb, hb, len));
+    }
+    return acc;
+}
+
 /* Forward decls: parse_class is called recursively for nested `[...]`
  * members and for `&&`-RHS sub-classes; ire_free disposes those
  * temporary nested-class nodes after we copy out their bitmap. */
@@ -354,7 +473,7 @@ static void ire_free(ire_node_t *n);
  * `&&` chains intersection: when seen, recursively parses the RHS
  * operand into a fresh bitmap and ANDs it in.  Recursion is left-
  * associative (`A&&B&&C` = `(A&&B)&&C`), which matches Onigmo. */
-static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
+static void parse_class_body(re_parser_t *q, uint64_t bm[4], cls_cp_ranges_t *cps) {
     bool first = true;
 
     while (q->p < q->end) {
@@ -370,7 +489,7 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
         if (!first && q->p + 1 < q->end && q->p[0] == '&' && q->p[1] == '&') {
             q->p += 2;
             uint64_t rhs[4] = {0};
-            parse_class_body(q, rhs);
+            parse_class_body(q, rhs, NULL);   /* && over multi-byte: unsupported */
             bm_and(bm, rhs);
             return;
         }
@@ -405,6 +524,11 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
         if (c == '[') {
             q->p++;  /* consume '[' */
             ire_node_t *nested = parse_class(q);
+            if (nested->kind != IRE_CLASS) {   /* nested class expanded to an ALT (multi-byte member) */
+                re_error(q, "multi-byte member in a nested char-class is not supported");
+                ire_free(nested);
+                return;
+            }
             bm_or(bm, nested->u.cls.bm);
             ire_free(nested);
             first = false;
@@ -414,13 +538,31 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
         first = false;
 
         uint8_t byte_val = 0;
+        uint32_t cp_val = 0;                  /* != 0 → member is a codepoint (>= U+0080) */
         bool got_byte = false;
 
         if (c == '\\') {
             q->p++;
-            if (parse_class_escape(q, bm, &byte_val)) {
+            if (parse_class_escape(q, bm, &byte_val, &cp_val)) {
                 continue;  /* set was applied */
             }
+            got_byte = true;
+        } else if (q->encoding == AGRE_ENC_UTF8 && c >= 0x80) {
+            /* Literal multi-byte character: decode the whole codepoint (the
+             * old byte-wise reading put each UTF-8 byte in the bitmap, which
+             * never matches a codepoint in UTF-8 subject mode). */
+            uint32_t cp = 0; int need = 0;
+            if      ((c & 0xE0) == 0xC0) { cp = (uint32_t)(c & 0x1F); need = 1; }
+            else if ((c & 0xF0) == 0xE0) { cp = (uint32_t)(c & 0x0F); need = 2; }
+            else if ((c & 0xF8) == 0xF0) { cp = (uint32_t)(c & 0x07); need = 3; }
+            else { re_error(q, "invalid UTF-8 in char-class"); return; }
+            q->p++;
+            for (int k = 0; k < need; k++) {
+                if (q->p >= q->end || (*q->p & 0xC0) != 0x80) { re_error(q, "invalid UTF-8 in char-class"); return; }
+                cp = (cp << 6) | (uint32_t)(*q->p & 0x3F);
+                q->p++;
+            }
+            cp_val = cp;
             got_byte = true;
         } else {
             re_get(q);
@@ -436,26 +578,49 @@ static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
                                q->p[1] == '&' && q->p[2] == '&');
         if (q->p + 1 < q->end && q->p[0] == '-' && q->p[1] != ']' && !peek_amp) {
             q->p++;  /* consume '-' */
-            uint8_t hi;
+            uint32_t hi_cp = 0;
+            uint8_t hi = 0;
             int c2 = re_peek(q);
             if (c2 == '\\') {
                 q->p++;
                 uint64_t dummy[4] = {0};
                 uint8_t hib;
-                if (parse_class_escape(q, dummy, &hib)) {
+                if (parse_class_escape(q, dummy, &hib, &hi_cp)) {
                     re_error(q, "char-class value at end of range");
                     return;
                 }
                 hi = hib;
+            } else if (q->encoding == AGRE_ENC_UTF8 && c2 >= 0x80) {
+                uint32_t cp = 0; int need = 0;
+                if      ((c2 & 0xE0) == 0xC0) { cp = (uint32_t)(c2 & 0x1F); need = 1; }
+                else if ((c2 & 0xF0) == 0xE0) { cp = (uint32_t)(c2 & 0x0F); need = 2; }
+                else if ((c2 & 0xF8) == 0xF0) { cp = (uint32_t)(c2 & 0x07); need = 3; }
+                else { re_error(q, "invalid UTF-8 in char-class"); return; }
+                q->p++;
+                for (int k = 0; k < need; k++) {
+                    if (q->p >= q->end || (*q->p & 0xC0) != 0x80) { re_error(q, "invalid UTF-8 in char-class"); return; }
+                    cp = (cp << 6) | (uint32_t)(*q->p & 0x3F);
+                    q->p++;
+                }
+                hi_cp = cp;
             } else {
                 re_get(q);
                 hi = (uint8_t)c2;
             }
-            uint8_t lo = byte_val;
-            if (lo > hi) { re_error(q, "empty range in char class"); return; }
-            for (int i = lo; i <= hi; i++) {
-                bm_set_ci(bm, (uint8_t)i, q->case_insensitive);
+            /* Normalize to codepoints: ASCII byte members double as
+             * codepoints; a range may span the 0x80 boundary. */
+            const uint32_t lo_c = cp_val ? cp_val : (uint32_t)byte_val;
+            const uint32_t hi_c = hi_cp  ? hi_cp  : (uint32_t)hi;
+            if (lo_c > hi_c) { re_error(q, "empty range in char class"); return; }
+            const uint32_t ascii_hi = hi_c < 0x7F ? hi_c : 0x7F;
+            if (lo_c <= 0x7F) {
+                for (uint32_t i = lo_c; i <= ascii_hi; i++)
+                    bm_set_ci(bm, (uint8_t)i, q->case_insensitive);
             }
+            if (hi_c >= 0x80)
+                cls_cp_add(q, cps, lo_c > 0x80 ? lo_c : 0x80, hi_c);
+        } else if (cp_val) {
+            cls_cp_add(q, cps, cp_val, cp_val);
         } else {
             bm_set_ci(bm, byte_val, q->case_insensitive);
         }
@@ -468,7 +633,21 @@ static ire_node_t *parse_class(re_parser_t *q) {
     ire_node_t *n = ire_new(IRE_CLASS);
     bool negate = false;
     if (re_peek(q) == '^') { negate = true; q->p++; }
-    parse_class_body(q, n->u.cls.bm);
+    cls_cp_ranges_t cps = { .n = 0 };
+    parse_class_body(q, n->u.cls.bm, &cps);
+    if (cps.n > 0) {
+        if (negate) {
+            re_error(q, "multi-byte member in a negated char-class is not supported");
+            return n;
+        }
+        /* Expand: [ascii bitmap] | utf8-seq(range) | ...  (see cls_cp_ranges_t) */
+        bool bm_empty = (n->u.cls.bm[0] | n->u.cls.bm[1] | n->u.cls.bm[2] | n->u.cls.bm[3]) == 0;
+        ire_node_t *acc = bm_empty ? NULL : n;
+        if (bm_empty) ire_free(n);
+        for (int i = 0; i < cps.n; i++)
+            acc = ire_alt2(acc, utf8_range_node(cps.r[i].lo, cps.r[i].hi));
+        return acc;
+    }
     if (negate) bm_invert(n->u.cls.bm);
     return n;
 }

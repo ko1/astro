@@ -2456,6 +2456,19 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
     return ALLOC_node_ary_push(acc, elem);
 }
 
+/* Value of `return` / `next` / `break` arguments: none → nil, one plain arg →
+ * that value, splat or multiple args → an Array (CRuby wraps even a 1-element
+ * splat: `return *[1]` → [1], `return *x, y` → [*x, y]). */
+static NODE *
+kp_jump_args_value(struct kp_ctx *tc, const pm_arguments_node_t *args)
+{
+    const size_t n = args ? args->arguments.size : 0;
+    if (n == 0) return lit_nil();
+    if (n == 1 && !PM_NODE_TYPE_P(args->arguments.nodes[0], PM_SPLAT_NODE))
+        return transduce(tc, args->arguments.nodes[0]);
+    return build_array(tc, args->arguments.nodes, n, (uint32_t)n);
+}
+
 /* Hash literal `{k => v, ...}` → inside-out set chain (same shape as
  * build_array): hash_set(hash_set(hash_new(n), k0, v0), k1, v1)... */
 static NODE *
@@ -3522,20 +3535,12 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t depth = 0;
         while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
         if (mf->method_mid == 0) depth = 0;
-        const size_t nargs = rn->arguments ? rn->arguments->arguments.size : 0;
         if (depth == 0) {
-            NODE *v;
-            if (nargs == 0)      v = lit_nil();
-            else if (nargs == 1) v = transduce(tc, rn->arguments->arguments.nodes[0]);
-            else { v = build_array(tc, rn->arguments->arguments.nodes, nargs, (uint32_t)nargs); }
-            return ALLOC_node_return(v);
+            return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
         }
         /* node_return_outer reads this block frame's PREV cell (prev_off, like
          * node_ivar_set's self_off — a VALUE @child reserves no sibling slot). */
-        NODE *v;
-        if (nargs == 0)      v = lit_nil();
-        else if (nargs == 1) v = transduce(tc, rn->arguments->arguments.nodes[0]);
-        else { v = build_array(tc, rn->arguments->arguments.nodes, nargs, (uint32_t)nargs); }
+        NODE *v = kp_jump_args_value(tc, rn->arguments);
         NODE *ro = ALLOC_node_return_outer(-2 - tc->chain, depth, v);
         bake_add(tc, &ro->u.node_return_outer.prev_off);
         return ro;
@@ -3722,19 +3727,11 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_NEXT_NODE: {
         const pm_next_node_t *nn = (const pm_next_node_t *)node;
-        NODE *v;
-        if (nn->arguments == NULL || nn->arguments->arguments.size == 0) v = lit_nil();
-        else if (nn->arguments->arguments.size == 1) v = transduce(tc, nn->arguments->arguments.nodes[0]);
-        else { size_t cnt = nn->arguments->arguments.size; v = build_array(tc, nn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `next a, b` → [a, b] */
-        return ALLOC_node_next(v);
+        return ALLOC_node_next(kp_jump_args_value(tc, nn->arguments));   /* `next a, b` → [a, b] */
       }
       case PM_BREAK_NODE: {
         const pm_break_node_t *bn = (const pm_break_node_t *)node;
-        NODE *v;
-        if (bn->arguments == NULL || bn->arguments->arguments.size == 0) v = lit_nil();
-        else if (bn->arguments->arguments.size == 1) v = transduce(tc, bn->arguments->arguments.nodes[0]);
-        else { size_t cnt = bn->arguments->arguments.size; v = build_array(tc, bn->arguments->arguments.nodes, cnt, (uint32_t)cnt); }  /* `break a, b` → [a, b] */
-        return ALLOC_node_break(v);
+        return ALLOC_node_break(kp_jump_args_value(tc, bn->arguments));   /* `break a, b` → [a, b] */
       }
       case PM_RETRY_NODE:                               /* `retry` in a rescue → re-run the begin body */
         return ALLOC_node_retry();
