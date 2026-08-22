@@ -478,8 +478,9 @@ astro_build_executable(const struct astro_build_config *cfg)
         sb_append(&cmd, &len, &capa, el);
     }
     // dl is needed by code store dlopen path even when we never call
-    // dlopen — astro_code_store.c references dlsym etc.
-    sb_append(&cmd, &len, &capa, " -ldl");
+    // dlopen — astro_code_store.c references dlsym etc.  Targets without
+    // libdl (wasm32) opt out via cfg->no_libdl.
+    if (!cfg->no_libdl) sb_append(&cmd, &len, &capa, " -ldl");
 
     if (cfg->show_cmd) {
         fprintf(stderr, "astro_build: %s\n", cmd);

@@ -46,4 +46,12 @@ void astro_emit_ast_c_program(FILE *fp, struct Node *root,
                               const char *func_name,
                               const char *include_header);
 
+// Same, but the generated function takes `params` (e.g. "CTX *_ectx") instead
+// of void — for hosts whose operand emitters need runtime context (interning
+// symbol names at exe startup).  NULL params = "void".
+void astro_emit_ast_c_program_params(FILE *fp, struct Node *root,
+                                     const char *func_name,
+                                     const char *include_header,
+                                     const char *params);
+
 #endif // ASTRO_NODE_H

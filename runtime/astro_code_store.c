@@ -7,8 +7,21 @@
 //   - PGC: SD_<Hopt>.c / SD_<Hopt> symbols.  Profile-baked compile.
 // They share `all.so`.  Load order: PGC (via hopt_index.txt key lookup)
 // first, AOT fallback.
+//
+// Hosts without dlopen (wasm32-wasip1) get the same SDs linked statically
+// into the module instead; see astro_cs_static_sd_lookup below.
 
+#ifndef ASTRO_CS_NO_DLOPEN
+#  ifdef __wasi__
+#    define ASTRO_CS_NO_DLOPEN 1
+#  else
+#    define ASTRO_CS_NO_DLOPEN 0
+#  endif
+#endif
+
+#if !ASTRO_CS_NO_DLOPEN
 #include <dlfcn.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #include "astro_code_store.h"
@@ -198,26 +211,49 @@ static struct astro_cs_state {
                                       // astro_cs_reload for the rationale.
 } astro_cs;
 
-// Resolve an SD_/PGSD_ symbol against the primary all.so, falling back to the
-// optional preload handle.  Either may be absent.
+// Statically-linked SD table.  A build that cannot dlopen (wasm) — or one that
+// simply prefers a self-contained binary — links a generated translation unit
+// defining this function; the weak default below means every other build is
+// unaffected.  Consulted before the .so handles so a baked-in SD wins.
+__attribute__((weak)) node_dispatcher_func_t
+astro_cs_static_sd_lookup(const char *sym)
+{
+    (void)sym;
+    return NULL;
+}
+
+__attribute__((weak)) uint32_t
+astro_cs_static_sd_count(void)
+{
+    return 0;
+}
+
+// Resolve an SD_/PGSD_ symbol against the static table, then the primary
+// all.so, falling back to the optional preload handle.  All may be absent.
 static node_dispatcher_func_t
 astro_cs_dlsym(const char *sym)
 {
-    node_dispatcher_func_t func = NULL;
-    if (astro_cs.all_handle)
+    node_dispatcher_func_t func = astro_cs_static_sd_lookup(sym);
+#if !ASTRO_CS_NO_DLOPEN
+    if (!func && astro_cs.all_handle)
         func = (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym);
     if (!func && astro_cs.preload_handle)
         func = (node_dispatcher_func_t)dlsym(astro_cs.preload_handle, sym);
+#endif
     return func;
 }
 
 void
 astro_cs_set_preload(const char *path)
 {
+#if ASTRO_CS_NO_DLOPEN
+    (void)path;
+#else
     // Mirror the all_handle policy: never dlclose (already-specialized nodes may
     // hold pointers into the image).  set_preload runs once at startup before any
     // dispatch swap, so simply (re)opening is safe.
     astro_cs.preload_handle = path ? dlopen(path, RTLD_LAZY) : NULL;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +415,11 @@ astro_cs_check_version(uint64_t current)
 void
 astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 {
+    // ASTRO_CS_STORE_DIR redirects the whole store.  Needed when the process
+    // can't write where the binary lives (wasm sandbox: the store is a mount
+    // the host later compiles from), useful anywhere for out-of-tree builds.
+    const char *store_env = getenv("ASTRO_CS_STORE_DIR");
+    if (store_env && store_env[0]) store_dir = store_env;
     astro_cs_resolve_dir(astro_cs.store_dir, ASTRO_CS_DIR_MAX, store_dir);
 
     // Environment variable overrides src_dir argument
@@ -395,10 +436,12 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
         // directory walk.  Cleanup of stale all.<N>.so generations is the
         // responsibility of whoever calls astro_cs_reload (since they're
         // the one creating new generations); see astro_cs_sweep_old_gens.
+#if !ASTRO_CS_NO_DLOPEN
         char path[ASTRO_CS_PATH_MAX];
         astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
         astro_cs.all_handle = dlopen(path, RTLD_LAZY);
         // NULL is fine: no all.so yet
+#endif
 
         // Read hopt_index.txt (PGC lookup table).  Missing file is fine.
         hopt_index_load_file();
@@ -417,7 +460,8 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 bool
 astro_cs_load(NODE *n, const char *file)
 {
-    if (!astro_cs.all_handle && !astro_cs.preload_handle) return false;
+    if (!astro_cs.all_handle && !astro_cs.preload_handle
+        && astro_cs_static_sd_count() == 0) return false;
 
     // Try PGC first: find a Hopt from the index, dlsym PGSD_<Hopt>.
     if (file) {
@@ -593,9 +637,15 @@ astro_cs_compile(NODE *entry, const char *file)
 // astro_cs_build: compile all SD_*.c → all.so
 // ---------------------------------------------------------------------------
 
-void
-astro_cs_build(const char *extra_cflags)
+static void
+astro_cs_build_target(const char *extra_cflags, const char *target)
 {
+#if ASTRO_CS_NO_DLOPEN
+    // No subprocesses and nothing to dlopen: the emitted SD_*.c are picked up
+    // by the host toolchain after the run (see the sample's wasm build).
+    (void)extra_cflags; (void)target;
+    return;
+#else
     char makefile_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(makefile_path, sizeof(makefile_path),
                   astro_cs.store_dir, "Makefile");
@@ -667,6 +717,11 @@ astro_cs_build(const char *extra_cflags)
     fprintf(fp, "o/%%.o: c/%%.c | o\n");
     fprintf(fp, "\t$(CC) $(CFLAGS) -c $< -o $@\n");
     fprintf(fp, "\n");
+    // Objects only — the exe builder (astro_cs_build_objs) links the .o
+    // itself, so no .so is produced (or even producible: wasm).
+    fprintf(fp, "objs: $(OBJS)\n");
+    fprintf(fp, ".PHONY: objs\n");
+    fprintf(fp, "\n");
     fprintf(fp, "o:\n");
     fprintf(fp, "\tmkdir -p o\n");
     fprintf(fp, "\n");
@@ -688,13 +743,31 @@ astro_cs_build(const char *extra_cflags)
     // stdout to null — leaving stderr still attached to the parent
     // (so compile warnings leaked into the host process's stdout
     // capture, breaking output-comparison test runners).
-    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s all.so >/dev/null 2>&1",
-             astro_cs.store_dir, jobs);
+    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s %s >/dev/null 2>&1",
+             astro_cs.store_dir, jobs, target);
 
     int ret = system(cmd);
     if (ret != 0) {
         fprintf(stderr, "astro_cs_build: make failed (exit %d)\n", ret);
     }
+#endif
+}
+
+void
+astro_cs_build(const char *extra_cflags)
+{
+    astro_cs_build_target(extra_cflags, "all.so");
+}
+
+// Compile SD_*.c → o/*.o in parallel WITHOUT linking all.so.  For exe builds
+// (astro_build_aot_executable-style) that link the objects themselves — the
+// store's o/ becomes a shared compile cache across builds.  The environment's
+// CC / CFLAGS override the generated Makefile's defaults (both are `?=`),
+// which is how cross builds (wasm32) substitute their toolchain.
+void
+astro_cs_build_objs(const char *extra_cflags)
+{
+    astro_cs_build_target(extra_cflags, "objs");
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +777,9 @@ astro_cs_build(const char *extra_cflags)
 void
 astro_cs_reload(void)
 {
+#if ASTRO_CS_NO_DLOPEN
+    return;   // nothing was built in-process; the static table is fixed at link
+#else
     // Don't dlclose the old handle — previously specialized nodes may still
     // hold function pointers into it.  We also can't just re-dlopen
     // "all.so": glibc's dlopen caches handles by pathname (not inode), so
@@ -755,6 +831,7 @@ astro_cs_reload(void)
         fprintf(stderr, "astro_cs_reload: dlopen failed for %s: %s\n",
                 gen_path, err ? err : "(no dlerror)");
     }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -764,6 +841,10 @@ astro_cs_reload(void)
 void
 astro_cs_disasm(NODE *n)
 {
+#if ASTRO_CS_NO_DLOPEN
+    (void)n;   // needs objdump; disassemble the host-built module instead
+    return;
+#else
     if (!n) return;
 
     // If PGC-loaded, point at PGSD_<Hopt>; otherwise the AOT SD_<Horg>
@@ -803,5 +884,6 @@ astro_cs_disasm(NODE *n)
              obj_path, obj_path, so_path, sym_name);
 
     (void)!system(cmd);
+#endif
 }
 

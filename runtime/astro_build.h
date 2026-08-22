@@ -71,6 +71,8 @@ struct astro_build_config {
     bool keep_intermediates;
 
     // ---------- sample-supplied (filled by the per-sample build helper) ----------
+    bool no_libdl;       // suppress the default trailing -ldl (targets without
+                         // libdl, e.g. wasm32-wasip1)
     const char *src_dir;
     const char *runtime_dir;
     const char *const *sources;

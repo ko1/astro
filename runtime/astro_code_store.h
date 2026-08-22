@@ -35,6 +35,11 @@ void astro_cs_compile(NODE *entry, const char *file);
 // extra_cflags: additional compiler flags (e.g., Ruby include paths). Can be NULL.
 void astro_cs_build(const char *extra_cflags);
 
+// Compile SD_*.c → o/*.o in parallel without linking all.so — for exe builds
+// that link the objects themselves.  Environment CC / CFLAGS override the
+// store Makefile's defaults (cross builds substitute their toolchain here).
+void astro_cs_build_objs(const char *extra_cflags);
+
 // Reload all.so (dlclose + dlopen). Use after build to apply immediately.
 void astro_cs_reload(void);
 
@@ -46,6 +51,26 @@ void astro_cs_reload(void);
 // handle; a dlopen failure simply leaves no preload handle (the SDs are then
 // not found, exactly as before).
 void astro_cs_set_preload(const char *path);
+
+// ---------------------------------------------------------------------------
+// Static SD table (dlopen-free hosts, e.g. wasm32-wasip1)
+// ---------------------------------------------------------------------------
+//
+// Instead of dlopen'ing all.so, a build may link the SD_*.c directly into the
+// program together with one generated translation unit that defines these two
+// functions.  astro_cs_load then resolves through the table, so the AOT flow is
+// unchanged apart from *when* the C compiler runs: the SD sources are emitted
+// by an earlier run (astro_cs_compile writes plain files — no toolchain needed)
+// and compiled by the host build, not by astro_cs_build.
+//
+// Both have weak no-table defaults, so a build that links no generated table
+// behaves exactly as before.
+//
+//   lookup: "SD_<hash>"/"PGSD_<hash>" → dispatcher, or NULL if absent.
+//   count:  number of entries; 0 means "no static table linked".
+
+node_dispatcher_func_t astro_cs_static_sd_lookup(const char *sym);
+uint32_t               astro_cs_static_sd_count(void);
 
 // Print disassembly of the specialized dispatcher for node (via objdump).
 // Does nothing if the node is not specialized.

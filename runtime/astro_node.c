@@ -344,24 +344,72 @@ struct astro_emit_ctx {
     FILE *fp;                // for child-ref emits
     int next_id;
     bool in_collect_phase;   // true during DFS pre-walk
+
+    // NODE* → visited slot map (open addressing).  A prelude-sized program
+    // visits tens of thousands of nodes with an edge per operand; the linear
+    // scans this replaces made emission quadratic (~2 min for koruby's
+    // prelude embed).
+    NODE **map_keys;
+    size_t *map_slots;
+    size_t map_mask;         // capacity - 1 (capacity is a power of two)
+    size_t map_count;
 };
+
+static void
+astro_emit_map_insert(struct astro_emit_ctx *ctx, NODE *n, size_t slot)
+{
+    if (!ctx->map_keys || ctx->map_count * 2 >= ctx->map_mask + 1) {   // load factor 1/2
+        size_t old_capa = ctx->map_keys ? ctx->map_mask + 1 : 0;
+        size_t capa = old_capa ? old_capa * 2 : 64;
+        NODE **keys = calloc(capa, sizeof(*keys));
+        size_t *slots = calloc(capa, sizeof(*slots));
+        if (!keys || !slots) { fprintf(stderr, "astro_emit: oom\n"); exit(1); }
+        for (size_t i = 0; i < old_capa; i++) {
+            NODE *k = ctx->map_keys[i];
+            if (!k) continue;
+            size_t j = ((uintptr_t)k >> 4) & (capa - 1);
+            while (keys[j]) j = (j + 1) & (capa - 1);
+            keys[j] = k;
+            slots[j] = ctx->map_slots[i];
+        }
+        free(ctx->map_keys);
+        free(ctx->map_slots);
+        ctx->map_keys = keys;
+        ctx->map_slots = slots;
+        ctx->map_mask = capa - 1;
+    }
+    size_t j = ((uintptr_t)n >> 4) & ctx->map_mask;
+    while (ctx->map_keys[j]) j = (j + 1) & ctx->map_mask;
+    ctx->map_keys[j] = n;
+    ctx->map_slots[j] = slot;
+    ctx->map_count++;
+}
+
+// visited slot for n, or (size_t)-1.
+static size_t
+astro_emit_map_find(const struct astro_emit_ctx *ctx, NODE *n)
+{
+    if (!ctx->map_keys) return (size_t)-1;
+    size_t j = ((uintptr_t)n >> 4) & ctx->map_mask;
+    while (ctx->map_keys[j]) {
+        if (ctx->map_keys[j] == n) return ctx->map_slots[j];
+        j = (j + 1) & ctx->map_mask;
+    }
+    return (size_t)-1;
+}
 
 static int
 astro_emit_ctx_lookup(const struct astro_emit_ctx *ctx, NODE *n)
 {
-    for (size_t i = 0; i < ctx->visited_size; i++) {
-        if (ctx->visited[i].node == n) return ctx->visited[i].id;
-    }
-    return -1;
+    size_t slot = astro_emit_map_find(ctx, n);
+    return slot == (size_t)-1 ? -1 : ctx->visited[slot].id;
 }
 
 static bool
 astro_emit_ctx_in_progress(const struct astro_emit_ctx *ctx, NODE *n)
 {
-    for (size_t i = 0; i < ctx->visited_size; i++) {
-        if (ctx->visited[i].node == n) return ctx->visited[i].in_progress;
-    }
-    return false;
+    size_t slot = astro_emit_map_find(ctx, n);
+    return slot == (size_t)-1 ? false : ctx->visited[slot].in_progress;
 }
 
 static void
@@ -452,6 +500,7 @@ astro_emit_ctx_visit(struct astro_emit_ctx *ctx, NODE *n)
     ctx->visited[my_slot].node = n;
     ctx->visited[my_slot].id = -1;       // assigned post-order
     ctx->visited[my_slot].in_progress = true;
+    astro_emit_map_insert(ctx, n, my_slot);
 
     // Recurse into children by invoking EMIT_AST with the collect
     // trampoline active.  We discard the FILE * output; the
@@ -545,12 +594,14 @@ astro_emit_lookup_sd(NODE *n)
 }
 
 void
-astro_emit_ast_c_program(FILE *fp, NODE *root,
-                         const char *func_name,
-                         const char *include_header)
+astro_emit_ast_c_program_params(FILE *fp, NODE *root,
+                                const char *func_name,
+                                const char *include_header,
+                                const char *params)
 {
+    if (!params) params = "void";
     if (root == NULL) {
-        fprintf(fp, "NODE *%s(void) { return NULL; }\n", func_name);
+        fprintf(fp, "NODE *%s(%s) { return NULL; }\n", func_name, params);
         return;
     }
     struct astro_emit_ctx ctx = { 0 };
@@ -573,26 +624,28 @@ astro_emit_ast_c_program(FILE *fp, NODE *root,
     // pointer below.  ASTRO_SD_PROTO is provided by node_head.h, derived
     // by ASTroGen from the first NODE_DEF's signature.
     {
-        bool emitted_any = false;
+        // Dedup by name against the (small) set already emitted — the same SD
+        // matches every visited node sharing its hash.
+        const uint32_t log_n = astro_cs_compile_log_size();
+        const char **seen = log_n ? calloc(log_n, sizeof(*seen)) : NULL;
+        uint32_t n_seen = 0;
         for (size_t j = 0; j < ctx.visited_size; j++) {
             const char *sd = astro_emit_lookup_sd(ctx.visited[j].node);
             if (!sd) continue;
-            // Dedup: same SD may match several visited entries (hash
-            // collisions in shared subtrees).
             bool dup = false;
-            for (size_t k = 0; k < j; k++) {
-                const char *prev = astro_emit_lookup_sd(ctx.visited[k].node);
-                if (prev && strcmp(prev, sd) == 0) { dup = true; break; }
+            for (uint32_t k = 0; k < n_seen; k++) {
+                if (strcmp(seen[k], sd) == 0) { dup = true; break; }
             }
             if (dup) continue;
+            if (n_seen < log_n) seen[n_seen++] = sd;
             fprintf(fp, "ASTRO_SD_PROTO(%s);\n", sd);
-            emitted_any = true;
         }
-        if (emitted_any) fprintf(fp, "\n");
+        if (n_seen) fprintf(fp, "\n");
+        free(seen);
     }
 
     fprintf(fp, "NODE *\n");
-    fprintf(fp, "%s(void)\n", func_name);
+    fprintf(fp, "%s(%s)\n", func_name, params);
     fprintf(fp, "{\n");
     fprintf(fp, "    static NODE *_n[%zu] = {0};\n", ctx.visited_size);
     fprintf(fp, "    if (_n[%d]) return _n[%d];\n", root_id, root_id);
@@ -602,14 +655,12 @@ astro_emit_ast_c_program(FILE *fp, NODE *root,
     // in the compile log, also patch in the SD dispatcher so the exe
     // doesn't need any runtime cs_load step.
     ctx.in_collect_phase = false;
+    NODE **by_id = calloc((size_t)ctx.next_id, sizeof(*by_id));
+    for (size_t j = 0; j < ctx.visited_size; j++) {
+        if (ctx.visited[j].id >= 0) by_id[ctx.visited[j].id] = ctx.visited[j].node;
+    }
     for (int id = 0; id < ctx.next_id; id++) {
-        NODE *n = NULL;
-        for (size_t j = 0; j < ctx.visited_size; j++) {
-            if (ctx.visited[j].id == id) {
-                n = ctx.visited[j].node;
-                break;
-            }
-        }
+        NODE *n = by_id[id];
         if (!n) continue;
         astro_emit_ctx_emit_node(&ctx, fp, n);
         const char *sd = astro_emit_lookup_sd(n);
@@ -624,6 +675,17 @@ astro_emit_ast_c_program(FILE *fp, NODE *root,
     fprintf(fp, "}\n");
 
     astro_emit_ast_active_ctx = NULL;
+    free(by_id);
+    free(ctx.map_keys);
+    free(ctx.map_slots);
     free(ctx.visited);
     free(ctx.fixups);
+}
+
+void
+astro_emit_ast_c_program(FILE *fp, NODE *root,
+                         const char *func_name,
+                         const char *include_header)
+{
+    astro_emit_ast_c_program_params(fp, root, func_name, include_header, NULL);
 }
