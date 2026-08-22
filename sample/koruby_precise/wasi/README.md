@@ -117,6 +117,11 @@ python3 -m http.server
 # → http://localhost:8000/wasi/demo/
 ```
 
+GitHub Pages でもそのまま動く: `wasi/build/` は gitignore なので、ページは
+コミット済みの `wasi/demo/koruby.wasm` (strip 済み 2.3 MB) に fallback する。
+この copy の更新は意図的な手順 (`make -C wasi demo-wasm`) — ビルドのたびに
+2.3 MB を git に積まないため。
+
 - **インタプリタ .wasm は prelude ソース埋め込み** (`-DKORUBY_PRELUDE_BLOB`,
   tools/gen_prelude_blob.rb が main.c の KORUBY_PRELUDE_FILES から生成) なので
   mount も fetch も不要。native は開発性 (prelude 編集→即実行) のため

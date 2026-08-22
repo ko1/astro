@@ -134,6 +134,14 @@ aot: $(BUILD)/libprism-wasm.a $(BUILD)/libkoruby-regex-wasm.a
 	    '$(abspath $(if $(OUT),$(OUT),$(BUILD)/$(notdir $(basename $(PROG))).wasm))' \
 	    '$(abspath $(PROG))'
 
+# Refresh the committed demo copy (GitHub Pages serves demo/koruby.wasm —
+# build/ is gitignored).  Deliberate step, not part of `all`: the 2.3 MB
+# binary should only churn in git when the demo is meant to update.
+demo-wasm: $(BUILD)/koruby.wasm
+	cp $(BUILD)/koruby.wasm demo/koruby.wasm
+	$(WASI_SDK)/bin/llvm-strip demo/koruby.wasm
+.PHONY: demo-wasm
+
 $(BUILD)/obj $(BUILD)/prism $(BUILD)/regex1 $(BUILD)/regex:
 	mkdir -p $@
 

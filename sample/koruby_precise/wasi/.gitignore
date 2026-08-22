@@ -1,3 +1,4 @@
 koruby.wasm
 *.o
 build/
+!demo/koruby.wasm

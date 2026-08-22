@@ -68,10 +68,31 @@ const clockEl = document.getElementById('jsclock');
 })();
 
 // Fetch + compile once; the same Module is reused on main and (via
-// postMessage) in the Worker.
+// postMessage) in the Worker.  ./koruby.wasm is the committed copy (GitHub
+// Pages — wasi/build/ is gitignored); ../build/koruby.wasm is the fresh
+// local build.  Loading failures surface in the output instead of hanging.
 status.textContent = 'loading koruby.wasm …';
-const mod = await WebAssembly.compileStreaming(fetch('../build/koruby.wasm'));
-status.textContent = 'ready';
+async function loadModule() {
+  let lastErr = null;
+  for (const url of ['../build/koruby.wasm', './koruby.wasm']) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) { lastErr = `${url}: HTTP ${resp.status}`; continue; }
+      try { return await WebAssembly.compileStreaming(resp.clone()); }
+      catch { return await WebAssembly.compile(await resp.arrayBuffer()); }
+    } catch (e) { lastErr = `${url}: ${e}`; }
+  }
+  throw new Error('koruby.wasm の取得に失敗: ' + lastErr);
+}
+let mod;
+try {
+  mod = await loadModule();
+  status.textContent = 'ready';
+} catch (e) {
+  status.textContent = 'load error';
+  log(String(e));
+  throw e;
+}
 
 function finish(rc, t0) {
   status.textContent = `exit ${rc} — ${((performance.now() - t0) / 1000).toFixed(2)}s`;
