@@ -26,7 +26,7 @@ The companion tool **ASTroGen** (`lib/astrogen.rb`) automatically generates an i
 The same `node.def` and the same generated infrastructure support:
 
 1. **Plain interpreter** — pure tree-walking via `DISPATCH` → `EVAL`.
-2. **AOT compilation** — specialize the whole AST offline, link, and run.
+2. **AOT compilation** — specialize the whole AST offline, link, and run.  Several samples also build **standalone executables** (`--build`): the AST is re-emitted as C (`_embed.c`) with dispatchers pre-bound to the specialized code, so the binary starts without parsing anything — and this path cross-compiles (e.g. `koruby_precise` → wasm32-wasip1).
 3. **Profile-guided compilation** — collect profile on the first run, specialize before the second.
 4. **JIT compilation** — specialize and load `.so` files at run time. A tiered design (in-process L0 thread, local L1 daemon, remote L2 compile farm) shares compiled code by hash.
 
@@ -45,14 +45,14 @@ docs/                   Design notes and papers
 
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
-**At a glance — 27 samples by paradigm:**
+**At a glance — 29 samples by paradigm:**
 
 | Group | Count | Samples |
 |---|---:|---|
 | Tutorial / calculators | 2 | `calc`, `abc` |
-| Ruby family | 5 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby` |
+| Ruby family | 6 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby`, `koruby_precise` |
 | Other dynamic scripting | 4 | `luastro`, `jstro`, `pystro`, `anlox` |
-| Functional / OO academic | 5 | `ascheme`, `astocaml`, `asml`, `ancaml`, `asom` |
+| Functional / OO academic | 6 | `ascheme`, `ascheme_precise`, `astocaml`, `asml`, `ancaml`, `asom` |
 | Statically-typed imperative | 3 | `pascalast`, `castro`, `anpy` |
 | Stack-based | 1 | `aforth` |
 | Data processing | 2 | `astr`, `arawk` |
@@ -74,6 +74,8 @@ ASTro samples span a wide range of language families to exercise the framework a
   PGC-baked optcarrot **86.5 fps** vs CRuby (no-JIT) 45.6 fps; integer-loop microbenches 4–8×.
 - [`koruby`](./sample/koruby/) — ***kind of Ruby***: standalone (non-CRuby) Ruby with Boehm GC + GMP + Prism (119 nodes).
   **Runs optcarrot end-to-end at ~100 fps** (gcc-15 -O3, vs CRuby 42 fps ≈ 2.4×; YJIT 175 fps).
+- [`koruby_precise`](./sample/koruby_precise/) — **the flagship sample**: koruby rebuilt from scratch (v2) on a slots ABI with **precise rooting + moving/copy GC** (16 build-time selectable backends) and `RESULT`-based error propagation — no `setjmp`/`longjmp`, no machine-stack scanning, every alloc path audited under GC-stress + page-purge.  Aims to be a **CRuby drop-in**: core classes + regex ([`astrogre`](./sample/astrogre/)-backed) + stdlib subset; **optcarrot runs checksum-identical** (AOT 77 fps = 1.8× plain CRuby; YJIT still wins on optcarrot, while on microbenches AOT beats YJIT except recursion / object-heavy), pure-Ruby **DOOM and a Game Boy emulator render pixel-perfect**, and unmodified **rubyspec core via real mspec passes 80.2%**.
+  `--build` emits **standalone executables** (program + prelude ASTs and all specialized code embedded — zero parsing at startup) and cross-compiles to **wasm32-wasip1**: the AOT .wasm starts in 0.014 s (ruby.wasm 0.09 s) and runs 2–37× faster than ruby.wasm on loop/alloc benches; a browser demo (WASI shim, main-thread vs Worker) is included ([`wasi/`](./sample/koruby_precise/wasi/)).
 
 **Other dynamic scripting.**
 - [`luastro`](./sample/luastro/) — **Lua 5.4** (74 nodes) with tagged 8-byte `LuaValue`.
@@ -86,6 +88,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 **Functional / academic.**
 - [`ascheme`](./sample/ascheme/) — **R5RS Scheme** (54 nodes) with the full numeric tower (fixnum / bignum / rational / flonum / complex via GMP), `call/cc`, multiple values, ports.
   Passes 179/179 of chibi's `r5rs-tests.scm`; vs chibi 18/18 wins, vs guile 17/18 (up to 27×).
+- [`ascheme_precise`](./sample/ascheme_precise/) — ascheme fork migrated from Boehm libgc to the **precise GC framework** (`runtime/precise_gc/`, 17 build-time selectable backends): precise rooting via `sframe` + `sp` scratch, GMP finalizers, GC-stress / page-purge audit knobs.  Same R5RS surface and AOT pipeline; serves as the framework's Scheme testbed (with a libgc baseline in its `docs/perf.md`).
 - [`astocaml`](./sample/astocaml/) — **OCaml** subset (91 nodes) with HM-lite type inference, ADTs, exceptions, single-inheritance classes, real functor instantiation, TCO.
   35/35 tests; with `-c`, fib / ack / tak beat `ocamlc` bytecode and `ocaml` toplevel.
 - [`asml`](./sample/asml/) — **Standard ML** subset (85 nodes) with **full Hindley–Milner type inference** (Algorithm W + level-based generalisation + value restriction), ADTs with type parameters, **records** (`{x=1, y=2}` / `#field` / record patterns), pattern match, exceptions, refs.  Type errors halt at compile time; the type-checker drives lower-time dispatcher specialisation, and **generic dynamic-typecheck nodes are removed from `node.def` entirely** — only `_int` / `_real` / `_string` / `_poly` / `_bool` / `_unchecked` variants remain.  AOT pipeline includes `is_leaf`-driven C-stack alloca, `mark_tail_calls` post-pass, and astocaml-style aggressive cflags (`-fno-stack-clash-protection -flto`).  vs SML/NJ v110.79: AOT **1.8×** of SML/NJ on `fib` and **2.7× faster** on `strcat`; 30× gap on multi-arg curried recursion (next target: `app2`/`app3` lower-time folding).
