@@ -151,8 +151,16 @@ libkoruby-regex-wasm.a にまとめる (wasi/Makefile。llvm-objcopy は wasm ob
   `--build` クロスコンパイルを使う (AOT 済み全埋め込み .wasm が出る)。
 - `BARUBY_GC_PURGE` — mprotect(PROT_NONE) ベースなので wasm では
   `mmap PURGE arena: Invalid argument`。STRESS は使える。
-- 多倍長は BIGNUM=wrap (64bit で wrap、Ruby とは意味論が違う)。GMP を
-  クロスビルドすれば BIGNUM=gmp も使えるはず。
+- **多倍長整数 (Bignum) — BIGNUM=wrap の意味論に注意**。wasm ビルドは外部依存
+  を避けるため GMP でなく wrap backend でビルドしている。契約は:
+  **fixnum (±2^62) に収まる限り CRuby と完全一致。超えた瞬間から結果は保証
+  されない** — Bignum への昇格が起きず、名前に反してきれいな 64bit wrap
+  ですらない (実測: `2**62` → `0`、`2**64` → `0`、fixnum 超のリテラル
+  `4611686018427387904` → `0`、巨大リテラルは切り詰め。表示でなく演算結果
+  自体がこうなる)。golden corpus では 100,523 中 529 件 (0.5%) がここに依存。
+  ベンチ除外の bignum / render_span_kernel もこれ (checksum が fixnum を
+  超える)。解消するには GMP を wasm32 にクロスビルドして BIGNUM=gmp
+  (未実施、通るはず)。
 
 インタプリタ .wasm は prelude を `--dir` mount から起動時に読む。
 AOT .wasm は prelude 埋め込み済みで mount 不要

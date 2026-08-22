@@ -40,7 +40,8 @@ CC ?= gcc
 optflags = -O2
 
 # 多倍長整数 backend (builtins/bignum_backend.h): gmp = 真の任意精度 (既定),
-# wrap = C の整数と同じく 64bit で wrap (外部依存なし、Ruby とは意味論が違う)
+# wrap = Bignum 非対応 (外部依存なし)。fixnum (±2^62) 内は CRuby と一致、超えると
+# 結果は保証されない (2**62→0 等; wasi/README.md 参照)
 BIGNUM ?= gmp
 BIGNUM_NUM_gmp  := 1
 BIGNUM_NUM_wrap := 2
@@ -110,7 +111,7 @@ KORUBY_CPPFLAGS = -I. -I./prism/include -I$(RUNTIME) \
 	    -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
 	    -DKORB_BIGNUM=$(BIGNUM_NUM) \
 	    -DKORUBY_GC_SRC='"$(RUNTIME_ABSPATH)/precise_gc/gc_$(GC).c"'
-# $@ = output binary; $(1) = extra flags/sources (PRELUDE_EMBED stage 2)
+# $@ = output binary; $(1) = extra flags/sources
 define KORUBY_LINK
 	$(CC) $(KORUBY_CPPFLAGS) $(optflags) -flto=auto -ggdb3 -Wall -Wextra \
 	    -Wno-unused-parameter -rdynamic -fno-plt \
